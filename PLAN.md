@@ -54,6 +54,7 @@ Immediate gap:
 - Editor camera and camera component scaffolding provide a shared `CameraView` for renderer code.
 - Shader source loading and hot-reload detection are centralized through `ShaderLibrary`.
 - GPU timestamp query contracts and renderer timing snapshots are stubbed; the D3D12 query heap resolve path is still pending.
+- The first D3D12 viewport pass has resource debug names and capture markers for frame, viewport, ImGui, and capture readback scopes.
 
 ## Phase 0: Buildable Spine
 
@@ -481,7 +482,7 @@ Before adding renderer code beyond stubs:
 - [x] Define the first RHI device/swapchain interface.
 - [x] Keep headless smoke tests green.
 - [ ] Keep editor panels useful even when renderer initialization fails.
-- [ ] Add debug names and capture markers from the first GPU pass.
+- [x] Add debug names and capture markers from the first GPU pass.
 
 ## Near-Term Next Tasks
 

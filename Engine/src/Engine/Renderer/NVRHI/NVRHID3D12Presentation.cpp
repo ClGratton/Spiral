@@ -1,6 +1,7 @@
 #include "Engine/Renderer/NVRHI/NVRHID3D12Presentation.h"
 
 #include "Engine/Core/Log.h"
+#include "Engine/Renderer/NVRHI/D3D12DebugMarkers.h"
 #include "Engine/Renderer/NVRHI/NVRHID3D12ViewportSceneRenderer.h"
 
 #if defined(GE_HAS_NVRHI_D3D12)
@@ -44,6 +45,26 @@ namespace Engine
         constexpr u32 kInvalidDescriptorIndex = std::numeric_limits<u32>::max();
         constexpr DXGI_FORMAT kSwapchainFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
         constexpr DXGI_FORMAT kDepthFormat = DXGI_FORMAT_D32_FLOAT;
+
+        const wchar_t* GetBackBufferName(u32 index)
+        {
+            switch (index)
+            {
+                case 0: return L"Spiral Swapchain Back Buffer 0";
+                case 1: return L"Spiral Swapchain Back Buffer 1";
+                default: return L"Spiral Swapchain Back Buffer";
+            }
+        }
+
+        const wchar_t* GetCommandAllocatorName(u32 index)
+        {
+            switch (index)
+            {
+                case 0: return L"Spiral Presentation Command Allocator 0";
+                case 1: return L"Spiral Presentation Command Allocator 1";
+                default: return L"Spiral Presentation Command Allocator";
+            }
+        }
 
         std::string HResultToString(HRESULT result)
         {
@@ -251,22 +272,35 @@ namespace Engine
                 return;
             }
 
-            RenderViewportTexture(clearColor);
+            {
+                ScopedD3D12Marker frameMarker(m_CommandList.Get(), "Spiral Editor Frame");
 
-            D3D12_RESOURCE_BARRIER presentToRender = TransitionBarrier(m_BackBuffers[m_FrameIndex].Get(), D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET);
-            m_CommandList->ResourceBarrier(1, &presentToRender);
+                {
+                    ScopedD3D12Marker viewportMarker(m_CommandList.Get(), "Editor Viewport Texture");
+                    RenderViewportTexture(clearColor);
+                }
 
-            const D3D12_CPU_DESCRIPTOR_HANDLE backBufferRtv = GetRtvCpuHandle(m_FrameIndex);
-            const float clear[4] = { 0.10f, 0.11f, 0.12f, 1.0f };
-            m_CommandList->OMSetRenderTargets(1, &backBufferRtv, FALSE, nullptr);
-            m_CommandList->ClearRenderTargetView(backBufferRtv, clear, 0, nullptr);
+                {
+                    ScopedD3D12Marker backBufferMarker(m_CommandList.Get(), "Backbuffer Clear");
+                    D3D12_RESOURCE_BARRIER presentToRender = TransitionBarrier(m_BackBuffers[m_FrameIndex].Get(), D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET);
+                    m_CommandList->ResourceBarrier(1, &presentToRender);
 
-            ID3D12DescriptorHeap* heaps[] = { m_SrvHeap.Get() };
-            m_CommandList->SetDescriptorHeaps(1, heaps);
-            ImGui_ImplDX12_RenderDrawData(drawData, m_CommandList.Get());
+                    const D3D12_CPU_DESCRIPTOR_HANDLE backBufferRtv = GetRtvCpuHandle(m_FrameIndex);
+                    const float clear[4] = { 0.10f, 0.11f, 0.12f, 1.0f };
+                    m_CommandList->OMSetRenderTargets(1, &backBufferRtv, FALSE, nullptr);
+                    m_CommandList->ClearRenderTargetView(backBufferRtv, clear, 0, nullptr);
+                }
 
-            D3D12_RESOURCE_BARRIER renderToPresent = TransitionBarrier(m_BackBuffers[m_FrameIndex].Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PRESENT);
-            m_CommandList->ResourceBarrier(1, &renderToPresent);
+                {
+                    ScopedD3D12Marker imguiMarker(m_CommandList.Get(), "Editor ImGui");
+                    ID3D12DescriptorHeap* heaps[] = { m_SrvHeap.Get() };
+                    m_CommandList->SetDescriptorHeaps(1, heaps);
+                    ImGui_ImplDX12_RenderDrawData(drawData, m_CommandList.Get());
+                }
+
+                D3D12_RESOURCE_BARRIER renderToPresent = TransitionBarrier(m_BackBuffers[m_FrameIndex].Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PRESENT);
+                m_CommandList->ResourceBarrier(1, &renderToPresent);
+            }
 
             result = m_CommandList->Close();
             if (FAILED(result))
@@ -425,42 +459,50 @@ namespace Engine
                 return false;
             }
 
-            m_ViewportSceneRenderer.Render(
-                m_CommandList.Get(),
-                m_ViewportTexture.Get(),
-                m_ViewportState,
-                GetRtvCpuHandle(kFrameCount),
-                m_ViewportDepthTexture.Get(),
-                GetDsvCpuHandle(),
-                m_ViewportWidth,
-                m_ViewportHeight,
-                m_LastClearColor);
-
-            const D3D12_RESOURCE_STATES previousState = m_ViewportState;
-            if (m_ViewportState != D3D12_RESOURCE_STATE_COPY_SOURCE)
             {
-                D3D12_RESOURCE_BARRIER barrier = TransitionBarrier(m_ViewportTexture.Get(), m_ViewportState, D3D12_RESOURCE_STATE_COPY_SOURCE);
-                m_CommandList->ResourceBarrier(1, &barrier);
-                m_ViewportState = D3D12_RESOURCE_STATE_COPY_SOURCE;
-            }
+                ScopedD3D12Marker captureMarker(m_CommandList.Get(), "Viewport Capture Readback");
 
-            D3D12_TEXTURE_COPY_LOCATION source {};
-            source.pResource = m_ViewportTexture.Get();
-            source.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
-            source.SubresourceIndex = 0;
+                {
+                    ScopedD3D12Marker viewportMarker(m_CommandList.Get(), "Capture Viewport Texture Refresh");
+                    m_ViewportSceneRenderer.Render(
+                        m_CommandList.Get(),
+                        m_ViewportTexture.Get(),
+                        m_ViewportState,
+                        GetRtvCpuHandle(kFrameCount),
+                        m_ViewportDepthTexture.Get(),
+                        GetDsvCpuHandle(),
+                        m_ViewportWidth,
+                        m_ViewportHeight,
+                        m_LastClearColor);
+                }
 
-            D3D12_TEXTURE_COPY_LOCATION destination {};
-            destination.pResource = readbackBuffer.Get();
-            destination.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
-            destination.PlacedFootprint = footprint;
+                ScopedD3D12Marker copyMarker(m_CommandList.Get(), "Copy Viewport To Readback Buffer");
+                const D3D12_RESOURCE_STATES previousState = m_ViewportState;
+                if (m_ViewportState != D3D12_RESOURCE_STATE_COPY_SOURCE)
+                {
+                    D3D12_RESOURCE_BARRIER barrier = TransitionBarrier(m_ViewportTexture.Get(), m_ViewportState, D3D12_RESOURCE_STATE_COPY_SOURCE);
+                    m_CommandList->ResourceBarrier(1, &barrier);
+                    m_ViewportState = D3D12_RESOURCE_STATE_COPY_SOURCE;
+                }
 
-            m_CommandList->CopyTextureRegion(&destination, 0, 0, 0, &source, nullptr);
+                D3D12_TEXTURE_COPY_LOCATION source {};
+                source.pResource = m_ViewportTexture.Get();
+                source.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+                source.SubresourceIndex = 0;
 
-            if (previousState != D3D12_RESOURCE_STATE_COPY_SOURCE)
-            {
-                D3D12_RESOURCE_BARRIER barrier = TransitionBarrier(m_ViewportTexture.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE, previousState);
-                m_CommandList->ResourceBarrier(1, &barrier);
-                m_ViewportState = previousState;
+                D3D12_TEXTURE_COPY_LOCATION destination {};
+                destination.pResource = readbackBuffer.Get();
+                destination.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+                destination.PlacedFootprint = footprint;
+
+                m_CommandList->CopyTextureRegion(&destination, 0, 0, 0, &source, nullptr);
+
+                if (previousState != D3D12_RESOURCE_STATE_COPY_SOURCE)
+                {
+                    D3D12_RESOURCE_BARRIER barrier = TransitionBarrier(m_ViewportTexture.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE, previousState);
+                    m_CommandList->ResourceBarrier(1, &barrier);
+                    m_ViewportState = previousState;
+                }
             }
 
             result = m_CommandList->Close();
@@ -520,6 +562,7 @@ namespace Engine
                 return false;
             }
 
+            m_RtvHeap->SetName(L"Spiral RTV Descriptor Heap");
             m_RtvDescriptorSize = m_Device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
 
             D3D12_DESCRIPTOR_HEAP_DESC dsvHeapDesc {};
@@ -534,6 +577,8 @@ namespace Engine
                 return false;
             }
 
+            m_DsvHeap->SetName(L"Spiral DSV Descriptor Heap");
+
             D3D12_DESCRIPTOR_HEAP_DESC srvHeapDesc {};
             srvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
             srvHeapDesc.NumDescriptors = kSrvDescriptorCount;
@@ -546,6 +591,7 @@ namespace Engine
                 return false;
             }
 
+            m_SrvHeap->SetName(L"Spiral Shader Visible SRV Descriptor Heap");
             m_SrvDescriptorSize = m_Device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
             m_SrvAllocated.assign(kSrvDescriptorCount, false);
             return true;
@@ -608,6 +654,7 @@ namespace Engine
                     return false;
                 }
 
+                m_BackBuffers[index]->SetName(GetBackBufferName(index));
                 m_Device->CreateRenderTargetView(m_BackBuffers[index].Get(), nullptr, GetRtvCpuHandle(index));
             }
 
@@ -622,14 +669,17 @@ namespace Engine
 
         bool CreateCommandObjects()
         {
-            for (FrameContext& frame : m_Frames)
+            for (u32 index = 0; index < kFrameCount; ++index)
             {
+                FrameContext& frame = m_Frames[index];
                 HRESULT result = m_Device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&frame.CommandAllocator));
                 if (FAILED(result))
                 {
                     Log::Error("Could not create D3D12 command allocator: ", HResultToString(result));
                     return false;
                 }
+
+                frame.CommandAllocator->SetName(GetCommandAllocatorName(index));
             }
 
             HRESULT result = m_Device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, m_Frames[0].CommandAllocator.Get(), nullptr, IID_PPV_ARGS(&m_CommandList));
@@ -691,6 +741,8 @@ namespace Engine
                 Log::Error("Could not create D3D12 presentation fence: ", HResultToString(result));
                 return false;
             }
+
+            m_Fence->SetName(L"Spiral Presentation Fence");
 
             m_FenceEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
             if (!m_FenceEvent)

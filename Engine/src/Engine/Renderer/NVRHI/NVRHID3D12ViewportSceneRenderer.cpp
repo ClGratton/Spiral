@@ -2,6 +2,7 @@
 
 #include "Engine/Core/Log.h"
 #include "Engine/Math/Math.h"
+#include "Engine/Renderer/NVRHI/D3D12DebugMarkers.h"
 #include "Engine/Renderer/ShaderLibrary.h"
 
 #if defined(GE_HAS_NVRHI_D3D12)
@@ -162,6 +163,8 @@ namespace Engine
         {
             if (!commandList || !colorTexture || !depthTexture || width == 0 || height == 0)
                 return false;
+
+            ScopedD3D12Marker marker(commandList, "Viewport Prototype Mesh Pass");
 
             if (colorState != D3D12_RESOURCE_STATE_RENDER_TARGET)
             {
