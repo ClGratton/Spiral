@@ -1,0 +1,24 @@
+# Build output
+bin/
+bin-int/
+output/
+
+# Generated projects
+.vs/
+*.sln
+*.vcxproj
+*.vcxproj.filters
+*.vcxproj.user
+Makefile
+*.make
+
+# Tool bootstrap output
+Vendor/premake/bin/*
+!Vendor/premake/bin/.gitkeep
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+imgui.ini
+*.user
+*.suo

@@ -1,0 +1,71 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  windows-d3d12-render-smoke:
+    name: Windows D3D12 Render Smoke
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build and validate viewport capture
+        shell: pwsh
+        run: .\Scripts\TestRender.ps1 -Configuration Debug -Action vs2022
+
+      - name: Upload viewport capture
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: editor-viewport-capture
+          path: output/captures/editor-viewport.bmp
+          if-no-files-found: ignore
+
+  portable-headless-smoke:
+    name: ${{ matrix.os }} Portable Headless Smoke
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ ubuntu-latest, macos-latest ]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libgl1-mesa-dev \
+            libx11-dev \
+            libxcursor-dev \
+            libxi-dev \
+            libxinerama-dev \
+            libxrandr-dev
+
+      - name: Build portable target
+        run: bash Scripts/Build.sh Debug gmake
+
+      - name: Run editor headless smoke
+        run: |
+          if [[ "${{ runner.os }}" == "Linux" ]]; then
+            ./bin/Debug-linux-x86_64-gmake/Editor/Editor --headless --smoke-test
+          else
+            ./bin/Debug-macosx-x86_64-gmake/Editor/Editor --headless --smoke-test
+          fi
+
+      - name: Run sandbox headless smoke
+        run: |
+          if [[ "${{ runner.os }}" == "Linux" ]]; then
+            ./bin/Debug-linux-x86_64-gmake/Sandbox/Sandbox --headless --smoke-test
+          else
+            ./bin/Debug-macosx-x86_64-gmake/Sandbox/Sandbox --headless --smoke-test
+          fi

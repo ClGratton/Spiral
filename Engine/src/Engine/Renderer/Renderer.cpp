@@ -1,0 +1,386 @@
+#include "Engine/Renderer/Renderer.h"
+
+#include "Engine/Core/Application.h"
+#include "Engine/Core/Log.h"
+#include "Engine/RHI/NVRHI/NVRHIAdapter.h"
+#include "Engine/Renderer/NVRHI/NVRHIRenderBackend.h"
+#include "Engine/Renderer/RenderBackend.h"
+
+namespace Engine
+{
+    namespace
+    {
+        RendererCapabilities s_Capabilities;
+        ClearColor s_ClearColor;
+        RenderViewportRect s_ViewportRect;
+        RendererBuildInfo s_BuildInfo;
+        Scope<RenderBackend> s_Backend;
+        std::vector<RendererBackendOption> s_BackendOptions;
+        RendererBackend s_ActiveBackend = RendererBackend::Headless;
+        bool s_Initialized = false;
+
+        bool HasNativeWindow()
+        {
+            return Application::Get().GetWindow().GetNativeWindow() != nullptr;
+        }
+
+        NVRHIRenderBackend* GetNVRHIBackend()
+        {
+            return dynamic_cast<NVRHIRenderBackend*>(s_Backend.get());
+        }
+
+        constexpr bool HasNVRHI()
+        {
+#if defined(GE_HAS_NVRHI)
+            return true;
+#else
+            return false;
+#endif
+        }
+
+        constexpr bool HasDirectXHeaders()
+        {
+#if defined(GE_HAS_DIRECTX_HEADERS)
+            return true;
+#else
+            return false;
+#endif
+        }
+
+        constexpr bool HasNVRHID3D12()
+        {
+#if defined(GE_HAS_NVRHI_D3D12)
+            return true;
+#else
+            return false;
+#endif
+        }
+
+        constexpr bool HasVulkanHeaders()
+        {
+#if defined(GE_HAS_VULKAN_HEADERS)
+            return true;
+#else
+            return false;
+#endif
+        }
+
+        constexpr bool IsWindows()
+        {
+#if defined(GE_PLATFORM_WINDOWS)
+            return true;
+#else
+            return false;
+#endif
+        }
+
+        constexpr bool IsMacOS()
+        {
+#if defined(GE_PLATFORM_MACOS)
+            return true;
+#else
+            return false;
+#endif
+        }
+
+        const char* BackendName(RendererBackend backend)
+        {
+            switch (backend)
+            {
+                case RendererBackend::Auto: return "Auto";
+                case RendererBackend::Headless: return "Headless";
+                case RendererBackend::NVRHICommon: return "NVRHI Common";
+                case RendererBackend::NVRHID3D12: return "NVRHI D3D12";
+                case RendererBackend::NVRHIVulkan: return "NVRHI Vulkan";
+                case RendererBackend::Metal: return "Metal";
+                case RendererBackend::NRI: return "NRI";
+            }
+
+            return "Unknown";
+        }
+
+        void RebuildBackendOptions()
+        {
+            s_BuildInfo.HasNVRHI = HasNVRHI();
+            s_BuildInfo.HasDirectXHeaders = HasDirectXHeaders();
+            s_BuildInfo.HasNVRHID3D12 = HasNVRHID3D12();
+            s_BuildInfo.HasVulkanHeaders = HasVulkanHeaders();
+            s_BuildInfo.NativeViewportHint = HasNVRHID3D12()
+                ? "D3D12 viewport code is compiled into this executable."
+                : "D3D12 viewport code is not compiled into this executable. On Windows, use the VS2022 build/run path for the native viewport.";
+
+            s_BackendOptions.clear();
+            s_BackendOptions.push_back({
+                RendererBackend::Auto,
+                RHI::Backend::None,
+                "Auto",
+                HasNVRHI() ? "Resolves to the NVRHI renderer boundary." : "No concrete renderer dependency is available.",
+                false,
+                false
+            });
+            s_BackendOptions.push_back({
+                RendererBackend::NVRHICommon,
+                RHI::Backend::NVRHICommon,
+                "NVRHI Common",
+                HasNVRHI()
+                    ? (s_ActiveBackend == RendererBackend::NVRHICommon ? "Active fallback probe backend; native device backend was unavailable." : "NVRHI is linked, but this build is using a native backend.")
+                    : "NVRHI is not vendored in this checkout.",
+                s_ActiveBackend == RendererBackend::NVRHICommon,
+                s_ActiveBackend == RendererBackend::NVRHICommon
+            });
+            s_BackendOptions.push_back({
+                RendererBackend::NVRHID3D12,
+                RHI::Backend::NVRHID3D12,
+                "NVRHI D3D12",
+                IsWindows()
+                    ? (HasNVRHID3D12()
+                        ? (s_ActiveBackend == RendererBackend::NVRHID3D12 ? "Active native D3D12 device; DX12 presentation is used by the editor UI when initialized." : "Compiled, but live backend switching is not implemented yet.")
+                        : (HasDirectXHeaders() ? "Unavailable in this executable: the current build action did not compile the NVRHI D3D12 backend. Use the VS2022 build/run path on Windows." : "DirectX-Headers are not vendored."))
+                    : "D3D12 is Windows-only.",
+                s_ActiveBackend == RendererBackend::NVRHID3D12,
+                s_ActiveBackend == RendererBackend::NVRHID3D12
+            });
+            s_BackendOptions.push_back({
+                RendererBackend::NVRHIVulkan,
+                RHI::Backend::NVRHIVulkan,
+                "NVRHI Vulkan",
+                HasVulkanHeaders() ? "Vulkan headers are pinned; Vulkan device/swapchain backend is not implemented yet." : "Vulkan-Headers are not vendored.",
+                false,
+                s_ActiveBackend == RendererBackend::NVRHIVulkan
+            });
+            s_BackendOptions.push_back({
+                RendererBackend::Metal,
+                RHI::Backend::Metal,
+                "Metal",
+                IsMacOS() ? "Metal backend is not implemented yet." : "Metal is only available on Apple platforms.",
+                false,
+                s_ActiveBackend == RendererBackend::Metal
+            });
+            s_BackendOptions.push_back({
+                RendererBackend::NRI,
+                RHI::Backend::NRI,
+                "NRI",
+                "Not integrated; keep as a future low-level backend comparison point.",
+                false,
+                s_ActiveBackend == RendererBackend::NRI
+            });
+            s_BackendOptions.push_back({
+                RendererBackend::Headless,
+                RHI::Backend::None,
+                "Headless",
+                "Used for smoke tests and machines without a native renderer.",
+                s_ActiveBackend == RendererBackend::Headless,
+                s_ActiveBackend == RendererBackend::Headless
+            });
+        }
+    }
+
+    void Renderer::Initialize()
+    {
+        if (s_Initialized)
+            return;
+
+        if (HasNativeWindow() && HasNVRHI())
+        {
+            Scope<NVRHIRenderBackend> backend = CreateScope<NVRHIRenderBackend>();
+            NVRHIRenderBackend* backendPtr = backend.get();
+            s_Backend = std::move(backend);
+            if (!s_Backend->Initialize())
+                s_Backend.reset();
+            else
+            {
+                s_ActiveBackend = backendPtr->GetRendererBackend();
+                if (const RHI::DeviceCapabilities* capabilities = backendPtr->GetDeviceCapabilities())
+                {
+                    s_Capabilities.HasNativeRayTracing = capabilities->SupportsRayTracing;
+                    s_Capabilities.HasWorkGraphs = capabilities->SupportsWorkGraphs;
+                    s_Capabilities.HasNeuralAccelerators = capabilities->SupportsNeuralShaders;
+                }
+            }
+        }
+
+        if (!s_Backend)
+            s_ActiveBackend = RendererBackend::Headless;
+        RebuildBackendOptions();
+
+        s_Initialized = true;
+        Log::Info("Renderer initialized with backend: ", s_Backend ? s_Backend->GetName() : "Headless");
+
+        const RHI::NVRHIAdapterInfo nvrhiInfo = RHI::QueryNVRHIAdapter();
+        if (nvrhiInfo.Available)
+            Log::Info("NVRHI core linked; format probe: ", nvrhiInfo.ProbeFormatName);
+    }
+
+    void Renderer::Shutdown()
+    {
+        if (!s_Initialized)
+            return;
+
+        if (s_Backend)
+        {
+            s_Backend->Shutdown();
+            s_Backend.reset();
+        }
+
+        s_Capabilities = {};
+        s_ActiveBackend = RendererBackend::Headless;
+        RebuildBackendOptions();
+
+        Log::Info("Renderer shutdown");
+        s_Initialized = false;
+    }
+
+    void Renderer::BeginFrame()
+    {
+        if (!s_Initialized || !s_Backend)
+            return;
+
+        s_Backend->BeginFrame(s_ClearColor);
+    }
+
+    void Renderer::EndFrame()
+    {
+        if (!s_Initialized || !s_Backend)
+            return;
+
+        s_Backend->EndFrame();
+    }
+
+    bool Renderer::InitializeImGui(void* nativeWindow)
+    {
+        NVRHIRenderBackend* backend = GetNVRHIBackend();
+        if (!backend)
+            return false;
+
+        Window& window = Application::Get().GetWindow();
+        return backend->InitializeImGui(nativeWindow, window.GetWidth(), window.GetHeight());
+    }
+
+    void Renderer::ShutdownImGui()
+    {
+        if (NVRHIRenderBackend* backend = GetNVRHIBackend())
+            backend->ShutdownImGui();
+    }
+
+    bool Renderer::IsNativeImGuiEnabled()
+    {
+        const NVRHIRenderBackend* backend = dynamic_cast<const NVRHIRenderBackend*>(s_Backend.get());
+        return backend && backend->IsNativeImGuiEnabled();
+    }
+
+    void Renderer::BeginImGuiFrame()
+    {
+        if (NVRHIRenderBackend* backend = GetNVRHIBackend())
+            backend->BeginImGuiFrame();
+    }
+
+    void Renderer::RenderImGuiDrawData(ImDrawData* drawData)
+    {
+        NVRHIRenderBackend* backend = GetNVRHIBackend();
+        if (!backend)
+            return;
+
+        Window& window = Application::Get().GetWindow();
+        backend->RenderImGuiDrawData(drawData, s_ClearColor, window.GetWidth(), window.GetHeight());
+    }
+
+    void Renderer::SetClearColor(const ClearColor& color)
+    {
+        s_ClearColor = color;
+    }
+
+    const ClearColor& Renderer::GetClearColor()
+    {
+        return s_ClearColor;
+    }
+
+    void Renderer::SetViewportRect(const RenderViewportRect& rect)
+    {
+        s_ViewportRect = rect;
+    }
+
+    const RenderViewportRect& Renderer::GetViewportRect()
+    {
+        return s_ViewportRect;
+    }
+
+    bool Renderer::PrepareViewportTexture(u32 width, u32 height)
+    {
+        if (NVRHIRenderBackend* backend = GetNVRHIBackend())
+            return backend->PrepareViewportTexture(width, height);
+
+        return false;
+    }
+
+    u64 Renderer::GetViewportTextureId()
+    {
+        if (const NVRHIRenderBackend* backend = dynamic_cast<const NVRHIRenderBackend*>(s_Backend.get()))
+            return backend->GetViewportTextureId();
+
+        return 0;
+    }
+
+    bool Renderer::CaptureViewportToFile(std::string_view path)
+    {
+        if (NVRHIRenderBackend* backend = GetNVRHIBackend())
+            return backend->CaptureViewportToFile(path);
+
+        Log::Warn("Viewport capture requested without an active native renderer");
+        return false;
+    }
+
+    RendererBackend Renderer::GetActiveBackend()
+    {
+        return s_ActiveBackend;
+    }
+
+    const char* Renderer::GetActiveBackendName()
+    {
+        return BackendName(s_ActiveBackend);
+    }
+
+    const std::vector<RendererBackendOption>& Renderer::GetBackendOptions()
+    {
+        if (s_BackendOptions.empty())
+            RebuildBackendOptions();
+
+        return s_BackendOptions;
+    }
+
+    bool Renderer::RequestBackend(RendererBackend backend)
+    {
+        for (const RendererBackendOption& option : GetBackendOptions())
+        {
+            if (option.Backend != backend)
+                continue;
+
+            if (option.Active)
+                return true;
+
+            if (!option.Selectable)
+            {
+                Log::Warn("Renderer backend is not selectable yet: ", option.Name, " (", option.Detail, ")");
+                return false;
+            }
+
+            Log::Warn("Renderer backend switching is not implemented yet: ", option.Name);
+            return false;
+        }
+
+        Log::Warn("Unknown renderer backend requested: ", static_cast<int>(backend));
+        return false;
+    }
+
+    const RendererCapabilities& Renderer::GetCapabilities()
+    {
+        return s_Capabilities;
+    }
+
+    const RendererBuildInfo& Renderer::GetBuildInfo()
+    {
+        if (s_BuildInfo.NativeViewportHint[0] == '\0')
+            RebuildBackendOptions();
+
+        return s_BuildInfo;
+    }
+}
