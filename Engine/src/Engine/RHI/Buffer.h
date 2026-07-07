@@ -20,12 +20,20 @@ namespace Engine::RHI
         CopyDest = 1u << 8u
     };
 
+    enum class BufferCpuAccess
+    {
+        None,
+        Write,
+        Read
+    };
+
     struct BufferDescription
     {
         std::string DebugName;
         u64 SizeBytes = 0;
         u32 StrideBytes = 0;
         BufferUsage Usage = BufferUsage::None;
+        BufferCpuAccess CpuAccess = BufferCpuAccess::None;
         ResourceState InitialState = ResourceState::Common;
     };
 
@@ -35,5 +43,7 @@ namespace Engine::RHI
         virtual ~Buffer() = default;
 
         virtual const BufferDescription& GetDescription() const = 0;
+        virtual void* Map() = 0;
+        virtual void Unmap() = 0;
     };
 }

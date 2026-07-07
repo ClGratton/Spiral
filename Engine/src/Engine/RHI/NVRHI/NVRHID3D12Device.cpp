@@ -35,6 +35,23 @@ namespace Engine::RHI
     {
         using Microsoft::WRL::ComPtr;
 
+        D3D12_RESOURCE_STATES ConvertResourceState(ResourceState state)
+        {
+            switch (state)
+            {
+                case ResourceState::Common: return D3D12_RESOURCE_STATE_COMMON;
+                case ResourceState::RenderTarget: return D3D12_RESOURCE_STATE_RENDER_TARGET;
+                case ResourceState::DepthWrite: return D3D12_RESOURCE_STATE_DEPTH_WRITE;
+                case ResourceState::ShaderResource: return D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+                case ResourceState::UnorderedAccess: return D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+                case ResourceState::CopySource: return D3D12_RESOURCE_STATE_COPY_SOURCE;
+                case ResourceState::CopyDest: return D3D12_RESOURCE_STATE_COPY_DEST;
+                case ResourceState::Present: return D3D12_RESOURCE_STATE_PRESENT;
+                case ResourceState::Unknown:
+                default: return D3D12_RESOURCE_STATE_COMMON;
+            }
+        }
+
         std::string HResultToString(HRESULT result)
         {
             std::ostringstream stream;
@@ -59,6 +76,23 @@ namespace Engine::RHI
             return result;
         }
 
+        std::wstring Utf8ToWide(const std::string& value)
+        {
+            if (value.empty())
+                return {};
+
+            const int requiredSize = MultiByteToWideChar(CP_UTF8, 0, value.c_str(), -1, nullptr, 0);
+            if (requiredSize <= 0)
+                return {};
+
+            std::wstring result(static_cast<size_t>(requiredSize), L'\0');
+            MultiByteToWideChar(CP_UTF8, 0, value.c_str(), -1, result.data(), requiredSize);
+            if (!result.empty() && result.back() == L'\0')
+                result.pop_back();
+
+            return result;
+        }
+
         class NVRHIMessageCallback final : public nvrhi::IMessageCallback
         {
         public:
@@ -78,6 +112,139 @@ namespace Engine::RHI
                         break;
                 }
             }
+        };
+
+        class NVRHID3D12Buffer final : public Buffer
+        {
+        public:
+            explicit NVRHID3D12Buffer(BufferDescription description)
+                : m_Description(std::move(description))
+            {
+            }
+
+            ~NVRHID3D12Buffer() override
+            {
+                if (m_MappedData)
+                    Unmap();
+            }
+
+            bool Initialize(ID3D12Device* device)
+            {
+                if (!device || m_Description.SizeBytes == 0)
+                    return false;
+
+                D3D12_HEAP_PROPERTIES heapProperties {};
+                heapProperties.Type = GetHeapType();
+                heapProperties.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
+                heapProperties.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
+                heapProperties.CreationNodeMask = 1;
+                heapProperties.VisibleNodeMask = 1;
+
+                D3D12_RESOURCE_DESC bufferDesc {};
+                bufferDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+                bufferDesc.Width = m_Description.SizeBytes;
+                bufferDesc.Height = 1;
+                bufferDesc.DepthOrArraySize = 1;
+                bufferDesc.MipLevels = 1;
+                bufferDesc.Format = DXGI_FORMAT_UNKNOWN;
+                bufferDesc.SampleDesc.Count = 1;
+                bufferDesc.SampleDesc.Quality = 0;
+                bufferDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+                bufferDesc.Flags = D3D12_RESOURCE_FLAG_NONE;
+
+                const HRESULT result = device->CreateCommittedResource(
+                    &heapProperties,
+                    D3D12_HEAP_FLAG_NONE,
+                    &bufferDesc,
+                    GetInitialState(),
+                    nullptr,
+                    IID_PPV_ARGS(&m_Resource));
+
+                if (FAILED(result))
+                {
+                    Log::Error("Could not create D3D12 RHI buffer '", m_Description.DebugName, "': ", HResultToString(result));
+                    return false;
+                }
+
+                const std::wstring name = Utf8ToWide(m_Description.DebugName);
+                if (!name.empty())
+                    m_Resource->SetName(name.c_str());
+
+                return true;
+            }
+
+            const BufferDescription& GetDescription() const override
+            {
+                return m_Description;
+            }
+
+            void* Map() override
+            {
+                if (!m_Resource || m_Description.CpuAccess == BufferCpuAccess::None)
+                    return nullptr;
+
+                if (m_MappedData)
+                    return m_MappedData;
+
+                D3D12_RANGE readRange {};
+                if (m_Description.CpuAccess == BufferCpuAccess::Read)
+                    readRange.End = static_cast<SIZE_T>(m_Description.SizeBytes);
+
+                const HRESULT result = m_Resource->Map(0, &readRange, &m_MappedData);
+                if (FAILED(result))
+                {
+                    Log::Error("Could not map D3D12 RHI buffer '", m_Description.DebugName, "': ", HResultToString(result));
+                    return nullptr;
+                }
+
+                return m_MappedData;
+            }
+
+            void Unmap() override
+            {
+                if (!m_Resource || !m_MappedData)
+                    return;
+
+                D3D12_RANGE writtenRange {};
+                if (m_Description.CpuAccess == BufferCpuAccess::Write)
+                    writtenRange.End = static_cast<SIZE_T>(m_Description.SizeBytes);
+
+                m_Resource->Unmap(0, &writtenRange);
+                m_MappedData = nullptr;
+            }
+
+            ID3D12Resource* GetResource() const
+            {
+                return m_Resource.Get();
+            }
+
+        private:
+            D3D12_HEAP_TYPE GetHeapType() const
+            {
+                switch (m_Description.CpuAccess)
+                {
+                    case BufferCpuAccess::Write: return D3D12_HEAP_TYPE_UPLOAD;
+                    case BufferCpuAccess::Read: return D3D12_HEAP_TYPE_READBACK;
+                    case BufferCpuAccess::None:
+                    default: return D3D12_HEAP_TYPE_DEFAULT;
+                }
+            }
+
+            D3D12_RESOURCE_STATES GetInitialState() const
+            {
+                switch (m_Description.CpuAccess)
+                {
+                    case BufferCpuAccess::Write: return D3D12_RESOURCE_STATE_GENERIC_READ;
+                    case BufferCpuAccess::Read: return D3D12_RESOURCE_STATE_COPY_DEST;
+                    case BufferCpuAccess::None:
+                    default: return ConvertResourceState(m_Description.InitialState);
+                }
+            }
+
+        private:
+            BufferDescription m_Description;
+            ComPtr<ID3D12Resource> m_Resource;
+            void* m_MappedData = nullptr;
         };
 
         class NVRHIQueryPoolStub final : public QueryPool
@@ -155,9 +322,11 @@ namespace Engine::RHI
 
             Scope<Buffer> CreateBuffer(const BufferDescription& description) override
             {
-                (void)description;
-                Log::Warn("NVRHI D3D12 buffer creation is not implemented yet");
-                return nullptr;
+                Scope<NVRHID3D12Buffer> buffer = CreateScope<NVRHID3D12Buffer>(description);
+                if (!buffer->Initialize(m_Device.Get()))
+                    return nullptr;
+
+                return buffer;
             }
 
             Scope<Texture> CreateTexture(const TextureDescription& description) override
@@ -431,6 +600,22 @@ namespace Engine::RHI
         (void)adapterInfo;
         (void)nativeHandles;
         return nullptr;
+#endif
+    }
+
+    NVRHID3D12BufferNativeHandles GetNVRHID3D12BufferNativeHandles(Buffer& buffer)
+    {
+#if defined(GE_HAS_NVRHI_D3D12)
+        auto* nativeBuffer = dynamic_cast<NVRHID3D12Buffer*>(&buffer);
+        if (!nativeBuffer)
+            return {};
+
+        NVRHID3D12BufferNativeHandles handles;
+        handles.Resource = nativeBuffer->GetResource();
+        return handles;
+#else
+        (void)buffer;
+        return {};
 #endif
     }
 }

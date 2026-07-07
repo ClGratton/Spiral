@@ -168,14 +168,15 @@ namespace Engine
 
     struct NVRHID3D12Presentation::Impl
     {
-        bool Initialize(void* nativeWindow, const RHI::NVRHID3D12NativeHandles& nativeHandles, u32 width, u32 height)
+        bool Initialize(void* nativeWindow, RHI::Device* rhiDevice, const RHI::NVRHID3D12NativeHandles& nativeHandles, u32 width, u32 height)
         {
             m_Window = static_cast<GLFWwindow*>(nativeWindow);
+            m_RHIDevice = rhiDevice;
             m_Factory = static_cast<IDXGIFactory4*>(nativeHandles.Factory);
             m_Device = static_cast<ID3D12Device*>(nativeHandles.Device);
             m_GraphicsQueue = static_cast<ID3D12CommandQueue*>(nativeHandles.GraphicsQueue);
 
-            if (!m_Window || !m_Factory || !m_Device || !m_GraphicsQueue)
+            if (!m_Window || !m_RHIDevice || !m_Factory || !m_Device || !m_GraphicsQueue)
             {
                 Log::Error("D3D12 presentation received incomplete native handles");
                 return false;
@@ -193,7 +194,7 @@ namespace Engine
             if (!CreateFence())
                 return false;
 
-            if (!m_ViewportSceneRenderer.Initialize(m_Device))
+            if (!m_ViewportSceneRenderer.Initialize(m_Device, m_RHIDevice))
                 return false;
 
             if (!InitializeImGui())
@@ -230,6 +231,7 @@ namespace Engine
             m_DsvHeap.Reset();
             m_SrvHeap.Reset();
             m_SrvAllocated.clear();
+            m_RHIDevice = nullptr;
             m_Initialized = false;
         }
 
@@ -977,6 +979,7 @@ namespace Engine
     private:
         bool m_Initialized = false;
         GLFWwindow* m_Window = nullptr;
+        RHI::Device* m_RHIDevice = nullptr;
         IDXGIFactory4* m_Factory = nullptr;
         ID3D12Device* m_Device = nullptr;
         ID3D12CommandQueue* m_GraphicsQueue = nullptr;
@@ -1025,12 +1028,13 @@ namespace Engine
         Shutdown();
     }
 
-    bool NVRHID3D12Presentation::Initialize(void* nativeWindow, const RHI::NVRHID3D12NativeHandles& nativeHandles, u32 width, u32 height)
+    bool NVRHID3D12Presentation::Initialize(void* nativeWindow, RHI::Device* rhiDevice, const RHI::NVRHID3D12NativeHandles& nativeHandles, u32 width, u32 height)
     {
 #if defined(GE_HAS_NVRHI_D3D12)
-        return m_Impl->Initialize(nativeWindow, nativeHandles, width, height);
+        return m_Impl->Initialize(nativeWindow, rhiDevice, nativeHandles, width, height);
 #else
         (void)nativeWindow;
+        (void)rhiDevice;
         (void)nativeHandles;
         (void)width;
         (void)height;

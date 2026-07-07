@@ -2,6 +2,7 @@
 
 #include "Engine/Core/Log.h"
 #include "Engine/Math/Math.h"
+#include "Engine/RHI/NVRHI/NVRHID3D12Device.h"
 #include "Engine/Renderer/NVRHI/D3D12DebugMarkers.h"
 #include "Engine/Renderer/ShaderLibrary.h"
 
@@ -122,10 +123,11 @@ namespace Engine
 
     struct NVRHID3D12ViewportSceneRenderer::Impl
     {
-        bool Initialize(ID3D12Device* device)
+        bool Initialize(ID3D12Device* device, RHI::Device* rhiDevice)
         {
             m_Device = device;
-            if (!m_Device)
+            m_RHIDevice = rhiDevice;
+            if (!m_Device || !m_RHIDevice)
                 return false;
 
             return CreatePipeline() && CreateMeshResources();
@@ -135,18 +137,22 @@ namespace Engine
         {
             if (m_ConstantBuffer && m_ConstantBufferMapped)
             {
-                m_ConstantBuffer->Unmap(0, nullptr);
+                m_ConstantBuffer->Unmap();
                 m_ConstantBufferMapped = nullptr;
             }
 
-            m_ConstantBuffer.Reset();
-            m_IndexBuffer.Reset();
-            m_VertexBuffer.Reset();
+            m_ConstantBuffer.reset();
+            m_IndexBuffer.reset();
+            m_VertexBuffer.reset();
+            m_ConstantBufferResource = nullptr;
+            m_IndexBufferResource = nullptr;
+            m_VertexBufferResource = nullptr;
             m_PipelineState.Reset();
             m_RootSignature.Reset();
             m_VertexBufferView = {};
             m_IndexBufferView = {};
             m_IndexCount = 0;
+            m_RHIDevice = nullptr;
             m_Device = nullptr;
         }
 
@@ -178,7 +184,7 @@ namespace Engine
             commandList->ClearRenderTargetView(colorRtv, clear, 0, nullptr);
             commandList->ClearDepthStencilView(depthDsv, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
 
-            if (m_PipelineState && m_RootSignature && m_ConstantBuffer && m_VertexBuffer && m_IndexBuffer)
+            if (m_PipelineState && m_RootSignature && m_ConstantBufferResource && m_VertexBufferResource && m_IndexBufferResource)
             {
                 PollShaderHotReload();
                 UpdateConstants(width, height);
@@ -199,7 +205,7 @@ namespace Engine
 
                 commandList->SetGraphicsRootSignature(m_RootSignature.Get());
                 commandList->SetPipelineState(m_PipelineState.Get());
-                commandList->SetGraphicsRootConstantBufferView(0, m_ConstantBuffer->GetGPUVirtualAddress());
+                commandList->SetGraphicsRootConstantBufferView(0, m_ConstantBufferResource->GetGPUVirtualAddress());
                 commandList->RSSetViewports(1, &viewport);
                 commandList->RSSetScissorRects(1, &scissor);
                 commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
@@ -330,94 +336,90 @@ namespace Engine
             return true;
         }
 
-        bool CreateUploadBuffer(u64 sizeBytes, const wchar_t* name, ComPtr<ID3D12Resource>& resource)
+        bool CreateRhiBuffer(const RHI::BufferDescription& description, Scope<RHI::Buffer>& buffer, ID3D12Resource*& resource)
         {
-            D3D12_HEAP_PROPERTIES heapProperties {};
-            heapProperties.Type = D3D12_HEAP_TYPE_UPLOAD;
-            heapProperties.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
-            heapProperties.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
-            heapProperties.CreationNodeMask = 1;
-            heapProperties.VisibleNodeMask = 1;
+            if (!m_RHIDevice)
+                return false;
 
-            D3D12_RESOURCE_DESC bufferDesc {};
-            bufferDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-            bufferDesc.Width = sizeBytes;
-            bufferDesc.Height = 1;
-            bufferDesc.DepthOrArraySize = 1;
-            bufferDesc.MipLevels = 1;
-            bufferDesc.Format = DXGI_FORMAT_UNKNOWN;
-            bufferDesc.SampleDesc.Count = 1;
-            bufferDesc.SampleDesc.Quality = 0;
-            bufferDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-            bufferDesc.Flags = D3D12_RESOURCE_FLAG_NONE;
+            buffer = m_RHIDevice->CreateBuffer(description);
+            if (!buffer)
+                return false;
 
-            const HRESULT result = m_Device->CreateCommittedResource(
-                &heapProperties,
-                D3D12_HEAP_FLAG_NONE,
-                &bufferDesc,
-                D3D12_RESOURCE_STATE_GENERIC_READ,
-                nullptr,
-                IID_PPV_ARGS(&resource));
-
-            if (FAILED(result))
+            const RHI::NVRHID3D12BufferNativeHandles handles = RHI::GetNVRHID3D12BufferNativeHandles(*buffer);
+            resource = static_cast<ID3D12Resource*>(handles.Resource);
+            if (!resource)
             {
-                Log::Error("Could not create D3D12 upload buffer: ", HResultToString(result));
+                Log::Error("RHI buffer did not expose a D3D12 resource: ", description.DebugName);
+                buffer.reset();
                 return false;
             }
 
-            resource->SetName(name);
+            return true;
+        }
+
+        bool WriteBuffer(RHI::Buffer& buffer, const void* sourceData, u64 sizeBytes)
+        {
+            if (!sourceData || sizeBytes == 0)
+                return false;
+
+            void* mappedData = buffer.Map();
+            if (!mappedData)
+                return false;
+
+            std::memcpy(mappedData, sourceData, static_cast<size_t>(sizeBytes));
+            buffer.Unmap();
             return true;
         }
 
         bool CreateMeshResources()
         {
             const u64 vertexBufferSize = sizeof(ViewportVertex) * kPrototypeMeshVertices.size();
-            if (!CreateUploadBuffer(vertexBufferSize, L"Editor Viewport Prototype Vertex Buffer", m_VertexBuffer))
+            RHI::BufferDescription vertexBufferDesc;
+            vertexBufferDesc.DebugName = "Editor Viewport Prototype Vertex Buffer";
+            vertexBufferDesc.SizeBytes = vertexBufferSize;
+            vertexBufferDesc.StrideBytes = sizeof(ViewportVertex);
+            vertexBufferDesc.Usage = RHI::BufferUsage::Vertex;
+            vertexBufferDesc.CpuAccess = RHI::BufferCpuAccess::Write;
+            if (!CreateRhiBuffer(vertexBufferDesc, m_VertexBuffer, m_VertexBufferResource))
                 return false;
 
-            void* mappedVertexData = nullptr;
-            D3D12_RANGE readRange { 0, 0 };
-            HRESULT result = m_VertexBuffer->Map(0, &readRange, &mappedVertexData);
-            if (FAILED(result))
-            {
-                Log::Error("Could not map viewport vertex buffer: ", HResultToString(result));
+            if (!WriteBuffer(*m_VertexBuffer, kPrototypeMeshVertices.data(), vertexBufferSize))
                 return false;
-            }
-            std::memcpy(mappedVertexData, kPrototypeMeshVertices.data(), static_cast<size_t>(vertexBufferSize));
-            m_VertexBuffer->Unmap(0, nullptr);
 
-            m_VertexBufferView.BufferLocation = m_VertexBuffer->GetGPUVirtualAddress();
+            m_VertexBufferView.BufferLocation = m_VertexBufferResource->GetGPUVirtualAddress();
             m_VertexBufferView.SizeInBytes = static_cast<UINT>(vertexBufferSize);
             m_VertexBufferView.StrideInBytes = sizeof(ViewportVertex);
 
             const u64 indexBufferSize = sizeof(u16) * kPrototypeMeshIndices.size();
-            if (!CreateUploadBuffer(indexBufferSize, L"Editor Viewport Prototype Index Buffer", m_IndexBuffer))
+            RHI::BufferDescription indexBufferDesc;
+            indexBufferDesc.DebugName = "Editor Viewport Prototype Index Buffer";
+            indexBufferDesc.SizeBytes = indexBufferSize;
+            indexBufferDesc.StrideBytes = sizeof(u16);
+            indexBufferDesc.Usage = RHI::BufferUsage::Index;
+            indexBufferDesc.CpuAccess = RHI::BufferCpuAccess::Write;
+            if (!CreateRhiBuffer(indexBufferDesc, m_IndexBuffer, m_IndexBufferResource))
                 return false;
 
-            void* mappedIndexData = nullptr;
-            result = m_IndexBuffer->Map(0, &readRange, &mappedIndexData);
-            if (FAILED(result))
-            {
-                Log::Error("Could not map viewport index buffer: ", HResultToString(result));
+            if (!WriteBuffer(*m_IndexBuffer, kPrototypeMeshIndices.data(), indexBufferSize))
                 return false;
-            }
-            std::memcpy(mappedIndexData, kPrototypeMeshIndices.data(), static_cast<size_t>(indexBufferSize));
-            m_IndexBuffer->Unmap(0, nullptr);
 
-            m_IndexBufferView.BufferLocation = m_IndexBuffer->GetGPUVirtualAddress();
+            m_IndexBufferView.BufferLocation = m_IndexBufferResource->GetGPUVirtualAddress();
             m_IndexBufferView.SizeInBytes = static_cast<UINT>(indexBufferSize);
             m_IndexBufferView.Format = DXGI_FORMAT_R16_UINT;
             m_IndexCount = static_cast<u32>(kPrototypeMeshIndices.size());
 
-            if (!CreateUploadBuffer(kViewportConstantBufferSize, L"Editor Viewport Constants", m_ConstantBuffer))
+            RHI::BufferDescription constantBufferDesc;
+            constantBufferDesc.DebugName = "Editor Viewport Constants";
+            constantBufferDesc.SizeBytes = kViewportConstantBufferSize;
+            constantBufferDesc.StrideBytes = kViewportConstantBufferSize;
+            constantBufferDesc.Usage = RHI::BufferUsage::Constant;
+            constantBufferDesc.CpuAccess = RHI::BufferCpuAccess::Write;
+            if (!CreateRhiBuffer(constantBufferDesc, m_ConstantBuffer, m_ConstantBufferResource))
                 return false;
 
-            result = m_ConstantBuffer->Map(0, &readRange, reinterpret_cast<void**>(&m_ConstantBufferMapped));
-            if (FAILED(result))
-            {
-                Log::Error("Could not map viewport constant buffer: ", HResultToString(result));
+            m_ConstantBufferMapped = static_cast<std::byte*>(m_ConstantBuffer->Map());
+            if (!m_ConstantBufferMapped)
                 return false;
-            }
 
             return true;
         }
@@ -451,11 +453,15 @@ namespace Engine
         }
 
         ID3D12Device* m_Device = nullptr;
+        RHI::Device* m_RHIDevice = nullptr;
         ComPtr<ID3D12RootSignature> m_RootSignature;
         ComPtr<ID3D12PipelineState> m_PipelineState;
-        ComPtr<ID3D12Resource> m_VertexBuffer;
-        ComPtr<ID3D12Resource> m_IndexBuffer;
-        ComPtr<ID3D12Resource> m_ConstantBuffer;
+        Scope<RHI::Buffer> m_VertexBuffer;
+        Scope<RHI::Buffer> m_IndexBuffer;
+        Scope<RHI::Buffer> m_ConstantBuffer;
+        ID3D12Resource* m_VertexBufferResource = nullptr;
+        ID3D12Resource* m_IndexBufferResource = nullptr;
+        ID3D12Resource* m_ConstantBufferResource = nullptr;
         D3D12_VERTEX_BUFFER_VIEW m_VertexBufferView {};
         D3D12_INDEX_BUFFER_VIEW m_IndexBufferView {};
         ShaderSourceFile m_ShaderSource;
@@ -472,10 +478,10 @@ namespace Engine
         Shutdown();
     }
 
-    bool NVRHID3D12ViewportSceneRenderer::Initialize(ID3D12Device* device)
+    bool NVRHID3D12ViewportSceneRenderer::Initialize(ID3D12Device* device, RHI::Device* rhiDevice)
     {
         m_Impl = CreateScope<Impl>();
-        if (m_Impl->Initialize(device))
+        if (m_Impl->Initialize(device, rhiDevice))
             return true;
 
         m_Impl.reset();

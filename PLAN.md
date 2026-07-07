@@ -55,6 +55,7 @@ Immediate gap:
 - Shader source loading and hot-reload detection are centralized through `ShaderLibrary`.
 - GPU timestamp query contracts and renderer timing snapshots are stubbed; the D3D12 query heap resolve path is still pending.
 - The first D3D12 viewport pass has resource debug names and capture markers for frame, viewport, ImGui, and capture readback scopes.
+- The D3D12 viewport prototype mesh creates vertex, index, and constant buffers through the RHI buffer API; command recording and pipeline binding are still D3D12-specific.
 
 ## Phase 0: Buildable Spine
 

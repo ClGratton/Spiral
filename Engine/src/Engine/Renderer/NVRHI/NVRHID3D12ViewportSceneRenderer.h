@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Engine/Core/Base.h"
+#include "Engine/RHI/Device.h"
 #include "Engine/Renderer/Renderer.h"
 
 #if defined(GE_HAS_NVRHI_D3D12)
@@ -24,7 +25,7 @@ namespace Engine
         NVRHID3D12ViewportSceneRenderer();
         ~NVRHID3D12ViewportSceneRenderer();
 
-        bool Initialize(ID3D12Device* device);
+        bool Initialize(ID3D12Device* device, RHI::Device* rhiDevice);
         void Shutdown();
 
         bool Render(

@@ -16,7 +16,7 @@ namespace Engine
         NVRHID3D12Presentation();
         ~NVRHID3D12Presentation();
 
-        bool Initialize(void* nativeWindow, const RHI::NVRHID3D12NativeHandles& nativeHandles, u32 width, u32 height);
+        bool Initialize(void* nativeWindow, RHI::Device* rhiDevice, const RHI::NVRHID3D12NativeHandles& nativeHandles, u32 width, u32 height);
         void Shutdown();
 
         bool IsInitialized() const;

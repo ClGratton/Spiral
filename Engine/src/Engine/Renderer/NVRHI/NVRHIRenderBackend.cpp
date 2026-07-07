@@ -77,7 +77,7 @@ namespace Engine
         if (!m_D3D12Presentation)
             m_D3D12Presentation = CreateScope<NVRHID3D12Presentation>();
 
-        return m_D3D12Presentation->Initialize(nativeWindow, m_D3D12NativeHandles, width, height);
+        return m_D3D12Presentation->Initialize(nativeWindow, m_Device.get(), m_D3D12NativeHandles, width, height);
     }
 
     void NVRHIRenderBackend::ShutdownImGui()

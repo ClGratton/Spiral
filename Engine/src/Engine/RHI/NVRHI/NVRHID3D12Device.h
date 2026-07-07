@@ -16,5 +16,11 @@ namespace Engine::RHI
         void* NVRHIDevice = nullptr;
     };
 
+    struct NVRHID3D12BufferNativeHandles
+    {
+        void* Resource = nullptr;
+    };
+
     Scope<Device> CreateNVRHID3D12Device(DeviceDescription description, NVRHIAdapterInfo& adapterInfo, NVRHID3D12NativeHandles* nativeHandles = nullptr);
+    NVRHID3D12BufferNativeHandles GetNVRHID3D12BufferNativeHandles(Buffer& buffer);
 }
