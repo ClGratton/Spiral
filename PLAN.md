@@ -50,6 +50,7 @@ Immediate gap:
 - GMake/MinGW keeps the OpenGL2 ImGui fallback and NVRHI common probe path until a portable Vulkan editor path is added.
 - Crash/error reports are written to `output/crashes` for caught top-level exceptions, fatal signals, and Windows unhandled exceptions.
 - Code style is checked by `Scripts/CheckCodeStyle.ps1` / `.sh` and a GitHub Actions style job.
+- Render graph pass/resource declarations now compile into resource lifetime and barrier data.
 
 ## Phase 0: Buildable Spine
 
@@ -103,7 +104,7 @@ Required:
 - [ ] Real RHI triangle/mesh draw pass.
 - [ ] Camera component and editor camera.
 - [ ] Basic shader pipeline and shader hot reload stub.
-- [ ] Render graph skeleton: pass declaration, resource lifetimes, barriers as data even if backend is simple.
+- [x] Render graph skeleton: pass declaration, resource lifetimes, barriers as data even if backend is simple.
 - [ ] GPU timestamp query interface stub.
 - [x] Screenshot capture for render tests.
 - [x] Render smoke test scene and image validation script.

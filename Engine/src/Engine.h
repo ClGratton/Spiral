@@ -16,6 +16,7 @@
 #include "Engine/Events/KeyEvent.h"
 #include "Engine/Events/MouseEvent.h"
 #include "Engine/Jobs/JobSystem.h"
+#include "Engine/RenderGraph/RenderGraph.h"
 #include "Engine/Renderer/Renderer.h"
 #include "Engine/RHI/RHI.h"
 #include "Engine/Scene/Scene.h"
