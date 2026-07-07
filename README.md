@@ -1,6 +1,6 @@
 # Spiral
 
-Spiral is the first buildable spine of the engine described in the architecture documents.
+Spiral is a cutting edge game engine, built from the grounds up for next gen visual quality. Its goal is to fix modern engines over-reliance on temporal effects.
 
 ## Build
 
