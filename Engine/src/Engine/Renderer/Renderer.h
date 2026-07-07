@@ -4,6 +4,7 @@
 #include "Engine/RHI/RHICommon.h"
 #include "Engine/Scene/Camera.h"
 
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -24,6 +25,30 @@ namespace Engine
         bool HasNativeRayTracing = false;
         bool HasWorkGraphs = false;
         bool HasNeuralAccelerators = false;
+    };
+
+    enum class RendererTimingStatus
+    {
+        Unavailable,
+        Pending,
+        Ready
+    };
+
+    struct RendererPassTiming
+    {
+        std::string Name;
+        double CpuMilliseconds = 0.0;
+        double GpuMilliseconds = 0.0;
+        RendererTimingStatus GpuStatus = RendererTimingStatus::Unavailable;
+    };
+
+    struct RendererFrameTiming
+    {
+        u64 FrameIndex = 0;
+        double CpuMilliseconds = 0.0;
+        double GpuMilliseconds = 0.0;
+        RendererTimingStatus GpuStatus = RendererTimingStatus::Unavailable;
+        std::vector<RendererPassTiming> Passes;
     };
 
     struct RendererBuildInfo
@@ -92,7 +117,20 @@ namespace Engine
         static bool RequestBackend(RendererBackend backend);
         static const RendererCapabilities& GetCapabilities();
         static const RendererBuildInfo& GetBuildInfo();
+        static const RendererFrameTiming& GetLastFrameTiming();
         static void SetCameraView(const CameraView& cameraView);
         static const CameraView& GetCameraView();
     };
+
+    inline const char* ToString(RendererTimingStatus status)
+    {
+        switch (status)
+        {
+            case RendererTimingStatus::Unavailable: return "Unavailable";
+            case RendererTimingStatus::Pending: return "Pending";
+            case RendererTimingStatus::Ready: return "Ready";
+        }
+
+        return "Unknown";
+    }
 }

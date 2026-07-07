@@ -53,6 +53,7 @@ Immediate gap:
 - Render graph pass/resource declarations now compile into resource lifetime and barrier data.
 - Editor camera and camera component scaffolding provide a shared `CameraView` for renderer code.
 - Shader source loading and hot-reload detection are centralized through `ShaderLibrary`.
+- GPU timestamp query contracts and renderer timing snapshots are stubbed; the D3D12 query heap resolve path is still pending.
 
 ## Phase 0: Buildable Spine
 
@@ -107,7 +108,7 @@ Required:
 - [x] Camera component and editor camera.
 - [x] Basic shader pipeline and shader hot reload stub.
 - [x] Render graph skeleton: pass declaration, resource lifetimes, barriers as data even if backend is simple.
-- [ ] GPU timestamp query interface stub.
+- [x] GPU timestamp query interface stub.
 - [x] Screenshot capture for render tests.
 - [x] Render smoke test scene and image validation script.
 

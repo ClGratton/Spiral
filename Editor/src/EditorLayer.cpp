@@ -358,11 +358,46 @@ void EditorLayer::DrawConsolePanel()
 void EditorLayer::DrawProfilerPanel()
 {
     ImGui::Begin("Profiler");
+    const Engine::RendererFrameTiming& timing = Engine::Renderer::GetLastFrameTiming();
+
     ImGui::Text("Frame: %u", m_FrameCounter);
     ImGui::Text("Last frame: %.3f ms", m_LastFrameMs);
     ImGui::Text("Workers: %u", Engine::JobSystem::Get().GetWorkerCount());
     ImGui::Separator();
-    ImGui::TextDisabled("GPU pass timing is not connected yet");
+    ImGui::Text("Renderer CPU: %.3f ms", timing.CpuMilliseconds);
+    ImGui::Text("GPU timestamps: %s", Engine::ToString(timing.GpuStatus));
+    if (timing.GpuStatus == Engine::RendererTimingStatus::Pending)
+        ImGui::TextDisabled("Timestamp query API is present; backend resolve path is next.");
+
+    if (timing.Passes.empty())
+    {
+        ImGui::TextDisabled("No renderer passes recorded yet");
+    }
+    else if (ImGui::BeginTable("PassTimings", 3, ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_RowBg))
+    {
+        ImGui::TableSetupColumn("Pass");
+        ImGui::TableSetupColumn("CPU ms");
+        ImGui::TableSetupColumn("GPU ms");
+        ImGui::TableHeadersRow();
+
+        for (const Engine::RendererPassTiming& pass : timing.Passes)
+        {
+            ImGui::TableNextRow();
+            ImGui::TableSetColumnIndex(0);
+            ImGui::TextUnformatted(pass.Name.c_str());
+            ImGui::TableSetColumnIndex(1);
+            ImGui::Text("%.3f", pass.CpuMilliseconds);
+            ImGui::TableSetColumnIndex(2);
+            if (pass.GpuStatus == Engine::RendererTimingStatus::Ready)
+                ImGui::Text("%.3f", pass.GpuMilliseconds);
+            else
+                ImGui::TextDisabled("%s", Engine::ToString(pass.GpuStatus));
+        }
+
+        ImGui::EndTable();
+    }
+
+    ImGui::Separator();
     ImGui::TextDisabled("Overdraw, quad waste, ray density, texture residency coming later");
     ImGui::End();
 }

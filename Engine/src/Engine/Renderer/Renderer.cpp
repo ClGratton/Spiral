@@ -6,19 +6,27 @@
 #include "Engine/Renderer/NVRHI/NVRHIRenderBackend.h"
 #include "Engine/Renderer/RenderBackend.h"
 
+#include <chrono>
+
 namespace Engine
 {
     namespace
     {
+        using Clock = std::chrono::steady_clock;
+
         RendererCapabilities s_Capabilities;
         ClearColor s_ClearColor;
         RenderViewportRect s_ViewportRect;
         CameraView s_CameraView;
         RendererBuildInfo s_BuildInfo;
+        RendererFrameTiming s_FrameTiming;
         Scope<RenderBackend> s_Backend;
         std::vector<RendererBackendOption> s_BackendOptions;
+        Clock::time_point s_RendererFrameStart;
+        u64 s_RendererTimingFrameIndex = 0;
         RendererBackend s_ActiveBackend = RendererBackend::Headless;
         bool s_Initialized = false;
+        bool s_RendererFrameTimingActive = false;
 
         bool HasNativeWindow()
         {
@@ -98,6 +106,45 @@ namespace Engine
             }
 
             return "Unknown";
+        }
+
+        double ToMilliseconds(Clock::duration duration)
+        {
+            return static_cast<double>(std::chrono::duration_cast<std::chrono::microseconds>(duration).count()) / 1000.0;
+        }
+
+        RendererTimingStatus GetBackendGpuTimingStatus()
+        {
+            const NVRHIRenderBackend* backend = dynamic_cast<const NVRHIRenderBackend*>(s_Backend.get());
+            const RHI::DeviceCapabilities* capabilities = backend ? backend->GetDeviceCapabilities() : nullptr;
+            return capabilities && capabilities->SupportsTimestamps ? RendererTimingStatus::Pending : RendererTimingStatus::Unavailable;
+        }
+
+        void BeginTimingFrame()
+        {
+            s_FrameTiming = {};
+            s_FrameTiming.FrameIndex = ++s_RendererTimingFrameIndex;
+            s_FrameTiming.GpuStatus = GetBackendGpuTimingStatus();
+            s_RendererFrameStart = Clock::now();
+            s_RendererFrameTimingActive = true;
+        }
+
+        void RefreshTimingFrameTotal()
+        {
+            if (!s_RendererFrameTimingActive)
+                return;
+
+            s_FrameTiming.CpuMilliseconds = ToMilliseconds(Clock::now() - s_RendererFrameStart);
+        }
+
+        void AddPassTiming(std::string name, Clock::duration cpuDuration)
+        {
+            RendererPassTiming pass;
+            pass.Name = std::move(name);
+            pass.CpuMilliseconds = ToMilliseconds(cpuDuration);
+            pass.GpuStatus = GetBackendGpuTimingStatus();
+            s_FrameTiming.Passes.push_back(std::move(pass));
+            RefreshTimingFrameTotal();
         }
 
         void RebuildBackendOptions()
@@ -237,7 +284,10 @@ namespace Engine
         if (!s_Initialized || !s_Backend)
             return;
 
+        BeginTimingFrame();
+        const Clock::time_point passStart = Clock::now();
         s_Backend->BeginFrame(s_ClearColor);
+        AddPassTiming("Renderer BeginFrame", Clock::now() - passStart);
     }
 
     void Renderer::EndFrame()
@@ -245,7 +295,9 @@ namespace Engine
         if (!s_Initialized || !s_Backend)
             return;
 
+        const Clock::time_point passStart = Clock::now();
         s_Backend->EndFrame();
+        AddPassTiming("Renderer EndFrame", Clock::now() - passStart);
     }
 
     bool Renderer::InitializeImGui(void* nativeWindow)
@@ -283,7 +335,9 @@ namespace Engine
             return;
 
         Window& window = Application::Get().GetWindow();
+        const Clock::time_point passStart = Clock::now();
         backend->RenderImGuiDrawData(drawData, s_ClearColor, window.GetWidth(), window.GetHeight());
+        AddPassTiming("Native viewport + ImGui present", Clock::now() - passStart);
     }
 
     void Renderer::SetClearColor(const ClearColor& color)
@@ -384,6 +438,11 @@ namespace Engine
             RebuildBackendOptions();
 
         return s_BuildInfo;
+    }
+
+    const RendererFrameTiming& Renderer::GetLastFrameTiming()
+    {
+        return s_FrameTiming;
     }
 
     void Renderer::SetCameraView(const CameraView& cameraView)

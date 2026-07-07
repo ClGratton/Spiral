@@ -80,6 +80,29 @@ namespace Engine::RHI
             }
         };
 
+        class NVRHIQueryPoolStub final : public QueryPool
+        {
+        public:
+            explicit NVRHIQueryPoolStub(QueryPoolDescription description)
+                : m_Description(std::move(description))
+            {
+            }
+
+            const QueryPoolDescription& GetDescription() const override
+            {
+                return m_Description;
+            }
+
+            QueryResult ReadResult(u32 queryIndex) const override
+            {
+                (void)queryIndex;
+                return {};
+            }
+
+        private:
+            QueryPoolDescription m_Description;
+        };
+
         class NVRHID3D12Device final : public Device
         {
         public:
@@ -160,9 +183,14 @@ namespace Engine::RHI
 
             Scope<QueryPool> CreateQueryPool(const QueryPoolDescription& description) override
             {
-                (void)description;
-                Log::Warn("NVRHI D3D12 query pool creation is not implemented yet");
-                return nullptr;
+                if (description.Count == 0)
+                {
+                    Log::Warn("NVRHI D3D12 query pool requested with zero query slots");
+                    return nullptr;
+                }
+
+                Log::Warn("NVRHI D3D12 query heap resolve is not implemented yet; creating CPU-visible query pool stub: ", description.DebugName);
+                return CreateScope<NVRHIQueryPoolStub>(description);
             }
 
             Scope<CommandList> CreateCommandList(QueueType queueType, std::string_view debugName) override
