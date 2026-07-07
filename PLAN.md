@@ -45,7 +45,7 @@ Immediate gap:
 - The viewport prototype mesh uses a disk-backed HLSL shader asset loaded from `Engine/Shaders`, not an embedded shader string.
 - The Windows/MSVC editor can capture the native viewport to `output/captures/editor-viewport.bmp` with `--capture-viewport`.
 - `Scripts/TestRender.ps1` validates the D3D12 viewport capture as a non-blank BMP render smoke test.
-- GitHub Actions CI workflow is scaffolded for Windows D3D12 render smoke plus Linux/macOS portable headless smoke builds; first hosted run waits for a GitHub remote.
+- GitHub Actions CI workflow is live for Windows D3D12 render smoke plus Linux/macOS portable headless smoke builds.
 - D3D12 device creation falls back to WARP when no hardware adapter accepts the minimum feature level, mainly for CI and diagnostics.
 - GMake/MinGW keeps the OpenGL2 ImGui fallback and NVRHI common probe path until a portable Vulkan editor path is added.
 
@@ -62,9 +62,9 @@ Required:
 - [x] ImGui docking editor shell.
 - [x] Headless smoke-test mode.
 - [x] Architecture docs moved out of root.
-- [ ] GitHub repo, remote, first clean commit.
+- [x] GitHub repo, remote, first clean commit.
 - [x] CI workflow scaffold for Windows, Linux, and macOS.
-- [ ] First hosted CI run after GitHub remote exists.
+- [x] First hosted CI run after GitHub remote exists.
 - [x] Dependency/license ledger for GLFW, ImGui, Premake, and future vendors.
 - [ ] Basic crash/error reporting path.
 - [ ] Coding standards checked by script.
@@ -492,4 +492,4 @@ Before adding renderer code beyond stubs:
 11. [x] Add screenshot capture for the viewport.
 12. [x] Add a render smoke test scene.
 13. [x] Add CI workflow scaffold.
-14. [ ] Create/push GitHub remote and verify first hosted CI run.
+14. [x] Create/push GitHub remote and verify first hosted CI run.
