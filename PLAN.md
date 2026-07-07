@@ -49,6 +49,7 @@ Immediate gap:
 - D3D12 device creation falls back to WARP when no hardware adapter accepts the minimum feature level, mainly for CI and diagnostics.
 - GMake/MinGW keeps the OpenGL2 ImGui fallback and NVRHI common probe path until a portable Vulkan editor path is added.
 - Crash/error reports are written to `output/crashes` for caught top-level exceptions, fatal signals, and Windows unhandled exceptions.
+- Code style is checked by `Scripts/CheckCodeStyle.ps1` / `.sh` and a GitHub Actions style job.
 
 ## Phase 0: Buildable Spine
 
@@ -68,7 +69,7 @@ Required:
 - [x] First hosted CI run after GitHub remote exists.
 - [x] Dependency/license ledger for GLFW, ImGui, Premake, and future vendors.
 - [x] Basic crash/error reporting path.
-- [ ] Coding standards checked by script.
+- [x] Coding standards checked by script.
 
 Exit criteria:
 

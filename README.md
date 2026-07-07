@@ -23,6 +23,12 @@ Default behavior:
 - Uses Visual Studio/MSBuild if available.
 - Falls back to Premake `gmake` and `mingw32-make`/`make` when Visual Studio is not available.
 
+Run the lightweight repository style check:
+
+```powershell
+.\Scripts\CheckCodeStyle.ps1
+```
+
 Run the sample app:
 
 ```powershell

@@ -6,6 +6,17 @@ on:
   workflow_dispatch:
 
 jobs:
+  code-style:
+    name: Code Style
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check code style
+        run: bash Scripts/CheckCodeStyle.sh
+
   windows-d3d12-render-smoke:
     name: Windows D3D12 Render Smoke
     runs-on: windows-latest
