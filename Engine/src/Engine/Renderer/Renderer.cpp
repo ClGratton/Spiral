@@ -13,6 +13,7 @@ namespace Engine
         RendererCapabilities s_Capabilities;
         ClearColor s_ClearColor;
         RenderViewportRect s_ViewportRect;
+        CameraView s_CameraView;
         RendererBuildInfo s_BuildInfo;
         Scope<RenderBackend> s_Backend;
         std::vector<RendererBackendOption> s_BackendOptions;
@@ -202,6 +203,7 @@ namespace Engine
         if (!s_Backend)
             s_ActiveBackend = RendererBackend::Headless;
         RebuildBackendOptions();
+        s_CameraView = EditorCamera().GetCameraView();
 
         s_Initialized = true;
         Log::Info("Renderer initialized with backend: ", s_Backend ? s_Backend->GetName() : "Headless");
@@ -382,5 +384,19 @@ namespace Engine
             RebuildBackendOptions();
 
         return s_BuildInfo;
+    }
+
+    void Renderer::SetCameraView(const CameraView& cameraView)
+    {
+        if (cameraView.Valid)
+            s_CameraView = cameraView;
+    }
+
+    const CameraView& Renderer::GetCameraView()
+    {
+        if (!s_CameraView.Valid)
+            s_CameraView = EditorCamera().GetCameraView();
+
+        return s_CameraView;
     }
 }

@@ -218,6 +218,25 @@ void EditorLayer::DrawInspectorPanel()
     ImGui::DragFloat3("Rotation", m_Rotation.data(), 0.5f);
     ImGui::DragFloat3("Scale", m_Scale.data(), 0.05f, 0.01f, 100.0f);
     ImGui::Separator();
+    ImGui::TextUnformatted("Editor Camera");
+    bool cameraChanged = false;
+    cameraChanged |= ImGui::DragFloat3("Camera Position", m_CameraPosition.data(), 0.05f);
+    cameraChanged |= ImGui::DragFloat3("Camera Rotation", m_CameraRotation.data(), 0.25f);
+    cameraChanged |= ImGui::DragFloat("Vertical FOV", &m_CameraFovDegrees, 0.25f, 20.0f, 110.0f);
+    cameraChanged |= ImGui::DragFloat("Near Clip", &m_CameraNearClip, 0.01f, 0.01f, 10.0f);
+    cameraChanged |= ImGui::DragFloat("Far Clip", &m_CameraFarClip, 1.0f, 1.0f, 10000.0f);
+    if (cameraChanged)
+    {
+        if (m_CameraFarClip <= m_CameraNearClip)
+            m_CameraFarClip = m_CameraNearClip + 1.0f;
+
+        m_EditorCamera.SetPosition({ m_CameraPosition[0], m_CameraPosition[1], m_CameraPosition[2] });
+        m_EditorCamera.SetRotationDegrees({ m_CameraRotation[0], m_CameraRotation[1], m_CameraRotation[2] });
+        m_EditorCamera.SetProjection({ m_CameraFovDegrees, m_CameraNearClip, m_CameraFarClip });
+        Engine::Renderer::SetCameraView(m_EditorCamera.GetCameraView());
+    }
+    ImGui::TextDisabled("Aspect %.3f", m_EditorCamera.GetAspectRatio());
+    ImGui::Separator();
     ImGui::TextUnformatted("Renderer");
     ImGui::Text("Active: %s", Engine::Renderer::GetActiveBackendName());
     DrawRendererBackendSelector();
@@ -279,6 +298,9 @@ void EditorLayer::DrawViewportPanel()
 
     const auto viewportWidth = static_cast<Engine::u32>(size.x);
     const auto viewportHeight = static_cast<Engine::u32>(size.y);
+    m_EditorCamera.SetViewportSize(viewportWidth, viewportHeight);
+    Engine::Renderer::SetCameraView(m_EditorCamera.GetCameraView());
+
     const bool hasNativeViewportTexture = Engine::Renderer::PrepareViewportTexture(viewportWidth, viewportHeight);
     const Engine::u64 viewportTextureId = Engine::Renderer::GetViewportTextureId();
 

@@ -40,8 +40,14 @@ private:
     bool m_CaptureViewportComplete = false;
     std::string m_CaptureViewportPath = "output/captures/editor-viewport.bmp";
     Engine::ClearColor m_ClearColor;
+    Engine::EditorCamera m_EditorCamera;
     std::array<float, 3> m_Position = { 0.0f, 0.0f, 0.0f };
     std::array<float, 3> m_Rotation = { 0.0f, 0.0f, 0.0f };
     std::array<float, 3> m_Scale = { 1.0f, 1.0f, 1.0f };
+    std::array<float, 3> m_CameraPosition = { 0.0f, 0.0f, -3.35f };
+    std::array<float, 3> m_CameraRotation = { 0.0f, 0.0f, 0.0f };
+    float m_CameraFovDegrees = 60.0f;
+    float m_CameraNearClip = 0.1f;
+    float m_CameraFarClip = 100.0f;
     std::vector<std::string> m_ConsoleLines;
 };

@@ -2,6 +2,7 @@
 
 #include "Engine/Core/Base.h"
 #include "Engine/RHI/RHICommon.h"
+#include "Engine/Scene/Camera.h"
 
 #include <string_view>
 #include <vector>
@@ -91,5 +92,7 @@ namespace Engine
         static bool RequestBackend(RendererBackend backend);
         static const RendererCapabilities& GetCapabilities();
         static const RendererBuildInfo& GetBuildInfo();
+        static void SetCameraView(const CameraView& cameraView);
+        static const CameraView& GetCameraView();
     };
 }

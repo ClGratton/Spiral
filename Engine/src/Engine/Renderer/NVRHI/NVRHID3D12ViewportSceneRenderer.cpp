@@ -1,13 +1,13 @@
 #include "Engine/Renderer/NVRHI/NVRHID3D12ViewportSceneRenderer.h"
 
 #include "Engine/Core/Log.h"
+#include "Engine/Math/Math.h"
 
 #if defined(GE_HAS_NVRHI_D3D12)
     #include <d3dcompiler.h>
     #include <wrl/client.h>
 
     #include <array>
-    #include <cmath>
     #include <cstddef>
     #include <cstring>
     #include <filesystem>
@@ -39,11 +39,6 @@ namespace Engine
         struct ViewportConstants
         {
             float ViewProjection[16];
-        };
-
-        struct Matrix4
-        {
-            float Values[16] {};
         };
 
         constexpr std::array<ViewportVertex, 24> kPrototypeMeshVertices = {
@@ -163,79 +158,6 @@ namespace Engine
             barrier.Transition.StateBefore = before;
             barrier.Transition.StateAfter = after;
             return barrier;
-        }
-
-        Matrix4 IdentityMatrix()
-        {
-            Matrix4 result {};
-            result.Values[0] = 1.0f;
-            result.Values[5] = 1.0f;
-            result.Values[10] = 1.0f;
-            result.Values[15] = 1.0f;
-            return result;
-        }
-
-        Matrix4 Multiply(const Matrix4& lhs, const Matrix4& rhs)
-        {
-            Matrix4 result {};
-            for (u32 row = 0; row < 4; ++row)
-            {
-                for (u32 column = 0; column < 4; ++column)
-                {
-                    for (u32 index = 0; index < 4; ++index)
-                        result.Values[row * 4 + column] += lhs.Values[row * 4 + index] * rhs.Values[index * 4 + column];
-                }
-            }
-
-            return result;
-        }
-
-        Matrix4 RotationX(float radians)
-        {
-            Matrix4 result = IdentityMatrix();
-            const float s = std::sin(radians);
-            const float c = std::cos(radians);
-            result.Values[5] = c;
-            result.Values[6] = s;
-            result.Values[9] = -s;
-            result.Values[10] = c;
-            return result;
-        }
-
-        Matrix4 RotationY(float radians)
-        {
-            Matrix4 result = IdentityMatrix();
-            const float s = std::sin(radians);
-            const float c = std::cos(radians);
-            result.Values[0] = c;
-            result.Values[2] = -s;
-            result.Values[8] = s;
-            result.Values[10] = c;
-            return result;
-        }
-
-        Matrix4 Translation(float x, float y, float z)
-        {
-            Matrix4 result = IdentityMatrix();
-            result.Values[12] = x;
-            result.Values[13] = y;
-            result.Values[14] = z;
-            return result;
-        }
-
-        Matrix4 PerspectiveLH(float verticalFovRadians, float aspectRatio, float nearPlane, float farPlane)
-        {
-            Matrix4 result {};
-            const float yScale = 1.0f / std::tan(verticalFovRadians * 0.5f);
-            const float xScale = yScale / aspectRatio;
-            const float zRange = farPlane / (farPlane - nearPlane);
-
-            result.Values[0] = xScale;
-            result.Values[5] = yScale;
-            result.Values[10] = zRange;
-            result.Values[11] = 1.0f;
-            result.Values[14] = -nearPlane * zRange;
-            return result;
         }
 
         bool CompileD3DShader(const std::filesystem::path& path, const std::string& source, const char* entryPoint, const char* target, ComPtr<ID3DBlob>& outBlob)
@@ -566,13 +488,11 @@ namespace Engine
             if (!m_ConstantBufferMapped || width == 0 || height == 0)
                 return;
 
-            const float aspectRatio = static_cast<float>(width) / static_cast<float>(height);
             const float framePhase = static_cast<float>(m_FrameCounter++);
             const float yaw = 0.72f + framePhase * 0.006f;
             const float pitch = -0.34f;
-            const Matrix4 world = Multiply(Multiply(RotationY(yaw), RotationX(pitch)), Translation(0.0f, 0.0f, 3.35f));
-            const Matrix4 projection = PerspectiveLH(1.04719755f, aspectRatio, 0.1f, 100.0f);
-            const Matrix4 viewProjection = Multiply(world, projection);
+            const Math::Mat4 model = Math::Multiply(Math::RotationY(yaw), Math::RotationX(pitch));
+            const Math::Mat4 viewProjection = Math::Multiply(model, Renderer::GetCameraView().ViewProjection);
 
             ViewportConstants constants {};
             std::memcpy(constants.ViewProjection, viewProjection.Values, sizeof(constants.ViewProjection));
