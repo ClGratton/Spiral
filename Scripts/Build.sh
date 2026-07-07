@@ -5,7 +5,7 @@ CONFIGURATION="${1:-Debug}"
 ACTION="${2:-gmake}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-"$ROOT/Scripts/GenerateProjects.sh" "$ACTION"
+bash "$ROOT/Scripts/GenerateProjects.sh" "$ACTION"
 
 CONFIG_LOWER="$(echo "$CONFIGURATION" | tr '[:upper:]' '[:lower:]')"
 

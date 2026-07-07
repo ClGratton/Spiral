@@ -5,7 +5,7 @@ CONFIGURATION="${1:-Debug}"
 ACTION="${2:-gmake}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-"$ROOT/Scripts/Build.sh" "$CONFIGURATION" "$ACTION"
+bash "$ROOT/Scripts/Build.sh" "$CONFIGURATION" "$ACTION"
 
 EDITOR="$(find "$ROOT/bin" -path "*/Editor/Editor" -type f | sort | head -n 1 || true)"
 if [[ -z "$EDITOR" ]]; then

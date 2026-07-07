@@ -4,7 +4,7 @@ set -euo pipefail
 ACTION="${1:-gmake}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-"$ROOT/Scripts/Setup.sh"
+bash "$ROOT/Scripts/Setup.sh"
 
 PREMAKE_EXE="$ROOT/Vendor/premake/bin/premake5"
 if [[ -x "$ROOT/Vendor/premake/bin/premake5.exe" ]]; then

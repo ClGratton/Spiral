@@ -5,7 +5,7 @@ CONFIGURATION="${1:-Debug}"
 ACTION="${2:-gmake}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-"$ROOT/Scripts/Build.sh" "$CONFIGURATION" "$ACTION"
+bash "$ROOT/Scripts/Build.sh" "$CONFIGURATION" "$ACTION"
 
 SYSTEM_NAME="$(uname -s)"
 case "$SYSTEM_NAME" in
