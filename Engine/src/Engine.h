@@ -10,6 +10,7 @@
 
 #include "Engine/Assets/AssetHandle.h"
 #include "Engine/Automation/Workflow.h"
+#include "Engine/Diagnostics/CrashHandler.h"
 #include "Engine/Events/ApplicationEvent.h"
 #include "Engine/Events/Event.h"
 #include "Engine/Events/KeyEvent.h"
