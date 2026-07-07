@@ -9,6 +9,7 @@
 #include "Engine/Core/Window.h"
 
 #include "Engine/Assets/AssetHandle.h"
+#include "Engine/Assets/AssetFileSystem.h"
 #include "Engine/Automation/Workflow.h"
 #include "Engine/Diagnostics/CrashHandler.h"
 #include "Engine/Events/ApplicationEvent.h"
@@ -19,6 +20,7 @@
 #include "Engine/Math/Math.h"
 #include "Engine/RenderGraph/RenderGraph.h"
 #include "Engine/Renderer/Renderer.h"
+#include "Engine/Renderer/ShaderLibrary.h"
 #include "Engine/RHI/RHI.h"
 #include "Engine/Scene/Camera.h"
 #include "Engine/Scene/Components.h"

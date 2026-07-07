@@ -2,6 +2,7 @@
 
 #include "Engine/Core/Log.h"
 #include "Engine/Math/Math.h"
+#include "Engine/Renderer/ShaderLibrary.h"
 
 #if defined(GE_HAS_NVRHI_D3D12)
     #include <d3dcompiler.h>
@@ -11,7 +12,6 @@
     #include <cstddef>
     #include <cstring>
     #include <filesystem>
-    #include <fstream>
     #include <limits>
     #include <sstream>
     #include <string>
@@ -82,70 +82,6 @@ namespace Engine
             std::ostringstream stream;
             stream << "0x" << std::hex << std::uppercase << static_cast<unsigned long>(result);
             return stream.str();
-        }
-
-        std::filesystem::path GetExecutableDirectory()
-        {
-            std::wstring buffer;
-            buffer.resize(MAX_PATH);
-
-            DWORD length = 0;
-            while (true)
-            {
-                length = GetModuleFileNameW(nullptr, buffer.data(), static_cast<DWORD>(buffer.size()));
-                if (length == 0)
-                    return {};
-
-                if (length < buffer.size() - 1)
-                    break;
-
-                buffer.resize(buffer.size() * 2);
-            }
-
-            buffer.resize(length);
-            return std::filesystem::path(buffer).parent_path();
-        }
-
-        std::filesystem::path ResolveAssetPath(std::string_view relativePath)
-        {
-            const std::filesystem::path relative(relativePath);
-            std::array<std::filesystem::path, 2> searchRoots = {
-                std::filesystem::current_path(),
-                GetExecutableDirectory()
-            };
-
-            for (const std::filesystem::path& root : searchRoots)
-            {
-                if (root.empty())
-                    continue;
-
-                std::filesystem::path cursor = root;
-                for (u32 depth = 0; depth < 8; ++depth)
-                {
-                    const std::filesystem::path candidate = cursor / relative;
-                    if (std::filesystem::exists(candidate))
-                        return candidate;
-
-                    if (!cursor.has_parent_path() || cursor.parent_path() == cursor)
-                        break;
-
-                    cursor = cursor.parent_path();
-                }
-            }
-
-            return relative;
-        }
-
-        bool LoadTextFile(const std::filesystem::path& path, std::string& outText)
-        {
-            std::ifstream file(path, std::ios::in | std::ios::binary);
-            if (!file)
-                return false;
-
-            std::ostringstream stream;
-            stream << file.rdbuf();
-            outText = stream.str();
-            return true;
         }
 
         D3D12_RESOURCE_BARRIER TransitionBarrier(ID3D12Resource* resource, D3D12_RESOURCE_STATES before, D3D12_RESOURCE_STATES after)
@@ -241,6 +177,7 @@ namespace Engine
 
             if (m_PipelineState && m_RootSignature && m_ConstantBuffer && m_VertexBuffer && m_IndexBuffer)
             {
+                PollShaderHotReload();
                 UpdateConstants(width, height);
 
                 D3D12_VIEWPORT viewport {};
@@ -315,22 +252,21 @@ namespace Engine
 
             m_RootSignature->SetName(L"Editor Viewport Root Signature");
 
-            const std::filesystem::path shaderPath = ResolveAssetPath(kViewportShaderPath);
-            std::string shaderSource;
-            if (!LoadTextFile(shaderPath, shaderSource))
+            m_ShaderSource = ShaderLibrary::LoadSource(kViewportShaderPath, "Editor Viewport");
+            if (m_ShaderSource.Status != ShaderSourceStatus::Loaded)
             {
-                Log::Error("Could not load viewport shader: ", shaderPath.string());
+                Log::Error("Could not load viewport shader: ", m_ShaderSource.ResolvedPath.string(), " (", ShaderLibrary::ToString(m_ShaderSource.Status), ")");
                 return false;
             }
 
             ComPtr<ID3DBlob> vertexShader;
             ComPtr<ID3DBlob> pixelShader;
-            if (!CompileD3DShader(shaderPath, shaderSource, "VSMain", "vs_5_0", vertexShader))
+            if (!CompileD3DShader(m_ShaderSource.ResolvedPath, m_ShaderSource.Source, "VSMain", ShaderLibrary::DefaultTargetProfile(RHI::ShaderStage::Vertex), vertexShader))
                 return false;
-            if (!CompileD3DShader(shaderPath, shaderSource, "PSMain", "ps_5_0", pixelShader))
+            if (!CompileD3DShader(m_ShaderSource.ResolvedPath, m_ShaderSource.Source, "PSMain", ShaderLibrary::DefaultTargetProfile(RHI::ShaderStage::Pixel), pixelShader))
                 return false;
 
-            Log::Info("Loaded viewport shader: ", shaderPath.string());
+            Log::Info("Loaded viewport shader: ", m_ShaderSource.ResolvedPath.string(), " (revision ", m_ShaderSource.Revision, ")");
 
             D3D12_RENDER_TARGET_BLEND_DESC renderTargetBlend {};
             renderTargetBlend.BlendEnable = FALSE;
@@ -499,6 +435,18 @@ namespace Engine
             std::memcpy(m_ConstantBufferMapped, &constants, sizeof(constants));
         }
 
+        void PollShaderHotReload()
+        {
+            if (m_ShaderReloadLogged || !ShaderLibrary::HasSourceChanged(m_ShaderSource))
+                return;
+
+            if (ShaderLibrary::ReloadSourceIfChanged(m_ShaderSource))
+            {
+                Log::Warn("Shader source changed: ", m_ShaderSource.ResolvedPath.string(), ". Live D3D12 pipeline rebuild is queued for a later renderer-thread pass.");
+                m_ShaderReloadLogged = true;
+            }
+        }
+
         ID3D12Device* m_Device = nullptr;
         ComPtr<ID3D12RootSignature> m_RootSignature;
         ComPtr<ID3D12PipelineState> m_PipelineState;
@@ -507,9 +455,11 @@ namespace Engine
         ComPtr<ID3D12Resource> m_ConstantBuffer;
         D3D12_VERTEX_BUFFER_VIEW m_VertexBufferView {};
         D3D12_INDEX_BUFFER_VIEW m_IndexBufferView {};
+        ShaderSourceFile m_ShaderSource;
         std::byte* m_ConstantBufferMapped = nullptr;
         u32 m_IndexCount = 0;
         u64 m_FrameCounter = 0;
+        bool m_ShaderReloadLogged = false;
     };
 
     NVRHID3D12ViewportSceneRenderer::NVRHID3D12ViewportSceneRenderer() = default;

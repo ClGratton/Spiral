@@ -52,6 +52,7 @@ Immediate gap:
 - Code style is checked by `Scripts/CheckCodeStyle.ps1` / `.sh` and a GitHub Actions style job.
 - Render graph pass/resource declarations now compile into resource lifetime and barrier data.
 - Editor camera and camera component scaffolding provide a shared `CameraView` for renderer code.
+- Shader source loading and hot-reload detection are centralized through `ShaderLibrary`.
 
 ## Phase 0: Buildable Spine
 
@@ -104,7 +105,7 @@ Required:
 - [ ] NVRHI Vulkan backend project enabled.
 - [ ] Real RHI triangle/mesh draw pass.
 - [x] Camera component and editor camera.
-- [ ] Basic shader pipeline and shader hot reload stub.
+- [x] Basic shader pipeline and shader hot reload stub.
 - [x] Render graph skeleton: pass declaration, resource lifetimes, barriers as data even if backend is simple.
 - [ ] GPU timestamp query interface stub.
 - [x] Screenshot capture for render tests.
