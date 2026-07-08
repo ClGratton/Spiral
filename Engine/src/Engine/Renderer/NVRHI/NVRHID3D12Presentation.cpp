@@ -426,9 +426,26 @@ namespace Engine
             UINT64 readbackSizeBytes = 0;
             m_Device->GetCopyableFootprints(&viewportDesc, 0, 1, 0, &footprint, &rowCount, &rowSizeBytes, &readbackSizeBytes);
 
-            ComPtr<ID3D12Resource> readbackBuffer;
-            if (!CreateReadbackBuffer(readbackSizeBytes, L"Editor Viewport Capture Readback", readbackBuffer))
+            RHI::BufferDescription readbackBufferDesc;
+            readbackBufferDesc.DebugName = "Editor Viewport Capture Readback";
+            readbackBufferDesc.SizeBytes = static_cast<u64>(readbackSizeBytes);
+            readbackBufferDesc.Usage = RHI::BufferUsage::CopyDest;
+            readbackBufferDesc.CpuAccess = RHI::BufferCpuAccess::Read;
+            readbackBufferDesc.InitialState = RHI::ResourceState::CopyDest;
+            Scope<RHI::Buffer> readbackBuffer = m_RHIDevice->CreateBuffer(readbackBufferDesc);
+            if (!readbackBuffer)
+            {
+                Log::Error("Could not create viewport capture readback buffer through RHI");
                 return false;
+            }
+
+            const RHI::NVRHID3D12BufferNativeHandles readbackHandles = RHI::GetNVRHID3D12BufferNativeHandles(*readbackBuffer);
+            ID3D12Resource* readbackResource = static_cast<ID3D12Resource*>(readbackHandles.Resource);
+            if (!readbackResource)
+            {
+                Log::Error("RHI viewport capture readback buffer did not expose a D3D12 resource");
+                return false;
+            }
 
             FrameContext& frame = m_Frames[0];
             HRESULT result = frame.CommandAllocator->Reset();
@@ -477,7 +494,7 @@ namespace Engine
                 source.SubresourceIndex = 0;
 
                 D3D12_TEXTURE_COPY_LOCATION destination {};
-                destination.pResource = readbackBuffer.Get();
+                destination.pResource = readbackResource;
                 destination.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
                 destination.PlacedFootprint = footprint;
 
@@ -510,20 +527,17 @@ namespace Engine
             }
             WaitForFenceValue(fenceValue);
 
-            D3D12_RANGE readRange { 0, static_cast<SIZE_T>(readbackSizeBytes) };
-            void* mappedData = nullptr;
-            result = readbackBuffer->Map(0, &readRange, &mappedData);
-            if (FAILED(result))
+            void* mappedData = readbackBuffer->Map();
+            if (!mappedData)
             {
-                Log::Error("Could not map viewport capture readback buffer: ", HResultToString(result));
+                Log::Error("Could not map viewport capture readback buffer");
                 return false;
             }
 
             const std::filesystem::path outputPath { std::string(path) };
             const auto* pixelData = static_cast<const u8*>(mappedData) + footprint.Offset;
             const bool written = WriteBmp(outputPath, pixelData, m_ViewportWidth, m_ViewportHeight, footprint.Footprint.RowPitch);
-            D3D12_RANGE writtenRange { 0, 0 };
-            readbackBuffer->Unmap(0, &writtenRange);
+            readbackBuffer->Unmap();
 
             if (written)
                 Log::Info("Viewport capture saved: ", outputPath.string());
@@ -677,45 +691,6 @@ namespace Engine
 
             m_CommandList->SetName(L"Spiral Presentation Command List");
             m_CommandList->Close();
-            return true;
-        }
-
-        bool CreateReadbackBuffer(u64 sizeBytes, const wchar_t* name, ComPtr<ID3D12Resource>& resource)
-        {
-            D3D12_HEAP_PROPERTIES heapProperties {};
-            heapProperties.Type = D3D12_HEAP_TYPE_READBACK;
-            heapProperties.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
-            heapProperties.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
-            heapProperties.CreationNodeMask = 1;
-            heapProperties.VisibleNodeMask = 1;
-
-            D3D12_RESOURCE_DESC bufferDesc {};
-            bufferDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-            bufferDesc.Width = sizeBytes;
-            bufferDesc.Height = 1;
-            bufferDesc.DepthOrArraySize = 1;
-            bufferDesc.MipLevels = 1;
-            bufferDesc.Format = DXGI_FORMAT_UNKNOWN;
-            bufferDesc.SampleDesc.Count = 1;
-            bufferDesc.SampleDesc.Quality = 0;
-            bufferDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-            bufferDesc.Flags = D3D12_RESOURCE_FLAG_NONE;
-
-            const HRESULT result = m_Device->CreateCommittedResource(
-                &heapProperties,
-                D3D12_HEAP_FLAG_NONE,
-                &bufferDesc,
-                D3D12_RESOURCE_STATE_COPY_DEST,
-                nullptr,
-                IID_PPV_ARGS(&resource));
-
-            if (FAILED(result))
-            {
-                Log::Error("Could not create D3D12 readback buffer: ", HResultToString(result));
-                return false;
-            }
-
-            resource->SetName(name);
             return true;
         }
 
