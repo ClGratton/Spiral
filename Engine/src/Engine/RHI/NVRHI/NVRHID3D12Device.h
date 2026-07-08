@@ -26,7 +26,14 @@ namespace Engine::RHI
         void* Resource = nullptr;
     };
 
+    struct NVRHID3D12ShaderNativeHandles
+    {
+        const void* Bytecode = nullptr;
+        u64 BytecodeSize = 0;
+    };
+
     Scope<Device> CreateNVRHID3D12Device(DeviceDescription description, NVRHIAdapterInfo& adapterInfo, NVRHID3D12NativeHandles* nativeHandles = nullptr);
     NVRHID3D12BufferNativeHandles GetNVRHID3D12BufferNativeHandles(Buffer& buffer);
     NVRHID3D12TextureNativeHandles GetNVRHID3D12TextureNativeHandles(Texture& texture);
+    NVRHID3D12ShaderNativeHandles GetNVRHID3D12ShaderNativeHandles(Shader& shader);
 }

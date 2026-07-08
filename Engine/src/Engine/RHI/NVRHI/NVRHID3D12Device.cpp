@@ -11,6 +11,7 @@
     #endif
 
     #include <Windows.h>
+    #include <d3dcompiler.h>
     #include <dxgi1_6.h>
     #include <wrl/client.h>
 
@@ -85,6 +86,17 @@ namespace Engine::RHI
                 flags |= D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
 
             return flags;
+        }
+
+        const char* DefaultTargetProfile(ShaderStage stage)
+        {
+            switch (stage)
+            {
+                case ShaderStage::Vertex: return "vs_5_0";
+                case ShaderStage::Pixel: return "ps_5_0";
+                case ShaderStage::Compute: return "cs_5_0";
+                default: return "";
+            }
         }
 
         std::string HResultToString(HRESULT result)
@@ -376,6 +388,80 @@ namespace Engine::RHI
             ComPtr<ID3D12Resource> m_Resource;
         };
 
+        class NVRHID3D12Shader final : public Shader
+        {
+        public:
+            explicit NVRHID3D12Shader(ShaderDescription description)
+                : m_Description(std::move(description))
+            {
+            }
+
+            bool Initialize()
+            {
+                if (m_Description.Stage == ShaderStage::None || m_Description.Source.empty() || m_Description.EntryPoint.empty())
+                    return false;
+
+                const std::string targetProfile = m_Description.TargetProfile.empty()
+                    ? DefaultTargetProfile(m_Description.Stage)
+                    : m_Description.TargetProfile;
+                if (targetProfile.empty())
+                {
+                    Log::Error("Could not compile D3D12 RHI shader '", m_Description.DebugName, "': unsupported shader stage");
+                    return false;
+                }
+
+                UINT flags = D3DCOMPILE_ENABLE_STRICTNESS;
+#if defined(GE_DEBUG)
+                flags |= D3DCOMPILE_DEBUG | D3DCOMPILE_SKIP_OPTIMIZATION;
+#endif
+
+                ComPtr<ID3DBlob> errors;
+                const char* sourceName = m_Description.SourceName.empty() ? m_Description.DebugName.c_str() : m_Description.SourceName.c_str();
+                const HRESULT result = D3DCompile(
+                    m_Description.Source.data(),
+                    m_Description.Source.size(),
+                    sourceName,
+                    nullptr,
+                    nullptr,
+                    m_Description.EntryPoint.c_str(),
+                    targetProfile.c_str(),
+                    flags,
+                    0,
+                    &m_Bytecode,
+                    &errors);
+
+                if (FAILED(result))
+                {
+                    if (errors)
+                        Log::Error("D3D12 RHI shader compilation failed for '", m_Description.DebugName, "': ", static_cast<const char*>(errors->GetBufferPointer()));
+                    else
+                        Log::Error("D3D12 RHI shader compilation failed for '", m_Description.DebugName, "': ", HResultToString(result));
+                    return false;
+                }
+
+                return true;
+            }
+
+            const ShaderDescription& GetDescription() const override
+            {
+                return m_Description;
+            }
+
+            const void* GetBytecode() const
+            {
+                return m_Bytecode ? m_Bytecode->GetBufferPointer() : nullptr;
+            }
+
+            u64 GetBytecodeSize() const
+            {
+                return m_Bytecode ? static_cast<u64>(m_Bytecode->GetBufferSize()) : 0;
+            }
+
+        private:
+            ShaderDescription m_Description;
+            ComPtr<ID3DBlob> m_Bytecode;
+        };
+
         class NVRHIQueryPoolStub final : public QueryPool
         {
         public:
@@ -469,9 +555,11 @@ namespace Engine::RHI
 
             Scope<Shader> CreateShader(const ShaderDescription& description) override
             {
-                (void)description;
-                Log::Warn("NVRHI D3D12 shader creation is not implemented yet");
-                return nullptr;
+                Scope<NVRHID3D12Shader> shader = CreateScope<NVRHID3D12Shader>(description);
+                if (!shader->Initialize())
+                    return nullptr;
+
+                return shader;
             }
 
             Scope<Pipeline> CreatePipeline(const PipelineDescription& description) override
@@ -762,6 +850,23 @@ namespace Engine::RHI
         return handles;
 #else
         (void)texture;
+        return {};
+#endif
+    }
+
+    NVRHID3D12ShaderNativeHandles GetNVRHID3D12ShaderNativeHandles(Shader& shader)
+    {
+#if defined(GE_HAS_NVRHI_D3D12)
+        auto* nativeShader = dynamic_cast<NVRHID3D12Shader*>(&shader);
+        if (!nativeShader)
+            return {};
+
+        NVRHID3D12ShaderNativeHandles handles;
+        handles.Bytecode = nativeShader->GetBytecode();
+        handles.BytecodeSize = nativeShader->GetBytecodeSize();
+        return handles;
+#else
+        (void)shader;
         return {};
 #endif
     }

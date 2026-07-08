@@ -98,27 +98,6 @@ namespace Engine
             return barrier;
         }
 
-        bool CompileD3DShader(const std::filesystem::path& path, const std::string& source, const char* entryPoint, const char* target, ComPtr<ID3DBlob>& outBlob)
-        {
-            UINT flags = D3DCOMPILE_ENABLE_STRICTNESS;
-#if defined(GE_DEBUG)
-            flags |= D3DCOMPILE_DEBUG | D3DCOMPILE_SKIP_OPTIMIZATION;
-#endif
-
-            ComPtr<ID3DBlob> errors;
-            const std::string pathString = path.string();
-            const HRESULT result = D3DCompile(source.data(), source.size(), pathString.c_str(), nullptr, nullptr, entryPoint, target, flags, 0, &outBlob, &errors);
-            if (FAILED(result))
-            {
-                if (errors)
-                    Log::Error("D3D shader compilation failed: ", static_cast<const char*>(errors->GetBufferPointer()));
-                else
-                    Log::Error("D3D shader compilation failed: ", HResultToString(result));
-                return false;
-            }
-
-            return true;
-        }
     }
 
     struct NVRHID3D12ViewportSceneRenderer::Impl
@@ -147,6 +126,8 @@ namespace Engine
             m_ConstantBufferResource = nullptr;
             m_IndexBufferResource = nullptr;
             m_VertexBufferResource = nullptr;
+            m_PixelShader.reset();
+            m_VertexShader.reset();
             m_PipelineState.Reset();
             m_RootSignature.Reset();
             m_VertexBufferView = {};
@@ -268,11 +249,11 @@ namespace Engine
                 return false;
             }
 
-            ComPtr<ID3DBlob> vertexShader;
-            ComPtr<ID3DBlob> pixelShader;
-            if (!CompileD3DShader(m_ShaderSource.ResolvedPath, m_ShaderSource.Source, "VSMain", ShaderLibrary::DefaultTargetProfile(RHI::ShaderStage::Vertex), vertexShader))
+            D3D12_SHADER_BYTECODE vertexShader {};
+            D3D12_SHADER_BYTECODE pixelShader {};
+            if (!CreateRhiShader(RHI::ShaderStage::Vertex, "VSMain", "Editor Viewport Vertex Shader", m_VertexShader, vertexShader))
                 return false;
-            if (!CompileD3DShader(m_ShaderSource.ResolvedPath, m_ShaderSource.Source, "PSMain", ShaderLibrary::DefaultTargetProfile(RHI::ShaderStage::Pixel), pixelShader))
+            if (!CreateRhiShader(RHI::ShaderStage::Pixel, "PSMain", "Editor Viewport Pixel Shader", m_PixelShader, pixelShader))
                 return false;
 
             Log::Info("Loaded viewport shader: ", m_ShaderSource.ResolvedPath.string(), " (revision ", m_ShaderSource.Revision, ")");
@@ -296,8 +277,8 @@ namespace Engine
 
             D3D12_GRAPHICS_PIPELINE_STATE_DESC pipelineDesc {};
             pipelineDesc.pRootSignature = m_RootSignature.Get();
-            pipelineDesc.VS = { vertexShader->GetBufferPointer(), vertexShader->GetBufferSize() };
-            pipelineDesc.PS = { pixelShader->GetBufferPointer(), pixelShader->GetBufferSize() };
+            pipelineDesc.VS = vertexShader;
+            pipelineDesc.PS = pixelShader;
             pipelineDesc.BlendState.AlphaToCoverageEnable = FALSE;
             pipelineDesc.BlendState.IndependentBlendEnable = FALSE;
             pipelineDesc.BlendState.RenderTarget[0] = renderTargetBlend;
@@ -333,6 +314,37 @@ namespace Engine
             }
 
             m_PipelineState->SetName(L"Editor Viewport Prototype Mesh Pipeline");
+            return true;
+        }
+
+        bool CreateRhiShader(
+            RHI::ShaderStage stage,
+            const char* entryPoint,
+            const char* debugName,
+            Scope<RHI::Shader>& shader,
+            D3D12_SHADER_BYTECODE& bytecode)
+        {
+            RHI::ShaderDescription description;
+            description.DebugName = debugName;
+            description.SourceName = m_ShaderSource.ResolvedPath.string();
+            description.Source = m_ShaderSource.Source;
+            description.EntryPoint = entryPoint;
+            description.TargetProfile = ShaderLibrary::DefaultTargetProfile(stage);
+            description.Stage = stage;
+
+            shader = m_RHIDevice->CreateShader(description);
+            if (!shader)
+                return false;
+
+            const RHI::NVRHID3D12ShaderNativeHandles handles = RHI::GetNVRHID3D12ShaderNativeHandles(*shader);
+            if (!handles.Bytecode || handles.BytecodeSize == 0)
+            {
+                Log::Error("RHI shader did not expose D3D12 bytecode: ", debugName);
+                shader.reset();
+                return false;
+            }
+
+            bytecode = { handles.Bytecode, static_cast<SIZE_T>(handles.BytecodeSize) };
             return true;
         }
 
@@ -456,6 +468,8 @@ namespace Engine
         RHI::Device* m_RHIDevice = nullptr;
         ComPtr<ID3D12RootSignature> m_RootSignature;
         ComPtr<ID3D12PipelineState> m_PipelineState;
+        Scope<RHI::Shader> m_VertexShader;
+        Scope<RHI::Shader> m_PixelShader;
         Scope<RHI::Buffer> m_VertexBuffer;
         Scope<RHI::Buffer> m_IndexBuffer;
         Scope<RHI::Buffer> m_ConstantBuffer;

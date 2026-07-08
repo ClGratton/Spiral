@@ -58,6 +58,7 @@ Immediate gap:
 - The D3D12 viewport prototype mesh creates vertex, index, and constant buffers through the RHI buffer API; command recording and pipeline binding are still D3D12-specific.
 - The D3D12 viewport color and depth targets are allocated through the RHI texture API, with D3D12 descriptors still created by the presentation layer.
 - Viewport capture readback now uses the RHI buffer API; texture copy commands and BMP writing remain in the D3D12 presentation layer.
+- The viewport prototype shader compiles through the D3D12 RHI shader API; the graphics pipeline state remains a native D3D12 bridge until the RHI pipeline abstraction is filled in.
 
 ## Phase 0: Buildable Spine
 
