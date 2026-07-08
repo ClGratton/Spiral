@@ -52,6 +52,41 @@ namespace Engine::RHI
             }
         }
 
+        bool HasTextureUsage(TextureUsage usage, TextureUsage flag)
+        {
+            return (static_cast<u32>(usage) & static_cast<u32>(flag)) != 0;
+        }
+
+        DXGI_FORMAT ConvertFormat(Format format)
+        {
+            switch (format)
+            {
+                case Format::R8Unorm: return DXGI_FORMAT_R8_UNORM;
+                case Format::R8G8B8A8Unorm: return DXGI_FORMAT_R8G8B8A8_UNORM;
+                case Format::R8G8B8A8UnormSrgb: return DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
+                case Format::R11G11B10Float: return DXGI_FORMAT_R11G11B10_FLOAT;
+                case Format::R16G16B16A16Float: return DXGI_FORMAT_R16G16B16A16_FLOAT;
+                case Format::R32Uint: return DXGI_FORMAT_R32_UINT;
+                case Format::D24UnormS8Uint: return DXGI_FORMAT_D24_UNORM_S8_UINT;
+                case Format::D32Float: return DXGI_FORMAT_D32_FLOAT;
+                case Format::Unknown:
+                default: return DXGI_FORMAT_UNKNOWN;
+            }
+        }
+
+        D3D12_RESOURCE_FLAGS ConvertTextureFlags(TextureUsage usage)
+        {
+            D3D12_RESOURCE_FLAGS flags = D3D12_RESOURCE_FLAG_NONE;
+            if (HasTextureUsage(usage, TextureUsage::RenderTarget))
+                flags |= D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+            if (HasTextureUsage(usage, TextureUsage::DepthStencil))
+                flags |= D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
+            if (HasTextureUsage(usage, TextureUsage::UnorderedAccess))
+                flags |= D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+
+            return flags;
+        }
+
         std::string HResultToString(HRESULT result)
         {
             std::ostringstream stream;
@@ -247,6 +282,100 @@ namespace Engine::RHI
             void* m_MappedData = nullptr;
         };
 
+        class NVRHID3D12Texture final : public Texture
+        {
+        public:
+            explicit NVRHID3D12Texture(TextureDescription description)
+                : m_Description(std::move(description))
+            {
+            }
+
+            bool Initialize(ID3D12Device* device)
+            {
+                if (!device || m_Description.Extent.Width == 0 || m_Description.Extent.Height == 0)
+                    return false;
+
+                const DXGI_FORMAT format = ConvertFormat(m_Description.TextureFormat);
+                if (format == DXGI_FORMAT_UNKNOWN)
+                {
+                    Log::Error("Could not create D3D12 RHI texture '", m_Description.DebugName, "': unsupported format");
+                    return false;
+                }
+
+                D3D12_HEAP_PROPERTIES heapProperties {};
+                heapProperties.Type = D3D12_HEAP_TYPE_DEFAULT;
+                heapProperties.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
+                heapProperties.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
+                heapProperties.CreationNodeMask = 1;
+                heapProperties.VisibleNodeMask = 1;
+
+                D3D12_RESOURCE_DESC textureDesc {};
+                textureDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+                textureDesc.Width = m_Description.Extent.Width;
+                textureDesc.Height = m_Description.Extent.Height;
+                textureDesc.DepthOrArraySize = static_cast<UINT16>(m_Description.ArrayLayers);
+                textureDesc.MipLevels = static_cast<UINT16>(m_Description.MipLevels);
+                textureDesc.Format = format;
+                textureDesc.SampleDesc.Count = m_Description.SampleCount == 0 ? 1 : m_Description.SampleCount;
+                textureDesc.SampleDesc.Quality = 0;
+                textureDesc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+                textureDesc.Flags = ConvertTextureFlags(m_Description.Usage);
+
+                D3D12_CLEAR_VALUE clearValue {};
+                D3D12_CLEAR_VALUE* clearValuePtr = nullptr;
+                if (HasTextureUsage(m_Description.Usage, TextureUsage::DepthStencil))
+                {
+                    clearValue.Format = format;
+                    clearValue.DepthStencil.Depth = 1.0f;
+                    clearValue.DepthStencil.Stencil = 0;
+                    clearValuePtr = &clearValue;
+                }
+                else if (HasTextureUsage(m_Description.Usage, TextureUsage::RenderTarget))
+                {
+                    clearValue.Format = format;
+                    clearValue.Color[0] = 0.0f;
+                    clearValue.Color[1] = 0.0f;
+                    clearValue.Color[2] = 0.0f;
+                    clearValue.Color[3] = 1.0f;
+                    clearValuePtr = &clearValue;
+                }
+
+                const HRESULT result = device->CreateCommittedResource(
+                    &heapProperties,
+                    D3D12_HEAP_FLAG_NONE,
+                    &textureDesc,
+                    ConvertResourceState(m_Description.InitialState),
+                    clearValuePtr,
+                    IID_PPV_ARGS(&m_Resource));
+
+                if (FAILED(result))
+                {
+                    Log::Error("Could not create D3D12 RHI texture '", m_Description.DebugName, "': ", HResultToString(result));
+                    return false;
+                }
+
+                const std::wstring name = Utf8ToWide(m_Description.DebugName);
+                if (!name.empty())
+                    m_Resource->SetName(name.c_str());
+
+                return true;
+            }
+
+            const TextureDescription& GetDescription() const override
+            {
+                return m_Description;
+            }
+
+            ID3D12Resource* GetResource() const
+            {
+                return m_Resource.Get();
+            }
+
+        private:
+            TextureDescription m_Description;
+            ComPtr<ID3D12Resource> m_Resource;
+        };
+
         class NVRHIQueryPoolStub final : public QueryPool
         {
         public:
@@ -331,9 +460,11 @@ namespace Engine::RHI
 
             Scope<Texture> CreateTexture(const TextureDescription& description) override
             {
-                (void)description;
-                Log::Warn("NVRHI D3D12 texture creation is not implemented yet");
-                return nullptr;
+                Scope<NVRHID3D12Texture> texture = CreateScope<NVRHID3D12Texture>(description);
+                if (!texture->Initialize(m_Device.Get()))
+                    return nullptr;
+
+                return texture;
             }
 
             Scope<Shader> CreateShader(const ShaderDescription& description) override
@@ -615,6 +746,22 @@ namespace Engine::RHI
         return handles;
 #else
         (void)buffer;
+        return {};
+#endif
+    }
+
+    NVRHID3D12TextureNativeHandles GetNVRHID3D12TextureNativeHandles(Texture& texture)
+    {
+#if defined(GE_HAS_NVRHI_D3D12)
+        auto* nativeTexture = dynamic_cast<NVRHID3D12Texture*>(&texture);
+        if (!nativeTexture)
+            return {};
+
+        NVRHID3D12TextureNativeHandles handles;
+        handles.Resource = nativeTexture->GetResource();
+        return handles;
+#else
+        (void)texture;
         return {};
 #endif
     }

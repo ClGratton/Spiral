@@ -44,7 +44,6 @@ namespace Engine
         constexpr u32 kSrvDescriptorCount = 256;
         constexpr u32 kInvalidDescriptorIndex = std::numeric_limits<u32>::max();
         constexpr DXGI_FORMAT kSwapchainFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
-        constexpr DXGI_FORMAT kDepthFormat = DXGI_FORMAT_D32_FLOAT;
 
         const wchar_t* GetBackBufferName(u32 index)
         {
@@ -83,6 +82,11 @@ namespace Engine
             barrier.Transition.StateBefore = before;
             barrier.Transition.StateAfter = after;
             return barrier;
+        }
+
+        RHI::TextureUsage TextureUsageFlags(RHI::TextureUsage first, RHI::TextureUsage second, RHI::TextureUsage third = RHI::TextureUsage::None)
+        {
+            return static_cast<RHI::TextureUsage>(static_cast<u32>(first) | static_cast<u32>(second) | static_cast<u32>(third));
         }
 
         void WriteU16(std::ofstream& file, u16 value)
@@ -337,50 +341,30 @@ namespace Engine
             WaitIdle();
             ReleaseViewportTexture();
 
-            D3D12_HEAP_PROPERTIES heapProperties {};
-            heapProperties.Type = D3D12_HEAP_TYPE_DEFAULT;
-            heapProperties.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
-            heapProperties.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
-            heapProperties.CreationNodeMask = 1;
-            heapProperties.VisibleNodeMask = 1;
-
-            D3D12_RESOURCE_DESC textureDesc {};
-            textureDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-            textureDesc.Alignment = 0;
-            textureDesc.Width = width;
-            textureDesc.Height = height;
-            textureDesc.DepthOrArraySize = 1;
-            textureDesc.MipLevels = 1;
-            textureDesc.Format = kSwapchainFormat;
-            textureDesc.SampleDesc.Count = 1;
-            textureDesc.SampleDesc.Quality = 0;
-            textureDesc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
-            textureDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
-
-            D3D12_CLEAR_VALUE clearValue {};
-            clearValue.Format = kSwapchainFormat;
-            clearValue.Color[0] = 0.08f;
-            clearValue.Color[1] = 0.09f;
-            clearValue.Color[2] = 0.10f;
-            clearValue.Color[3] = 1.0f;
-
-            HRESULT result = m_Device->CreateCommittedResource(
-                &heapProperties,
-                D3D12_HEAP_FLAG_NONE,
-                &textureDesc,
-                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
-                &clearValue,
-                IID_PPV_ARGS(&m_ViewportTexture));
-
-            if (FAILED(result))
+            RHI::TextureDescription viewportTextureDesc;
+            viewportTextureDesc.DebugName = "Editor Viewport Texture";
+            viewportTextureDesc.Extent = { width, height };
+            viewportTextureDesc.TextureFormat = RHI::Format::R8G8B8A8Unorm;
+            viewportTextureDesc.Usage = TextureUsageFlags(RHI::TextureUsage::ShaderResource, RHI::TextureUsage::RenderTarget, RHI::TextureUsage::CopySource);
+            viewportTextureDesc.InitialState = RHI::ResourceState::ShaderResource;
+            m_ViewportTexture = m_RHIDevice->CreateTexture(viewportTextureDesc);
+            if (!m_ViewportTexture)
             {
-                Log::Error("Could not create D3D12 viewport texture: ", HResultToString(result));
+                Log::Error("Could not create viewport texture through RHI");
                 return false;
             }
 
-            m_ViewportTexture->SetName(L"Editor Viewport Texture");
+            const RHI::NVRHID3D12TextureNativeHandles viewportHandles = RHI::GetNVRHID3D12TextureNativeHandles(*m_ViewportTexture);
+            m_ViewportTextureResource = static_cast<ID3D12Resource*>(viewportHandles.Resource);
+            if (!m_ViewportTextureResource)
+            {
+                Log::Error("RHI viewport texture did not expose a D3D12 resource");
+                ReleaseViewportTexture();
+                return false;
+            }
+
             m_ViewportState = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
-            m_Device->CreateRenderTargetView(m_ViewportTexture.Get(), nullptr, GetRtvCpuHandle(kFrameCount));
+            m_Device->CreateRenderTargetView(m_ViewportTextureResource, nullptr, GetRtvCpuHandle(kFrameCount));
 
             D3D12_CPU_DESCRIPTOR_HANDLE srvCpu {};
             D3D12_GPU_DESCRIPTOR_HANDLE srvGpu {};
@@ -399,7 +383,7 @@ namespace Engine
             srvDesc.Texture2D.MipLevels = 1;
             srvDesc.Texture2D.PlaneSlice = 0;
             srvDesc.Texture2D.ResourceMinLODClamp = 0.0f;
-            m_Device->CreateShaderResourceView(m_ViewportTexture.Get(), &srvDesc, srvCpu);
+            m_Device->CreateShaderResourceView(m_ViewportTextureResource, &srvDesc, srvCpu);
 
             m_ViewportTextureId = srvGpu.ptr;
             m_ViewportWidth = width;
@@ -421,7 +405,7 @@ namespace Engine
 
         bool CaptureViewportToFile(std::string_view path)
         {
-            if (!m_Initialized || !m_ViewportTexture || m_ViewportWidth == 0 || m_ViewportHeight == 0)
+            if (!m_Initialized || !m_ViewportTextureResource || m_ViewportWidth == 0 || m_ViewportHeight == 0)
             {
                 Log::Warn("Viewport capture requested before the viewport texture exists");
                 return false;
@@ -435,7 +419,7 @@ namespace Engine
 
             WaitIdle();
 
-            D3D12_RESOURCE_DESC viewportDesc = m_ViewportTexture->GetDesc();
+            D3D12_RESOURCE_DESC viewportDesc = m_ViewportTextureResource->GetDesc();
             D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint {};
             UINT rowCount = 0;
             UINT64 rowSizeBytes = 0;
@@ -468,10 +452,10 @@ namespace Engine
                     ScopedD3D12Marker viewportMarker(m_CommandList.Get(), "Capture Viewport Texture Refresh");
                     m_ViewportSceneRenderer.Render(
                         m_CommandList.Get(),
-                        m_ViewportTexture.Get(),
+                        m_ViewportTextureResource,
                         m_ViewportState,
                         GetRtvCpuHandle(kFrameCount),
-                        m_ViewportDepthTexture.Get(),
+                        m_ViewportDepthTextureResource,
                         GetDsvCpuHandle(),
                         m_ViewportWidth,
                         m_ViewportHeight,
@@ -482,13 +466,13 @@ namespace Engine
                 const D3D12_RESOURCE_STATES previousState = m_ViewportState;
                 if (m_ViewportState != D3D12_RESOURCE_STATE_COPY_SOURCE)
                 {
-                    D3D12_RESOURCE_BARRIER barrier = TransitionBarrier(m_ViewportTexture.Get(), m_ViewportState, D3D12_RESOURCE_STATE_COPY_SOURCE);
+                    D3D12_RESOURCE_BARRIER barrier = TransitionBarrier(m_ViewportTextureResource, m_ViewportState, D3D12_RESOURCE_STATE_COPY_SOURCE);
                     m_CommandList->ResourceBarrier(1, &barrier);
                     m_ViewportState = D3D12_RESOURCE_STATE_COPY_SOURCE;
                 }
 
                 D3D12_TEXTURE_COPY_LOCATION source {};
-                source.pResource = m_ViewportTexture.Get();
+                source.pResource = m_ViewportTextureResource;
                 source.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
                 source.SubresourceIndex = 0;
 
@@ -501,7 +485,7 @@ namespace Engine
 
                 if (previousState != D3D12_RESOURCE_STATE_COPY_SOURCE)
                 {
-                    D3D12_RESOURCE_BARRIER barrier = TransitionBarrier(m_ViewportTexture.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE, previousState);
+                    D3D12_RESOURCE_BARRIER barrier = TransitionBarrier(m_ViewportTextureResource, D3D12_RESOURCE_STATE_COPY_SOURCE, previousState);
                     m_CommandList->ResourceBarrier(1, &barrier);
                     m_ViewportState = previousState;
                 }
@@ -813,60 +797,42 @@ namespace Engine
 
         bool CreateViewportDepthTexture(u32 width, u32 height)
         {
-            D3D12_HEAP_PROPERTIES heapProperties {};
-            heapProperties.Type = D3D12_HEAP_TYPE_DEFAULT;
-            heapProperties.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
-            heapProperties.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
-            heapProperties.CreationNodeMask = 1;
-            heapProperties.VisibleNodeMask = 1;
-
-            D3D12_RESOURCE_DESC depthDesc {};
-            depthDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-            depthDesc.Width = width;
-            depthDesc.Height = height;
-            depthDesc.DepthOrArraySize = 1;
-            depthDesc.MipLevels = 1;
-            depthDesc.Format = kDepthFormat;
-            depthDesc.SampleDesc.Count = 1;
-            depthDesc.SampleDesc.Quality = 0;
-            depthDesc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
-            depthDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
-
-            D3D12_CLEAR_VALUE clearValue {};
-            clearValue.Format = kDepthFormat;
-            clearValue.DepthStencil.Depth = 1.0f;
-            clearValue.DepthStencil.Stencil = 0;
-
-            HRESULT result = m_Device->CreateCommittedResource(
-                &heapProperties,
-                D3D12_HEAP_FLAG_NONE,
-                &depthDesc,
-                D3D12_RESOURCE_STATE_DEPTH_WRITE,
-                &clearValue,
-                IID_PPV_ARGS(&m_ViewportDepthTexture));
-
-            if (FAILED(result))
+            RHI::TextureDescription depthTextureDesc;
+            depthTextureDesc.DebugName = "Editor Viewport Depth Texture";
+            depthTextureDesc.Extent = { width, height };
+            depthTextureDesc.TextureFormat = RHI::Format::D32Float;
+            depthTextureDesc.Usage = RHI::TextureUsage::DepthStencil;
+            depthTextureDesc.InitialState = RHI::ResourceState::DepthWrite;
+            m_ViewportDepthTexture = m_RHIDevice->CreateTexture(depthTextureDesc);
+            if (!m_ViewportDepthTexture)
             {
-                Log::Error("Could not create D3D12 viewport depth texture: ", HResultToString(result));
+                Log::Error("Could not create viewport depth texture through RHI");
                 return false;
             }
 
-            m_ViewportDepthTexture->SetName(L"Editor Viewport Depth Texture");
-            m_Device->CreateDepthStencilView(m_ViewportDepthTexture.Get(), nullptr, GetDsvCpuHandle());
+            const RHI::NVRHID3D12TextureNativeHandles depthHandles = RHI::GetNVRHID3D12TextureNativeHandles(*m_ViewportDepthTexture);
+            m_ViewportDepthTextureResource = static_cast<ID3D12Resource*>(depthHandles.Resource);
+            if (!m_ViewportDepthTextureResource)
+            {
+                Log::Error("RHI viewport depth texture did not expose a D3D12 resource");
+                return false;
+            }
+
+            m_Device->CreateDepthStencilView(m_ViewportDepthTextureResource, nullptr, GetDsvCpuHandle());
             return true;
         }
 
         void RenderViewportTexture(const ClearColor& clearColor)
         {
-            if (!m_ViewportTexture)
+            if (!m_ViewportTextureResource || !m_ViewportDepthTextureResource)
                 return;
 
             m_ViewportSceneRenderer.Render(
                 m_CommandList.Get(),
-                m_ViewportTexture.Get(),
+                m_ViewportTextureResource,
                 m_ViewportState,
                 GetRtvCpuHandle(kFrameCount),
-                m_ViewportDepthTexture.Get(),
+                m_ViewportDepthTextureResource,
                 GetDsvCpuHandle(),
                 m_ViewportWidth,
                 m_ViewportHeight,
@@ -881,8 +847,10 @@ namespace Engine
                 m_ViewportSrvIndex = kInvalidDescriptorIndex;
             }
 
-            m_ViewportTexture.Reset();
-            m_ViewportDepthTexture.Reset();
+            m_ViewportTexture.reset();
+            m_ViewportDepthTexture.reset();
+            m_ViewportTextureResource = nullptr;
+            m_ViewportDepthTextureResource = nullptr;
             m_ViewportTextureId = 0;
             m_ViewportWidth = 0;
             m_ViewportHeight = 0;
@@ -1003,8 +971,10 @@ namespace Engine
         u32 m_SwapchainHeight = 0;
         u64 m_LastFenceValue = 0;
 
-        ComPtr<ID3D12Resource> m_ViewportTexture;
-        ComPtr<ID3D12Resource> m_ViewportDepthTexture;
+        Scope<RHI::Texture> m_ViewportTexture;
+        Scope<RHI::Texture> m_ViewportDepthTexture;
+        ID3D12Resource* m_ViewportTextureResource = nullptr;
+        ID3D12Resource* m_ViewportDepthTextureResource = nullptr;
         D3D12_RESOURCE_STATES m_ViewportState = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
         u32 m_ViewportWidth = 0;
         u32 m_ViewportHeight = 0;

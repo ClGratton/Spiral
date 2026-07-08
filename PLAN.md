@@ -56,6 +56,7 @@ Immediate gap:
 - GPU timestamp query contracts and renderer timing snapshots are stubbed; the D3D12 query heap resolve path is still pending.
 - The first D3D12 viewport pass has resource debug names and capture markers for frame, viewport, ImGui, and capture readback scopes.
 - The D3D12 viewport prototype mesh creates vertex, index, and constant buffers through the RHI buffer API; command recording and pipeline binding are still D3D12-specific.
+- The D3D12 viewport color and depth targets are allocated through the RHI texture API, with D3D12 descriptors still created by the presentation layer.
 
 ## Phase 0: Buildable Spine
 
