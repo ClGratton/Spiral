@@ -3,7 +3,43 @@
 #include <imgui.h>
 #include <imgui_internal.h>
 
+#include <cstdio>
 #include <stdexcept>
+
+namespace
+{
+    const char* ToLightTypeName(Engine::LightType type)
+    {
+        switch (type)
+        {
+            case Engine::LightType::Directional: return "Directional";
+            case Engine::LightType::Point: return "Point";
+            case Engine::LightType::Spot: return "Spot";
+        }
+
+        return "Directional";
+    }
+
+    bool DrawVec3Control(const char* label, Engine::Math::Vec3& value, float speed, float min = 0.0f, float max = 0.0f)
+    {
+        float values[3] = { value.X, value.Y, value.Z };
+        if (!ImGui::DragFloat3(label, values, speed, min, max))
+            return false;
+
+        value = { values[0], values[1], values[2] };
+        return true;
+    }
+
+    bool DrawAssetHandleControl(const char* label, Engine::AssetHandle& handle)
+    {
+        Engine::u64 value = handle;
+        if (!ImGui::InputScalar(label, ImGuiDataType_U64, &value))
+            return false;
+
+        handle = value;
+        return true;
+    }
+}
 
 EditorLayer::EditorLayer()
     : Engine::Layer("EditorLayer")
@@ -18,6 +54,7 @@ void EditorLayer::OnAttach()
     m_ConsoleLines.emplace_back("GLFW window backend active");
     m_ConsoleLines.emplace_back(std::string("Renderer backend: ") + Engine::Renderer::GetActiveBackendName());
     EnsureDefaultSceneEntities();
+    SyncEditorCameraStateFromMainCamera();
     m_CaptureViewportRequested = Engine::Application::Get().GetSpecification().CommandLineArgs.HasFlag("--capture-viewport");
     m_SaveSceneSmokeRequested = Engine::Application::Get().GetSpecification().CommandLineArgs.HasFlag("--save-scene-smoke");
     if (m_CaptureViewportRequested)
@@ -208,7 +245,13 @@ void EditorLayer::DrawSceneHierarchyPanel()
     if (ImGui::TreeNodeEx("World", ImGuiTreeNodeFlags_DefaultOpen))
     {
         for (const Engine::SceneEntity& entity : m_ActiveScene.GetEntities())
-            ImGui::BulletText("%s", entity.Name.c_str());
+        {
+            ImGui::PushID(static_cast<int>(entity.EntityHandle.Id));
+            const bool selected = entity.EntityHandle == m_SelectedEntity;
+            if (ImGui::Selectable(entity.Name.c_str(), selected))
+                m_SelectedEntity = entity.EntityHandle;
+            ImGui::PopID();
+        }
         ImGui::TreePop();
     }
 
@@ -218,12 +261,101 @@ void EditorLayer::DrawSceneHierarchyPanel()
 void EditorLayer::DrawInspectorPanel()
 {
     ImGui::Begin("Inspector");
-    ImGui::TextUnformatted("Selected: Prototype Mesh");
+
+    if (!m_ActiveScene.IsEntityValid(m_SelectedEntity))
+        m_SelectedEntity = m_PrototypeMeshEntity;
+
+    Engine::SceneEntity* selectedEntity = m_ActiveScene.TryGetEntity(m_SelectedEntity);
+    if (!selectedEntity)
+    {
+        ImGui::TextDisabled("No entity selected");
+        ImGui::End();
+        return;
+    }
+
+    ImGui::Text("Selected: %s", selectedEntity->Name.c_str());
     ImGui::Separator();
     ImGui::TextUnformatted("Transform");
-    ImGui::DragFloat3("Position", m_Position.data(), 0.1f);
-    ImGui::DragFloat3("Rotation", m_Rotation.data(), 0.5f);
-    ImGui::DragFloat3("Scale", m_Scale.data(), 0.05f, 0.01f, 100.0f);
+
+    bool transformChanged = false;
+    transformChanged |= DrawVec3Control("Position", selectedEntity->Transform.Position, 0.1f);
+    transformChanged |= DrawVec3Control("Rotation", selectedEntity->Transform.RotationDegrees, 0.5f);
+    transformChanged |= DrawVec3Control("Scale", selectedEntity->Transform.Scale, 0.05f, 0.01f, 100.0f);
+    if (transformChanged && selectedEntity->EntityHandle == m_ActiveScene.GetMainCameraEntity())
+    {
+        m_ActiveScene.SetMainCameraTransform(selectedEntity->Transform);
+        SyncEditorCameraStateFromMainCamera();
+    }
+
+    if (selectedEntity->Camera)
+    {
+        ImGui::Separator();
+        ImGui::TextUnformatted("Camera Component");
+        Engine::CameraComponent& camera = *selectedEntity->Camera;
+        bool cameraChanged = false;
+        cameraChanged |= ImGui::Checkbox("Primary", &camera.Primary);
+        cameraChanged |= ImGui::DragFloat("Vertical FOV", &camera.Projection.VerticalFovDegrees, 0.25f, 20.0f, 110.0f);
+        cameraChanged |= ImGui::DragFloat("Near Clip", &camera.Projection.NearClip, 0.01f, 0.01f, 10.0f);
+        cameraChanged |= ImGui::DragFloat("Far Clip", &camera.Projection.FarClip, 1.0f, 1.0f, 10000.0f);
+        if (camera.Projection.FarClip <= camera.Projection.NearClip)
+            camera.Projection.FarClip = camera.Projection.NearClip + 1.0f;
+        if (camera.Primary)
+            m_ActiveScene.SetMainCameraEntity(selectedEntity->EntityHandle);
+        if (cameraChanged && selectedEntity->EntityHandle == m_ActiveScene.GetMainCameraEntity())
+        {
+            m_ActiveScene.SetMainCamera(camera);
+            SyncEditorCameraStateFromMainCamera();
+        }
+    }
+
+    if (selectedEntity->Light)
+    {
+        ImGui::Separator();
+        ImGui::TextUnformatted("Light Component");
+        Engine::LightComponent& light = *selectedEntity->Light;
+        const char* lightTypeName = ToLightTypeName(light.Type);
+        if (ImGui::BeginCombo("Type", lightTypeName))
+        {
+            const Engine::LightType lightTypes[] = {
+                Engine::LightType::Directional,
+                Engine::LightType::Point,
+                Engine::LightType::Spot
+            };
+            for (Engine::LightType candidate : lightTypes)
+            {
+                const bool selected = light.Type == candidate;
+                if (ImGui::Selectable(ToLightTypeName(candidate), selected))
+                    light.Type = candidate;
+                if (selected)
+                    ImGui::SetItemDefaultFocus();
+            }
+            ImGui::EndCombo();
+        }
+        ImGui::ColorEdit3("Color", &light.Color.X);
+        ImGui::DragFloat("Intensity", &light.Intensity, 0.05f, 0.0f, 100000.0f);
+        ImGui::DragFloat("Range", &light.Range, 0.1f, 0.0f, 10000.0f);
+        ImGui::DragFloat("Inner Cone", &light.InnerConeDegrees, 0.5f, 0.0f, 180.0f);
+        ImGui::DragFloat("Outer Cone", &light.OuterConeDegrees, 0.5f, 0.0f, 180.0f);
+        if (light.OuterConeDegrees < light.InnerConeDegrees)
+            light.OuterConeDegrees = light.InnerConeDegrees;
+        ImGui::Checkbox("Casts Shadows", &light.CastsShadows);
+    }
+
+    if (selectedEntity->MeshRenderer)
+    {
+        ImGui::Separator();
+        ImGui::TextUnformatted("Mesh Renderer Component");
+        Engine::MeshRendererComponent& meshRenderer = *selectedEntity->MeshRenderer;
+        char meshName[128] = {};
+        std::snprintf(meshName, sizeof(meshName), "%s", meshRenderer.MeshName.c_str());
+        if (ImGui::InputText("Mesh Name", meshName, sizeof(meshName)))
+            meshRenderer.MeshName = meshName;
+        DrawAssetHandleControl("Mesh Asset", meshRenderer.MeshAsset);
+        DrawAssetHandleControl("Material Asset", meshRenderer.MaterialAsset);
+        ImGui::Checkbox("Visible", &meshRenderer.Visible);
+        ImGui::Checkbox("Casts Shadows", &meshRenderer.CastsShadows);
+    }
+
     ImGui::Separator();
     ImGui::TextUnformatted("Editor Camera");
     bool cameraChanged = false;
@@ -241,6 +373,7 @@ void EditorLayer::DrawInspectorPanel()
         m_EditorCamera.SetRotationDegrees({ m_CameraRotation[0], m_CameraRotation[1], m_CameraRotation[2] });
         m_EditorCamera.SetProjection({ m_CameraFovDegrees, m_CameraNearClip, m_CameraFarClip });
         Engine::Renderer::SetCameraView(m_EditorCamera.GetCameraView());
+        ApplyEditorCameraStateToScene();
     }
     ImGui::TextDisabled("Aspect %.3f", m_EditorCamera.GetAspectRatio());
     ImGui::Separator();
@@ -254,6 +387,38 @@ void EditorLayer::DrawInspectorPanel()
     if (ImGui::ColorEdit4("Clear Color", &m_ClearColor.R))
         Engine::Renderer::SetClearColor(m_ClearColor);
     ImGui::End();
+}
+
+void EditorLayer::ApplyEditorCameraStateToScene()
+{
+    Engine::TransformComponent cameraTransform;
+    cameraTransform.Position = { m_CameraPosition[0], m_CameraPosition[1], m_CameraPosition[2] };
+    cameraTransform.RotationDegrees = { m_CameraRotation[0], m_CameraRotation[1], m_CameraRotation[2] };
+    cameraTransform.Scale = { 1.0f, 1.0f, 1.0f };
+
+    Engine::CameraComponent camera;
+    camera.Primary = true;
+    camera.Projection = { m_CameraFovDegrees, m_CameraNearClip, m_CameraFarClip };
+
+    m_ActiveScene.SetMainCameraTransform(cameraTransform);
+    m_ActiveScene.SetMainCamera(camera);
+}
+
+void EditorLayer::SyncEditorCameraStateFromMainCamera()
+{
+    const Engine::TransformComponent& cameraTransform = m_ActiveScene.GetMainCameraTransform();
+    const Engine::CameraComponent& camera = m_ActiveScene.GetMainCamera();
+
+    m_CameraPosition = { cameraTransform.Position.X, cameraTransform.Position.Y, cameraTransform.Position.Z };
+    m_CameraRotation = { cameraTransform.RotationDegrees.X, cameraTransform.RotationDegrees.Y, cameraTransform.RotationDegrees.Z };
+    m_CameraFovDegrees = camera.Projection.VerticalFovDegrees;
+    m_CameraNearClip = camera.Projection.NearClip;
+    m_CameraFarClip = camera.Projection.FarClip;
+
+    m_EditorCamera.SetPosition(cameraTransform.Position);
+    m_EditorCamera.SetRotationDegrees(cameraTransform.RotationDegrees);
+    m_EditorCamera.SetProjection(camera.Projection);
+    Engine::Renderer::SetCameraView(m_EditorCamera.GetCameraView());
 }
 
 void EditorLayer::DrawRendererBackendSelector()
@@ -425,8 +590,6 @@ void EditorLayer::DrawProjectPanel()
 
 bool EditorLayer::SaveActiveScene()
 {
-    SyncSceneFromEditorState();
-
     const bool saved = m_ActiveScene.SaveToFile(m_ScenePath);
     if (saved)
     {
@@ -445,28 +608,6 @@ bool EditorLayer::SaveActiveScene()
     Engine::Log::Error("Scene save failed: ", m_ScenePath);
     m_ConsoleLines.emplace_back(std::string("Scene save failed: ") + m_ScenePath);
     return false;
-}
-
-void EditorLayer::SyncSceneFromEditorState()
-{
-    Engine::TransformComponent cameraTransform;
-    cameraTransform.Position = { m_CameraPosition[0], m_CameraPosition[1], m_CameraPosition[2] };
-    cameraTransform.RotationDegrees = { m_CameraRotation[0], m_CameraRotation[1], m_CameraRotation[2] };
-    cameraTransform.Scale = { 1.0f, 1.0f, 1.0f };
-
-    Engine::CameraComponent camera;
-    camera.Primary = true;
-    camera.Projection = { m_CameraFovDegrees, m_CameraNearClip, m_CameraFarClip };
-
-    m_ActiveScene.SetMainCameraTransform(cameraTransform);
-    m_ActiveScene.SetMainCamera(camera);
-
-    if (Engine::TransformComponent* transform = m_ActiveScene.TryGetTransform(m_PrototypeMeshEntity))
-    {
-        transform->Position = { m_Position[0], m_Position[1], m_Position[2] };
-        transform->RotationDegrees = { m_Rotation[0], m_Rotation[1], m_Rotation[2] };
-        transform->Scale = { m_Scale[0], m_Scale[1], m_Scale[2] };
-    }
 }
 
 void EditorLayer::EnsureDefaultSceneEntities()
@@ -498,4 +639,7 @@ void EditorLayer::EnsureDefaultSceneEntities()
     m_PlayerStartEntity = m_ActiveScene.FindEntityByName("Player Start");
     if (!m_PlayerStartEntity)
         m_PlayerStartEntity = m_ActiveScene.CreateEntity("Player Start");
+
+    if (!m_SelectedEntity)
+        m_SelectedEntity = m_PrototypeMeshEntity;
 }

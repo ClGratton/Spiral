@@ -65,6 +65,7 @@ Immediate gap:
 - Scenes now expose a small entity/component authoring facade with scene-local entity IDs, names, transforms, optional cameras, and save/load coverage.
 - The editor scene hierarchy lists actual scene entities rather than hard-coded placeholder rows.
 - Scene entities now support transform, camera, light, and mesh renderer components, with the editor default scene authoring a directional light and prototype mesh renderer.
+- The scene hierarchy selection now drives the Inspector, and the Inspector edits live transform, camera, light, and mesh renderer component data.
 
 ## Phase 0: Buildable Spine
 
@@ -140,7 +141,7 @@ Required:
 - [x] Entity/component authoring facade.
 - [x] Transform, camera, light, mesh renderer components.
 - [x] Scene hierarchy bound to actual entities.
-- [ ] Inspector edits live component data.
+- [x] Inspector edits live component data.
 - [ ] Asset registry with stable handles.
 - [ ] File watching and reimport hooks.
 - [ ] glTF import prototype.

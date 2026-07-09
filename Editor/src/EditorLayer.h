@@ -26,12 +26,13 @@ private:
     void DrawSceneHierarchyPanel();
     void DrawInspectorPanel();
     void DrawRendererBackendSelector();
+    void ApplyEditorCameraStateToScene();
+    void SyncEditorCameraStateFromMainCamera();
     void DrawViewportPanel();
     void DrawConsolePanel();
     void DrawProfilerPanel();
     void DrawProjectPanel();
     bool SaveActiveScene();
-    void SyncSceneFromEditorState();
     void EnsureDefaultSceneEntities();
 
 private:
@@ -49,10 +50,8 @@ private:
     Engine::Entity m_PrototypeMeshEntity;
     Engine::Entity m_DirectionalLightEntity;
     Engine::Entity m_PlayerStartEntity;
+    Engine::Entity m_SelectedEntity;
     Engine::EditorCamera m_EditorCamera;
-    std::array<float, 3> m_Position = { 0.0f, 0.0f, 0.0f };
-    std::array<float, 3> m_Rotation = { 0.0f, 0.0f, 0.0f };
-    std::array<float, 3> m_Scale = { 1.0f, 1.0f, 1.0f };
     std::array<float, 3> m_CameraPosition = { 0.0f, 0.0f, -3.35f };
     std::array<float, 3> m_CameraRotation = { 0.0f, 0.0f, 0.0f };
     float m_CameraFovDegrees = 60.0f;
