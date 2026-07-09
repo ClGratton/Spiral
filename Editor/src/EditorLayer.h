@@ -30,6 +30,8 @@ private:
     void DrawConsolePanel();
     void DrawProfilerPanel();
     void DrawProjectPanel();
+    bool SaveActiveScene();
+    void SyncSceneFromEditorState();
 
 private:
     unsigned int m_FrameCounter = 0;
@@ -38,8 +40,11 @@ private:
     bool m_ResetDockLayout = true;
     bool m_CaptureViewportRequested = false;
     bool m_CaptureViewportComplete = false;
+    bool m_SaveSceneSmokeRequested = false;
     std::string m_CaptureViewportPath = "output/captures/editor-viewport.bmp";
+    std::string m_ScenePath = "output/scenes/sample.spiral";
     Engine::ClearColor m_ClearColor;
+    Engine::Scene m_ActiveScene { "Sample Scene" };
     Engine::EditorCamera m_EditorCamera;
     std::array<float, 3> m_Position = { 0.0f, 0.0f, 0.0f };
     std::array<float, 3> m_Rotation = { 0.0f, 0.0f, 0.0f };

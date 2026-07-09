@@ -61,6 +61,7 @@ Immediate gap:
 - Viewport capture readback now uses the RHI buffer API; texture copy commands and BMP writing remain in the D3D12 presentation layer.
 - The viewport prototype shader, graphics pipeline, root constant-buffer binding, vertex/index binding, and indexed draw now run through D3D12 RHI shader/pipeline/command-list APIs; render-target descriptor binding, texture copy commands, and BMP writing remain in the D3D12 presentation/viewport bridge.
 - The NVRHI Vulkan vendor backend compiles against the pinned Vulkan-Headers, but engine-owned Vulkan device, swapchain, presentation, and ImGui integration are not implemented yet.
+- The editor can serialize the active sample scene to a versioned `.spiral` scene file and reload-validate it through the same scene API.
 
 ## Phase 0: Buildable Spine
 
@@ -132,7 +133,7 @@ Goal: make the editor manipulate actual scene data and load simple assets.
 
 Required:
 
-- [ ] Scene serialization format.
+- [x] Scene serialization format.
 - [ ] Entity/component authoring facade.
 - [ ] Transform, camera, light, mesh renderer components.
 - [ ] Scene hierarchy bound to actual entities.

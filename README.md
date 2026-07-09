@@ -84,6 +84,14 @@ To produce a deterministic viewport capture from the native D3D12 editor path:
 
 The capture is written to `output/captures/editor-viewport.bmp`.
 
+To save and reload-validate the current sample scene in headless mode:
+
+```powershell
+.\bin\Debug-windows-x86_64\Editor\Editor.exe --headless --smoke-test --save-scene-smoke
+```
+
+The scene is written to `output/scenes/sample.spiral`.
+
 To run the automated Windows render smoke test, including build, capture, BMP validation, and non-blank pixel checks:
 
 ```powershell
@@ -117,6 +125,13 @@ After a Debug build on Windows, the generated executables are:
 ```text
 bin/Debug-windows-x86_64/Editor/Editor.exe
 bin/Debug-windows-x86_64/Sandbox/Sandbox.exe
+```
+
+After a Debug gmake/MinGW build on Windows, Premake appends the action name:
+
+```text
+bin/Debug-windows-x86_64-gmake/Editor/Editor.exe
+bin/Debug-windows-x86_64-gmake/Sandbox/Sandbox.exe
 ```
 
 The editor and sandbox open native windows by default and stay open until closed. The Visual Studio editor build contains the dockable UI, renderer backend selector, and native D3D12 viewport prototype mesh pass.

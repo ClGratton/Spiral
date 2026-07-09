@@ -3,6 +3,7 @@
 #include "Engine/Core/Timestep.h"
 #include "Engine/Scene/Components.h"
 
+#include <filesystem>
 #include <string>
 
 namespace Engine
@@ -16,6 +17,11 @@ namespace Engine
         const std::string& GetName() const { return m_Name; }
         const TransformComponent& GetMainCameraTransform() const { return m_MainCameraTransform; }
         const CameraComponent& GetMainCamera() const { return m_MainCamera; }
+        void SetMainCameraTransform(const TransformComponent& transform);
+        void SetMainCamera(const CameraComponent& camera);
+
+        bool SaveToFile(const std::filesystem::path& path) const;
+        static bool LoadFromFile(const std::filesystem::path& path, Scene& outScene);
 
     private:
         std::string m_Name;

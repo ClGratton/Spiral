@@ -3,6 +3,8 @@
 #include <imgui.h>
 #include <imgui_internal.h>
 
+#include <stdexcept>
+
 EditorLayer::EditorLayer()
     : Engine::Layer("EditorLayer")
 {
@@ -16,8 +18,14 @@ void EditorLayer::OnAttach()
     m_ConsoleLines.emplace_back("GLFW window backend active");
     m_ConsoleLines.emplace_back(std::string("Renderer backend: ") + Engine::Renderer::GetActiveBackendName());
     m_CaptureViewportRequested = Engine::Application::Get().GetSpecification().CommandLineArgs.HasFlag("--capture-viewport");
+    m_SaveSceneSmokeRequested = Engine::Application::Get().GetSpecification().CommandLineArgs.HasFlag("--save-scene-smoke");
     if (m_CaptureViewportRequested)
         m_ConsoleLines.emplace_back(std::string("Viewport capture requested: ") + m_CaptureViewportPath);
+    if (m_SaveSceneSmokeRequested)
+    {
+        if (!SaveActiveScene())
+            throw std::runtime_error("Scene save smoke failed");
+    }
 
     const Engine::RendererBuildInfo& buildInfo = Engine::Renderer::GetBuildInfo();
     if (Engine::Renderer::GetActiveBackend() == Engine::RendererBackend::NVRHID3D12)
@@ -128,7 +136,7 @@ void EditorLayer::DrawMainMenuBar()
         if (ImGui::MenuItem("Open Project"))
             m_ConsoleLines.emplace_back("Open Project workflow is not implemented yet");
         if (ImGui::MenuItem("Save Scene"))
-            m_ConsoleLines.emplace_back("Save Scene is not implemented yet");
+            SaveActiveScene();
         ImGui::Separator();
         if (ImGui::MenuItem("Exit"))
             Engine::Application::Get().Close();
@@ -193,7 +201,7 @@ void EditorLayer::BuildDefaultDockLayout(unsigned int dockspaceId, const ImVec2&
 void EditorLayer::DrawSceneHierarchyPanel()
 {
     ImGui::Begin("Scene Hierarchy");
-    ImGui::TextUnformatted("Sample Scene");
+    ImGui::TextUnformatted(m_ActiveScene.GetName().c_str());
     ImGui::Separator();
 
     if (ImGui::TreeNodeEx("World", ImGuiTreeNodeFlags_DefaultOpen))
@@ -414,4 +422,43 @@ void EditorLayer::DrawProjectPanel()
     ImGui::Separator();
     ImGui::TextDisabled("Automation graph not implemented yet");
     ImGui::End();
+}
+
+bool EditorLayer::SaveActiveScene()
+{
+    SyncSceneFromEditorState();
+
+    const bool saved = m_ActiveScene.SaveToFile(m_ScenePath);
+    if (saved)
+    {
+        Engine::Scene loadedScene;
+        const bool loaded = Engine::Scene::LoadFromFile(m_ScenePath, loadedScene);
+        if (loaded)
+            Engine::Log::Info("Scene saved and reload-validated: ", m_ScenePath);
+        else
+            Engine::Log::Error("Scene saved but reload validation failed: ", m_ScenePath);
+        m_ConsoleLines.emplace_back(loaded
+            ? std::string("Scene saved: ") + m_ScenePath
+            : std::string("Scene saved but reload validation failed: ") + m_ScenePath);
+        return loaded;
+    }
+
+    Engine::Log::Error("Scene save failed: ", m_ScenePath);
+    m_ConsoleLines.emplace_back(std::string("Scene save failed: ") + m_ScenePath);
+    return false;
+}
+
+void EditorLayer::SyncSceneFromEditorState()
+{
+    Engine::TransformComponent cameraTransform;
+    cameraTransform.Position = { m_CameraPosition[0], m_CameraPosition[1], m_CameraPosition[2] };
+    cameraTransform.RotationDegrees = { m_CameraRotation[0], m_CameraRotation[1], m_CameraRotation[2] };
+    cameraTransform.Scale = { 1.0f, 1.0f, 1.0f };
+
+    Engine::CameraComponent camera;
+    camera.Primary = true;
+    camera.Projection = { m_CameraFovDegrees, m_CameraNearClip, m_CameraFarClip };
+
+    m_ActiveScene.SetMainCameraTransform(cameraTransform);
+    m_ActiveScene.SetMainCamera(camera);
 }
