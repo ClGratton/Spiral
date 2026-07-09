@@ -7,15 +7,9 @@
 #include "Engine/Renderer/ShaderLibrary.h"
 
 #if defined(GE_HAS_NVRHI_D3D12)
-    #include <d3dcompiler.h>
-    #include <wrl/client.h>
-
     #include <array>
     #include <cstddef>
     #include <cstring>
-    #include <filesystem>
-    #include <limits>
-    #include <sstream>
     #include <string>
     #include <string_view>
 #endif
@@ -25,10 +19,6 @@ namespace Engine
 #if defined(GE_HAS_NVRHI_D3D12)
     namespace
     {
-        using Microsoft::WRL::ComPtr;
-
-        constexpr DXGI_FORMAT kColorFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
-        constexpr DXGI_FORMAT kDepthFormat = DXGI_FORMAT_D32_FLOAT;
         constexpr u32 kViewportConstantBufferSize = 256;
         constexpr std::string_view kViewportShaderPath = "Engine/Shaders/EditorViewport.hlsl";
 
@@ -79,13 +69,6 @@ namespace Engine
             20, 21, 22, 20, 22, 23,
         };
 
-        std::string HResultToString(HRESULT result)
-        {
-            std::ostringstream stream;
-            stream << "0x" << std::hex << std::uppercase << static_cast<unsigned long>(result);
-            return stream.str();
-        }
-
         D3D12_RESOURCE_BARRIER TransitionBarrier(ID3D12Resource* resource, D3D12_RESOURCE_STATES before, D3D12_RESOURCE_STATES after)
         {
             D3D12_RESOURCE_BARRIER barrier {};
@@ -126,10 +109,11 @@ namespace Engine
             m_ConstantBufferResource = nullptr;
             m_IndexBufferResource = nullptr;
             m_VertexBufferResource = nullptr;
+            m_Pipeline.reset();
+            m_PipelineState = nullptr;
+            m_RootSignature = nullptr;
             m_PixelShader.reset();
             m_VertexShader.reset();
-            m_PipelineState.Reset();
-            m_RootSignature.Reset();
             m_VertexBufferView = {};
             m_IndexBufferView = {};
             m_IndexCount = 0;
@@ -184,8 +168,8 @@ namespace Engine
                 scissor.right = static_cast<LONG>(width);
                 scissor.bottom = static_cast<LONG>(height);
 
-                commandList->SetGraphicsRootSignature(m_RootSignature.Get());
-                commandList->SetPipelineState(m_PipelineState.Get());
+                commandList->SetGraphicsRootSignature(m_RootSignature);
+                commandList->SetPipelineState(m_PipelineState);
                 commandList->SetGraphicsRootConstantBufferView(0, m_ConstantBufferResource->GetGPUVirtualAddress());
                 commandList->RSSetViewports(1, &viewport);
                 commandList->RSSetScissorRects(1, &scissor);
@@ -203,45 +187,6 @@ namespace Engine
 
         bool CreatePipeline()
         {
-            D3D12_ROOT_PARAMETER rootParameter {};
-            rootParameter.ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
-            rootParameter.Descriptor.ShaderRegister = 0;
-            rootParameter.Descriptor.RegisterSpace = 0;
-            rootParameter.ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
-
-            D3D12_ROOT_SIGNATURE_DESC rootSignatureDesc {};
-            rootSignatureDesc.NumParameters = 1;
-            rootSignatureDesc.pParameters = &rootParameter;
-            rootSignatureDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT
-                | D3D12_ROOT_SIGNATURE_FLAG_DENY_HULL_SHADER_ROOT_ACCESS
-                | D3D12_ROOT_SIGNATURE_FLAG_DENY_DOMAIN_SHADER_ROOT_ACCESS
-                | D3D12_ROOT_SIGNATURE_FLAG_DENY_GEOMETRY_SHADER_ROOT_ACCESS;
-
-            ComPtr<ID3DBlob> signatureBlob;
-            ComPtr<ID3DBlob> signatureErrors;
-            HRESULT result = D3D12SerializeRootSignature(&rootSignatureDesc, D3D_ROOT_SIGNATURE_VERSION_1, &signatureBlob, &signatureErrors);
-            if (FAILED(result))
-            {
-                if (signatureErrors)
-                    Log::Error("Could not serialize viewport root signature: ", static_cast<const char*>(signatureErrors->GetBufferPointer()));
-                else
-                    Log::Error("Could not serialize viewport root signature: ", HResultToString(result));
-                return false;
-            }
-
-            result = m_Device->CreateRootSignature(
-                0,
-                signatureBlob->GetBufferPointer(),
-                signatureBlob->GetBufferSize(),
-                IID_PPV_ARGS(&m_RootSignature));
-            if (FAILED(result))
-            {
-                Log::Error("Could not create viewport root signature: ", HResultToString(result));
-                return false;
-            }
-
-            m_RootSignature->SetName(L"Editor Viewport Root Signature");
-
             m_ShaderSource = ShaderLibrary::LoadSource(kViewportShaderPath, "Editor Viewport");
             if (m_ShaderSource.Status != ShaderSourceStatus::Loaded)
             {
@@ -249,71 +194,48 @@ namespace Engine
                 return false;
             }
 
-            D3D12_SHADER_BYTECODE vertexShader {};
-            D3D12_SHADER_BYTECODE pixelShader {};
-            if (!CreateRhiShader(RHI::ShaderStage::Vertex, "VSMain", "Editor Viewport Vertex Shader", m_VertexShader, vertexShader))
+            if (!CreateRhiShader(RHI::ShaderStage::Vertex, "VSMain", "Editor Viewport Vertex Shader", m_VertexShader))
                 return false;
-            if (!CreateRhiShader(RHI::ShaderStage::Pixel, "PSMain", "Editor Viewport Pixel Shader", m_PixelShader, pixelShader))
+            if (!CreateRhiShader(RHI::ShaderStage::Pixel, "PSMain", "Editor Viewport Pixel Shader", m_PixelShader))
                 return false;
 
             Log::Info("Loaded viewport shader: ", m_ShaderSource.ResolvedPath.string(), " (revision ", m_ShaderSource.Revision, ")");
 
-            D3D12_RENDER_TARGET_BLEND_DESC renderTargetBlend {};
-            renderTargetBlend.BlendEnable = FALSE;
-            renderTargetBlend.LogicOpEnable = FALSE;
-            renderTargetBlend.SrcBlend = D3D12_BLEND_ONE;
-            renderTargetBlend.DestBlend = D3D12_BLEND_ZERO;
-            renderTargetBlend.BlendOp = D3D12_BLEND_OP_ADD;
-            renderTargetBlend.SrcBlendAlpha = D3D12_BLEND_ONE;
-            renderTargetBlend.DestBlendAlpha = D3D12_BLEND_ZERO;
-            renderTargetBlend.BlendOpAlpha = D3D12_BLEND_OP_ADD;
-            renderTargetBlend.LogicOp = D3D12_LOGIC_OP_NOOP;
-            renderTargetBlend.RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
-
-            D3D12_INPUT_ELEMENT_DESC inputElements[] = {
-                { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, offsetof(ViewportVertex, Position), D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-                { "COLOR", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, offsetof(ViewportVertex, Color), D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 }
+            RHI::PipelineDescription pipelineDesc;
+            pipelineDesc.DebugName = "Editor Viewport Prototype Mesh Pipeline";
+            pipelineDesc.Type = RHI::PipelineType::Graphics;
+            pipelineDesc.VertexShader = m_VertexShader.get();
+            pipelineDesc.PixelShader = m_PixelShader.get();
+            pipelineDesc.VertexInputs = {
+                { "POSITION", 0, RHI::Format::R32G32B32Float, 0, offsetof(ViewportVertex, Position) },
+                { "COLOR", 0, RHI::Format::R32G32B32Float, 0, offsetof(ViewportVertex, Color) }
             };
+            pipelineDesc.ConstantBufferBindings = {
+                { 0, 0, RHI::ShaderStage::Vertex }
+            };
+            pipelineDesc.Topology = RHI::PrimitiveTopology::TriangleList;
+            pipelineDesc.RasterCullMode = RHI::CullMode::None;
+            pipelineDesc.ColorFormat = RHI::Format::R8G8B8A8Unorm;
+            pipelineDesc.DepthFormat = RHI::Format::D32Float;
+            pipelineDesc.DepthTestEnable = true;
+            pipelineDesc.DepthWriteEnable = true;
 
-            D3D12_GRAPHICS_PIPELINE_STATE_DESC pipelineDesc {};
-            pipelineDesc.pRootSignature = m_RootSignature.Get();
-            pipelineDesc.VS = vertexShader;
-            pipelineDesc.PS = pixelShader;
-            pipelineDesc.BlendState.AlphaToCoverageEnable = FALSE;
-            pipelineDesc.BlendState.IndependentBlendEnable = FALSE;
-            pipelineDesc.BlendState.RenderTarget[0] = renderTargetBlend;
-            pipelineDesc.SampleMask = std::numeric_limits<unsigned int>::max();
-            pipelineDesc.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
-            pipelineDesc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
-            pipelineDesc.RasterizerState.FrontCounterClockwise = FALSE;
-            pipelineDesc.RasterizerState.DepthBias = D3D12_DEFAULT_DEPTH_BIAS;
-            pipelineDesc.RasterizerState.DepthBiasClamp = D3D12_DEFAULT_DEPTH_BIAS_CLAMP;
-            pipelineDesc.RasterizerState.SlopeScaledDepthBias = D3D12_DEFAULT_SLOPE_SCALED_DEPTH_BIAS;
-            pipelineDesc.RasterizerState.DepthClipEnable = TRUE;
-            pipelineDesc.RasterizerState.MultisampleEnable = FALSE;
-            pipelineDesc.RasterizerState.AntialiasedLineEnable = FALSE;
-            pipelineDesc.RasterizerState.ForcedSampleCount = 0;
-            pipelineDesc.RasterizerState.ConservativeRaster = D3D12_CONSERVATIVE_RASTERIZATION_MODE_OFF;
-            pipelineDesc.DepthStencilState.DepthEnable = TRUE;
-            pipelineDesc.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
-            pipelineDesc.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_LESS_EQUAL;
-            pipelineDesc.DepthStencilState.StencilEnable = FALSE;
-            pipelineDesc.InputLayout = { inputElements, static_cast<UINT>(sizeof(inputElements) / sizeof(inputElements[0])) };
-            pipelineDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
-            pipelineDesc.NumRenderTargets = 1;
-            pipelineDesc.RTVFormats[0] = kColorFormat;
-            pipelineDesc.DSVFormat = kDepthFormat;
-            pipelineDesc.SampleDesc.Count = 1;
-            pipelineDesc.SampleDesc.Quality = 0;
+            m_Pipeline = m_RHIDevice->CreatePipeline(pipelineDesc);
+            if (!m_Pipeline)
+                return false;
 
-            result = m_Device->CreateGraphicsPipelineState(&pipelineDesc, IID_PPV_ARGS(&m_PipelineState));
-            if (FAILED(result))
+            const RHI::NVRHID3D12PipelineNativeHandles handles = RHI::GetNVRHID3D12PipelineNativeHandles(*m_Pipeline);
+            m_RootSignature = static_cast<ID3D12RootSignature*>(handles.RootSignature);
+            m_PipelineState = static_cast<ID3D12PipelineState*>(handles.PipelineState);
+            if (!m_RootSignature || !m_PipelineState)
             {
-                Log::Error("Could not create viewport graphics pipeline: ", HResultToString(result));
+                Log::Error("RHI pipeline did not expose D3D12 native handles: ", pipelineDesc.DebugName);
+                m_Pipeline.reset();
+                m_RootSignature = nullptr;
+                m_PipelineState = nullptr;
                 return false;
             }
 
-            m_PipelineState->SetName(L"Editor Viewport Prototype Mesh Pipeline");
             return true;
         }
 
@@ -321,8 +243,7 @@ namespace Engine
             RHI::ShaderStage stage,
             const char* entryPoint,
             const char* debugName,
-            Scope<RHI::Shader>& shader,
-            D3D12_SHADER_BYTECODE& bytecode)
+            Scope<RHI::Shader>& shader)
         {
             RHI::ShaderDescription description;
             description.DebugName = debugName;
@@ -344,7 +265,6 @@ namespace Engine
                 return false;
             }
 
-            bytecode = { handles.Bytecode, static_cast<SIZE_T>(handles.BytecodeSize) };
             return true;
         }
 
@@ -466,8 +386,9 @@ namespace Engine
 
         ID3D12Device* m_Device = nullptr;
         RHI::Device* m_RHIDevice = nullptr;
-        ComPtr<ID3D12RootSignature> m_RootSignature;
-        ComPtr<ID3D12PipelineState> m_PipelineState;
+        Scope<RHI::Pipeline> m_Pipeline;
+        ID3D12RootSignature* m_RootSignature = nullptr;
+        ID3D12PipelineState* m_PipelineState = nullptr;
         Scope<RHI::Shader> m_VertexShader;
         Scope<RHI::Shader> m_PixelShader;
         Scope<RHI::Buffer> m_VertexBuffer;

@@ -25,8 +25,10 @@
     #endif
 
     #include <iomanip>
+    #include <limits>
     #include <sstream>
     #include <string>
+    #include <vector>
 #endif
 
 namespace Engine::RHI
@@ -67,6 +69,9 @@ namespace Engine::RHI
                 case Format::R8G8B8A8UnormSrgb: return DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
                 case Format::R11G11B10Float: return DXGI_FORMAT_R11G11B10_FLOAT;
                 case Format::R16G16B16A16Float: return DXGI_FORMAT_R16G16B16A16_FLOAT;
+                case Format::R32G32Float: return DXGI_FORMAT_R32G32_FLOAT;
+                case Format::R32G32B32Float: return DXGI_FORMAT_R32G32B32_FLOAT;
+                case Format::R32G32B32A32Float: return DXGI_FORMAT_R32G32B32A32_FLOAT;
                 case Format::R32Uint: return DXGI_FORMAT_R32_UINT;
                 case Format::D24UnormS8Uint: return DXGI_FORMAT_D24_UNORM_S8_UINT;
                 case Format::D32Float: return DXGI_FORMAT_D32_FLOAT;
@@ -86,6 +91,51 @@ namespace Engine::RHI
                 flags |= D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
 
             return flags;
+        }
+
+        D3D12_SHADER_VISIBILITY ConvertShaderVisibility(ShaderStage stage)
+        {
+            switch (stage)
+            {
+                case ShaderStage::Vertex: return D3D12_SHADER_VISIBILITY_VERTEX;
+                case ShaderStage::Pixel: return D3D12_SHADER_VISIBILITY_PIXEL;
+                case ShaderStage::AllGraphics:
+                case ShaderStage::All: return D3D12_SHADER_VISIBILITY_ALL;
+                default: return D3D12_SHADER_VISIBILITY_ALL;
+            }
+        }
+
+        D3D12_CULL_MODE ConvertCullMode(CullMode cullMode)
+        {
+            switch (cullMode)
+            {
+                case CullMode::None: return D3D12_CULL_MODE_NONE;
+                case CullMode::Front: return D3D12_CULL_MODE_FRONT;
+                case CullMode::Back: return D3D12_CULL_MODE_BACK;
+            }
+
+            return D3D12_CULL_MODE_BACK;
+        }
+
+        D3D12_PRIMITIVE_TOPOLOGY_TYPE ConvertPrimitiveTopologyType(PrimitiveTopology topology)
+        {
+            switch (topology)
+            {
+                case PrimitiveTopology::TriangleList: return D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+            }
+
+            return D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+        }
+
+        D3D12_INPUT_CLASSIFICATION ConvertVertexInputRate(VertexInputRate rate)
+        {
+            switch (rate)
+            {
+                case VertexInputRate::PerVertex: return D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA;
+                case VertexInputRate::PerInstance: return D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA;
+            }
+
+            return D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA;
         }
 
         const char* DefaultTargetProfile(ShaderStage stage)
@@ -462,6 +512,188 @@ namespace Engine::RHI
             ComPtr<ID3DBlob> m_Bytecode;
         };
 
+        class NVRHID3D12Pipeline final : public Pipeline
+        {
+        public:
+            explicit NVRHID3D12Pipeline(PipelineDescription description)
+                : m_Description(std::move(description))
+            {
+            }
+
+            bool Initialize(ID3D12Device* device)
+            {
+                if (!device || m_Description.Type != PipelineType::Graphics || !m_Description.VertexShader || !m_Description.PixelShader)
+                    return false;
+
+                if (!CreateRootSignature(device))
+                    return false;
+
+                return CreateGraphicsPipelineState(device);
+            }
+
+            const PipelineDescription& GetDescription() const override
+            {
+                return m_Description;
+            }
+
+            ID3D12RootSignature* GetRootSignature() const
+            {
+                return m_RootSignature.Get();
+            }
+
+            ID3D12PipelineState* GetPipelineState() const
+            {
+                return m_PipelineState.Get();
+            }
+
+        private:
+            bool CreateRootSignature(ID3D12Device* device)
+            {
+                std::vector<D3D12_ROOT_PARAMETER> rootParameters;
+                rootParameters.reserve(m_Description.ConstantBufferBindings.size());
+                for (const RootConstantBufferBinding& binding : m_Description.ConstantBufferBindings)
+                {
+                    D3D12_ROOT_PARAMETER rootParameter {};
+                    rootParameter.ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+                    rootParameter.Descriptor.ShaderRegister = binding.ShaderRegister;
+                    rootParameter.Descriptor.RegisterSpace = binding.RegisterSpace;
+                    rootParameter.ShaderVisibility = ConvertShaderVisibility(binding.Visibility);
+                    rootParameters.push_back(rootParameter);
+                }
+
+                D3D12_ROOT_SIGNATURE_DESC rootSignatureDesc {};
+                rootSignatureDesc.NumParameters = static_cast<UINT>(rootParameters.size());
+                rootSignatureDesc.pParameters = rootParameters.empty() ? nullptr : rootParameters.data();
+                rootSignatureDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT
+                    | D3D12_ROOT_SIGNATURE_FLAG_DENY_HULL_SHADER_ROOT_ACCESS
+                    | D3D12_ROOT_SIGNATURE_FLAG_DENY_DOMAIN_SHADER_ROOT_ACCESS
+                    | D3D12_ROOT_SIGNATURE_FLAG_DENY_GEOMETRY_SHADER_ROOT_ACCESS;
+
+                ComPtr<ID3DBlob> signatureBlob;
+                ComPtr<ID3DBlob> signatureErrors;
+                const HRESULT serializeResult = D3D12SerializeRootSignature(&rootSignatureDesc, D3D_ROOT_SIGNATURE_VERSION_1, &signatureBlob, &signatureErrors);
+                if (FAILED(serializeResult))
+                {
+                    if (signatureErrors)
+                        Log::Error("Could not serialize D3D12 RHI root signature '", m_Description.DebugName, "': ", static_cast<const char*>(signatureErrors->GetBufferPointer()));
+                    else
+                        Log::Error("Could not serialize D3D12 RHI root signature '", m_Description.DebugName, "': ", HResultToString(serializeResult));
+                    return false;
+                }
+
+                const HRESULT createResult = device->CreateRootSignature(
+                    0,
+                    signatureBlob->GetBufferPointer(),
+                    signatureBlob->GetBufferSize(),
+                    IID_PPV_ARGS(&m_RootSignature));
+                if (FAILED(createResult))
+                {
+                    Log::Error("Could not create D3D12 RHI root signature '", m_Description.DebugName, "': ", HResultToString(createResult));
+                    return false;
+                }
+
+                const std::wstring name = Utf8ToWide(m_Description.DebugName + " Root Signature");
+                if (!name.empty())
+                    m_RootSignature->SetName(name.c_str());
+
+                return true;
+            }
+
+            bool CreateGraphicsPipelineState(ID3D12Device* device)
+            {
+                const NVRHID3D12ShaderNativeHandles vertexShader = GetNVRHID3D12ShaderNativeHandles(*m_Description.VertexShader);
+                const NVRHID3D12ShaderNativeHandles pixelShader = GetNVRHID3D12ShaderNativeHandles(*m_Description.PixelShader);
+                if (!vertexShader.Bytecode || vertexShader.BytecodeSize == 0 || !pixelShader.Bytecode || pixelShader.BytecodeSize == 0)
+                {
+                    Log::Error("Could not create D3D12 RHI pipeline '", m_Description.DebugName, "': shader bytecode is missing");
+                    return false;
+                }
+
+                std::vector<D3D12_INPUT_ELEMENT_DESC> inputElements;
+                inputElements.reserve(m_Description.VertexInputs.size());
+                for (const VertexInputAttribute& input : m_Description.VertexInputs)
+                {
+                    const DXGI_FORMAT format = ConvertFormat(input.AttributeFormat);
+                    if (format == DXGI_FORMAT_UNKNOWN)
+                    {
+                        Log::Error("Could not create D3D12 RHI pipeline '", m_Description.DebugName, "': unsupported vertex input format");
+                        return false;
+                    }
+
+                    D3D12_INPUT_ELEMENT_DESC inputElement {};
+                    inputElement.SemanticName = input.SemanticName.c_str();
+                    inputElement.SemanticIndex = input.SemanticIndex;
+                    inputElement.Format = format;
+                    inputElement.InputSlot = input.InputSlot;
+                    inputElement.AlignedByteOffset = input.OffsetBytes;
+                    inputElement.InputSlotClass = ConvertVertexInputRate(input.InputRate);
+                    inputElement.InstanceDataStepRate = input.InstanceStepRate;
+                    inputElements.push_back(inputElement);
+                }
+
+                D3D12_RENDER_TARGET_BLEND_DESC renderTargetBlend {};
+                renderTargetBlend.BlendEnable = FALSE;
+                renderTargetBlend.LogicOpEnable = FALSE;
+                renderTargetBlend.SrcBlend = D3D12_BLEND_ONE;
+                renderTargetBlend.DestBlend = D3D12_BLEND_ZERO;
+                renderTargetBlend.BlendOp = D3D12_BLEND_OP_ADD;
+                renderTargetBlend.SrcBlendAlpha = D3D12_BLEND_ONE;
+                renderTargetBlend.DestBlendAlpha = D3D12_BLEND_ZERO;
+                renderTargetBlend.BlendOpAlpha = D3D12_BLEND_OP_ADD;
+                renderTargetBlend.LogicOp = D3D12_LOGIC_OP_NOOP;
+                renderTargetBlend.RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+
+                D3D12_GRAPHICS_PIPELINE_STATE_DESC pipelineDesc {};
+                pipelineDesc.pRootSignature = m_RootSignature.Get();
+                pipelineDesc.VS = { vertexShader.Bytecode, static_cast<SIZE_T>(vertexShader.BytecodeSize) };
+                pipelineDesc.PS = { pixelShader.Bytecode, static_cast<SIZE_T>(pixelShader.BytecodeSize) };
+                pipelineDesc.BlendState.AlphaToCoverageEnable = FALSE;
+                pipelineDesc.BlendState.IndependentBlendEnable = FALSE;
+                pipelineDesc.BlendState.RenderTarget[0] = renderTargetBlend;
+                pipelineDesc.SampleMask = std::numeric_limits<unsigned int>::max();
+                pipelineDesc.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+                pipelineDesc.RasterizerState.CullMode = ConvertCullMode(m_Description.RasterCullMode);
+                pipelineDesc.RasterizerState.FrontCounterClockwise = FALSE;
+                pipelineDesc.RasterizerState.DepthBias = D3D12_DEFAULT_DEPTH_BIAS;
+                pipelineDesc.RasterizerState.DepthBiasClamp = D3D12_DEFAULT_DEPTH_BIAS_CLAMP;
+                pipelineDesc.RasterizerState.SlopeScaledDepthBias = D3D12_DEFAULT_SLOPE_SCALED_DEPTH_BIAS;
+                pipelineDesc.RasterizerState.DepthClipEnable = TRUE;
+                pipelineDesc.RasterizerState.MultisampleEnable = FALSE;
+                pipelineDesc.RasterizerState.AntialiasedLineEnable = FALSE;
+                pipelineDesc.RasterizerState.ForcedSampleCount = 0;
+                pipelineDesc.RasterizerState.ConservativeRaster = D3D12_CONSERVATIVE_RASTERIZATION_MODE_OFF;
+                pipelineDesc.DepthStencilState.DepthEnable = m_Description.DepthTestEnable ? TRUE : FALSE;
+                pipelineDesc.DepthStencilState.DepthWriteMask = m_Description.DepthWriteEnable ? D3D12_DEPTH_WRITE_MASK_ALL : D3D12_DEPTH_WRITE_MASK_ZERO;
+                pipelineDesc.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_LESS_EQUAL;
+                pipelineDesc.DepthStencilState.StencilEnable = FALSE;
+                pipelineDesc.InputLayout = { inputElements.empty() ? nullptr : inputElements.data(), static_cast<UINT>(inputElements.size()) };
+                pipelineDesc.PrimitiveTopologyType = ConvertPrimitiveTopologyType(m_Description.Topology);
+                pipelineDesc.NumRenderTargets = 1;
+                pipelineDesc.RTVFormats[0] = ConvertFormat(m_Description.ColorFormat);
+                pipelineDesc.DSVFormat = ConvertFormat(m_Description.DepthFormat);
+                pipelineDesc.SampleDesc.Count = 1;
+                pipelineDesc.SampleDesc.Quality = 0;
+
+                const HRESULT result = device->CreateGraphicsPipelineState(&pipelineDesc, IID_PPV_ARGS(&m_PipelineState));
+                if (FAILED(result))
+                {
+                    Log::Error("Could not create D3D12 RHI graphics pipeline '", m_Description.DebugName, "': ", HResultToString(result));
+                    return false;
+                }
+
+                const std::wstring name = Utf8ToWide(m_Description.DebugName);
+                if (!name.empty())
+                    m_PipelineState->SetName(name.c_str());
+
+                return true;
+            }
+
+        private:
+            PipelineDescription m_Description;
+            ComPtr<ID3D12RootSignature> m_RootSignature;
+            ComPtr<ID3D12PipelineState> m_PipelineState;
+        };
+
         class NVRHIQueryPoolStub final : public QueryPool
         {
         public:
@@ -564,9 +796,11 @@ namespace Engine::RHI
 
             Scope<Pipeline> CreatePipeline(const PipelineDescription& description) override
             {
-                (void)description;
-                Log::Warn("NVRHI D3D12 pipeline creation is not implemented yet");
-                return nullptr;
+                Scope<NVRHID3D12Pipeline> pipeline = CreateScope<NVRHID3D12Pipeline>(description);
+                if (!pipeline->Initialize(m_Device.Get()))
+                    return nullptr;
+
+                return pipeline;
             }
 
             Scope<QueryPool> CreateQueryPool(const QueryPoolDescription& description) override
@@ -867,6 +1101,23 @@ namespace Engine::RHI
         return handles;
 #else
         (void)shader;
+        return {};
+#endif
+    }
+
+    NVRHID3D12PipelineNativeHandles GetNVRHID3D12PipelineNativeHandles(Pipeline& pipeline)
+    {
+#if defined(GE_HAS_NVRHI_D3D12)
+        auto* nativePipeline = dynamic_cast<NVRHID3D12Pipeline*>(&pipeline);
+        if (!nativePipeline)
+            return {};
+
+        NVRHID3D12PipelineNativeHandles handles;
+        handles.RootSignature = nativePipeline->GetRootSignature();
+        handles.PipelineState = nativePipeline->GetPipelineState();
+        return handles;
+#else
+        (void)pipeline;
         return {};
 #endif
     }
