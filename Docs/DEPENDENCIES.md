@@ -11,6 +11,7 @@ This file records third-party dependencies, why they exist, how they enter the r
 - Do not add a dependency without a license entry.
 - Do not let temporary bootstrap dependencies define the final architecture.
 - Keep backend-specific APIs behind engine interfaces.
+- When changing current dependency versions, update `.github/dependency-graph/vendor-dependencies.json` so GitHub's dependency graph snapshot stays aligned with this ledger.
 
 ## Current Dependencies
 
@@ -22,6 +23,22 @@ This file records third-party dependencies, why they exist, how they enter the r
 | NVRHI | `Vendor/NVRHI` | Renderer abstraction vendor layer. Common, validation, Windows/MSVC D3D12, and Vulkan backend sources are built by Premake and used through `Engine::RHI`. | MIT, see `Vendor/NVRHI/LICENSE.txt`. | NVRHI types stay out of gameplay/editor APIs. D3D12/Vulkan details remain behind `Engine::RHI`. |
 | Vulkan-Headers | `Vendor/Vulkan-Headers` | Platform headers for the NVRHI Vulkan backend. | Apache-2.0 OR MIT, see `Vendor/Vulkan-Headers/LICENSE.md`. | Pinned from NVRHI's expected tag. Enables vendor Vulkan backend compilation; engine Vulkan device/swapchain creation is still pending. |
 | DirectX-Headers | `Vendor/DirectX-Headers` | Platform headers for the NVRHI D3D12 backend. | MIT, see `Vendor/DirectX-Headers/LICENSE`. | Pinned from NVRHI's expected tag. D3D12 sources are enabled only for Windows/MSVC; MinGW builds keep the NVRHI common fallback. |
+
+## GitHub Dependency Graph And SBOM
+
+GitHub's dependency graph is driven by supported package manifests, lockfiles, and dependency submissions. Premake files, vendored C++ source trees, and this prose ledger are not enough for GitHub to infer dependencies by themselves.
+
+The repo keeps two records in sync:
+
+- `Docs/DEPENDENCIES.md` is the human-readable policy, license, and architecture ledger.
+- `.github/dependency-graph/vendor-dependencies.json` is the machine-readable list used by `Scripts/GenerateDependencySnapshot.py`.
+
+`.github/workflows/dependency-submission.yml` submits that snapshot to GitHub's Dependency Submission API on pushes to `main` and on manual dispatch. This should make the vendored/tool dependencies visible in GitHub's dependency graph and SBOM export. It does not replace the license audit, and Dependabot alert coverage still depends on whether GitHub has advisories for the submitted package ecosystem/package URL.
+
+Reference docs:
+
+- <https://docs.github.com/en/code-security/reference/supply-chain-security/dependency-graph-supported-package-ecosystems>
+- <https://docs.github.com/en/code-security/how-tos/secure-your-supply-chain/secure-your-dependencies/use-dependency-submission-api>
 
 ## Planned Dependencies
 

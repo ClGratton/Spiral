@@ -38,7 +38,9 @@ namespace Engine
         AssetHandle RegisterAsset(AssetType type, std::string sourcePath, std::string name = {});
         bool RegisterAsset(const AssetMetadata& metadata);
         bool Contains(AssetHandle handle) const;
+        AssetMetadata* GetAsset(AssetHandle handle);
         const AssetMetadata* GetAsset(AssetHandle handle) const;
+        bool SetAssetName(AssetHandle handle, std::string name);
         AssetHandle FindAssetByPath(AssetType type, std::string_view sourcePath) const;
         const std::vector<AssetMetadata>& GetAssets() const { return m_Assets; }
         void Clear();

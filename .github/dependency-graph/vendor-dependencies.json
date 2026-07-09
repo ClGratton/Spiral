@@ -1,0 +1,62 @@
+{
+  "version": 1,
+  "detector": {
+    "name": "Spiral vendored dependency ledger",
+    "version": "1",
+    "url": "https://github.com/ClGratton/Spiral/blob/main/Docs/DEPENDENCIES.md"
+  },
+  "manifest": {
+    "name": "Vendored dependencies",
+    "source_location": "Docs/DEPENDENCIES.md"
+  },
+  "dependencies": [
+    {
+      "name": "Premake",
+      "package_url": "pkg:github/premake/premake-core@v5.0.0-beta8",
+      "relationship": "direct",
+      "scope": "development",
+      "source_location": "Vendor/premake/bin",
+      "license": "BSD-3-Clause"
+    },
+    {
+      "name": "GLFW",
+      "package_url": "pkg:github/glfw/glfw@3.4",
+      "relationship": "direct",
+      "scope": "runtime",
+      "source_location": "Vendor/GLFW",
+      "license": "Zlib"
+    },
+    {
+      "name": "Dear ImGui",
+      "package_url": "pkg:github/ocornut/imgui@docking",
+      "relationship": "direct",
+      "scope": "runtime",
+      "source_location": "Vendor/ImGui",
+      "license": "MIT"
+    },
+    {
+      "name": "NVRHI",
+      "package_url": "pkg:github/NVIDIA-RTX/NVRHI@8e8c36e37558acec333204619b95d9d2fcdc4a79",
+      "relationship": "direct",
+      "scope": "runtime",
+      "source_location": "Vendor/NVRHI",
+      "license": "MIT"
+    },
+    {
+      "name": "Vulkan-Headers",
+      "package_url": "pkg:github/KhronosGroup/Vulkan-Headers@v1.4.352",
+      "relationship": "direct",
+      "scope": "runtime",
+      "source_location": "Vendor/Vulkan-Headers",
+      "license": "Apache-2.0 OR MIT"
+    },
+    {
+      "name": "DirectX-Headers",
+      "package_url": "pkg:github/microsoft/DirectX-Headers@v1.717.0-preview",
+      "relationship": "direct",
+      "scope": "runtime",
+      "source_location": "Vendor/DirectX-Headers",
+      "license": "MIT"
+    }
+  ]
+}

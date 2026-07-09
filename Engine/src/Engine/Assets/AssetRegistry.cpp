@@ -137,6 +137,16 @@ namespace Engine
         return GetAsset(handle) != nullptr;
     }
 
+    AssetMetadata* AssetRegistry::GetAsset(AssetHandle handle)
+    {
+        const auto it = std::find_if(m_Assets.begin(), m_Assets.end(), [handle](const AssetMetadata& metadata)
+        {
+            return metadata.Handle == handle;
+        });
+
+        return it == m_Assets.end() ? nullptr : &(*it);
+    }
+
     const AssetMetadata* AssetRegistry::GetAsset(AssetHandle handle) const
     {
         const auto it = std::find_if(m_Assets.begin(), m_Assets.end(), [handle](const AssetMetadata& metadata)
@@ -145,6 +155,16 @@ namespace Engine
         });
 
         return it == m_Assets.end() ? nullptr : &(*it);
+    }
+
+    bool AssetRegistry::SetAssetName(AssetHandle handle, std::string name)
+    {
+        AssetMetadata* metadata = GetAsset(handle);
+        if (!metadata)
+            return false;
+
+        metadata->Name = std::move(name);
+        return true;
     }
 
     AssetHandle AssetRegistry::FindAssetByPath(AssetType type, std::string_view sourcePath) const

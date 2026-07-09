@@ -39,6 +39,14 @@ namespace
         handle = value;
         return true;
     }
+
+    std::string GetMeshDisplayName(const Engine::MeshRendererComponent& meshRenderer, const Engine::AssetRegistry& assetRegistry)
+    {
+        if (const Engine::AssetMetadata* meshAsset = assetRegistry.GetAsset(meshRenderer.MeshAsset))
+            return meshAsset->Name;
+
+        return meshRenderer.MeshName;
+    }
 }
 
 EditorLayer::EditorLayer()
@@ -355,10 +363,17 @@ void EditorLayer::DrawInspectorPanel()
         ImGui::PushID("MeshRendererComponent");
         ImGui::TextUnformatted("Mesh Renderer Component");
         Engine::MeshRendererComponent& meshRenderer = *selectedEntity->MeshRenderer;
+        if (const Engine::AssetMetadata* meshAsset = m_AssetRegistry.GetAsset(meshRenderer.MeshAsset))
+            meshRenderer.MeshName = meshAsset->Name;
+
         char meshName[128] = {};
-        std::snprintf(meshName, sizeof(meshName), "%s", meshRenderer.MeshName.c_str());
+        const std::string meshDisplayName = GetMeshDisplayName(meshRenderer, m_AssetRegistry);
+        std::snprintf(meshName, sizeof(meshName), "%s", meshDisplayName.c_str());
         if (ImGui::InputText("Mesh Name", meshName, sizeof(meshName)))
+        {
             meshRenderer.MeshName = meshName;
+            m_AssetRegistry.SetAssetName(meshRenderer.MeshAsset, meshName);
+        }
         DrawAssetHandleControl("Mesh Asset", meshRenderer.MeshAsset);
         DrawAssetHandleControl("Material Asset", meshRenderer.MaterialAsset);
         ImGui::Checkbox("Visible", &meshRenderer.Visible);

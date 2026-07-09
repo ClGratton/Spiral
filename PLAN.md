@@ -67,6 +67,7 @@ Immediate gap:
 - Scene entities now support transform, camera, light, and mesh renderer components, with the editor default scene authoring a directional light and prototype mesh renderer.
 - The scene hierarchy selection now drives the Inspector, and the Inspector edits live transform, camera, light, and mesh renderer component data.
 - The asset registry creates stable path/type-based handles, saves and reload-validates a manifest, and assigns registered sample mesh/material handles into the editor scene.
+- GitHub dependency submission now reports vendored/tool dependencies from the dependency ledger so the repo dependency graph can show them.
 
 ## Phase 0: Buildable Spine
 
@@ -85,6 +86,7 @@ Required:
 - [x] CI workflow scaffold for Windows, Linux, and macOS.
 - [x] First hosted CI run after GitHub remote exists.
 - [x] Dependency/license ledger for GLFW, ImGui, Premake, and future vendors.
+- [x] GitHub dependency graph submission for vendored/tool dependencies.
 - [x] Basic crash/error reporting path.
 - [x] Coding standards checked by script.
 
