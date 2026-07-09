@@ -70,11 +70,11 @@ or:
 - `Vendor/premake`: auto-bootstrapped Premake tool location.
 - `Vendor/GLFW`: vendored cross-platform window/input library built from source by Premake.
 - `Vendor/ImGui`: vendored Dear ImGui docking UI built from source by Premake.
-- `Vendor/NVRHI`: vendored NVRHI common core and validation library built from source by Premake.
-- `Vendor/Vulkan-Headers` and `Vendor/DirectX-Headers`: pinned platform headers for the upcoming NVRHI backend work.
+- `Vendor/NVRHI`: vendored NVRHI common core, validation layer, Vulkan backend, and Windows/MSVC D3D12 backend built from source by Premake.
+- `Vendor/Vulkan-Headers` and `Vendor/DirectX-Headers`: pinned platform headers for NVRHI backend builds.
 - `Engine/Shaders`: engine-owned shader assets loaded by renderer code during development.
 
-The current renderer initializes through an NVRHI backend boundary. On Windows/MSVC it creates a native NVRHI D3D12 device, DXGI swapchain, renderer-owned viewport texture, ImGui DX12 presentation path, and a first native D3D12 indexed prototype mesh pass using a disk-backed HLSL shader asset. The `gmake`/MinGW path currently keeps the common NVRHI probe and OpenGL2 ImGui fallback until the Vulkan backend lands.
+The current renderer initializes through an NVRHI backend boundary. On Windows/MSVC it creates a native NVRHI D3D12 device, DXGI swapchain, renderer-owned viewport texture, ImGui DX12 presentation path, and a first native D3D12 indexed prototype mesh pass using a disk-backed HLSL shader asset. The NVRHI Vulkan vendor backend now compiles against the pinned Vulkan-Headers, but the `gmake`/MinGW path still uses the common NVRHI probe and OpenGL2 ImGui fallback until the engine-owned Vulkan device, swapchain, and presentation path is implemented.
 
 To produce a deterministic viewport capture from the native D3D12 editor path:
 
@@ -96,7 +96,7 @@ CI is scaffolded in `.github/workflows/ci.yml`. The Windows job runs the D3D12 r
 
 The current code slice is OS-neutral C++20 plus GLFW for native windows/input. It is structured to build on Windows, Linux, and macOS from the same Premake workspace.
 
-Current limitation: the viewport mesh is still a bootstrap test pass, not an actual scene draw through the full `Engine::RHI` render graph. The next major platform step is moving shader compilation, resource creation, and drawing into the RHI/render-graph path, then adding the Vulkan backend.
+Current limitation: the viewport mesh is still a bootstrap test pass, not an actual scene draw through the full `Engine::RHI` render graph. The next major platform step is moving drawing/command recording into the RHI/render-graph path, then adding engine-owned Vulkan device and presentation code on top of the compiled vendor backend.
 
 ## Architecture
 

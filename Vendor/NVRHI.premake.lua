@@ -35,12 +35,52 @@ project "NVRHI"
 
     defines
     {
-        "_CRT_SECURE_NO_WARNINGS"
+        "_CRT_SECURE_NO_WARNINGS",
+        "NVRHI_WITH_AFTERMATH=0"
     }
+
+    if has_vulkan_headers then
+        includedirs
+        {
+            "%{wks.location}/Vendor/Vulkan-Headers/include"
+        }
+
+        defines
+        {
+            "GE_HAS_NVRHI_VULKAN=1"
+        }
+
+        files
+        {
+            "%{wks.location}/Vendor/NVRHI/include/nvrhi/vulkan.h",
+            "%{wks.location}/Vendor/NVRHI/src/common/versioning.h",
+            "%{wks.location}/Vendor/NVRHI/src/vulkan/vulkan-allocator.cpp",
+            "%{wks.location}/Vendor/NVRHI/src/vulkan/vulkan-buffer.cpp",
+            "%{wks.location}/Vendor/NVRHI/src/vulkan/vulkan-commandlist.cpp",
+            "%{wks.location}/Vendor/NVRHI/src/vulkan/vulkan-compute.cpp",
+            "%{wks.location}/Vendor/NVRHI/src/vulkan/vulkan-constants.cpp",
+            "%{wks.location}/Vendor/NVRHI/src/vulkan/vulkan-device.cpp",
+            "%{wks.location}/Vendor/NVRHI/src/vulkan/vulkan-graphics.cpp",
+            "%{wks.location}/Vendor/NVRHI/src/vulkan/vulkan-meshlets.cpp",
+            "%{wks.location}/Vendor/NVRHI/src/vulkan/vulkan-queries.cpp",
+            "%{wks.location}/Vendor/NVRHI/src/vulkan/vulkan-queue.cpp",
+            "%{wks.location}/Vendor/NVRHI/src/vulkan/vulkan-raytracing.cpp",
+            "%{wks.location}/Vendor/NVRHI/src/vulkan/vulkan-resource-bindings.cpp",
+            "%{wks.location}/Vendor/NVRHI/src/vulkan/vulkan-shader.cpp",
+            "%{wks.location}/Vendor/NVRHI/src/vulkan/vulkan-staging-texture.cpp",
+            "%{wks.location}/Vendor/NVRHI/src/vulkan/vulkan-state-tracking.cpp",
+            "%{wks.location}/Vendor/NVRHI/src/vulkan/vulkan-texture.cpp",
+            "%{wks.location}/Vendor/NVRHI/src/vulkan/vulkan-upload.cpp",
+            "%{wks.location}/Vendor/NVRHI/src/vulkan/vulkan-backend.h"
+        }
+    end
 
     filter "system:windows"
         systemversion "latest"
         defines { "GE_PLATFORM_WINDOWS" }
+        if has_vulkan_headers then
+            defines { "VK_USE_PLATFORM_WIN32_KHR", "NOMINMAX" }
+        end
 
     filter { "system:windows", "action:vs*" }
         buildoptions { "/Zc:preprocessor" }
@@ -58,8 +98,7 @@ project "NVRHI"
             {
                 "GE_HAS_NVRHI_D3D12=1",
                 "NVRHI_D3D12_WITH_DXR12_OPACITY_MICROMAP=0",
-                "NVRHI_D3D12_WITH_NVAPI=0",
-                "NVRHI_WITH_AFTERMATH=0"
+                "NVRHI_D3D12_WITH_NVAPI=0"
             }
 
             files

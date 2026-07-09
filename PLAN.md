@@ -37,6 +37,7 @@ Already present:
 - Dependency/license ledger and pinned NVRHI fetch script.
 - Vendored NVRHI common, validation, and MSVC-gated D3D12 backend sources linked through Premake.
 - Vendored Vulkan-Headers and DirectX-Headers pinned to the versions expected by the chosen NVRHI commit.
+- NVRHI Vulkan backend sources are enabled in the vendor build when the pinned Vulkan headers are present.
 
 Immediate gap:
 
@@ -47,7 +48,7 @@ Immediate gap:
 - `Scripts/TestRender.ps1` validates the D3D12 viewport capture as a non-blank BMP render smoke test.
 - GitHub Actions CI workflow is live for Windows D3D12 render smoke plus Linux/macOS portable headless smoke builds.
 - D3D12 device creation falls back to WARP when no hardware adapter accepts the minimum feature level, mainly for CI and diagnostics.
-- GMake/MinGW keeps the OpenGL2 ImGui fallback and NVRHI common probe path until a portable Vulkan editor path is added.
+- GMake/MinGW keeps the OpenGL2 ImGui fallback and NVRHI common probe path until a portable Vulkan editor path is added, even though the NVRHI Vulkan vendor backend now compiles.
 - Crash/error reports are written to `output/crashes` for caught top-level exceptions, fatal signals, and Windows unhandled exceptions.
 - Code style is checked by `Scripts/CheckCodeStyle.ps1` / `.sh` and a GitHub Actions style job.
 - Render graph pass/resource declarations now compile into resource lifetime and barrier data.
@@ -59,6 +60,7 @@ Immediate gap:
 - The D3D12 viewport color and depth targets are allocated through the RHI texture API, with D3D12 descriptors still created by the presentation layer.
 - Viewport capture readback now uses the RHI buffer API; texture copy commands and BMP writing remain in the D3D12 presentation layer.
 - The viewport prototype shader and graphics pipeline now create through the D3D12 RHI shader/pipeline APIs; command recording, root binding, descriptor creation, texture copy commands, and BMP writing remain in the D3D12 presentation/viewport bridge.
+- The NVRHI Vulkan vendor backend compiles against the pinned Vulkan-Headers, but engine-owned Vulkan device, swapchain, presentation, and ImGui integration are not implemented yet.
 
 ## Phase 0: Buildable Spine
 
@@ -108,7 +110,7 @@ Required:
 - [x] NVRHI D3D12 backend project enabled for Windows/MSVC.
 - [x] NVRHI D3D12 native device, graphics/compute/copy queues, validation layer, and capability probe.
 - [x] ImGui DX12 backend and `GLFW_NO_API` window path for the Windows/MSVC editor.
-- [ ] NVRHI Vulkan backend project enabled.
+- [x] NVRHI Vulkan backend project enabled.
 - [ ] Real RHI triangle/mesh draw pass.
 - [x] Camera component and editor camera.
 - [x] Basic shader pipeline and shader hot reload stub.

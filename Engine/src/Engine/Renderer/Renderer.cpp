@@ -74,6 +74,15 @@ namespace Engine
 #endif
         }
 
+        constexpr bool HasNVRHIVulkan()
+        {
+#if defined(GE_HAS_NVRHI_VULKAN)
+            return true;
+#else
+            return false;
+#endif
+        }
+
         constexpr bool IsWindows()
         {
 #if defined(GE_PLATFORM_WINDOWS)
@@ -152,6 +161,7 @@ namespace Engine
             s_BuildInfo.HasNVRHI = HasNVRHI();
             s_BuildInfo.HasDirectXHeaders = HasDirectXHeaders();
             s_BuildInfo.HasNVRHID3D12 = HasNVRHID3D12();
+            s_BuildInfo.HasNVRHIVulkan = HasNVRHIVulkan();
             s_BuildInfo.HasVulkanHeaders = HasVulkanHeaders();
             s_BuildInfo.NativeViewportHint = HasNVRHID3D12()
                 ? "D3D12 viewport code is compiled into this executable."
@@ -192,7 +202,9 @@ namespace Engine
                 RendererBackend::NVRHIVulkan,
                 RHI::Backend::NVRHIVulkan,
                 "NVRHI Vulkan",
-                HasVulkanHeaders() ? "Vulkan headers are pinned; Vulkan device/swapchain backend is not implemented yet." : "Vulkan-Headers are not vendored.",
+                HasNVRHIVulkan()
+                    ? "NVRHI Vulkan vendor backend is compiled; engine device/swapchain creation is not implemented yet."
+                    : (HasVulkanHeaders() ? "Vulkan headers are pinned, but the NVRHI Vulkan backend is not compiled into this executable." : "Vulkan-Headers are not vendored."),
                 false,
                 s_ActiveBackend == RendererBackend::NVRHIVulkan
             });

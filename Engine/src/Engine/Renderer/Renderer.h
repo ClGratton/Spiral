@@ -56,6 +56,7 @@ namespace Engine
         bool HasNVRHI = false;
         bool HasDirectXHeaders = false;
         bool HasNVRHID3D12 = false;
+        bool HasNVRHIVulkan = false;
         bool HasVulkanHeaders = false;
         const char* NativeViewportHint = "";
     };

@@ -39,6 +39,10 @@ project "Engine"
         defines { "GE_HAS_VULKAN_HEADERS=1" }
     end
 
+    if has_nvrhi and has_vulkan_headers then
+        defines { "GE_HAS_NVRHI_VULKAN=1" }
+    end
+
     if has_directx_headers then
         includedirs
         {
