@@ -33,6 +33,7 @@ private:
     void DrawProfilerPanel();
     void DrawProjectPanel();
     bool SaveActiveScene();
+    bool SaveAssetRegistry();
     void EnsureDefaultSceneEntities();
 
 private:
@@ -45,7 +46,9 @@ private:
     bool m_SaveSceneSmokeRequested = false;
     std::string m_CaptureViewportPath = "output/captures/editor-viewport.bmp";
     std::string m_ScenePath = "output/scenes/sample.spiral";
+    std::string m_AssetRegistryPath = "output/assets/sample.assets";
     Engine::ClearColor m_ClearColor;
+    Engine::AssetRegistry m_AssetRegistry;
     Engine::Scene m_ActiveScene { "Sample Scene" };
     Engine::Entity m_PrototypeMeshEntity;
     Engine::Entity m_DirectionalLightEntity;

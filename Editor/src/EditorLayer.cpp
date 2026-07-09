@@ -175,6 +175,8 @@ void EditorLayer::DrawMainMenuBar()
             m_ConsoleLines.emplace_back("Open Project workflow is not implemented yet");
         if (ImGui::MenuItem("Save Scene"))
             SaveActiveScene();
+        if (ImGui::MenuItem("Save Asset Registry"))
+            SaveAssetRegistry();
         ImGui::Separator();
         if (ImGui::MenuItem("Exit"))
             Engine::Application::Get().Close();
@@ -587,19 +589,46 @@ void EditorLayer::DrawProfilerPanel()
 void EditorLayer::DrawProjectPanel()
 {
     ImGui::Begin("Project");
-    ImGui::TextUnformatted("Guided workflows");
+    ImGui::TextUnformatted("Assets");
     ImGui::Separator();
-    ImGui::BulletText("First playable");
-    ImGui::BulletText("Visual style");
-    ImGui::BulletText("Asset import");
-    ImGui::BulletText("Performance validation");
+    if (m_AssetRegistry.GetAssets().empty())
+    {
+        ImGui::TextDisabled("No registered assets");
+    }
+    else if (ImGui::BeginTable("RegisteredAssets", 2, ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_RowBg))
+    {
+        ImGui::TableSetupColumn("Name");
+        ImGui::TableSetupColumn("Type");
+        ImGui::TableHeadersRow();
+
+        for (const Engine::AssetMetadata& metadata : m_AssetRegistry.GetAssets())
+        {
+            ImGui::TableNextRow();
+            ImGui::TableSetColumnIndex(0);
+            ImGui::TextUnformatted(metadata.Name.c_str());
+            ImGui::TableSetColumnIndex(1);
+            ImGui::TextUnformatted(Engine::ToString(metadata.Type));
+            if (ImGui::IsItemHovered())
+            {
+                ImGui::SetTooltip(
+                    "Handle: %llu\nSource: %s",
+                    static_cast<unsigned long long>(metadata.Handle),
+                    metadata.SourcePath.c_str());
+            }
+        }
+
+        ImGui::EndTable();
+    }
     ImGui::Separator();
-    ImGui::TextDisabled("Automation graph not implemented yet");
+    ImGui::TextDisabled("File watching and import workflows are next");
     ImGui::End();
 }
 
 bool EditorLayer::SaveActiveScene()
 {
+    if (!SaveAssetRegistry())
+        return false;
+
     const bool saved = m_ActiveScene.SaveToFile(m_ScenePath);
     if (saved)
     {
@@ -620,16 +649,56 @@ bool EditorLayer::SaveActiveScene()
     return false;
 }
 
+bool EditorLayer::SaveAssetRegistry()
+{
+    const bool saved = m_AssetRegistry.SaveToFile(m_AssetRegistryPath);
+    if (saved)
+    {
+        Engine::AssetRegistry loadedRegistry;
+        const bool loaded = loadedRegistry.LoadFromFile(m_AssetRegistryPath);
+        if (loaded)
+            Engine::Log::Info("Asset registry saved and reload-validated: ", m_AssetRegistryPath);
+        else
+            Engine::Log::Error("Asset registry saved but reload validation failed: ", m_AssetRegistryPath);
+        m_ConsoleLines.emplace_back(loaded
+            ? std::string("Asset registry saved: ") + m_AssetRegistryPath
+            : std::string("Asset registry saved but reload validation failed: ") + m_AssetRegistryPath);
+        return loaded;
+    }
+
+    Engine::Log::Error("Asset registry save failed: ", m_AssetRegistryPath);
+    m_ConsoleLines.emplace_back(std::string("Asset registry save failed: ") + m_AssetRegistryPath);
+    return false;
+}
+
 void EditorLayer::EnsureDefaultSceneEntities()
 {
+    const Engine::AssetHandle prototypeMeshAsset = m_AssetRegistry.RegisterAsset(
+        Engine::AssetType::Mesh,
+        "Engine/Generated/PrototypeCube.mesh",
+        "Prototype Cube");
+    const Engine::AssetHandle prototypeMaterialAsset = m_AssetRegistry.RegisterAsset(
+        Engine::AssetType::Material,
+        "Engine/Generated/PrototypeDefault.material",
+        "Prototype Default");
+
     m_PrototypeMeshEntity = m_ActiveScene.FindEntityByName("Prototype Mesh");
     if (!m_PrototypeMeshEntity)
         m_PrototypeMeshEntity = m_ActiveScene.CreateEntity("Prototype Mesh");
-    if (!m_ActiveScene.TryGetMeshRendererComponent(m_PrototypeMeshEntity))
+    if (Engine::MeshRendererComponent* meshRenderer = m_ActiveScene.TryGetMeshRendererComponent(m_PrototypeMeshEntity))
     {
-        Engine::MeshRendererComponent meshRenderer;
-        meshRenderer.MeshName = "Prototype Cube";
-        m_ActiveScene.AddMeshRendererComponent(m_PrototypeMeshEntity, meshRenderer);
+        meshRenderer->MeshAsset = prototypeMeshAsset;
+        meshRenderer->MaterialAsset = prototypeMaterialAsset;
+        if (meshRenderer->MeshName.empty())
+            meshRenderer->MeshName = "Prototype Cube";
+    }
+    else
+    {
+        Engine::MeshRendererComponent defaultMeshRenderer;
+        defaultMeshRenderer.MeshAsset = prototypeMeshAsset;
+        defaultMeshRenderer.MaterialAsset = prototypeMaterialAsset;
+        defaultMeshRenderer.MeshName = "Prototype Cube";
+        m_ActiveScene.AddMeshRendererComponent(m_PrototypeMeshEntity, defaultMeshRenderer);
     }
 
     m_DirectionalLightEntity = m_ActiveScene.FindEntityByName("Directional Light");
