@@ -127,6 +127,16 @@ namespace Engine::RHI
             return D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
         }
 
+        D3D_PRIMITIVE_TOPOLOGY ConvertPrimitiveTopology(PrimitiveTopology topology)
+        {
+            switch (topology)
+            {
+                case PrimitiveTopology::TriangleList: return D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
+            }
+
+            return D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
+        }
+
         D3D12_INPUT_CLASSIFICATION ConvertVertexInputRate(VertexInputRate rate)
         {
             switch (rate)
@@ -136,6 +146,17 @@ namespace Engine::RHI
             }
 
             return D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA;
+        }
+
+        DXGI_FORMAT ConvertIndexFormat(IndexFormat format)
+        {
+            switch (format)
+            {
+                case IndexFormat::Uint16: return DXGI_FORMAT_R16_UINT;
+                case IndexFormat::Uint32: return DXGI_FORMAT_R32_UINT;
+            }
+
+            return DXGI_FORMAT_R16_UINT;
         }
 
         const char* DefaultTargetProfile(ShaderStage stage)
@@ -694,6 +715,170 @@ namespace Engine::RHI
             ComPtr<ID3D12PipelineState> m_PipelineState;
         };
 
+        class NVRHID3D12CommandList final : public CommandList
+        {
+        public:
+            NVRHID3D12CommandList(QueueType queueType, ID3D12GraphicsCommandList* commandList, std::string debugName)
+                : m_QueueType(queueType)
+                , m_CommandList(commandList)
+                , m_DebugName(std::move(debugName))
+            {
+            }
+
+            QueueType GetQueueType() const override
+            {
+                return m_QueueType;
+            }
+
+            void Begin() override
+            {
+            }
+
+            void End() override
+            {
+            }
+
+            void BeginDebugMarker(std::string_view name) override
+            {
+                (void)name;
+            }
+
+            void EndDebugMarker() override
+            {
+            }
+
+            void SetGraphicsPipeline(Pipeline& pipeline) override
+            {
+                if (!m_CommandList)
+                    return;
+
+                auto* nativePipeline = dynamic_cast<NVRHID3D12Pipeline*>(&pipeline);
+                if (!nativePipeline || !nativePipeline->GetRootSignature() || !nativePipeline->GetPipelineState())
+                {
+                    Log::Error("D3D12 RHI command list could not bind graphics pipeline: ", m_DebugName);
+                    return;
+                }
+
+                m_CommandList->SetGraphicsRootSignature(nativePipeline->GetRootSignature());
+                m_CommandList->SetPipelineState(nativePipeline->GetPipelineState());
+                m_CommandList->IASetPrimitiveTopology(ConvertPrimitiveTopology(pipeline.GetDescription().Topology));
+            }
+
+            void SetGraphicsConstantBuffer(u32 rootParameterIndex, Buffer& buffer) override
+            {
+                if (!m_CommandList)
+                    return;
+
+                ID3D12Resource* resource = GetD3D12Resource(buffer);
+                if (!resource)
+                    return;
+
+                m_CommandList->SetGraphicsRootConstantBufferView(rootParameterIndex, resource->GetGPUVirtualAddress());
+            }
+
+            void SetViewport(const Viewport& viewport) override
+            {
+                if (!m_CommandList)
+                    return;
+
+                D3D12_VIEWPORT d3dViewport {};
+                d3dViewport.TopLeftX = viewport.X;
+                d3dViewport.TopLeftY = viewport.Y;
+                d3dViewport.Width = viewport.Width;
+                d3dViewport.Height = viewport.Height;
+                d3dViewport.MinDepth = viewport.MinDepth;
+                d3dViewport.MaxDepth = viewport.MaxDepth;
+                m_CommandList->RSSetViewports(1, &d3dViewport);
+            }
+
+            void SetScissorRect(const ScissorRect& rect) override
+            {
+                if (!m_CommandList)
+                    return;
+
+                D3D12_RECT d3dRect {};
+                d3dRect.left = static_cast<LONG>(rect.Left);
+                d3dRect.top = static_cast<LONG>(rect.Top);
+                d3dRect.right = static_cast<LONG>(rect.Right);
+                d3dRect.bottom = static_cast<LONG>(rect.Bottom);
+                m_CommandList->RSSetScissorRects(1, &d3dRect);
+            }
+
+            void SetVertexBuffer(u32 slot, Buffer& buffer) override
+            {
+                if (!m_CommandList)
+                    return;
+
+                ID3D12Resource* resource = GetD3D12Resource(buffer);
+                if (!resource)
+                    return;
+
+                const BufferDescription& description = buffer.GetDescription();
+                D3D12_VERTEX_BUFFER_VIEW view {};
+                view.BufferLocation = resource->GetGPUVirtualAddress();
+                view.SizeInBytes = static_cast<UINT>(description.SizeBytes);
+                view.StrideInBytes = description.StrideBytes;
+                m_CommandList->IASetVertexBuffers(slot, 1, &view);
+            }
+
+            void SetIndexBuffer(Buffer& buffer, IndexFormat format) override
+            {
+                if (!m_CommandList)
+                    return;
+
+                ID3D12Resource* resource = GetD3D12Resource(buffer);
+                if (!resource)
+                    return;
+
+                const BufferDescription& description = buffer.GetDescription();
+                D3D12_INDEX_BUFFER_VIEW view {};
+                view.BufferLocation = resource->GetGPUVirtualAddress();
+                view.SizeInBytes = static_cast<UINT>(description.SizeBytes);
+                view.Format = ConvertIndexFormat(format);
+                m_CommandList->IASetIndexBuffer(&view);
+            }
+
+            void DrawIndexed(u32 indexCount, u32 instanceCount, u32 startIndex, int baseVertex, u32 startInstance) override
+            {
+                if (m_CommandList)
+                    m_CommandList->DrawIndexedInstanced(indexCount, instanceCount, startIndex, baseVertex, startInstance);
+            }
+
+            void ResetQueryPool(QueryPool& queryPool, u32 firstQuery, u32 queryCount) override
+            {
+                (void)queryPool;
+                (void)firstQuery;
+                (void)queryCount;
+            }
+
+            void WriteTimestamp(QueryPool& queryPool, u32 queryIndex) override
+            {
+                (void)queryPool;
+                (void)queryIndex;
+            }
+
+            void ResolveQueryPool(QueryPool& queryPool, u32 firstQuery, u32 queryCount) override
+            {
+                (void)queryPool;
+                (void)firstQuery;
+                (void)queryCount;
+            }
+
+        private:
+            ID3D12Resource* GetD3D12Resource(Buffer& buffer) const
+            {
+                const NVRHID3D12BufferNativeHandles handles = GetNVRHID3D12BufferNativeHandles(buffer);
+                ID3D12Resource* resource = static_cast<ID3D12Resource*>(handles.Resource);
+                if (!resource)
+                    Log::Error("D3D12 RHI command list could not bind buffer: ", buffer.GetDescription().DebugName);
+                return resource;
+            }
+
+            QueueType m_QueueType = QueueType::Graphics;
+            ID3D12GraphicsCommandList* m_CommandList = nullptr;
+            std::string m_DebugName;
+        };
+
         class NVRHIQueryPoolStub final : public QueryPool
         {
         public:
@@ -1105,20 +1290,19 @@ namespace Engine::RHI
 #endif
     }
 
-    NVRHID3D12PipelineNativeHandles GetNVRHID3D12PipelineNativeHandles(Pipeline& pipeline)
+    Scope<CommandList> WrapNVRHID3D12CommandList(QueueType queueType, void* nativeCommandList, std::string_view debugName)
     {
 #if defined(GE_HAS_NVRHI_D3D12)
-        auto* nativePipeline = dynamic_cast<NVRHID3D12Pipeline*>(&pipeline);
-        if (!nativePipeline)
-            return {};
+        auto* d3dCommandList = static_cast<ID3D12GraphicsCommandList*>(nativeCommandList);
+        if (!d3dCommandList)
+            return nullptr;
 
-        NVRHID3D12PipelineNativeHandles handles;
-        handles.RootSignature = nativePipeline->GetRootSignature();
-        handles.PipelineState = nativePipeline->GetPipelineState();
-        return handles;
+        return CreateScope<NVRHID3D12CommandList>(queueType, d3dCommandList, std::string(debugName));
 #else
-        (void)pipeline;
-        return {};
+        (void)queueType;
+        (void)nativeCommandList;
+        (void)debugName;
+        return nullptr;
 #endif
     }
 }

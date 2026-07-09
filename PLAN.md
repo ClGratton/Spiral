@@ -56,10 +56,10 @@ Immediate gap:
 - Shader source loading and hot-reload detection are centralized through `ShaderLibrary`.
 - GPU timestamp query contracts and renderer timing snapshots are stubbed; the D3D12 query heap resolve path is still pending.
 - The first D3D12 viewport pass has resource debug names and capture markers for frame, viewport, ImGui, and capture readback scopes.
-- The D3D12 viewport prototype mesh creates vertex, index, and constant buffers through the RHI buffer API; command recording and pipeline binding are still D3D12-specific.
+- The D3D12 viewport prototype mesh creates vertex, index, and constant buffers through the RHI buffer API and records its indexed draw through the D3D12 RHI command-list bridge.
 - The D3D12 viewport color and depth targets are allocated through the RHI texture API, with D3D12 descriptors still created by the presentation layer.
 - Viewport capture readback now uses the RHI buffer API; texture copy commands and BMP writing remain in the D3D12 presentation layer.
-- The viewport prototype shader and graphics pipeline now create through the D3D12 RHI shader/pipeline APIs; command recording, root binding, descriptor creation, texture copy commands, and BMP writing remain in the D3D12 presentation/viewport bridge.
+- The viewport prototype shader, graphics pipeline, root constant-buffer binding, vertex/index binding, and indexed draw now run through D3D12 RHI shader/pipeline/command-list APIs; render-target descriptor binding, texture copy commands, and BMP writing remain in the D3D12 presentation/viewport bridge.
 - The NVRHI Vulkan vendor backend compiles against the pinned Vulkan-Headers, but engine-owned Vulkan device, swapchain, presentation, and ImGui integration are not implemented yet.
 
 ## Phase 0: Buildable Spine
@@ -111,7 +111,7 @@ Required:
 - [x] NVRHI D3D12 native device, graphics/compute/copy queues, validation layer, and capability probe.
 - [x] ImGui DX12 backend and `GLFW_NO_API` window path for the Windows/MSVC editor.
 - [x] NVRHI Vulkan backend project enabled.
-- [ ] Real RHI triangle/mesh draw pass.
+- [x] Real RHI triangle/mesh draw pass.
 - [x] Camera component and editor camera.
 - [x] Basic shader pipeline and shader hot reload stub.
 - [x] Render graph skeleton: pass declaration, resource lifetimes, barriers as data even if backend is simple.

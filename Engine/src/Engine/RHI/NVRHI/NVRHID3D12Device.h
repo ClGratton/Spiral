@@ -32,15 +32,9 @@ namespace Engine::RHI
         u64 BytecodeSize = 0;
     };
 
-    struct NVRHID3D12PipelineNativeHandles
-    {
-        void* RootSignature = nullptr;
-        void* PipelineState = nullptr;
-    };
-
     Scope<Device> CreateNVRHID3D12Device(DeviceDescription description, NVRHIAdapterInfo& adapterInfo, NVRHID3D12NativeHandles* nativeHandles = nullptr);
     NVRHID3D12BufferNativeHandles GetNVRHID3D12BufferNativeHandles(Buffer& buffer);
     NVRHID3D12TextureNativeHandles GetNVRHID3D12TextureNativeHandles(Texture& texture);
     NVRHID3D12ShaderNativeHandles GetNVRHID3D12ShaderNativeHandles(Shader& shader);
-    NVRHID3D12PipelineNativeHandles GetNVRHID3D12PipelineNativeHandles(Pipeline& pipeline);
+    Scope<CommandList> WrapNVRHID3D12CommandList(QueueType queueType, void* nativeCommandList, std::string_view debugName);
 }

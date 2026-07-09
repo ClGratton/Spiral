@@ -106,16 +106,9 @@ namespace Engine
             m_ConstantBuffer.reset();
             m_IndexBuffer.reset();
             m_VertexBuffer.reset();
-            m_ConstantBufferResource = nullptr;
-            m_IndexBufferResource = nullptr;
-            m_VertexBufferResource = nullptr;
             m_Pipeline.reset();
-            m_PipelineState = nullptr;
-            m_RootSignature = nullptr;
             m_PixelShader.reset();
             m_VertexShader.reset();
-            m_VertexBufferView = {};
-            m_IndexBufferView = {};
             m_IndexCount = 0;
             m_RHIDevice = nullptr;
             m_Device = nullptr;
@@ -149,34 +142,25 @@ namespace Engine
             commandList->ClearRenderTargetView(colorRtv, clear, 0, nullptr);
             commandList->ClearDepthStencilView(depthDsv, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
 
-            if (m_PipelineState && m_RootSignature && m_ConstantBufferResource && m_VertexBufferResource && m_IndexBufferResource)
+            if (m_Pipeline && m_ConstantBuffer && m_VertexBuffer && m_IndexBuffer)
             {
                 PollShaderHotReload();
                 UpdateConstants(width, height);
 
-                D3D12_VIEWPORT viewport {};
-                viewport.TopLeftX = 0.0f;
-                viewport.TopLeftY = 0.0f;
-                viewport.Width = static_cast<float>(width);
-                viewport.Height = static_cast<float>(height);
-                viewport.MinDepth = 0.0f;
-                viewport.MaxDepth = 1.0f;
+                Scope<RHI::CommandList> rhiCommandList = RHI::WrapNVRHID3D12CommandList(
+                    RHI::QueueType::Graphics,
+                    commandList,
+                    "Editor Viewport Prototype Mesh Command Bridge");
+                if (!rhiCommandList)
+                    return false;
 
-                D3D12_RECT scissor {};
-                scissor.left = 0;
-                scissor.top = 0;
-                scissor.right = static_cast<LONG>(width);
-                scissor.bottom = static_cast<LONG>(height);
-
-                commandList->SetGraphicsRootSignature(m_RootSignature);
-                commandList->SetPipelineState(m_PipelineState);
-                commandList->SetGraphicsRootConstantBufferView(0, m_ConstantBufferResource->GetGPUVirtualAddress());
-                commandList->RSSetViewports(1, &viewport);
-                commandList->RSSetScissorRects(1, &scissor);
-                commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-                commandList->IASetVertexBuffers(0, 1, &m_VertexBufferView);
-                commandList->IASetIndexBuffer(&m_IndexBufferView);
-                commandList->DrawIndexedInstanced(m_IndexCount, 1, 0, 0, 0);
+                rhiCommandList->SetGraphicsPipeline(*m_Pipeline);
+                rhiCommandList->SetGraphicsConstantBuffer(0, *m_ConstantBuffer);
+                rhiCommandList->SetViewport({ 0.0f, 0.0f, static_cast<float>(width), static_cast<float>(height), 0.0f, 1.0f });
+                rhiCommandList->SetScissorRect({ 0, 0, static_cast<int>(width), static_cast<int>(height) });
+                rhiCommandList->SetVertexBuffer(0, *m_VertexBuffer);
+                rhiCommandList->SetIndexBuffer(*m_IndexBuffer, RHI::IndexFormat::Uint16);
+                rhiCommandList->DrawIndexed(m_IndexCount, 1, 0, 0, 0);
             }
 
             D3D12_RESOURCE_BARRIER toShaderResource = TransitionBarrier(colorTexture, colorState, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
@@ -224,18 +208,6 @@ namespace Engine
             if (!m_Pipeline)
                 return false;
 
-            const RHI::NVRHID3D12PipelineNativeHandles handles = RHI::GetNVRHID3D12PipelineNativeHandles(*m_Pipeline);
-            m_RootSignature = static_cast<ID3D12RootSignature*>(handles.RootSignature);
-            m_PipelineState = static_cast<ID3D12PipelineState*>(handles.PipelineState);
-            if (!m_RootSignature || !m_PipelineState)
-            {
-                Log::Error("RHI pipeline did not expose D3D12 native handles: ", pipelineDesc.DebugName);
-                m_Pipeline.reset();
-                m_RootSignature = nullptr;
-                m_PipelineState = nullptr;
-                return false;
-            }
-
             return true;
         }
 
@@ -268,7 +240,7 @@ namespace Engine
             return true;
         }
 
-        bool CreateRhiBuffer(const RHI::BufferDescription& description, Scope<RHI::Buffer>& buffer, ID3D12Resource*& resource)
+        bool CreateRhiBuffer(const RHI::BufferDescription& description, Scope<RHI::Buffer>& buffer)
         {
             if (!m_RHIDevice)
                 return false;
@@ -278,8 +250,7 @@ namespace Engine
                 return false;
 
             const RHI::NVRHID3D12BufferNativeHandles handles = RHI::GetNVRHID3D12BufferNativeHandles(*buffer);
-            resource = static_cast<ID3D12Resource*>(handles.Resource);
-            if (!resource)
+            if (!handles.Resource)
             {
                 Log::Error("RHI buffer did not expose a D3D12 resource: ", description.DebugName);
                 buffer.reset();
@@ -312,15 +283,11 @@ namespace Engine
             vertexBufferDesc.StrideBytes = sizeof(ViewportVertex);
             vertexBufferDesc.Usage = RHI::BufferUsage::Vertex;
             vertexBufferDesc.CpuAccess = RHI::BufferCpuAccess::Write;
-            if (!CreateRhiBuffer(vertexBufferDesc, m_VertexBuffer, m_VertexBufferResource))
+            if (!CreateRhiBuffer(vertexBufferDesc, m_VertexBuffer))
                 return false;
 
             if (!WriteBuffer(*m_VertexBuffer, kPrototypeMeshVertices.data(), vertexBufferSize))
                 return false;
-
-            m_VertexBufferView.BufferLocation = m_VertexBufferResource->GetGPUVirtualAddress();
-            m_VertexBufferView.SizeInBytes = static_cast<UINT>(vertexBufferSize);
-            m_VertexBufferView.StrideInBytes = sizeof(ViewportVertex);
 
             const u64 indexBufferSize = sizeof(u16) * kPrototypeMeshIndices.size();
             RHI::BufferDescription indexBufferDesc;
@@ -329,15 +296,12 @@ namespace Engine
             indexBufferDesc.StrideBytes = sizeof(u16);
             indexBufferDesc.Usage = RHI::BufferUsage::Index;
             indexBufferDesc.CpuAccess = RHI::BufferCpuAccess::Write;
-            if (!CreateRhiBuffer(indexBufferDesc, m_IndexBuffer, m_IndexBufferResource))
+            if (!CreateRhiBuffer(indexBufferDesc, m_IndexBuffer))
                 return false;
 
             if (!WriteBuffer(*m_IndexBuffer, kPrototypeMeshIndices.data(), indexBufferSize))
                 return false;
 
-            m_IndexBufferView.BufferLocation = m_IndexBufferResource->GetGPUVirtualAddress();
-            m_IndexBufferView.SizeInBytes = static_cast<UINT>(indexBufferSize);
-            m_IndexBufferView.Format = DXGI_FORMAT_R16_UINT;
             m_IndexCount = static_cast<u32>(kPrototypeMeshIndices.size());
 
             RHI::BufferDescription constantBufferDesc;
@@ -346,7 +310,7 @@ namespace Engine
             constantBufferDesc.StrideBytes = kViewportConstantBufferSize;
             constantBufferDesc.Usage = RHI::BufferUsage::Constant;
             constantBufferDesc.CpuAccess = RHI::BufferCpuAccess::Write;
-            if (!CreateRhiBuffer(constantBufferDesc, m_ConstantBuffer, m_ConstantBufferResource))
+            if (!CreateRhiBuffer(constantBufferDesc, m_ConstantBuffer))
                 return false;
 
             m_ConstantBufferMapped = static_cast<std::byte*>(m_ConstantBuffer->Map());
@@ -387,18 +351,11 @@ namespace Engine
         ID3D12Device* m_Device = nullptr;
         RHI::Device* m_RHIDevice = nullptr;
         Scope<RHI::Pipeline> m_Pipeline;
-        ID3D12RootSignature* m_RootSignature = nullptr;
-        ID3D12PipelineState* m_PipelineState = nullptr;
         Scope<RHI::Shader> m_VertexShader;
         Scope<RHI::Shader> m_PixelShader;
         Scope<RHI::Buffer> m_VertexBuffer;
         Scope<RHI::Buffer> m_IndexBuffer;
         Scope<RHI::Buffer> m_ConstantBuffer;
-        ID3D12Resource* m_VertexBufferResource = nullptr;
-        ID3D12Resource* m_IndexBufferResource = nullptr;
-        ID3D12Resource* m_ConstantBufferResource = nullptr;
-        D3D12_VERTEX_BUFFER_VIEW m_VertexBufferView {};
-        D3D12_INDEX_BUFFER_VIEW m_IndexBufferView {};
         ShaderSourceFile m_ShaderSource;
         std::byte* m_ConstantBufferMapped = nullptr;
         u32 m_IndexCount = 0;

@@ -96,7 +96,7 @@ CI is scaffolded in `.github/workflows/ci.yml`. The Windows job runs the D3D12 r
 
 The current code slice is OS-neutral C++20 plus GLFW for native windows/input. It is structured to build on Windows, Linux, and macOS from the same Premake workspace.
 
-Current limitation: the viewport mesh is still a bootstrap test pass, not an actual scene draw through the full `Engine::RHI` render graph. The next major platform step is moving drawing/command recording into the RHI/render-graph path, then adding engine-owned Vulkan device and presentation code on top of the compiled vendor backend.
+Current limitation: the viewport mesh is still a bootstrap test pass, not an actual scene draw through the full render graph. Its buffers, shaders, pipeline, and indexed draw now pass through `Engine::RHI`; descriptor binding, presentation, capture readback, and scene submission are the remaining bridge work before engine-owned Vulkan device and presentation code can sit on the same path.
 
 ## Architecture
 
