@@ -112,6 +112,7 @@ Primary sources:
 - [Alex Tardif, A Failed Adventure in Avoiding Temporal Anti-Aliasing](https://alextardif.com/Antialiasing.html)
 - [Intel CMAA 2.0](https://www.intel.com/content/www/us/en/developer/articles/technical/conservative-morphological-anti-aliasing-20.html)
 - [Ben Golus, Alpha To Coverage](https://bgolus.medium.com/anti-aliased-alpha-test-the-esoteric-alpha-to-coverage-8b177335ae4f)
+- [Threat Interactive, Why MSAA Should Be In EVERY Deferred Renderer](https://www.youtube.com/watch?v=SxCMaTEoBoI)
 
 Decision:
 
@@ -128,6 +129,10 @@ The engine should not use TAA as a crutch. It should attack aliasing at the sour
 Trade-off:
 
 Without TAA, shader/specular/subpixel aliasing becomes a real problem. The engine must spend design effort on source-level filtering, not just final image AA.
+
+Deferred MSAA note:
+
+The useful lesson from the Threat Interactive Crysis 3 analysis is not "MSAA alone fixes everything." It is that MSAA in a deferred renderer has to be designed through the whole pass chain. Edge samples are easy to ruin with bad G-buffer packing, missing sample-frequency stencil coverage, pixel-frequency AO/SSDO resolves, or post-lighting resolves that collapse subsample data too early. CMAA2/SMAA remains valuable as final edge cleanup, especially after 2x/4x MSAA reaches diminishing returns, but it should complement real coverage instead of replacing it.
 
 ## Shadows Decision
 

@@ -250,6 +250,14 @@ Rules:
 - Prefer CMAA2 over FXAA as the default post AA because it preserves sharpness better and can complement MSAA.
 - No TAA dependency is introduced by this stack.
 
+Deferred renderer MSAA requirements:
+
+- Treat MSAA as a pass-level contract, not a swapchain checkbox.
+- G-buffer encodings used on edges must preserve per-sample material inputs well enough that resolves do not blend corrupted albedo, normal, roughness, or material IDs.
+- Stencil/edge masks that select sample-frequency shading must be validated with debug overlays; missed edges make the renderer look like MSAA is enabled while important edges remain binary.
+- AO, SSDO, decals, lighting, and post-lighting resolves must declare whether they run at pixel frequency, sample frequency, or use a coverage-aware resolve. Pixel-frequency effects must not overwrite or destroy valid subsample lighting/coverage.
+- Sample count should scale with output density and content: 4x MSAA plus CMAA2/SMAA is a plausible 1080p target, while 2x MSAA plus CMAA2/SMAA may be enough at 1440p+ for many scenes.
+
 ## 9. Topology, Quad Utilization, And LOD Contract
 
 Modern GPUs shade in 2x2 pixel quads. Small or skinny triangles waste helper lanes and can cause the same screen area to be shaded repeatedly. Ray tracing also dislikes elongated triangles because their bounds overlap more and traversal becomes less efficient.

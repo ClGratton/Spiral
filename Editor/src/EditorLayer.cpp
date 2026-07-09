@@ -17,6 +17,7 @@ void EditorLayer::OnAttach()
     m_ConsoleLines.emplace_back("Editor booted");
     m_ConsoleLines.emplace_back("GLFW window backend active");
     m_ConsoleLines.emplace_back(std::string("Renderer backend: ") + Engine::Renderer::GetActiveBackendName());
+    EnsureDefaultSceneEntities();
     m_CaptureViewportRequested = Engine::Application::Get().GetSpecification().CommandLineArgs.HasFlag("--capture-viewport");
     m_SaveSceneSmokeRequested = Engine::Application::Get().GetSpecification().CommandLineArgs.HasFlag("--save-scene-smoke");
     if (m_CaptureViewportRequested)
@@ -206,10 +207,8 @@ void EditorLayer::DrawSceneHierarchyPanel()
 
     if (ImGui::TreeNodeEx("World", ImGuiTreeNodeFlags_DefaultOpen))
     {
-        ImGui::BulletText("Main Camera");
-        ImGui::BulletText("Directional Light");
-        ImGui::BulletText("Prototype Mesh");
-        ImGui::BulletText("Player Start");
+        for (const Engine::SceneEntity& entity : m_ActiveScene.GetEntities())
+            ImGui::BulletText("%s", entity.Name.c_str());
         ImGui::TreePop();
     }
 
@@ -461,4 +460,26 @@ void EditorLayer::SyncSceneFromEditorState()
 
     m_ActiveScene.SetMainCameraTransform(cameraTransform);
     m_ActiveScene.SetMainCamera(camera);
+
+    if (Engine::TransformComponent* transform = m_ActiveScene.TryGetTransform(m_PrototypeMeshEntity))
+    {
+        transform->Position = { m_Position[0], m_Position[1], m_Position[2] };
+        transform->RotationDegrees = { m_Rotation[0], m_Rotation[1], m_Rotation[2] };
+        transform->Scale = { m_Scale[0], m_Scale[1], m_Scale[2] };
+    }
+}
+
+void EditorLayer::EnsureDefaultSceneEntities()
+{
+    m_PrototypeMeshEntity = m_ActiveScene.FindEntityByName("Prototype Mesh");
+    if (!m_PrototypeMeshEntity)
+        m_PrototypeMeshEntity = m_ActiveScene.CreateEntity("Prototype Mesh");
+
+    m_DirectionalLightEntity = m_ActiveScene.FindEntityByName("Directional Light");
+    if (!m_DirectionalLightEntity)
+        m_DirectionalLightEntity = m_ActiveScene.CreateEntity("Directional Light");
+
+    m_PlayerStartEntity = m_ActiveScene.FindEntityByName("Player Start");
+    if (!m_PlayerStartEntity)
+        m_PlayerStartEntity = m_ActiveScene.CreateEntity("Player Start");
 }

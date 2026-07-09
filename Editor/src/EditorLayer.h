@@ -32,6 +32,7 @@ private:
     void DrawProjectPanel();
     bool SaveActiveScene();
     void SyncSceneFromEditorState();
+    void EnsureDefaultSceneEntities();
 
 private:
     unsigned int m_FrameCounter = 0;
@@ -45,6 +46,9 @@ private:
     std::string m_ScenePath = "output/scenes/sample.spiral";
     Engine::ClearColor m_ClearColor;
     Engine::Scene m_ActiveScene { "Sample Scene" };
+    Engine::Entity m_PrototypeMeshEntity;
+    Engine::Entity m_DirectionalLightEntity;
+    Engine::Entity m_PlayerStartEntity;
     Engine::EditorCamera m_EditorCamera;
     std::array<float, 3> m_Position = { 0.0f, 0.0f, 0.0f };
     std::array<float, 3> m_Rotation = { 0.0f, 0.0f, 0.0f };
