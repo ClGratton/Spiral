@@ -35,6 +35,8 @@ The repo keeps two records in sync:
 
 `.github/workflows/dependency-submission.yml` submits that snapshot to GitHub's Dependency Submission API on pushes to `main` and on manual dispatch. This should make the vendored/tool dependencies visible in GitHub's dependency graph and SBOM export. It does not replace the license audit, and Dependabot alert coverage still depends on whether GitHub has advisories for the submitted package ecosystem/package URL.
 
+Dependabot is enabled for GitHub Actions in `.github/dependabot.yml` so workflow actions stay current. It is not expected to update the vendored C++ dependencies; those still require explicit version bumps in this ledger, the fetch scripts, and the dependency graph metadata.
+
 Reference docs:
 
 - <https://docs.github.com/en/code-security/reference/supply-chain-security/dependency-graph-supported-package-ecosystems>
