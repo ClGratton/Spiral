@@ -15,7 +15,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Generate dependency snapshot
         run: python3 Scripts/GenerateDependencySnapshot.py .github/dependency-graph/vendor-dependencies.json dependency-snapshot.json
