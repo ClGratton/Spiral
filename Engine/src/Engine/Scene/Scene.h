@@ -18,6 +18,8 @@ namespace Engine
         std::string Name;
         TransformComponent Transform;
         std::optional<CameraComponent> Camera;
+        std::optional<LightComponent> Light;
+        std::optional<MeshRendererComponent> MeshRenderer;
     };
 
     class Scene
@@ -41,6 +43,14 @@ namespace Engine
         CameraComponent* TryGetCameraComponent(Entity entity);
         const CameraComponent* TryGetCameraComponent(Entity entity) const;
         bool RemoveCameraComponent(Entity entity);
+        LightComponent* AddLightComponent(Entity entity, const LightComponent& light = {});
+        LightComponent* TryGetLightComponent(Entity entity);
+        const LightComponent* TryGetLightComponent(Entity entity) const;
+        bool RemoveLightComponent(Entity entity);
+        MeshRendererComponent* AddMeshRendererComponent(Entity entity, const MeshRendererComponent& meshRenderer = {});
+        MeshRendererComponent* TryGetMeshRendererComponent(Entity entity);
+        const MeshRendererComponent* TryGetMeshRendererComponent(Entity entity) const;
+        bool RemoveMeshRendererComponent(Entity entity);
 
         Entity GetMainCameraEntity() const { return m_MainCameraEntity; }
         bool SetMainCameraEntity(Entity entity);

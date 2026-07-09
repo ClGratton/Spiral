@@ -24,6 +24,28 @@ namespace Engine
             return static_cast<bool>(stream >> outValue.X >> outValue.Y >> outValue.Z);
         }
 
+        const char* ToString(LightType type)
+        {
+            switch (type)
+            {
+                case LightType::Directional: return "Directional";
+                case LightType::Point: return "Point";
+                case LightType::Spot: return "Spot";
+            }
+
+            return "Directional";
+        }
+
+        LightType ParseLightType(std::string_view value)
+        {
+            if (value == "Point")
+                return LightType::Point;
+            if (value == "Spot")
+                return LightType::Spot;
+
+            return LightType::Directional;
+        }
+
         SceneEntity* FindEntityInList(std::vector<SceneEntity>& entities, Entity entity)
         {
             const auto it = std::find_if(entities.begin(), entities.end(), [entity](const SceneEntity& candidate)
@@ -161,6 +183,70 @@ namespace Engine
         return true;
     }
 
+    LightComponent* Scene::AddLightComponent(Entity entity, const LightComponent& light)
+    {
+        SceneEntity* sceneEntity = FindEntityStorage(entity);
+        if (!sceneEntity)
+            return nullptr;
+
+        sceneEntity->Light = light;
+        return &(*sceneEntity->Light);
+    }
+
+    LightComponent* Scene::TryGetLightComponent(Entity entity)
+    {
+        SceneEntity* sceneEntity = FindEntityStorage(entity);
+        return sceneEntity && sceneEntity->Light ? &(*sceneEntity->Light) : nullptr;
+    }
+
+    const LightComponent* Scene::TryGetLightComponent(Entity entity) const
+    {
+        const SceneEntity* sceneEntity = FindEntityStorage(entity);
+        return sceneEntity && sceneEntity->Light ? &(*sceneEntity->Light) : nullptr;
+    }
+
+    bool Scene::RemoveLightComponent(Entity entity)
+    {
+        SceneEntity* sceneEntity = FindEntityStorage(entity);
+        if (!sceneEntity || !sceneEntity->Light)
+            return false;
+
+        sceneEntity->Light.reset();
+        return true;
+    }
+
+    MeshRendererComponent* Scene::AddMeshRendererComponent(Entity entity, const MeshRendererComponent& meshRenderer)
+    {
+        SceneEntity* sceneEntity = FindEntityStorage(entity);
+        if (!sceneEntity)
+            return nullptr;
+
+        sceneEntity->MeshRenderer = meshRenderer;
+        return &(*sceneEntity->MeshRenderer);
+    }
+
+    MeshRendererComponent* Scene::TryGetMeshRendererComponent(Entity entity)
+    {
+        SceneEntity* sceneEntity = FindEntityStorage(entity);
+        return sceneEntity && sceneEntity->MeshRenderer ? &(*sceneEntity->MeshRenderer) : nullptr;
+    }
+
+    const MeshRendererComponent* Scene::TryGetMeshRendererComponent(Entity entity) const
+    {
+        const SceneEntity* sceneEntity = FindEntityStorage(entity);
+        return sceneEntity && sceneEntity->MeshRenderer ? &(*sceneEntity->MeshRenderer) : nullptr;
+    }
+
+    bool Scene::RemoveMeshRendererComponent(Entity entity)
+    {
+        SceneEntity* sceneEntity = FindEntityStorage(entity);
+        if (!sceneEntity || !sceneEntity->MeshRenderer)
+            return false;
+
+        sceneEntity->MeshRenderer.reset();
+        return true;
+    }
+
     bool Scene::SetMainCameraEntity(Entity entity)
     {
         SceneEntity* sceneEntity = FindEntityStorage(entity);
@@ -239,6 +325,30 @@ namespace Engine
                     << ' ' << entity.Camera->Projection.VerticalFovDegrees
                     << ' ' << entity.Camera->Projection.NearClip
                     << ' ' << entity.Camera->Projection.FarClip << '\n';
+            }
+
+            if (entity.Light)
+            {
+                output << "Light " << entity.EntityHandle.Id
+                    << ' ' << ToString(entity.Light->Type)
+                    << ' ' << entity.Light->Color.X
+                    << ' ' << entity.Light->Color.Y
+                    << ' ' << entity.Light->Color.Z
+                    << ' ' << entity.Light->Intensity
+                    << ' ' << entity.Light->Range
+                    << ' ' << entity.Light->InnerConeDegrees
+                    << ' ' << entity.Light->OuterConeDegrees
+                    << ' ' << (entity.Light->CastsShadows ? "true" : "false") << '\n';
+            }
+
+            if (entity.MeshRenderer)
+            {
+                output << "MeshRenderer " << entity.EntityHandle.Id
+                    << ' ' << entity.MeshRenderer->MeshAsset
+                    << ' ' << entity.MeshRenderer->MaterialAsset
+                    << ' ' << std::quoted(entity.MeshRenderer->MeshName)
+                    << ' ' << (entity.MeshRenderer->Visible ? "true" : "false")
+                    << ' ' << (entity.MeshRenderer->CastsShadows ? "true" : "false") << '\n';
             }
         }
 
@@ -372,6 +482,41 @@ namespace Engine
                         >> entityCamera.Projection.FarClip;
                     entityCamera.Primary = primary == "true";
                     scene.AddCameraComponent(entity, entityCamera);
+                }
+                else if (key == "Light")
+                {
+                    Entity entity;
+                    std::string type;
+                    std::string castsShadows;
+                    LightComponent light;
+                    stream >> entity.Id >> type
+                        >> light.Color.X
+                        >> light.Color.Y
+                        >> light.Color.Z
+                        >> light.Intensity
+                        >> light.Range
+                        >> light.InnerConeDegrees
+                        >> light.OuterConeDegrees
+                        >> castsShadows;
+                    light.Type = ParseLightType(type);
+                    light.CastsShadows = castsShadows == "true";
+                    scene.AddLightComponent(entity, light);
+                }
+                else if (key == "MeshRenderer")
+                {
+                    Entity entity;
+                    std::string visible;
+                    std::string castsShadows;
+                    MeshRendererComponent meshRenderer;
+                    stream >> entity.Id
+                        >> meshRenderer.MeshAsset
+                        >> meshRenderer.MaterialAsset
+                        >> std::quoted(meshRenderer.MeshName)
+                        >> visible
+                        >> castsShadows;
+                    meshRenderer.Visible = visible == "true";
+                    meshRenderer.CastsShadows = castsShadows == "true";
+                    scene.AddMeshRendererComponent(entity, meshRenderer);
                 }
             }
         }

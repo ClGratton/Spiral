@@ -474,10 +474,26 @@ void EditorLayer::EnsureDefaultSceneEntities()
     m_PrototypeMeshEntity = m_ActiveScene.FindEntityByName("Prototype Mesh");
     if (!m_PrototypeMeshEntity)
         m_PrototypeMeshEntity = m_ActiveScene.CreateEntity("Prototype Mesh");
+    if (!m_ActiveScene.TryGetMeshRendererComponent(m_PrototypeMeshEntity))
+    {
+        Engine::MeshRendererComponent meshRenderer;
+        meshRenderer.MeshName = "Prototype Cube";
+        m_ActiveScene.AddMeshRendererComponent(m_PrototypeMeshEntity, meshRenderer);
+    }
 
     m_DirectionalLightEntity = m_ActiveScene.FindEntityByName("Directional Light");
     if (!m_DirectionalLightEntity)
         m_DirectionalLightEntity = m_ActiveScene.CreateEntity("Directional Light");
+    if (!m_ActiveScene.TryGetLightComponent(m_DirectionalLightEntity))
+    {
+        Engine::LightComponent light;
+        light.Type = Engine::LightType::Directional;
+        light.Color = { 1.0f, 0.96f, 0.86f };
+        light.Intensity = 3.0f;
+        m_ActiveScene.AddLightComponent(m_DirectionalLightEntity, light);
+        if (Engine::TransformComponent* transform = m_ActiveScene.TryGetTransform(m_DirectionalLightEntity))
+            transform->RotationDegrees = { 45.0f, -35.0f, 0.0f };
+    }
 
     m_PlayerStartEntity = m_ActiveScene.FindEntityByName("Player Start");
     if (!m_PlayerStartEntity)
