@@ -275,6 +275,7 @@ void EditorLayer::DrawInspectorPanel()
 
     ImGui::Text("Selected: %s", selectedEntity->Name.c_str());
     ImGui::Separator();
+    ImGui::PushID("TransformComponent");
     ImGui::TextUnformatted("Transform");
 
     bool transformChanged = false;
@@ -286,10 +287,12 @@ void EditorLayer::DrawInspectorPanel()
         m_ActiveScene.SetMainCameraTransform(selectedEntity->Transform);
         SyncEditorCameraStateFromMainCamera();
     }
+    ImGui::PopID();
 
     if (selectedEntity->Camera)
     {
         ImGui::Separator();
+        ImGui::PushID("CameraComponent");
         ImGui::TextUnformatted("Camera Component");
         Engine::CameraComponent& camera = *selectedEntity->Camera;
         bool cameraChanged = false;
@@ -306,11 +309,13 @@ void EditorLayer::DrawInspectorPanel()
             m_ActiveScene.SetMainCamera(camera);
             SyncEditorCameraStateFromMainCamera();
         }
+        ImGui::PopID();
     }
 
     if (selectedEntity->Light)
     {
         ImGui::Separator();
+        ImGui::PushID("LightComponent");
         ImGui::TextUnformatted("Light Component");
         Engine::LightComponent& light = *selectedEntity->Light;
         const char* lightTypeName = ToLightTypeName(light.Type);
@@ -339,11 +344,13 @@ void EditorLayer::DrawInspectorPanel()
         if (light.OuterConeDegrees < light.InnerConeDegrees)
             light.OuterConeDegrees = light.InnerConeDegrees;
         ImGui::Checkbox("Casts Shadows", &light.CastsShadows);
+        ImGui::PopID();
     }
 
     if (selectedEntity->MeshRenderer)
     {
         ImGui::Separator();
+        ImGui::PushID("MeshRendererComponent");
         ImGui::TextUnformatted("Mesh Renderer Component");
         Engine::MeshRendererComponent& meshRenderer = *selectedEntity->MeshRenderer;
         char meshName[128] = {};
@@ -354,9 +361,11 @@ void EditorLayer::DrawInspectorPanel()
         DrawAssetHandleControl("Material Asset", meshRenderer.MaterialAsset);
         ImGui::Checkbox("Visible", &meshRenderer.Visible);
         ImGui::Checkbox("Casts Shadows", &meshRenderer.CastsShadows);
+        ImGui::PopID();
     }
 
     ImGui::Separator();
+    ImGui::PushID("EditorCamera");
     ImGui::TextUnformatted("Editor Camera");
     bool cameraChanged = false;
     cameraChanged |= ImGui::DragFloat3("Camera Position", m_CameraPosition.data(), 0.05f);
@@ -376,6 +385,7 @@ void EditorLayer::DrawInspectorPanel()
         ApplyEditorCameraStateToScene();
     }
     ImGui::TextDisabled("Aspect %.3f", m_EditorCamera.GetAspectRatio());
+    ImGui::PopID();
     ImGui::Separator();
     ImGui::TextUnformatted("Renderer");
     ImGui::Text("Active: %s", Engine::Renderer::GetActiveBackendName());
