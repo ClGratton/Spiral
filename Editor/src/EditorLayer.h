@@ -32,6 +32,8 @@ private:
     void DrawConsolePanel();
     void DrawProfilerPanel();
     void DrawProjectPanel();
+    void HandleAssetWatchEvents();
+    void RunAssetWatchSmokeMutation();
     bool SaveActiveScene();
     bool SaveAssetRegistry();
     void EnsureDefaultSceneEntities();
@@ -44,11 +46,15 @@ private:
     bool m_CaptureViewportRequested = false;
     bool m_CaptureViewportComplete = false;
     bool m_SaveSceneSmokeRequested = false;
+    bool m_AssetWatchSmokeRequested = false;
+    bool m_AssetWatchSmokeTouched = false;
     std::string m_CaptureViewportPath = "output/captures/editor-viewport.bmp";
     std::string m_ScenePath = "output/scenes/sample.spiral";
     std::string m_AssetRegistryPath = "output/assets/sample.assets";
+    std::string m_AssetWatchSmokePath = "output/assets/watch-smoke.mesh";
     Engine::ClearColor m_ClearColor;
     Engine::AssetRegistry m_AssetRegistry;
+    Engine::AssetWatcher m_AssetWatcher;
     Engine::Scene m_ActiveScene { "Sample Scene" };
     Engine::Entity m_PrototypeMeshEntity;
     Engine::Entity m_DirectionalLightEntity;
@@ -60,5 +66,6 @@ private:
     float m_CameraFovDegrees = 60.0f;
     float m_CameraNearClip = 0.1f;
     float m_CameraFarClip = 100.0f;
+    unsigned int m_ReimportRequestCount = 0;
     std::vector<std::string> m_ConsoleLines;
 };

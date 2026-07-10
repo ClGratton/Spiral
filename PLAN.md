@@ -67,6 +67,7 @@ Immediate gap:
 - Scene entities now support transform, camera, light, and mesh renderer components, with the editor default scene authoring a directional light and prototype mesh renderer.
 - The scene hierarchy selection now drives the Inspector, and the Inspector edits live transform, camera, light, and mesh renderer component data.
 - The asset registry creates stable path/type-based handles, saves and reload-validates a manifest, and assigns registered sample mesh/material handles into the editor scene.
+- Asset source watching tracks registered files, warns on deletion, and queues reimport hooks on source changes.
 - GitHub dependency submission now reports vendored/tool dependencies from the dependency ledger so the repo dependency graph can show them.
 
 ## Phase 0: Buildable Spine
@@ -146,7 +147,7 @@ Required:
 - [x] Scene hierarchy bound to actual entities.
 - [x] Inspector edits live component data.
 - [x] Asset registry with stable handles.
-- [ ] File watching and reimport hooks.
+- [x] File watching and reimport hooks.
 - [ ] glTF import prototype.
 - [ ] KTX2/Basis texture import plan.
 - [ ] Material asset format.

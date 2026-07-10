@@ -4,7 +4,10 @@
 #include <imgui_internal.h>
 
 #include <cstdio>
+#include <filesystem>
+#include <fstream>
 #include <stdexcept>
+#include <system_error>
 
 namespace
 {
@@ -47,6 +50,23 @@ namespace
 
         return meshRenderer.MeshName;
     }
+
+    bool WriteTextFile(const std::filesystem::path& path, const std::string& text)
+    {
+        std::error_code error;
+        const std::filesystem::path parent = path.parent_path();
+        if (!parent.empty())
+            std::filesystem::create_directories(parent, error);
+        if (error)
+            return false;
+
+        std::ofstream output(path, std::ios::out | std::ios::trunc);
+        if (!output)
+            return false;
+
+        output << text;
+        return true;
+    }
 }
 
 EditorLayer::EditorLayer()
@@ -65,6 +85,14 @@ void EditorLayer::OnAttach()
     SyncEditorCameraStateFromMainCamera();
     m_CaptureViewportRequested = Engine::Application::Get().GetSpecification().CommandLineArgs.HasFlag("--capture-viewport");
     m_SaveSceneSmokeRequested = Engine::Application::Get().GetSpecification().CommandLineArgs.HasFlag("--save-scene-smoke");
+    m_AssetWatchSmokeRequested = Engine::Application::Get().GetSpecification().CommandLineArgs.HasFlag("--asset-watch-smoke");
+    if (m_AssetWatchSmokeRequested)
+    {
+        WriteTextFile(m_AssetWatchSmokePath, "asset watch smoke baseline\n");
+        m_AssetRegistry.RegisterAsset(Engine::AssetType::Mesh, m_AssetWatchSmokePath, "Asset Watch Smoke");
+    }
+    m_AssetWatcher.SyncRegistry(m_AssetRegistry);
+    m_ConsoleLines.emplace_back("File watching active: " + std::to_string(m_AssetWatcher.GetTrackedCount()) + " asset source(s)");
     if (m_CaptureViewportRequested)
         m_ConsoleLines.emplace_back(std::string("Viewport capture requested: ") + m_CaptureViewportPath);
     if (m_SaveSceneSmokeRequested)
@@ -91,6 +119,9 @@ void EditorLayer::OnUpdate(Engine::Timestep timestep)
 {
     ++m_FrameCounter;
     m_LastFrameMs = timestep.GetMilliseconds();
+
+    RunAssetWatchSmokeMutation();
+    HandleAssetWatchEvents();
 
     if (m_FrameCounter == 1)
     {
@@ -205,6 +236,11 @@ void EditorLayer::DrawMainMenuBar()
             m_ConsoleLines.emplace_back("Validation queued");
         if (ImGui::MenuItem("Compile Shaders"))
             m_ConsoleLines.emplace_back("Shader compiler is not implemented yet");
+        if (ImGui::MenuItem("Rescan Asset Sources"))
+        {
+            m_AssetWatcher.SyncRegistry(m_AssetRegistry);
+            m_ConsoleLines.emplace_back("Asset source watcher resynced");
+        }
         if (ImGui::MenuItem("Capture Viewport"))
         {
             m_CaptureViewportRequested = true;
@@ -635,8 +671,46 @@ void EditorLayer::DrawProjectPanel()
         ImGui::EndTable();
     }
     ImGui::Separator();
-    ImGui::TextDisabled("File watching and import workflows are next");
+    ImGui::TextDisabled(
+        "Watching %zu source file(s); %zu missing; %u reimport request(s)",
+        m_AssetWatcher.GetTrackedCount(),
+        m_AssetWatcher.GetMissingCount(),
+        m_ReimportRequestCount);
     ImGui::End();
+}
+
+void EditorLayer::HandleAssetWatchEvents()
+{
+    const std::vector<Engine::AssetWatchEvent> events = m_AssetWatcher.Poll(m_AssetRegistry);
+    for (const Engine::AssetWatchEvent& event : events)
+    {
+        const Engine::AssetMetadata* metadata = m_AssetRegistry.GetAsset(event.Handle);
+        const std::string name = metadata ? metadata->Name : event.SourcePath;
+        if (event.EventType == Engine::AssetWatchEventType::Deleted)
+        {
+            m_ConsoleLines.emplace_back("Asset source missing: " + name + " (" + event.SourcePath + ")");
+            Engine::Log::Warn("Asset source missing: ", event.SourcePath);
+            continue;
+        }
+
+        ++m_ReimportRequestCount;
+        m_ConsoleLines.emplace_back(
+            "Reimport queued: " + name + " (" + Engine::ToString(event.Type) + ", "
+            + Engine::ToString(event.EventType) + ")");
+        Engine::Log::Info("Asset reimport queued: ", event.SourcePath, " (", Engine::ToString(event.EventType), ")");
+    }
+}
+
+void EditorLayer::RunAssetWatchSmokeMutation()
+{
+    if (!m_AssetWatchSmokeRequested || m_AssetWatchSmokeTouched || m_FrameCounter < 1)
+        return;
+
+    m_AssetWatchSmokeTouched = WriteTextFile(
+        m_AssetWatchSmokePath,
+        "asset watch smoke changed payload\nwith a different size\n");
+    if (!m_AssetWatchSmokeTouched)
+        m_ConsoleLines.emplace_back("Asset watch smoke mutation failed");
 }
 
 bool EditorLayer::SaveActiveScene()

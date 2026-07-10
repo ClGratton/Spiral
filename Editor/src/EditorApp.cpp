@@ -24,7 +24,7 @@ Engine::Application* Engine::CreateApplication(ApplicationCommandLineArgs args)
     specification.Window.Width = 1600;
     specification.Window.Height = 900;
     specification.Window.Headless = args.HasFlag("--headless");
-    specification.MaxFrames = args.HasFlag("--smoke-test") ? 2 : 0;
+    specification.MaxFrames = args.HasFlag("--asset-watch-smoke") ? 4 : (args.HasFlag("--smoke-test") ? 2 : 0);
 
     return new EditorApplication(specification);
 }

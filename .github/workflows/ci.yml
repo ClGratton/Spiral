@@ -29,6 +29,10 @@ jobs:
         shell: pwsh
         run: .\Scripts\TestRender.ps1 -Configuration Debug -Action vs2022
 
+      - name: Run asset watch smoke
+        shell: pwsh
+        run: .\bin\Debug-windows-x86_64\Editor\Editor.exe --headless --asset-watch-smoke
+
       - name: Upload viewport capture
         uses: actions/upload-artifact@v7
         if: always()
@@ -71,6 +75,14 @@ jobs:
             ./bin/Debug-linux-x86_64-gmake/Editor/Editor --headless --smoke-test
           else
             ./bin/Debug-macosx-x86_64-gmake/Editor/Editor --headless --smoke-test
+          fi
+
+      - name: Run asset watch smoke
+        run: |
+          if [[ "${{ runner.os }}" == "Linux" ]]; then
+            ./bin/Debug-linux-x86_64-gmake/Editor/Editor --headless --asset-watch-smoke
+          else
+            ./bin/Debug-macosx-x86_64-gmake/Editor/Editor --headless --asset-watch-smoke
           fi
 
       - name: Run sandbox headless smoke
