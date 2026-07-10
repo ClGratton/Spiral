@@ -49,6 +49,7 @@ Reference docs:
 | --- | --- | --- | --- | --- |
 | Slang | TBD | Shader authoring/compilation. | Apache-2.0 with LLVM exceptions for some components; audit before vendoring. | Shader compiler/tooling, not hardcoded into app layer. |
 | meshoptimizer | TBD | Meshlet/cluster/vertex/index optimization. | MIT. | Asset pipeline dependency. |
+| KTX-Software / libktx | TBD | KTX2 validation and BasisLZ/UASTC transcoding for the texture importer. | Apache-2.0 for repository-unique files, with third-party component audit required; see upstream `LICENSE.md`. | Keep container/transcode types inside the importer. Do not use upstream GPU upload helpers. |
 
 ## NVRHI Pin
 
