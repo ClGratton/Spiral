@@ -89,6 +89,13 @@ namespace Engine
         return events;
     }
 
+    void AssetWatcher::Acknowledge(AssetHandle handle)
+    {
+        Record* record = FindRecord(handle);
+        if (record)
+            record->LastSnapshot = Capture(record->ResolvedPath);
+    }
+
     void AssetWatcher::Clear()
     {
         m_Records.clear();

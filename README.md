@@ -101,6 +101,14 @@ To parse, validate, register, and cook a self-contained glTF triangle import smo
 
 The source and cooked mesh manifest are written under `output/assets/gltf-smoke` and `output/imports/gltf`.
 
+To save and reload-validate the versioned material asset format:
+
+```powershell
+.\bin\Debug-windows-x86_64\Editor\Editor.exe --headless --material-asset-smoke
+```
+
+The smoke material is written to `output/assets/material-smoke.spiralmat`.
+
 To run the automated Windows render smoke test, including build, capture, BMP validation, and non-blank pixel checks:
 
 ```powershell

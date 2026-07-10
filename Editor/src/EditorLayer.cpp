@@ -4,6 +4,7 @@
 #include <imgui_internal.h>
 
 #include <cstdio>
+#include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <stdexcept>
@@ -87,6 +88,7 @@ void EditorLayer::OnAttach()
     m_SaveSceneSmokeRequested = Engine::Application::Get().GetSpecification().CommandLineArgs.HasFlag("--save-scene-smoke");
     m_AssetWatchSmokeRequested = Engine::Application::Get().GetSpecification().CommandLineArgs.HasFlag("--asset-watch-smoke");
     m_GltfImportSmokeRequested = Engine::Application::Get().GetSpecification().CommandLineArgs.HasFlag("--gltf-import-smoke");
+    m_MaterialAssetSmokeRequested = Engine::Application::Get().GetSpecification().CommandLineArgs.HasFlag("--material-asset-smoke");
     if (m_AssetWatchSmokeRequested)
     {
         WriteTextFile(m_AssetWatchSmokePath, "asset watch smoke baseline\n");
@@ -123,6 +125,7 @@ void EditorLayer::OnUpdate(Engine::Timestep timestep)
 
     RunAssetWatchSmokeMutation();
     RunGltfImportSmoke();
+    RunMaterialAssetSmoke();
     HandleAssetWatchEvents();
 
     if (m_FrameCounter == 1)
@@ -414,6 +417,7 @@ void EditorLayer::DrawInspectorPanel()
         }
         DrawAssetHandleControl("Mesh Asset", meshRenderer.MeshAsset);
         DrawAssetHandleControl("Material Asset", meshRenderer.MaterialAsset);
+        DrawMaterialAssetControls(meshRenderer.MaterialAsset);
         ImGui::Checkbox("Visible", &meshRenderer.Visible);
         ImGui::Checkbox("Casts Shadows", &meshRenderer.CastsShadows);
         ImGui::PopID();
@@ -452,6 +456,99 @@ void EditorLayer::DrawInspectorPanel()
     if (ImGui::ColorEdit4("Clear Color", &m_ClearColor.R))
         Engine::Renderer::SetClearColor(m_ClearColor);
     ImGui::End();
+}
+
+void EditorLayer::DrawMaterialAssetControls(Engine::AssetHandle handle)
+{
+    Engine::MaterialAsset* material = m_MaterialLibrary.Get(handle);
+    if (!material)
+    {
+        ImGui::TextDisabled("No loaded material asset for this handle");
+        return;
+    }
+
+    ImGui::Separator();
+    ImGui::PushID("MaterialAsset");
+    ImGui::TextUnformatted("Material Asset");
+    char materialName[128] = {};
+    std::snprintf(materialName, sizeof(materialName), "%s", material->Name.c_str());
+    if (ImGui::InputText("Material Name", materialName, sizeof(materialName)))
+    {
+        material->Name = materialName;
+        m_AssetRegistry.SetAssetName(handle, materialName);
+    }
+
+    if (ImGui::BeginCombo("Shading Model", Engine::ToString(material->ShadingModel)))
+    {
+        const Engine::MaterialShadingModel models[] = {
+            Engine::MaterialShadingModel::Standard,
+            Engine::MaterialShadingModel::Unlit
+        };
+        for (Engine::MaterialShadingModel candidate : models)
+        {
+            const bool selected = material->ShadingModel == candidate;
+            if (ImGui::Selectable(Engine::ToString(candidate), selected))
+                material->ShadingModel = candidate;
+            if (selected)
+                ImGui::SetItemDefaultFocus();
+        }
+        ImGui::EndCombo();
+    }
+
+    if (ImGui::BeginCombo("Alpha Mode", Engine::ToString(material->AlphaMode)))
+    {
+        const Engine::MaterialAlphaMode modes[] = {
+            Engine::MaterialAlphaMode::Opaque,
+            Engine::MaterialAlphaMode::Mask,
+            Engine::MaterialAlphaMode::Blend
+        };
+        for (Engine::MaterialAlphaMode candidate : modes)
+        {
+            const bool selected = material->AlphaMode == candidate;
+            if (ImGui::Selectable(Engine::ToString(candidate), selected))
+                material->AlphaMode = candidate;
+            if (selected)
+                ImGui::SetItemDefaultFocus();
+        }
+        ImGui::EndCombo();
+    }
+
+    ImGui::Checkbox("Two Sided", &material->TwoSided);
+    ImGui::ColorEdit3("Base Color", &material->BaseColor.X);
+    ImGui::DragFloat("Metallic", &material->Metallic, 0.01f, 0.0f, 1.0f);
+    ImGui::DragFloat("Roughness", &material->Roughness, 0.01f, 0.0f, 1.0f);
+    ImGui::DragFloat("Normal Scale", &material->NormalScale, 0.01f, 0.0f, 4.0f);
+    ImGui::DragFloat("Occlusion Strength", &material->OcclusionStrength, 0.01f, 0.0f, 1.0f);
+    ImGui::ColorEdit3("Emissive Color", &material->EmissiveColor.X);
+    ImGui::DragFloat("Emissive Strength", &material->EmissiveStrength, 0.01f, 0.0f, 10000.0f);
+    if (material->AlphaMode == Engine::MaterialAlphaMode::Mask)
+        ImGui::DragFloat("Alpha Cutoff", &material->AlphaCutoff, 0.01f, 0.0f, 1.0f);
+
+    ImGui::Separator();
+    ImGui::TextUnformatted("Texture Handles");
+    const Engine::MaterialTextureSlot textureSlots[] = {
+        Engine::MaterialTextureSlot::BaseColor,
+        Engine::MaterialTextureSlot::Normal,
+        Engine::MaterialTextureSlot::Orm,
+        Engine::MaterialTextureSlot::Emissive,
+        Engine::MaterialTextureSlot::Opacity,
+        Engine::MaterialTextureSlot::CallistoControl
+    };
+    for (Engine::MaterialTextureSlot slot : textureSlots)
+        DrawAssetHandleControl(Engine::ToString(slot), material->GetTexture(slot));
+
+    ImGui::Separator();
+    ImGui::TextUnformatted("Callisto Controls");
+    ImGui::DragFloat("Diffuse Fresnel", &material->DiffuseFresnelIntensity, 0.01f, 0.0f, 256.0f);
+    ImGui::DragFloat("Retroreflection", &material->RetroreflectionIntensity, 0.01f, 0.0f, 256.0f);
+    ImGui::DragFloat("Diffuse Falloff", &material->DiffuseFresnelFalloff, 0.01f, 0.0f, 1.0f);
+    ImGui::DragFloat("Retroreflection Falloff", &material->RetroreflectionFalloff, 0.01f, 0.0f, 1.0f);
+    ImGui::DragFloat("Smooth Terminator", &material->SmoothTerminator, 0.01f, -1.0f, 1.0f);
+    material->ClampValues();
+
+    if (ImGui::Button("Save Material"))
+        SaveMaterialAsset(handle);
+    ImGui::PopID();
 }
 
 void EditorLayer::ApplyEditorCameraStateToScene()
@@ -757,6 +854,52 @@ void EditorLayer::RunGltfImportSmoke()
     Engine::Log::Info("glTF import smoke passed: ", m_LastGltfImport.CookedPath.string());
 }
 
+void EditorLayer::RunMaterialAssetSmoke()
+{
+    if (!m_MaterialAssetSmokeRequested || m_MaterialAssetSmokeCompleted || m_FrameCounter < 1)
+        return;
+
+    const Engine::AssetHandle textureHandle = m_AssetRegistry.RegisterAsset(
+        Engine::AssetType::Texture,
+        "output/assets/material-smoke-base.ktx2",
+        "Material Smoke Base Color");
+    const Engine::AssetHandle materialHandle = m_AssetRegistry.RegisterAsset(
+        Engine::AssetType::Material,
+        m_MaterialAssetSmokePath,
+        "Material Smoke");
+
+    Engine::MaterialAsset material;
+    material.Name = "Material Smoke";
+    material.AlphaMode = Engine::MaterialAlphaMode::Mask;
+    material.TwoSided = true;
+    material.BaseColor = { 0.2f, 0.4f, 0.8f };
+    material.Metallic = 0.35f;
+    material.Roughness = 0.28f;
+    material.AlphaCutoff = 0.42f;
+    material.Textures.BaseColor = textureHandle;
+    material.Textures.Opacity = textureHandle;
+    if (!m_MaterialLibrary.Set(materialHandle, material) || !SaveMaterialAsset(materialHandle))
+        throw std::runtime_error("Material asset smoke could not save the material asset");
+
+    Engine::MaterialLibrary loadedLibrary;
+    if (!loadedLibrary.Load(materialHandle, m_MaterialAssetSmokePath))
+        throw std::runtime_error("Material asset smoke could not reload the material asset");
+
+    const Engine::MaterialAsset* loaded = loadedLibrary.Get(materialHandle);
+    m_MaterialAssetSmokeCompleted = loaded
+        && loaded->Name == material.Name
+        && loaded->AlphaMode == Engine::MaterialAlphaMode::Mask
+        && loaded->TwoSided
+        && std::abs(loaded->Roughness - material.Roughness) < 0.0001f
+        && loaded->Textures.BaseColor == textureHandle
+        && loaded->Textures.Opacity == textureHandle;
+    if (!m_MaterialAssetSmokeCompleted)
+        throw std::runtime_error("Material asset smoke reload validation failed");
+
+    m_AssetWatcher.SyncRegistry(m_AssetRegistry);
+    Engine::Log::Info("Material asset smoke passed: ", m_MaterialAssetSmokePath);
+}
+
 bool EditorLayer::ImportGltfAsset(const std::filesystem::path& sourcePath)
 {
     m_LastGltfImport = Engine::GltfImporter::Import(sourcePath, m_AssetRegistry);
@@ -781,6 +924,9 @@ bool EditorLayer::ImportGltfAsset(const std::filesystem::path& sourcePath)
 
 bool EditorLayer::SaveActiveScene()
 {
+    if (!SaveMaterialAssets())
+        return false;
+
     if (!SaveAssetRegistry())
         return false;
 
@@ -826,6 +972,49 @@ bool EditorLayer::SaveAssetRegistry()
     return false;
 }
 
+bool EditorLayer::SaveMaterialAsset(Engine::AssetHandle handle)
+{
+    const Engine::AssetMetadata* metadata = m_AssetRegistry.GetAsset(handle);
+    if (!metadata || metadata->Type != Engine::AssetType::Material)
+        return false;
+
+    const std::filesystem::path path = Engine::AssetFileSystem::ResolvePath(metadata->SourcePath);
+    const bool saved = m_MaterialLibrary.Save(handle, path);
+    if (saved)
+    {
+        m_AssetWatcher.Acknowledge(handle);
+        m_ConsoleLines.emplace_back("Material saved: " + metadata->SourcePath);
+        Engine::Log::Info("Material saved: ", metadata->SourcePath);
+    }
+    else
+    {
+        m_ConsoleLines.emplace_back("Material save failed: " + metadata->SourcePath);
+        Engine::Log::Error("Material save failed: ", metadata->SourcePath);
+    }
+
+    return saved;
+}
+
+bool EditorLayer::SaveMaterialAssets()
+{
+    for (const Engine::AssetMetadata& metadata : m_AssetRegistry.GetAssets())
+    {
+        if (metadata.Type == Engine::AssetType::Material && m_MaterialLibrary.Get(metadata.Handle))
+        {
+            const std::filesystem::path path = Engine::AssetFileSystem::ResolvePath(metadata.SourcePath);
+            if (!m_MaterialLibrary.Save(metadata.Handle, path))
+            {
+                Engine::Log::Error("Material save failed: ", metadata.SourcePath);
+                return false;
+            }
+
+            m_AssetWatcher.Acknowledge(metadata.Handle);
+        }
+    }
+
+    return true;
+}
+
 void EditorLayer::EnsureDefaultSceneEntities()
 {
     const Engine::AssetHandle prototypeMeshAsset = m_AssetRegistry.RegisterAsset(
@@ -834,8 +1023,21 @@ void EditorLayer::EnsureDefaultSceneEntities()
         "Prototype Cube");
     const Engine::AssetHandle prototypeMaterialAsset = m_AssetRegistry.RegisterAsset(
         Engine::AssetType::Material,
-        "Engine/Generated/PrototypeDefault.material",
+        "output/assets/PrototypeDefault.spiralmat",
         "Prototype Default");
+    if (!m_MaterialLibrary.Get(prototypeMaterialAsset))
+    {
+        const std::filesystem::path materialPath = Engine::AssetFileSystem::ResolvePath("output/assets/PrototypeDefault.spiralmat");
+        if (!m_MaterialLibrary.Load(prototypeMaterialAsset, materialPath))
+        {
+            Engine::MaterialAsset prototypeMaterial;
+            prototypeMaterial.Name = "Prototype Default";
+            prototypeMaterial.BaseColor = { 0.72f, 0.78f, 0.92f };
+            prototypeMaterial.Roughness = 0.45f;
+            m_MaterialLibrary.Set(prototypeMaterialAsset, prototypeMaterial);
+            SaveMaterialAsset(prototypeMaterialAsset);
+        }
+    }
 
     m_PrototypeMeshEntity = m_ActiveScene.FindEntityByName("Prototype Mesh");
     if (!m_PrototypeMeshEntity)

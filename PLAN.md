@@ -70,6 +70,7 @@ Immediate gap:
 - Asset source watching tracks registered files, warns on deletion, and queues reimport hooks on source changes.
 - The editor can import `.gltf`/`.glb` mesh sources through cgltf, register a stable mesh handle, and cook a structural mesh manifest; GPU mesh buffers and material/texture conversion remain follow-on work.
 - The KTX2/Basis texture import plan defines texture roles, color-space rules, target profiles, validation, streaming, and the future libktx boundary before any texture transcoder is vendored.
+- Material assets are versioned `.spiralmat` files with PBR factors, alpha/shading modes, Callisto controls, and texture handles; editor changes save and reload-validate through the material library.
 - GitHub dependency submission now reports vendored/tool dependencies from the dependency ledger so the repo dependency graph can show them.
 
 ## Phase 0: Buildable Spine
@@ -152,7 +153,7 @@ Required:
 - [x] File watching and reimport hooks.
 - [x] glTF import prototype.
 - [x] KTX2/Basis texture import plan.
-- [ ] Material asset format.
+- [x] Material asset format.
 - [ ] Drag/drop asset browser.
 - [ ] Save/load project and scene.
 - [ ] Undo/redo command stack.

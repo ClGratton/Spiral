@@ -33,12 +33,16 @@ private:
     void DrawConsolePanel();
     void DrawProfilerPanel();
     void DrawProjectPanel();
+    void DrawMaterialAssetControls(Engine::AssetHandle handle);
     void HandleAssetWatchEvents();
     void RunAssetWatchSmokeMutation();
     void RunGltfImportSmoke();
+    void RunMaterialAssetSmoke();
     bool ImportGltfAsset(const std::filesystem::path& sourcePath);
     bool SaveActiveScene();
     bool SaveAssetRegistry();
+    bool SaveMaterialAsset(Engine::AssetHandle handle);
+    bool SaveMaterialAssets();
     void EnsureDefaultSceneEntities();
 
 private:
@@ -53,15 +57,19 @@ private:
     bool m_AssetWatchSmokeTouched = false;
     bool m_GltfImportSmokeRequested = false;
     bool m_GltfImportSmokeCompleted = false;
+    bool m_MaterialAssetSmokeRequested = false;
+    bool m_MaterialAssetSmokeCompleted = false;
     std::string m_CaptureViewportPath = "output/captures/editor-viewport.bmp";
     std::string m_ScenePath = "output/scenes/sample.spiral";
     std::string m_AssetRegistryPath = "output/assets/sample.assets";
     std::string m_AssetWatchSmokePath = "output/assets/watch-smoke.mesh";
     std::string m_GltfImportSmokePath = "output/assets/gltf-smoke/triangle.gltf";
+    std::string m_MaterialAssetSmokePath = "output/assets/material-smoke.spiralmat";
     Engine::ClearColor m_ClearColor;
     Engine::AssetRegistry m_AssetRegistry;
     Engine::AssetWatcher m_AssetWatcher;
     Engine::GltfImportResult m_LastGltfImport;
+    Engine::MaterialLibrary m_MaterialLibrary;
     Engine::Scene m_ActiveScene { "Sample Scene" };
     Engine::Entity m_PrototypeMeshEntity;
     Engine::Entity m_DirectionalLightEntity;

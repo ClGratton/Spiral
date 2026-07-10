@@ -37,6 +37,10 @@ jobs:
         shell: pwsh
         run: .\bin\Debug-windows-x86_64\Editor\Editor.exe --headless --gltf-import-smoke
 
+      - name: Run material asset smoke
+        shell: pwsh
+        run: .\bin\Debug-windows-x86_64\Editor\Editor.exe --headless --material-asset-smoke
+
       - name: Upload viewport capture
         uses: actions/upload-artifact@v7
         if: always()
@@ -95,6 +99,14 @@ jobs:
             ./bin/Debug-linux-x86_64-gmake/Editor/Editor --headless --gltf-import-smoke
           else
             ./bin/Debug-macosx-x86_64-gmake/Editor/Editor --headless --gltf-import-smoke
+          fi
+
+      - name: Run material asset smoke
+        run: |
+          if [[ "${{ runner.os }}" == "Linux" ]]; then
+            ./bin/Debug-linux-x86_64-gmake/Editor/Editor --headless --material-asset-smoke
+          else
+            ./bin/Debug-macosx-x86_64-gmake/Editor/Editor --headless --material-asset-smoke
           fi
 
       - name: Run sandbox headless smoke

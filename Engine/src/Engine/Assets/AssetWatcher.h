@@ -34,6 +34,7 @@ namespace Engine
     public:
         void SyncRegistry(const AssetRegistry& registry);
         std::vector<AssetWatchEvent> Poll(const AssetRegistry& registry);
+        void Acknowledge(AssetHandle handle);
         void Clear();
 
         std::size_t GetTrackedCount() const { return m_Records.size(); }
