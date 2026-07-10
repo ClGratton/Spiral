@@ -21,6 +21,7 @@ This file records third-party dependencies, why they exist, how they enter the r
 | GLFW 3.4 | `Vendor/GLFW` | Cross-platform native window/input. Uses `GLFW_NO_API` for the Windows/MSVC D3D12 editor path and an OpenGL context for fallback builds. | zlib/libpng, see `Vendor/GLFW/LICENSE.md`. | Required for current editor/player shell. Must stay behind `Engine::Window`. |
 | Dear ImGui docking | `Vendor/ImGui` | Editor docking UI and panels. Uses DX12 renderer backend on Windows/MSVC and OpenGL2 fallback elsewhere. | MIT, see `Vendor/ImGui/LICENSE.txt`. | Required for current editor UI. Runtime game UI is a future separate decision. |
 | NVRHI | `Vendor/NVRHI` | Renderer abstraction vendor layer. Common, validation, Windows/MSVC D3D12, and Vulkan backend sources are built by Premake and used through `Engine::RHI`. | MIT, see `Vendor/NVRHI/LICENSE.txt`. | NVRHI types stay out of gameplay/editor APIs. D3D12/Vulkan details remain behind `Engine::RHI`. |
+| cgltf 1.15 | `Vendor/cgltf` | glTF 2.0 parse/validation and source-buffer loading for the asset import prototype. | MIT, see `Vendor/cgltf/LICENSE`. | Parser only. Spiral owns source identity, import metadata, and cooked manifests; runtime mesh buffers and material/texture conversion remain engine work. |
 | Vulkan-Headers | `Vendor/Vulkan-Headers` | Platform headers for the NVRHI Vulkan backend. | Apache-2.0 OR MIT, see `Vendor/Vulkan-Headers/LICENSE.md`. | Pinned from NVRHI's expected tag. Enables vendor Vulkan backend compilation; engine Vulkan device/swapchain creation is still pending. |
 | DirectX-Headers | `Vendor/DirectX-Headers` | Platform headers for the NVRHI D3D12 backend. | MIT, see `Vendor/DirectX-Headers/LICENSE`. | Pinned from NVRHI's expected tag. D3D12 sources are enabled only for Windows/MSVC; MinGW builds keep the NVRHI common fallback. |
 
@@ -59,6 +60,18 @@ Commit:     8e8c36e37558acec333204619b95d9d2fcdc4a79
 ```
 
 The current build compiles NVRHI common, validation, and Vulkan backend sources through `Vendor/NVRHI.premake.lua`, links them into the editor/sandbox, and probes `nvrhi::getFormatInfo` at renderer startup. On Windows/MSVC it also compiles NVRHI's D3D12 backend and the engine creates a native D3D12 device plus graphics/compute/copy queues before wrapping them in an NVRHI device. The editor presentation path then uses an engine-owned DXGI swapchain, D3D12 render-target/SRV descriptor heaps, ImGui's DX12 backend, and a renderer-owned viewport texture. MinGW/GMake intentionally keeps the NVRHI common fallback because DirectX-Headers and NVRHI D3D12 sources do not currently form a reliable MinGW ABI path in this repo. Vulkan device/swapchain creation is still an engine implementation task; this ledger entry only means the vendored NVRHI Vulkan backend now compiles against the pinned Vulkan-Headers.
+
+## cgltf Pin
+
+Vendored upstream:
+
+```text
+Repository: https://github.com/jkuhlmann/cgltf.git
+Tag:        v1.15
+Commit:     360db1a95480fe102ae9c69b27c5d101167ff5ba
+```
+
+`GltfImporter` uses cgltf to parse and validate `.gltf`/`.glb` sources, load buffers (including data URIs), then write Spiral-owned mesh import manifests. It does not make cgltf data structures part of a public engine or renderer contract.
 
 ## NVRHI Platform Header Pins
 

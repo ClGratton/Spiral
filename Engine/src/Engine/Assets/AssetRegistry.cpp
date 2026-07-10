@@ -297,7 +297,8 @@ namespace Engine
         while (normalized.rfind("./", 0) == 0)
             normalized.erase(0, 2);
 
-        while (!normalized.empty() && normalized.front() == '/')
+        const bool isAbsolutePath = std::filesystem::path(normalized).is_absolute();
+        while (!isAbsolutePath && !normalized.empty() && normalized.front() == '/')
             normalized.erase(normalized.begin());
 
         return normalized;

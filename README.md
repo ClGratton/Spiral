@@ -71,6 +71,7 @@ or:
 - `Vendor/GLFW`: vendored cross-platform window/input library built from source by Premake.
 - `Vendor/ImGui`: vendored Dear ImGui docking UI built from source by Premake.
 - `Vendor/NVRHI`: vendored NVRHI common core, validation layer, Vulkan backend, and Windows/MSVC D3D12 backend built from source by Premake.
+- `Vendor/cgltf`: pinned glTF 2.0 parser used by the asset import prototype.
 - `Vendor/Vulkan-Headers` and `Vendor/DirectX-Headers`: pinned platform headers for NVRHI backend builds.
 - `Engine/Shaders`: engine-owned shader assets loaded by renderer code during development.
 
@@ -91,6 +92,14 @@ To save and reload-validate the current sample scene in headless mode:
 ```
 
 The scene is written to `output/scenes/sample.spiral`.
+
+To parse, validate, register, and cook a self-contained glTF triangle import smoke:
+
+```powershell
+.\bin\Debug-windows-x86_64\Editor\Editor.exe --headless --gltf-import-smoke
+```
+
+The source and cooked mesh manifest are written under `output/assets/gltf-smoke` and `output/imports/gltf`.
 
 To run the automated Windows render smoke test, including build, capture, BMP validation, and non-blank pixel checks:
 

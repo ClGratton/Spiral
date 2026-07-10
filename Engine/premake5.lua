@@ -19,7 +19,8 @@ project "Engine"
         "src",
         "%{wks.location}/Vendor/GLFW/include",
         "%{wks.location}/Vendor/ImGui",
-        "%{wks.location}/Vendor/ImGui/backends"
+        "%{wks.location}/Vendor/ImGui/backends",
+        "%{wks.location}/Vendor/cgltf"
     }
 
     links

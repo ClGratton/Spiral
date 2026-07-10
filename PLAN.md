@@ -68,6 +68,7 @@ Immediate gap:
 - The scene hierarchy selection now drives the Inspector, and the Inspector edits live transform, camera, light, and mesh renderer component data.
 - The asset registry creates stable path/type-based handles, saves and reload-validates a manifest, and assigns registered sample mesh/material handles into the editor scene.
 - Asset source watching tracks registered files, warns on deletion, and queues reimport hooks on source changes.
+- The editor can import `.gltf`/`.glb` mesh sources through cgltf, register a stable mesh handle, and cook a structural mesh manifest; GPU mesh buffers and material/texture conversion remain follow-on work.
 - GitHub dependency submission now reports vendored/tool dependencies from the dependency ledger so the repo dependency graph can show them.
 
 ## Phase 0: Buildable Spine
@@ -148,7 +149,7 @@ Required:
 - [x] Inspector edits live component data.
 - [x] Asset registry with stable handles.
 - [x] File watching and reimport hooks.
-- [ ] glTF import prototype.
+- [x] glTF import prototype.
 - [ ] KTX2/Basis texture import plan.
 - [ ] Material asset format.
 - [ ] Drag/drop asset browser.

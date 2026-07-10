@@ -86,6 +86,7 @@ void EditorLayer::OnAttach()
     m_CaptureViewportRequested = Engine::Application::Get().GetSpecification().CommandLineArgs.HasFlag("--capture-viewport");
     m_SaveSceneSmokeRequested = Engine::Application::Get().GetSpecification().CommandLineArgs.HasFlag("--save-scene-smoke");
     m_AssetWatchSmokeRequested = Engine::Application::Get().GetSpecification().CommandLineArgs.HasFlag("--asset-watch-smoke");
+    m_GltfImportSmokeRequested = Engine::Application::Get().GetSpecification().CommandLineArgs.HasFlag("--gltf-import-smoke");
     if (m_AssetWatchSmokeRequested)
     {
         WriteTextFile(m_AssetWatchSmokePath, "asset watch smoke baseline\n");
@@ -121,6 +122,7 @@ void EditorLayer::OnUpdate(Engine::Timestep timestep)
     m_LastFrameMs = timestep.GetMilliseconds();
 
     RunAssetWatchSmokeMutation();
+    RunGltfImportSmoke();
     HandleAssetWatchEvents();
 
     if (m_FrameCounter == 1)
@@ -642,6 +644,20 @@ void EditorLayer::DrawProjectPanel()
     ImGui::Begin("Project");
     ImGui::TextUnformatted("Assets");
     ImGui::Separator();
+    ImGui::TextUnformatted("Import glTF");
+    ImGui::SetNextItemWidth(-1.0f);
+    ImGui::InputTextWithHint(
+        "##GltfSource",
+        "Source path (.gltf or .glb)",
+        m_GltfImportPath.data(),
+        m_GltfImportPath.size());
+    if (ImGui::Button("Import glTF"))
+        ImportGltfAsset(m_GltfImportPath.data());
+    if (!m_LastGltfImport.Error.empty())
+        ImGui::TextDisabled("%s", m_LastGltfImport.Error.c_str());
+    else if (m_LastGltfImport.Succeeded)
+        ImGui::TextDisabled("Cooked %zu mesh(es) to %s", m_LastGltfImport.Meshes.size(), m_LastGltfImport.CookedPath.string().c_str());
+    ImGui::Separator();
     if (m_AssetRegistry.GetAssets().empty())
     {
         ImGui::TextDisabled("No registered assets");
@@ -711,6 +727,56 @@ void EditorLayer::RunAssetWatchSmokeMutation()
         "asset watch smoke changed payload\nwith a different size\n");
     if (!m_AssetWatchSmokeTouched)
         m_ConsoleLines.emplace_back("Asset watch smoke mutation failed");
+}
+
+void EditorLayer::RunGltfImportSmoke()
+{
+    if (!m_GltfImportSmokeRequested || m_GltfImportSmokeCompleted || m_FrameCounter < 1)
+        return;
+
+    constexpr const char* source = R"({
+  "asset": { "version": "2.0" },
+  "buffers": [
+    { "uri": "data:application/octet-stream;base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAA", "byteLength": 36 }
+  ],
+  "bufferViews": [ { "buffer": 0, "byteOffset": 0, "byteLength": 36 } ],
+  "accessors": [ { "bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3" } ],
+  "meshes": [ { "name": "Smoke Triangle", "primitives": [ { "attributes": { "POSITION": 0 }, "mode": 4 } ] } ]
+})";
+
+    if (!WriteTextFile(m_GltfImportSmokePath, source) || !ImportGltfAsset(m_GltfImportSmokePath))
+        throw std::runtime_error("glTF import smoke failed: " + m_LastGltfImport.Error);
+
+    m_GltfImportSmokeCompleted = m_LastGltfImport.Meshes.size() == 1
+        && m_LastGltfImport.Meshes.front().VertexCount == 3
+        && m_LastGltfImport.Meshes.front().TriangleCount == 1
+        && std::filesystem::exists(m_LastGltfImport.CookedPath);
+    if (!m_GltfImportSmokeCompleted)
+        throw std::runtime_error("glTF import smoke produced an invalid cooked mesh manifest");
+
+    Engine::Log::Info("glTF import smoke passed: ", m_LastGltfImport.CookedPath.string());
+}
+
+bool EditorLayer::ImportGltfAsset(const std::filesystem::path& sourcePath)
+{
+    m_LastGltfImport = Engine::GltfImporter::Import(sourcePath, m_AssetRegistry);
+    if (!m_LastGltfImport.Succeeded)
+    {
+        m_ConsoleLines.emplace_back("glTF import failed: " + m_LastGltfImport.Error);
+        Engine::Log::Error("glTF import failed: ", m_LastGltfImport.Error);
+        return false;
+    }
+
+    m_AssetWatcher.SyncRegistry(m_AssetRegistry);
+    m_ConsoleLines.emplace_back(
+        "glTF imported: " + m_LastGltfImport.SourcePath + " ("
+        + std::to_string(m_LastGltfImport.Meshes.size()) + " mesh(es))");
+    Engine::Log::Info(
+        "glTF imported: ",
+        m_LastGltfImport.SourcePath,
+        " -> ",
+        m_LastGltfImport.CookedPath.string());
+    return true;
 }
 
 bool EditorLayer::SaveActiveScene()

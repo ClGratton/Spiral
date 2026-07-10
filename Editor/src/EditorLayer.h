@@ -3,6 +3,7 @@
 #include <Engine.h>
 
 #include <array>
+#include <filesystem>
 #include <string>
 #include <vector>
 
@@ -34,6 +35,8 @@ private:
     void DrawProjectPanel();
     void HandleAssetWatchEvents();
     void RunAssetWatchSmokeMutation();
+    void RunGltfImportSmoke();
+    bool ImportGltfAsset(const std::filesystem::path& sourcePath);
     bool SaveActiveScene();
     bool SaveAssetRegistry();
     void EnsureDefaultSceneEntities();
@@ -48,13 +51,17 @@ private:
     bool m_SaveSceneSmokeRequested = false;
     bool m_AssetWatchSmokeRequested = false;
     bool m_AssetWatchSmokeTouched = false;
+    bool m_GltfImportSmokeRequested = false;
+    bool m_GltfImportSmokeCompleted = false;
     std::string m_CaptureViewportPath = "output/captures/editor-viewport.bmp";
     std::string m_ScenePath = "output/scenes/sample.spiral";
     std::string m_AssetRegistryPath = "output/assets/sample.assets";
     std::string m_AssetWatchSmokePath = "output/assets/watch-smoke.mesh";
+    std::string m_GltfImportSmokePath = "output/assets/gltf-smoke/triangle.gltf";
     Engine::ClearColor m_ClearColor;
     Engine::AssetRegistry m_AssetRegistry;
     Engine::AssetWatcher m_AssetWatcher;
+    Engine::GltfImportResult m_LastGltfImport;
     Engine::Scene m_ActiveScene { "Sample Scene" };
     Engine::Entity m_PrototypeMeshEntity;
     Engine::Entity m_DirectionalLightEntity;
@@ -67,5 +74,6 @@ private:
     float m_CameraNearClip = 0.1f;
     float m_CameraFarClip = 100.0f;
     unsigned int m_ReimportRequestCount = 0;
+    std::array<char, 512> m_GltfImportPath {};
     std::vector<std::string> m_ConsoleLines;
 };

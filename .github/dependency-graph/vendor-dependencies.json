@@ -43,6 +43,14 @@
       "license": "MIT"
     },
     {
+      "name": "cgltf",
+      "package_url": "pkg:github/jkuhlmann/cgltf@v1.15",
+      "relationship": "direct",
+      "scope": "runtime",
+      "source_location": "Vendor/cgltf",
+      "license": "MIT"
+    },
+    {
       "name": "Vulkan-Headers",
       "package_url": "pkg:github/KhronosGroup/Vulkan-Headers@v1.4.352",
       "relationship": "direct",

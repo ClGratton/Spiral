@@ -10,6 +10,7 @@
 
 #include "Engine/Assets/AssetHandle.h"
 #include "Engine/Assets/AssetFileSystem.h"
+#include "Engine/Assets/GltfImporter.h"
 #include "Engine/Assets/AssetRegistry.h"
 #include "Engine/Assets/AssetWatcher.h"
 #include "Engine/Automation/Workflow.h"
