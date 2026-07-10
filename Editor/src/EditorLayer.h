@@ -82,6 +82,9 @@ private:
     float m_CameraNearClip = 0.1f;
     float m_CameraFarClip = 100.0f;
     unsigned int m_ReimportRequestCount = 0;
+    Engine::AssetHandle m_SelectedAssetHandle = Engine::kInvalidAssetHandle;
+    Engine::AssetType m_AssetBrowserTypeFilter = Engine::AssetType::Unknown;
+    std::array<char, 128> m_AssetBrowserFilter {};
     std::array<char, 512> m_GltfImportPath {};
     std::vector<std::string> m_ConsoleLines;
 };

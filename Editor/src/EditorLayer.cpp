@@ -3,6 +3,8 @@
 #include <imgui.h>
 #include <imgui_internal.h>
 
+#include <algorithm>
+#include <cctype>
 #include <cstdio>
 #include <cmath>
 #include <filesystem>
@@ -12,6 +14,14 @@
 
 namespace
 {
+    constexpr const char* AssetDragPayloadType = "SPIRAL_ASSET_HANDLE";
+
+    struct AssetDragPayload
+    {
+        Engine::AssetHandle Handle = Engine::kInvalidAssetHandle;
+        Engine::AssetType Type = Engine::AssetType::Unknown;
+    };
+
     const char* ToLightTypeName(Engine::LightType type)
     {
         switch (type)
@@ -34,14 +44,63 @@ namespace
         return true;
     }
 
-    bool DrawAssetHandleControl(const char* label, Engine::AssetHandle& handle)
+    bool DrawAssetHandleControl(
+        const char* label,
+        Engine::AssetHandle& handle,
+        const Engine::AssetRegistry& assetRegistry,
+        Engine::AssetType expectedType)
     {
         Engine::u64 value = handle;
-        if (!ImGui::InputScalar(label, ImGuiDataType_U64, &value))
+        bool changed = ImGui::InputScalar(label, ImGuiDataType_U64, &value);
+        if (changed)
+            handle = value;
+
+        if (ImGui::BeginDragDropTarget())
+        {
+            if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(AssetDragPayloadType))
+            {
+                if (payload->DataSize == sizeof(AssetDragPayload))
+                {
+                    const AssetDragPayload& droppedAsset = *static_cast<const AssetDragPayload*>(payload->Data);
+                    if (droppedAsset.Type == expectedType && assetRegistry.Contains(droppedAsset.Handle))
+                    {
+                        handle = droppedAsset.Handle;
+                        changed = true;
+                    }
+                }
+            }
+
+            ImGui::EndDragDropTarget();
+        }
+
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Drag a registered %s asset here", Engine::ToString(expectedType));
+
+        return changed;
+    }
+
+    bool AssetMatchesFilter(const Engine::AssetMetadata& metadata, const char* filter, Engine::AssetType typeFilter)
+    {
+        if (typeFilter != Engine::AssetType::Unknown && metadata.Type != typeFilter)
             return false;
 
-        handle = value;
-        return true;
+        if (filter[0] == '\0')
+            return true;
+
+        std::string searchable = metadata.Name + " " + metadata.SourcePath + " " + Engine::ToString(metadata.Type);
+        std::transform(
+            searchable.begin(),
+            searchable.end(),
+            searchable.begin(),
+            [](unsigned char character) { return static_cast<char>(std::tolower(character)); });
+
+        std::string needle = filter;
+        std::transform(
+            needle.begin(),
+            needle.end(),
+            needle.begin(),
+            [](unsigned char character) { return static_cast<char>(std::tolower(character)); });
+        return searchable.find(needle) != std::string::npos;
     }
 
     std::string GetMeshDisplayName(const Engine::MeshRendererComponent& meshRenderer, const Engine::AssetRegistry& assetRegistry)
@@ -415,8 +474,8 @@ void EditorLayer::DrawInspectorPanel()
             meshRenderer.MeshName = meshName;
             m_AssetRegistry.SetAssetName(meshRenderer.MeshAsset, meshName);
         }
-        DrawAssetHandleControl("Mesh Asset", meshRenderer.MeshAsset);
-        DrawAssetHandleControl("Material Asset", meshRenderer.MaterialAsset);
+        DrawAssetHandleControl("Mesh Asset", meshRenderer.MeshAsset, m_AssetRegistry, Engine::AssetType::Mesh);
+        DrawAssetHandleControl("Material Asset", meshRenderer.MaterialAsset, m_AssetRegistry, Engine::AssetType::Material);
         DrawMaterialAssetControls(meshRenderer.MaterialAsset);
         ImGui::Checkbox("Visible", &meshRenderer.Visible);
         ImGui::Checkbox("Casts Shadows", &meshRenderer.CastsShadows);
@@ -535,7 +594,8 @@ void EditorLayer::DrawMaterialAssetControls(Engine::AssetHandle handle)
         Engine::MaterialTextureSlot::CallistoControl
     };
     for (Engine::MaterialTextureSlot slot : textureSlots)
-        DrawAssetHandleControl(Engine::ToString(slot), material->GetTexture(slot));
+        DrawAssetHandleControl(
+            Engine::ToString(slot), material->GetTexture(slot), m_AssetRegistry, Engine::AssetType::Texture);
 
     ImGui::Separator();
     ImGui::TextUnformatted("Callisto Controls");
@@ -755,30 +815,87 @@ void EditorLayer::DrawProjectPanel()
     else if (m_LastGltfImport.Succeeded)
         ImGui::TextDisabled("Cooked %zu mesh(es) to %s", m_LastGltfImport.Meshes.size(), m_LastGltfImport.CookedPath.string().c_str());
     ImGui::Separator();
+
+    ImGui::SetNextItemWidth(-1.0f);
+    ImGui::InputTextWithHint(
+        "##AssetFilter",
+        "Filter assets",
+        m_AssetBrowserFilter.data(),
+        m_AssetBrowserFilter.size());
+
+    constexpr Engine::AssetType assetTypes[] = {
+        Engine::AssetType::Unknown,
+        Engine::AssetType::Mesh,
+        Engine::AssetType::Material,
+        Engine::AssetType::Texture,
+        Engine::AssetType::Scene,
+        Engine::AssetType::Shader,
+        Engine::AssetType::Script,
+        Engine::AssetType::Audio
+    };
+    const char* selectedTypeLabel = m_AssetBrowserTypeFilter == Engine::AssetType::Unknown
+        ? "All Types"
+        : Engine::ToString(m_AssetBrowserTypeFilter);
+    ImGui::SetNextItemWidth(-1.0f);
+    if (ImGui::BeginCombo("##AssetType", selectedTypeLabel))
+    {
+        for (Engine::AssetType type : assetTypes)
+        {
+            const char* typeLabel = type == Engine::AssetType::Unknown ? "All Types" : Engine::ToString(type);
+            const bool isSelected = m_AssetBrowserTypeFilter == type;
+            if (ImGui::Selectable(typeLabel, isSelected))
+                m_AssetBrowserTypeFilter = type;
+            if (isSelected)
+                ImGui::SetItemDefaultFocus();
+        }
+
+        ImGui::EndCombo();
+    }
+
     if (m_AssetRegistry.GetAssets().empty())
     {
         ImGui::TextDisabled("No registered assets");
     }
-    else if (ImGui::BeginTable("RegisteredAssets", 2, ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_RowBg))
+    else if (ImGui::BeginTable(
+                 "RegisteredAssets",
+                 3,
+                 ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_RowBg | ImGuiTableFlags_Resizable))
     {
-        ImGui::TableSetupColumn("Name");
-        ImGui::TableSetupColumn("Type");
+        ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_WidthStretch, 0.9f);
+        ImGui::TableSetupColumn("Type", ImGuiTableColumnFlags_WidthFixed, 72.0f);
+        ImGui::TableSetupColumn("Source", ImGuiTableColumnFlags_WidthStretch, 1.1f);
         ImGui::TableHeadersRow();
 
         for (const Engine::AssetMetadata& metadata : m_AssetRegistry.GetAssets())
         {
+            if (!AssetMatchesFilter(metadata, m_AssetBrowserFilter.data(), m_AssetBrowserTypeFilter))
+                continue;
+
             ImGui::TableNextRow();
             ImGui::TableSetColumnIndex(0);
-            ImGui::TextUnformatted(metadata.Name.c_str());
-            ImGui::TableSetColumnIndex(1);
-            ImGui::TextUnformatted(Engine::ToString(metadata.Type));
+            ImGui::PushID(metadata.SourcePath.c_str());
+            if (ImGui::Selectable(metadata.Name.c_str(), m_SelectedAssetHandle == metadata.Handle, ImGuiSelectableFlags_SpanAllColumns))
+                m_SelectedAssetHandle = metadata.Handle;
+            if (ImGui::BeginDragDropSource())
+            {
+                const AssetDragPayload payload { metadata.Handle, metadata.Type };
+                ImGui::SetDragDropPayload(AssetDragPayloadType, &payload, sizeof(payload));
+                ImGui::TextUnformatted(metadata.Name.c_str());
+                ImGui::TextDisabled("%s", Engine::ToString(metadata.Type));
+                ImGui::EndDragDropSource();
+            }
             if (ImGui::IsItemHovered())
             {
                 ImGui::SetTooltip(
-                    "Handle: %llu\nSource: %s",
+                    "Handle: %llu\nSource: %s\nDrag to assign",
                     static_cast<unsigned long long>(metadata.Handle),
                     metadata.SourcePath.c_str());
             }
+            ImGui::PopID();
+            ImGui::TableSetColumnIndex(1);
+            ImGui::TextUnformatted(Engine::ToString(metadata.Type));
+            ImGui::TableSetColumnIndex(2);
+            ImGui::TextUnformatted(metadata.SourcePath.c_str());
         }
 
         ImGui::EndTable();

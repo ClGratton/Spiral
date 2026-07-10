@@ -154,7 +154,7 @@ Required:
 - [x] glTF import prototype.
 - [x] KTX2/Basis texture import plan.
 - [x] Material asset format.
-- [ ] Drag/drop asset browser.
+- [x] Drag/drop asset browser.
 - [ ] Save/load project and scene.
 - [ ] Undo/redo command stack.
 
