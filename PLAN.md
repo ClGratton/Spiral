@@ -169,8 +169,8 @@ Goal: deliver a conventional-but-clean renderer before the advanced visibility-b
 
 Required:
 
-- [ ] NVRHI backend integrated behind `Engine::RHI`.
-- [ ] D3D12 first path on Windows, Vulkan path kept in design.
+- [x] NVRHI backend integrated behind `Engine::RHI`.
+- [x] D3D12 first path on Windows, Vulkan path kept in design.
 - [ ] Swapchain, command queues, resource upload, transient resources.
 - [ ] Slang or HLSL shader compilation pipeline.
 - [ ] Mesh buffers, index buffers, constant/structured buffers.
