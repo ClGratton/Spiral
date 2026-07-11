@@ -8,6 +8,8 @@
 
 #include <GLFW/glfw3.h>
 
+#include <vector>
+
 namespace Engine
 {
     namespace
@@ -95,6 +97,21 @@ namespace Engine
             WindowResizeEvent event(data.Width, data.Height);
             if (data.EventCallback)
                 data.EventCallback(event);
+        });
+
+        glfwSetDropCallback(m_Window, [](GLFWwindow* window, int pathCount, const char* paths[])
+        {
+            WindowData& data = *static_cast<WindowData*>(glfwGetWindowUserPointer(window));
+            if (!data.EventCallback)
+                return;
+
+            std::vector<std::string> droppedPaths;
+            droppedPaths.reserve(static_cast<size_t>(pathCount));
+            for (int pathIndex = 0; pathIndex < pathCount; ++pathIndex)
+                droppedPaths.emplace_back(paths[pathIndex]);
+
+            FileDropEvent event(std::move(droppedPaths));
+            data.EventCallback(event);
         });
 
         glfwSetKeyCallback(m_Window, [](GLFWwindow* window, int key, int scancode, int action, int mods)

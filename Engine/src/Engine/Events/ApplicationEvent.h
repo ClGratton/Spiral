@@ -3,6 +3,8 @@
 #include "Engine/Events/Event.h"
 
 #include <sstream>
+#include <utility>
+#include <vector>
 
 namespace Engine
 {
@@ -41,6 +43,25 @@ namespace Engine
         EventType GetEventType() const override { return GetStaticType(); }
         std::string_view GetName() const override { return "WindowClose"; }
         u32 GetCategoryFlags() const override { return EventCategoryApplication; }
+    };
+
+    class FileDropEvent final : public Event
+    {
+    public:
+        explicit FileDropEvent(std::vector<std::string> paths)
+            : m_Paths(std::move(paths))
+        {
+        }
+
+        const std::vector<std::string>& GetPaths() const { return m_Paths; }
+
+        static EventType GetStaticType() { return EventType::FileDrop; }
+        EventType GetEventType() const override { return GetStaticType(); }
+        std::string_view GetName() const override { return "FileDrop"; }
+        u32 GetCategoryFlags() const override { return EventCategoryApplication | EventCategoryInput; }
+
+    private:
+        std::vector<std::string> m_Paths;
     };
 
     class AppTickEvent final : public Event

@@ -38,6 +38,7 @@ private:
     void RunAssetWatchSmokeMutation();
     void RunGltfImportSmoke();
     void RunMaterialAssetSmoke();
+    bool OnFileDrop(Engine::FileDropEvent& event);
     bool ImportGltfAsset(const std::filesystem::path& sourcePath);
     bool SaveActiveScene();
     bool SaveAssetRegistry();

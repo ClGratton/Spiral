@@ -12,6 +12,7 @@ namespace Engine
         None = 0,
         WindowClose,
         WindowResize,
+        FileDrop,
         WindowFocus,
         WindowLostFocus,
         AppTick,

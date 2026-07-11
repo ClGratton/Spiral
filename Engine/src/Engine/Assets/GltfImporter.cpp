@@ -134,8 +134,14 @@ namespace Engine
         }
 
         std::unique_ptr<cgltf_data, decltype(&cgltf_free)> document(rawDocument, &cgltf_free);
-        const std::string basePath = resolvedPath.parent_path().string();
-        parseResult = cgltf_load_buffers(&options, document.get(), basePath.c_str());
+        for (cgltf_size bufferIndex = 0; bufferIndex < document->buffers_count; ++bufferIndex)
+        {
+            if (document->buffers[bufferIndex].uri)
+                cgltf_decode_string(document->buffers[bufferIndex].uri);
+        }
+
+        // cgltf resolves external buffers relative to the original glTF file, not its parent directory.
+        parseResult = cgltf_load_buffers(&options, document.get(), resolvedPathString.c_str());
         if (parseResult != cgltf_result_success)
         {
             result.Error = "Could not load glTF buffers: " + GetResultName(parseResult);

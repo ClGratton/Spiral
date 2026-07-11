@@ -127,6 +127,23 @@ namespace
         output << text;
         return true;
     }
+
+    bool WriteBinaryFile(const std::filesystem::path& path, const void* data, std::size_t size)
+    {
+        std::error_code error;
+        const std::filesystem::path parent = path.parent_path();
+        if (!parent.empty())
+            std::filesystem::create_directories(parent, error);
+        if (error)
+            return false;
+
+        std::ofstream output(path, std::ios::out | std::ios::trunc | std::ios::binary);
+        if (!output)
+            return false;
+
+        output.write(static_cast<const char*>(data), static_cast<std::streamsize>(size));
+        return static_cast<bool>(output);
+    }
 }
 
 EditorLayer::EditorLayer()
@@ -224,6 +241,11 @@ void EditorLayer::OnUiRender()
 
 void EditorLayer::OnEvent(Engine::Event& event)
 {
+    Engine::EventDispatcher dispatcher(event);
+    dispatcher.Dispatch<Engine::FileDropEvent>(GE_BIND_EVENT_FN(EditorLayer::OnFileDrop));
+    if (event.Handled)
+        return;
+
     Engine::Log::Trace("Editor received event: ", event.ToString());
 }
 
@@ -951,14 +973,22 @@ void EditorLayer::RunGltfImportSmoke()
     constexpr const char* source = R"({
   "asset": { "version": "2.0" },
   "buffers": [
-    { "uri": "data:application/octet-stream;base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAA", "byteLength": 36 }
+    { "uri": "triangle.bin", "byteLength": 36 }
   ],
   "bufferViews": [ { "buffer": 0, "byteOffset": 0, "byteLength": 36 } ],
   "accessors": [ { "bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3" } ],
   "meshes": [ { "name": "Smoke Triangle", "primitives": [ { "attributes": { "POSITION": 0 }, "mode": 4 } ] } ]
 })";
+    constexpr std::array<float, 9> trianglePositions = {
+        0.0f, 0.0f, 0.0f,
+        1.0f, 0.0f, 0.0f,
+        0.0f, 1.0f, 0.0f
+    };
+    const std::filesystem::path bufferPath = std::filesystem::path(m_GltfImportSmokePath).replace_extension(".bin");
 
-    if (!WriteTextFile(m_GltfImportSmokePath, source) || !ImportGltfAsset(m_GltfImportSmokePath))
+    if (!WriteTextFile(m_GltfImportSmokePath, source)
+        || !WriteBinaryFile(bufferPath, trianglePositions.data(), sizeof(trianglePositions))
+        || !ImportGltfAsset(m_GltfImportSmokePath))
         throw std::runtime_error("glTF import smoke failed: " + m_LastGltfImport.Error);
 
     m_GltfImportSmokeCompleted = m_LastGltfImport.Meshes.size() == 1
@@ -969,6 +999,17 @@ void EditorLayer::RunGltfImportSmoke()
         throw std::runtime_error("glTF import smoke produced an invalid cooked mesh manifest");
 
     Engine::Log::Info("glTF import smoke passed: ", m_LastGltfImport.CookedPath.string());
+}
+
+bool EditorLayer::OnFileDrop(Engine::FileDropEvent& event)
+{
+    for (const std::string& path : event.GetPaths())
+    {
+        std::snprintf(m_GltfImportPath.data(), m_GltfImportPath.size(), "%s", path.c_str());
+        ImportGltfAsset(path);
+    }
+
+    return true;
 }
 
 void EditorLayer::RunMaterialAssetSmoke()
