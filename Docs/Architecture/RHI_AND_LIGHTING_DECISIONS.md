@@ -409,16 +409,37 @@ Automation:
 
 1. Add NVRHI backend behind `Engine::RHI`.
 2. Add render graph/resource validation above NVRHI.
-3. Add dynamic directional sun/moon light with art-directed path.
-4. Add analytic sky model and sky SH output.
-5. Add static lightmap/probe data format.
-6. Add single-time bake import/runtime sampling.
-7. Add time-keyed probe blending.
-8. Add time-keyed directional lightmap blending.
-9. Add adaptive keyframe selection/error heatmap.
-10. Add geospatial SPA sun mode.
-11. Add compression/PCA/delta storage for lighting keys.
-12. Add production atmosphere and weather.
+3. Add presentation pacing and instrumentation at the native swapchain boundary.
+4. Add dynamic directional sun/moon light with art-directed path.
+5. Add analytic sky model and sky SH output.
+6. Add static lightmap/probe data format.
+7. Add single-time bake import/runtime sampling.
+8. Add time-keyed probe blending.
+9. Add time-keyed directional lightmap blending.
+10. Add adaptive keyframe selection/error heatmap.
+11. Add geospatial SPA sun mode.
+12. Add compression/PCA/delta storage for lighting keys.
+13. Add production atmosphere and weather.
+
+## Presentation Timing And Latency Policy
+
+Presentation belongs to the platform swapchain layer, outside NVRHI. The engine must treat simulation cadence, CPU `Present` cadence, GPU completion, and display cadence as separate signals. No single overlay metric is sufficient evidence of smoothness or input latency.
+
+Windows D3D12 baseline:
+
+- Use a flip-model swapchain with `DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT` when the window/presentation mode supports it.
+- Wait on the frame-latency object before input sampling, simulation, and rendering, then present the freshly rendered result immediately. Do not make a generic sleep immediately before `Present` the engine pacing policy.
+- Expose a profiled queue-depth profile. Start at a maximum frame latency of one; allow two only when measurements show that the extra CPU/GPU overlap is needed to meet the target cadence.
+
+Vulkan baseline:
+
+- Keep normal FIFO presentation and engine-side timing as the portable fallback.
+- When the selected device and surface expose `VK_EXT_present_timing`, opt in behind a capability check, collect presentation feedback, and use its timing controls only through the swapchain policy. Never make this extension mandatory for portability.
+- Do not design around the older `VK_GOOGLE_display_timing` path; it remains a possible compatibility experiment, not the preferred cross-vendor contract.
+
+VRR and vendor latency technologies are profile inputs, not correctness mechanisms. Respect the user's VRR and driver settings, but do not claim that VRR repairs missed frame budgets. NVIDIA Reflex may become an optional Windows/NVIDIA latency integration after the portable pacing and instrumentation path exists; it is not a substitute for that path.
+
+RTSS, MSI Afterburner, and Special K may be useful external test conditions. The engine must not require them or reproduce their implementation details. Claims such as a fixed one-frame cost, display-level timing, or frame-generation benefit require measurements on the target hardware and presentation path before they affect an engine default.
 
 ## Open Questions
 
@@ -445,6 +466,10 @@ Automation:
 - D3D12 Shader Execution Reordering: https://devblogs.microsoft.com/directx/ser/
 - D3D12 Cooperative Vector: https://devblogs.microsoft.com/directx/cooperative-vector/
 - NREL Solar Position Algorithm: https://midcdmz.nlr.gov/spa/
+- Microsoft DXGI waitable swap chains: https://learn.microsoft.com/en-us/windows/uwp/gaming/reduce-latency-with-dxgi-1-3-swap-chains
+- Khronos `VK_EXT_present_timing`: https://docs.vulkan.org/refpages/latest/refpages/source/VK_EXT_present_timing.html
+- Khronos present-timing proposal: https://docs.vulkan.org/features/latest/features/proposals/VK_EXT_present_timing.html
+- NVIDIA Reflex: https://developer.nvidia.com/performance-rendering-tools/reflex
 - Sandia SPA summary: https://pvpmc.sandia.gov/modeling-guide/1-weather-design-inputs/sun-position/solar-position-algorithm-spa/
 - Precomputed Radiance Transfer: https://cseweb.ucsd.edu/~ravir/6998/papers/p527-sloan.pdf
 - Deferred Radiance Transfer Volumes, Far Cry 3: https://www.gdcvault.com/play/1015326/Deferred-Radiance-Transfer-Volumes-Global

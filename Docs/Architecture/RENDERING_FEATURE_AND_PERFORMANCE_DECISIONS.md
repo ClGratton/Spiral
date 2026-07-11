@@ -257,7 +257,10 @@ Required external tool support:
 
 Required engine instrumentation:
 
-- CPU frame time, GPU frame time, present time.
+- CPU frame time, GPU frame time, and present time.
+- Per-frame simulation-start, render-submit, `Present` begin/end, GPU-complete, and display-timing markers where the platform exposes them. Keep application, present, and display cadence separate.
+- Swapchain mode, buffer count, configured queue depth, waitable-swapchain availability/use, and VRR/tearing policy.
+- When frame generation is active, rendered-frame, generated-frame, present, and display rates, plus latency, reported separately.
 - Per-pass GPU timestamps.
 - Queue overlap: graphics, compute, copy.
 - Draw/dispatch count.
@@ -274,6 +277,14 @@ Required engine instrumentation:
 - Mesh memory, cluster page residency, fallback usage.
 - Shader permutation count and pipeline cache misses.
 - Async upload/decompression time.
+
+### Presentation Measurement Rules
+
+Use PresentMon on Windows performance runs to compare `MsBetweenPresents`, `MsBetweenDisplayChange`, `MsUntilDisplayed`, `DisplayLatency`, and presentation mode with the engine's own markers. These metrics describe different pipeline stages; a stable `Present` cadence alone does not prove a stable display cadence.
+
+Click-to-photon claims require an appropriate input/display measurement path. Engine timestamps and presentation telemetry are necessary for diagnosis, but do not by themselves measure peripheral or panel response latency.
+
+Evaluate external pacing tools, driver settings, VRR modes, and frame-generation modes as named test conditions. Do not promote one configuration to a default based on an overlay alone or assume a fixed latency cost across APIs and hardware.
 
 Required debug views:
 
@@ -393,6 +404,8 @@ Maximizing triangle area is not the only goal. A giant long sliver can have larg
 ## Sources
 
 - Frostbite Stochastic Screen-Space Reflections: https://www.ea.com/news/stochastic-screen-space-reflections
+- PresentMon console metrics: https://github.com/GameTechDev/PresentMon/blob/main/README-ConsoleApplication.md
+- NVIDIA PC latency measurement: https://developer.nvidia.com/blog/understanding-and-measuring-pc-latency/
 - Tomasz Stachowiak, Stochastic SSR notes: https://h3.gd/stochastic-ssr/
 - SIGGRAPH 2015 Advances course: https://advances.realtimerendering.com/s2015/
 - Hybrid screen-space reflections: https://interplayoflight.wordpress.com/2019/09/07/hybrid-screen-space-reflections/
