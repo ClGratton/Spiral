@@ -42,12 +42,23 @@ namespace Engine
         RendererTimingStatus GpuStatus = RendererTimingStatus::Unavailable;
     };
 
+    struct RendererPresentationTiming
+    {
+        bool UsesWaitableSwapchain = false;
+        bool WaitedForFrameLatency = false;
+        bool PresentSucceeded = false;
+        u32 MaximumFrameLatency = 0;
+        double FrameLatencyWaitMilliseconds = 0.0;
+        double PresentMilliseconds = 0.0;
+    };
+
     struct RendererFrameTiming
     {
         u64 FrameIndex = 0;
         double CpuMilliseconds = 0.0;
         double GpuMilliseconds = 0.0;
         RendererTimingStatus GpuStatus = RendererTimingStatus::Unavailable;
+        RendererPresentationTiming Presentation;
         std::vector<RendererPassTiming> Passes;
     };
 

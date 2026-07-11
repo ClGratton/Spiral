@@ -30,6 +30,7 @@ namespace Engine
         const RHI::NVRHIAdapterInfo& GetAdapterInfo() const { return m_AdapterInfo; }
         RendererBackend GetRendererBackend() const { return m_RendererBackend; }
         const RHI::DeviceCapabilities* GetDeviceCapabilities() const;
+        const RendererPresentationTiming* GetPresentationTiming() const;
 
     private:
         RHI::NVRHIAdapterInfo m_AdapterInfo;

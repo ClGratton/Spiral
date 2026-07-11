@@ -20,11 +20,13 @@ namespace Engine
         void Shutdown();
 
         bool IsInitialized() const;
+        void WaitForFrameLatency();
         void BeginImGuiFrame();
         void RenderImGuiDrawData(ImDrawData* drawData, const ClearColor& clearColor, u32 width, u32 height);
         bool PrepareViewportTexture(u32 width, u32 height);
         u64 GetViewportTextureId() const;
         bool CaptureViewportToFile(std::string_view path);
+        const RendererPresentationTiming& GetTiming() const;
 
     private:
         struct Impl;

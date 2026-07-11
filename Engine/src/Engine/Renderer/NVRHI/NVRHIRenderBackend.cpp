@@ -58,6 +58,8 @@ namespace Engine
     void NVRHIRenderBackend::BeginFrame(const ClearColor& clearColor)
     {
         (void)clearColor;
+        if (m_D3D12Presentation)
+            m_D3D12Presentation->WaitForFrameLatency();
     }
 
     void NVRHIRenderBackend::EndFrame()
@@ -67,6 +69,11 @@ namespace Engine
     const RHI::DeviceCapabilities* NVRHIRenderBackend::GetDeviceCapabilities() const
     {
         return m_Device ? &m_Device->GetCapabilities() : nullptr;
+    }
+
+    const RendererPresentationTiming* NVRHIRenderBackend::GetPresentationTiming() const
+    {
+        return m_D3D12Presentation ? &m_D3D12Presentation->GetTiming() : nullptr;
     }
 
     bool NVRHIRenderBackend::InitializeImGui(void* nativeWindow, u32 width, u32 height)

@@ -25,6 +25,7 @@
     #include <backends/imgui_impl_dx12.h>
 
     #include <array>
+    #include <chrono>
     #include <filesystem>
     #include <fstream>
     #include <limits>
@@ -41,9 +42,11 @@ namespace Engine
         using Microsoft::WRL::ComPtr;
 
         constexpr u32 kFrameCount = 2;
+        constexpr u32 kMaximumFrameLatency = 1;
         constexpr u32 kSrvDescriptorCount = 256;
         constexpr u32 kInvalidDescriptorIndex = std::numeric_limits<u32>::max();
         constexpr DXGI_FORMAT kSwapchainFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
+        constexpr DXGI_SWAP_CHAIN_FLAG kSwapchainFlags = DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
 
         const wchar_t* GetBackBufferName(u32 index)
         {
@@ -226,6 +229,8 @@ namespace Engine
                 m_FenceEvent = nullptr;
             }
 
+            ReleaseFrameLatencyWaitableObject();
+
             m_CommandList.Reset();
             for (FrameContext& frame : m_Frames)
                 frame.CommandAllocator.Reset();
@@ -242,6 +247,33 @@ namespace Engine
         bool IsInitialized() const
         {
             return m_Initialized;
+        }
+
+        const RendererPresentationTiming& GetTiming() const
+        {
+            return m_PresentationTiming;
+        }
+
+        void WaitForFrameLatency()
+        {
+            m_PresentationTiming.WaitedForFrameLatency = false;
+            m_PresentationTiming.FrameLatencyWaitMilliseconds = 0.0;
+            m_PresentationTiming.PresentSucceeded = false;
+            m_PresentationTiming.PresentMilliseconds = 0.0;
+
+            if (!m_Initialized || !m_FrameLatencyWaitableObject)
+                return;
+
+            const auto waitStart = std::chrono::steady_clock::now();
+            const DWORD waitResult = WaitForSingleObjectEx(m_FrameLatencyWaitableObject, 1000, FALSE);
+            const auto waitEnd = std::chrono::steady_clock::now();
+            m_PresentationTiming.WaitedForFrameLatency = waitResult == WAIT_OBJECT_0;
+            m_PresentationTiming.FrameLatencyWaitMilliseconds = std::chrono::duration<double, std::milli>(waitEnd - waitStart).count();
+
+            if (waitResult == WAIT_TIMEOUT)
+                Log::Warn("D3D12 frame-latency wait timed out");
+            else if (waitResult == WAIT_FAILED)
+                Log::Error("D3D12 frame-latency wait failed: ", HResultToString(HRESULT_FROM_WIN32(GetLastError())));
         }
 
         void BeginImGuiFrame()
@@ -318,7 +350,11 @@ namespace Engine
             ID3D12CommandList* commandLists[] = { m_CommandList.Get() };
             m_GraphicsQueue->ExecuteCommandLists(1, commandLists);
 
+            const auto presentStart = std::chrono::steady_clock::now();
             result = m_Swapchain->Present(1, 0);
+            const auto presentEnd = std::chrono::steady_clock::now();
+            m_PresentationTiming.PresentMilliseconds = std::chrono::duration<double, std::milli>(presentEnd - presentStart).count();
+            m_PresentationTiming.PresentSucceeded = SUCCEEDED(result);
             if (FAILED(result))
                 Log::Error("D3D12 swapchain present failed: ", HResultToString(result));
 
@@ -618,7 +654,7 @@ namespace Engine
             swapchainDesc.Scaling = DXGI_SCALING_STRETCH;
             swapchainDesc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
             swapchainDesc.AlphaMode = DXGI_ALPHA_MODE_UNSPECIFIED;
-            swapchainDesc.Flags = 0;
+            swapchainDesc.Flags = kSwapchainFlags;
 
             ComPtr<IDXGISwapChain1> swapchain1;
             HRESULT result = m_Factory->CreateSwapChainForHwnd(m_GraphicsQueue, hwnd, &swapchainDesc, nullptr, nullptr, &swapchain1);
@@ -640,7 +676,42 @@ namespace Engine
             m_SwapchainWidth = width;
             m_SwapchainHeight = height;
             m_FrameIndex = m_Swapchain->GetCurrentBackBufferIndex();
+            if (!ConfigureFrameLatencyWaitableObject())
+                return false;
             return CreateBackBufferViews();
+        }
+
+        bool ConfigureFrameLatencyWaitableObject()
+        {
+            HRESULT result = m_Swapchain->SetMaximumFrameLatency(kMaximumFrameLatency);
+            if (FAILED(result))
+            {
+                Log::Error("Could not configure D3D12 swapchain frame latency: ", HResultToString(result));
+                return false;
+            }
+
+            m_FrameLatencyWaitableObject = m_Swapchain->GetFrameLatencyWaitableObject();
+            if (!m_FrameLatencyWaitableObject)
+            {
+                Log::Error("Could not get D3D12 swapchain frame-latency waitable object");
+                return false;
+            }
+
+            m_PresentationTiming.UsesWaitableSwapchain = true;
+            m_PresentationTiming.MaximumFrameLatency = kMaximumFrameLatency;
+            return true;
+        }
+
+        void ReleaseFrameLatencyWaitableObject()
+        {
+            if (m_FrameLatencyWaitableObject)
+            {
+                CloseHandle(m_FrameLatencyWaitableObject);
+                m_FrameLatencyWaitableObject = nullptr;
+            }
+
+            m_PresentationTiming.UsesWaitableSwapchain = false;
+            m_PresentationTiming.MaximumFrameLatency = 0;
         }
 
         bool CreateBackBufferViews()
@@ -756,8 +827,9 @@ namespace Engine
 
             WaitIdle();
             ReleaseBackBuffers();
+            ReleaseFrameLatencyWaitableObject();
 
-            HRESULT result = m_Swapchain->ResizeBuffers(kFrameCount, width, height, kSwapchainFormat, 0);
+            HRESULT result = m_Swapchain->ResizeBuffers(kFrameCount, width, height, kSwapchainFormat, kSwapchainFlags);
             if (FAILED(result))
             {
                 Log::Error("Could not resize D3D12 swapchain: ", HResultToString(result));
@@ -767,6 +839,8 @@ namespace Engine
             m_SwapchainWidth = width;
             m_SwapchainHeight = height;
             m_FrameIndex = m_Swapchain->GetCurrentBackBufferIndex();
+            if (!ConfigureFrameLatencyWaitableObject())
+                return false;
             return CreateBackBufferViews();
         }
 
@@ -937,6 +1011,7 @@ namespace Engine
         ComPtr<ID3D12Fence> m_Fence;
         NVRHID3D12ViewportSceneRenderer m_ViewportSceneRenderer;
         HANDLE m_FenceEvent = nullptr;
+        HANDLE m_FrameLatencyWaitableObject = nullptr;
 
         std::vector<bool> m_SrvAllocated;
         u32 m_RtvDescriptorSize = 0;
@@ -945,6 +1020,7 @@ namespace Engine
         u32 m_SwapchainWidth = 0;
         u32 m_SwapchainHeight = 0;
         u64 m_LastFenceValue = 0;
+        RendererPresentationTiming m_PresentationTiming;
 
         Scope<RHI::Texture> m_ViewportTexture;
         Scope<RHI::Texture> m_ViewportDepthTexture;
@@ -1003,6 +1079,13 @@ namespace Engine
 #endif
     }
 
+    void NVRHID3D12Presentation::WaitForFrameLatency()
+    {
+#if defined(GE_HAS_NVRHI_D3D12)
+        m_Impl->WaitForFrameLatency();
+#endif
+    }
+
     void NVRHID3D12Presentation::BeginImGuiFrame()
     {
 #if defined(GE_HAS_NVRHI_D3D12)
@@ -1049,6 +1132,16 @@ namespace Engine
 #else
         (void)path;
         return false;
+#endif
+    }
+
+    const RendererPresentationTiming& NVRHID3D12Presentation::GetTiming() const
+    {
+#if defined(GE_HAS_NVRHI_D3D12)
+        return m_Impl->GetTiming();
+#else
+        static const RendererPresentationTiming timing;
+        return timing;
 #endif
     }
 }

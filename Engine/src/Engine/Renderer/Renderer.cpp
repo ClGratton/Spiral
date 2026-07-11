@@ -156,6 +156,13 @@ namespace Engine
             RefreshTimingFrameTotal();
         }
 
+        void RefreshPresentationTiming()
+        {
+            const NVRHIRenderBackend* backend = dynamic_cast<const NVRHIRenderBackend*>(s_Backend.get());
+            if (const RendererPresentationTiming* timing = backend ? backend->GetPresentationTiming() : nullptr)
+                s_FrameTiming.Presentation = *timing;
+        }
+
         void RebuildBackendOptions()
         {
             s_BuildInfo.HasNVRHI = HasNVRHI();
@@ -300,6 +307,7 @@ namespace Engine
         const Clock::time_point passStart = Clock::now();
         s_Backend->BeginFrame(s_ClearColor);
         AddPassTiming("Renderer BeginFrame", Clock::now() - passStart);
+        RefreshPresentationTiming();
     }
 
     void Renderer::EndFrame()
@@ -350,6 +358,7 @@ namespace Engine
         const Clock::time_point passStart = Clock::now();
         backend->RenderImGuiDrawData(drawData, s_ClearColor, window.GetWidth(), window.GetHeight());
         AddPassTiming("Native viewport + ImGui present", Clock::now() - passStart);
+        RefreshPresentationTiming();
     }
 
     void Renderer::SetClearColor(const ClearColor& color)

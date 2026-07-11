@@ -895,6 +895,18 @@ void EditorLayer::DrawProfilerPanel()
     if (timing.GpuStatus == Engine::RendererTimingStatus::Pending)
         ImGui::TextDisabled("Timestamp query API is present; backend resolve path is next.");
 
+    const Engine::RendererPresentationTiming& presentation = timing.Presentation;
+    if (presentation.UsesWaitableSwapchain)
+    {
+        ImGui::Text("Swapchain pacing: waitable, queue depth %u", presentation.MaximumFrameLatency);
+        ImGui::Text("Frame-latency wait: %.3f ms", presentation.FrameLatencyWaitMilliseconds);
+        ImGui::Text("Present: %.3f ms (%s)", presentation.PresentMilliseconds, presentation.PresentSucceeded ? "ok" : "pending");
+    }
+    else
+    {
+        ImGui::TextDisabled("Swapchain pacing: unavailable on this backend");
+    }
+
     if (timing.Passes.empty())
     {
         ImGui::TextDisabled("No renderer passes recorded yet");
