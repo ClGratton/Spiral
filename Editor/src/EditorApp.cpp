@@ -26,7 +26,8 @@ Engine::Application* Engine::CreateApplication(ApplicationCommandLineArgs args)
     specification.Window.Headless = args.HasFlag("--headless");
     const bool extendedSmoke = args.HasFlag("--asset-watch-smoke")
         || args.HasFlag("--gltf-import-smoke")
-        || args.HasFlag("--material-asset-smoke");
+        || args.HasFlag("--material-asset-smoke")
+        || args.HasFlag("--project-save-smoke");
     specification.MaxFrames = extendedSmoke ? 4 : (args.HasFlag("--smoke-test") ? 2 : 0);
 
     return new EditorApplication(specification);

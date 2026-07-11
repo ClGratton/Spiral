@@ -40,6 +40,8 @@ private:
     void RunMaterialAssetSmoke();
     bool OnFileDrop(Engine::FileDropEvent& event);
     bool ImportGltfAsset(const std::filesystem::path& sourcePath);
+    bool SaveProject();
+    bool LoadProject();
     bool SaveActiveScene();
     bool SaveAssetRegistry();
     bool SaveMaterialAsset(Engine::AssetHandle handle);
@@ -60,7 +62,9 @@ private:
     bool m_GltfImportSmokeCompleted = false;
     bool m_MaterialAssetSmokeRequested = false;
     bool m_MaterialAssetSmokeCompleted = false;
+    bool m_ProjectSaveSmokeRequested = false;
     std::string m_CaptureViewportPath = "output/captures/editor-viewport.bmp";
+    std::string m_ProjectPath = "output/projects/default.spiralproject";
     std::string m_ScenePath = "output/scenes/sample.spiral";
     std::string m_AssetRegistryPath = "output/assets/sample.assets";
     std::string m_AssetWatchSmokePath = "output/assets/watch-smoke.mesh";

@@ -155,7 +155,7 @@ Required:
 - [x] KTX2/Basis texture import plan.
 - [x] Material asset format.
 - [x] Drag/drop asset browser.
-- [ ] Save/load project and scene.
+- [x] Save/load project and scene.
 - [ ] Undo/redo command stack.
 
 Exit criteria:

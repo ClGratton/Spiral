@@ -9,17 +9,26 @@
 #include <cmath>
 #include <filesystem>
 #include <fstream>
+#include <iomanip>
+#include <sstream>
 #include <stdexcept>
 #include <system_error>
 
 namespace
 {
     constexpr const char* AssetDragPayloadType = "SPIRAL_ASSET_HANDLE";
+    constexpr int ProjectFormatVersion = 1;
 
     struct AssetDragPayload
     {
         Engine::AssetHandle Handle = Engine::kInvalidAssetHandle;
         Engine::AssetType Type = Engine::AssetType::Unknown;
+    };
+
+    struct ProjectManifest
+    {
+        std::string ScenePath;
+        std::string AssetRegistryPath;
     };
 
     const char* ToLightTypeName(Engine::LightType type)
@@ -144,6 +153,58 @@ namespace
         output.write(static_cast<const char*>(data), static_cast<std::streamsize>(size));
         return static_cast<bool>(output);
     }
+
+    bool WriteProjectManifest(const std::filesystem::path& path, const ProjectManifest& manifest)
+    {
+        std::error_code error;
+        const std::filesystem::path parent = path.parent_path();
+        if (!parent.empty())
+            std::filesystem::create_directories(parent, error);
+        if (error)
+            return false;
+
+        std::ofstream output(path, std::ios::out | std::ios::trunc);
+        if (!output)
+            return false;
+
+        output << "SpiralProject " << ProjectFormatVersion << '\n';
+        output << "Scene " << std::quoted(manifest.ScenePath) << '\n';
+        output << "AssetRegistry " << std::quoted(manifest.AssetRegistryPath) << '\n';
+        return static_cast<bool>(output);
+    }
+
+    bool ReadProjectManifest(const std::filesystem::path& path, ProjectManifest& outManifest)
+    {
+        std::ifstream input(path);
+        if (!input)
+            return false;
+
+        std::string magic;
+        int version = 0;
+        if (!(input >> magic >> version) || magic != "SpiralProject" || version != ProjectFormatVersion)
+            return false;
+
+        ProjectManifest manifest;
+        std::string key;
+        while (input >> key)
+        {
+            if (key == "Scene")
+                input >> std::quoted(manifest.ScenePath);
+            else if (key == "AssetRegistry")
+                input >> std::quoted(manifest.AssetRegistryPath);
+            else
+                return false;
+
+            if (!input)
+                return false;
+        }
+
+        if (manifest.ScenePath.empty() || manifest.AssetRegistryPath.empty())
+            return false;
+
+        outManifest = std::move(manifest);
+        return true;
+    }
 }
 
 EditorLayer::EditorLayer()
@@ -158,13 +219,15 @@ void EditorLayer::OnAttach()
     m_ConsoleLines.emplace_back("Editor booted");
     m_ConsoleLines.emplace_back("GLFW window backend active");
     m_ConsoleLines.emplace_back(std::string("Renderer backend: ") + Engine::Renderer::GetActiveBackendName());
-    EnsureDefaultSceneEntities();
+    if (!std::filesystem::exists(m_ProjectPath) || !LoadProject())
+        EnsureDefaultSceneEntities();
     SyncEditorCameraStateFromMainCamera();
     m_CaptureViewportRequested = Engine::Application::Get().GetSpecification().CommandLineArgs.HasFlag("--capture-viewport");
     m_SaveSceneSmokeRequested = Engine::Application::Get().GetSpecification().CommandLineArgs.HasFlag("--save-scene-smoke");
     m_AssetWatchSmokeRequested = Engine::Application::Get().GetSpecification().CommandLineArgs.HasFlag("--asset-watch-smoke");
     m_GltfImportSmokeRequested = Engine::Application::Get().GetSpecification().CommandLineArgs.HasFlag("--gltf-import-smoke");
     m_MaterialAssetSmokeRequested = Engine::Application::Get().GetSpecification().CommandLineArgs.HasFlag("--material-asset-smoke");
+    m_ProjectSaveSmokeRequested = Engine::Application::Get().GetSpecification().CommandLineArgs.HasFlag("--project-save-smoke");
     if (m_AssetWatchSmokeRequested)
     {
         WriteTextFile(m_AssetWatchSmokePath, "asset watch smoke baseline\n");
@@ -179,6 +242,8 @@ void EditorLayer::OnAttach()
         if (!SaveActiveScene())
             throw std::runtime_error("Scene save smoke failed");
     }
+    if (m_ProjectSaveSmokeRequested && (!SaveProject() || !LoadProject()))
+        throw std::runtime_error("Project save/reopen smoke failed");
 
     const Engine::RendererBuildInfo& buildInfo = Engine::Renderer::GetBuildInfo();
     if (Engine::Renderer::GetActiveBackend() == Engine::RendererBackend::NVRHID3D12)
@@ -297,7 +362,9 @@ void EditorLayer::DrawMainMenuBar()
         if (ImGui::MenuItem("New Project"))
             m_ConsoleLines.emplace_back("New Project workflow is not implemented yet");
         if (ImGui::MenuItem("Open Project"))
-            m_ConsoleLines.emplace_back("Open Project workflow is not implemented yet");
+            LoadProject();
+        if (ImGui::MenuItem("Save Project"))
+            SaveProject();
         if (ImGui::MenuItem("Save Scene"))
             SaveActiveScene();
         if (ImGui::MenuItem("Save Asset Registry"))
@@ -1077,6 +1144,82 @@ bool EditorLayer::ImportGltfAsset(const std::filesystem::path& sourcePath)
         m_LastGltfImport.SourcePath,
         " -> ",
         m_LastGltfImport.CookedPath.string());
+    return true;
+}
+
+bool EditorLayer::SaveProject()
+{
+    if (!SaveActiveScene())
+        return false;
+
+    const ProjectManifest manifest { m_ScenePath, m_AssetRegistryPath };
+    if (!WriteProjectManifest(m_ProjectPath, manifest))
+    {
+        Engine::Log::Error("Project save failed: ", m_ProjectPath);
+        m_ConsoleLines.emplace_back("Project save failed: " + m_ProjectPath);
+        return false;
+    }
+
+    Engine::Log::Info("Project saved: ", m_ProjectPath);
+    m_ConsoleLines.emplace_back("Project saved: " + m_ProjectPath);
+    return true;
+}
+
+bool EditorLayer::LoadProject()
+{
+    ProjectManifest manifest;
+    if (!ReadProjectManifest(m_ProjectPath, manifest))
+    {
+        Engine::Log::Error("Could not load project manifest: ", m_ProjectPath);
+        m_ConsoleLines.emplace_back("Project load failed: " + m_ProjectPath);
+        return false;
+    }
+
+    Engine::AssetRegistry loadedRegistry;
+    if (!loadedRegistry.LoadFromFile(manifest.AssetRegistryPath))
+    {
+        Engine::Log::Error("Could not load project asset registry: ", manifest.AssetRegistryPath);
+        m_ConsoleLines.emplace_back("Project load failed: asset registry");
+        return false;
+    }
+
+    Engine::Scene loadedScene;
+    if (!Engine::Scene::LoadFromFile(manifest.ScenePath, loadedScene))
+    {
+        Engine::Log::Error("Could not load project scene: ", manifest.ScenePath);
+        m_ConsoleLines.emplace_back("Project load failed: scene");
+        return false;
+    }
+
+    Engine::MaterialLibrary loadedMaterials;
+    for (const Engine::AssetMetadata& metadata : loadedRegistry.GetAssets())
+    {
+        if (metadata.Type != Engine::AssetType::Material)
+            continue;
+
+        const std::filesystem::path materialPath = Engine::AssetFileSystem::ResolvePath(metadata.SourcePath);
+        if (!loadedMaterials.Load(metadata.Handle, materialPath))
+        {
+            Engine::Log::Error("Could not load project material: ", metadata.SourcePath);
+            m_ConsoleLines.emplace_back("Project load failed: material " + metadata.SourcePath);
+            return false;
+        }
+    }
+
+    m_ScenePath = std::move(manifest.ScenePath);
+    m_AssetRegistryPath = std::move(manifest.AssetRegistryPath);
+    m_AssetRegistry = std::move(loadedRegistry);
+    m_MaterialLibrary = std::move(loadedMaterials);
+    m_ActiveScene = std::move(loadedScene);
+    m_PrototypeMeshEntity = m_ActiveScene.FindEntityByName("Prototype Mesh");
+    m_DirectionalLightEntity = m_ActiveScene.FindEntityByName("Directional Light");
+    m_PlayerStartEntity = m_ActiveScene.FindEntityByName("Player Start");
+    m_SelectedEntity = m_PrototypeMeshEntity ? m_PrototypeMeshEntity : m_ActiveScene.GetMainCameraEntity();
+    m_AssetWatcher.SyncRegistry(m_AssetRegistry);
+    SyncEditorCameraStateFromMainCamera();
+
+    Engine::Log::Info("Project loaded: ", m_ProjectPath);
+    m_ConsoleLines.emplace_back("Project loaded: " + m_ProjectPath);
     return true;
 }
 
