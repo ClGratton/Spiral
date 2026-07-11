@@ -73,6 +73,7 @@ Immediate gap:
 - Material assets are versioned `.spiralmat` files with PBR factors, alpha/shading modes, Callisto controls, and texture handles; editor changes save and reload-validate through the material library.
 - GitHub dependency submission now reports vendored/tool dependencies from the dependency ledger so the repo dependency graph can show them.
 - A portable `EngineTests` executable covers deterministic engine contracts that are too narrow for editor smoke tests, including job-system failure handling and strict scene deserialization.
+- The editor can create an isolated project and starter scene from a name/location modal, and hierarchy controls create or delete entities with undo/redo coverage.
 
 ## Phase 0: Buildable Spine
 
@@ -159,8 +160,8 @@ Required:
 - [x] Drag/drop asset browser.
 - [x] Save/load project and scene.
 - [x] Bounded undo/redo snapshot history for current editor-owned state.
-- [ ] New scene/project workflow in the editor UI.
-- [ ] Entity create/delete controls in the scene hierarchy.
+- [x] New scene/project workflow in the editor UI.
+- [x] Entity create/delete controls in the scene hierarchy.
 
 Exit criteria:
 

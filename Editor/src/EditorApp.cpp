@@ -28,7 +28,8 @@ Engine::Application* Engine::CreateApplication(ApplicationCommandLineArgs args)
         || args.HasFlag("--gltf-import-smoke")
         || args.HasFlag("--material-asset-smoke")
         || args.HasFlag("--project-save-smoke")
-        || args.HasFlag("--undo-redo-smoke");
+        || args.HasFlag("--undo-redo-smoke")
+        || args.HasFlag("--scene-authoring-smoke");
     specification.MaxFrames = extendedSmoke ? 4 : (args.HasFlag("--smoke-test") ? 2 : 0);
 
     return new EditorApplication(specification);

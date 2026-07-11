@@ -112,6 +112,23 @@ namespace
         return searchable.find(needle) != std::string::npos;
     }
 
+    std::string SanitizeFileStem(std::string_view value)
+    {
+        std::string stem;
+        stem.reserve(value.size());
+        for (unsigned char character : value)
+        {
+            if (std::isalnum(character) || character == '-' || character == '_')
+                stem.push_back(static_cast<char>(character));
+            else if (std::isspace(character) && !stem.empty() && stem.back() != '-')
+                stem.push_back('-');
+        }
+
+        while (!stem.empty() && stem.back() == '-')
+            stem.pop_back();
+        return stem;
+    }
+
     std::string GetMeshDisplayName(const Engine::MeshRendererComponent& meshRenderer, const Engine::AssetRegistry& assetRegistry)
     {
         if (const Engine::AssetMetadata* meshAsset = assetRegistry.GetAsset(meshRenderer.MeshAsset))
@@ -229,6 +246,7 @@ void EditorLayer::OnAttach()
     m_MaterialAssetSmokeRequested = Engine::Application::Get().GetSpecification().CommandLineArgs.HasFlag("--material-asset-smoke");
     m_ProjectSaveSmokeRequested = Engine::Application::Get().GetSpecification().CommandLineArgs.HasFlag("--project-save-smoke");
     m_UndoRedoSmokeRequested = Engine::Application::Get().GetSpecification().CommandLineArgs.HasFlag("--undo-redo-smoke");
+    m_SceneAuthoringSmokeRequested = Engine::Application::Get().GetSpecification().CommandLineArgs.HasFlag("--scene-authoring-smoke");
     if (m_AssetWatchSmokeRequested)
     {
         WriteTextFile(m_AssetWatchSmokePath, "asset watch smoke baseline\n");
@@ -269,6 +287,7 @@ void EditorLayer::OnUpdate(Engine::Timestep timestep)
     RunGltfImportSmoke();
     RunMaterialAssetSmoke();
     RunUndoRedoSmoke();
+    RunSceneAuthoringSmoke();
     HandleAssetWatchEvents();
 
     if (m_FrameCounter == 1)
@@ -301,6 +320,7 @@ void EditorLayer::OnUiRender()
     DrawConsolePanel();
     DrawProfilerPanel();
     DrawProjectPanel();
+    DrawNewProjectDialog();
 
     if (m_CaptureViewportRequested && !m_CaptureViewportComplete && m_FrameCounter >= 2)
     {
@@ -371,7 +391,7 @@ void EditorLayer::DrawMainMenuBar()
     if (ImGui::BeginMenu("File"))
     {
         if (ImGui::MenuItem("New Project"))
-            m_ConsoleLines.emplace_back("New Project workflow is not implemented yet");
+            m_ShowNewProjectDialog = true;
         if (ImGui::MenuItem("Open Project"))
             LoadProject();
         if (ImGui::MenuItem("Save Project"))
@@ -453,8 +473,24 @@ void EditorLayer::BuildDefaultDockLayout(unsigned int dockspaceId, const ImVec2&
 
 void EditorLayer::DrawSceneHierarchyPanel()
 {
+    bool createEntityRequested = false;
+    Engine::Entity deleteEntityRequested;
     ImGui::Begin("Scene Hierarchy");
     ImGui::TextUnformatted(m_ActiveScene.GetName().c_str());
+    ImGui::SameLine();
+    if (ImGui::SmallButton("+"))
+        CreateSceneEntity();
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Create empty entity");
+    ImGui::SameLine();
+    const bool canDelete = m_ActiveScene.IsEntityValid(m_SelectedEntity)
+        && m_SelectedEntity != m_ActiveScene.GetMainCameraEntity();
+    ImGui::BeginDisabled(!canDelete);
+    if (ImGui::SmallButton("Delete"))
+        DeleteSelectedEntity();
+    ImGui::EndDisabled();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+        ImGui::SetTooltip(canDelete ? "Delete selected entity" : "The primary camera cannot be deleted");
     ImGui::Separator();
 
     if (ImGui::TreeNodeEx("World", ImGuiTreeNodeFlags_DefaultOpen))
@@ -465,9 +501,26 @@ void EditorLayer::DrawSceneHierarchyPanel()
             const bool selected = entity.EntityHandle == m_SelectedEntity;
             if (ImGui::Selectable(entity.Name.c_str(), selected))
                 m_SelectedEntity = entity.EntityHandle;
+            if (ImGui::BeginPopupContextItem("EntityContext"))
+            {
+                if (ImGui::MenuItem("Create Empty"))
+                    createEntityRequested = true;
+                const bool isMainCamera = entity.EntityHandle == m_ActiveScene.GetMainCameraEntity();
+                if (ImGui::MenuItem("Delete", nullptr, false, !isMainCamera))
+                    deleteEntityRequested = entity.EntityHandle;
+                ImGui::EndPopup();
+            }
             ImGui::PopID();
         }
         ImGui::TreePop();
+    }
+
+    if (createEntityRequested)
+        CreateSceneEntity();
+    if (deleteEntityRequested)
+    {
+        m_SelectedEntity = deleteEntityRequested;
+        DeleteSelectedEntity();
     }
 
     ImGui::End();
@@ -1053,6 +1106,47 @@ void EditorLayer::DrawProjectPanel()
     ImGui::End();
 }
 
+void EditorLayer::DrawNewProjectDialog()
+{
+    if (m_ShowNewProjectDialog)
+    {
+        ImGui::OpenPopup("New Project");
+        m_ShowNewProjectDialog = false;
+    }
+
+    if (!ImGui::BeginPopupModal("New Project", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+        return;
+
+    ImGui::InputText("Name", m_NewProjectName.data(), m_NewProjectName.size());
+    ImGui::InputText("Location", m_NewProjectParentPath.data(), m_NewProjectParentPath.size());
+
+    const std::string projectName = m_NewProjectName.data();
+    const std::string fileStem = SanitizeFileStem(projectName);
+    const std::filesystem::path projectRoot = std::filesystem::path(m_NewProjectParentPath.data()) / fileStem;
+    const std::filesystem::path manifestPath = projectRoot / (fileStem + ".spiralproject");
+    const bool valid = !projectName.empty() && !fileStem.empty() && m_NewProjectParentPath[0] != '\0';
+    std::error_code pathError;
+    const bool alreadyExists = valid && std::filesystem::exists(manifestPath, pathError);
+
+    if (valid)
+        ImGui::TextDisabled("%s", manifestPath.string().c_str());
+    if (alreadyExists)
+        ImGui::TextDisabled("A project already exists at this location");
+
+    ImGui::BeginDisabled(!valid || alreadyExists || pathError);
+    if (ImGui::Button("Create"))
+    {
+        if (CreateNewProject(projectName, m_NewProjectParentPath.data()))
+            ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    if (ImGui::Button("Cancel"))
+        ImGui::CloseCurrentPopup();
+
+    ImGui::EndPopup();
+}
+
 void EditorLayer::HandleAssetWatchEvents()
 {
     const std::vector<Engine::AssetWatchEvent> events = m_AssetWatcher.Poll(m_AssetRegistry);
@@ -1208,6 +1302,44 @@ void EditorLayer::RunUndoRedoSmoke()
     Engine::Log::Info("Undo/redo smoke passed");
 }
 
+void EditorLayer::RunSceneAuthoringSmoke()
+{
+    if (!m_SceneAuthoringSmokeRequested || m_SceneAuthoringSmokeCompleted || m_FrameCounter < 1)
+        return;
+
+    if (!CreateNewProject("Authoring Smoke", "output/projects/smoke", true))
+        throw std::runtime_error("Scene authoring smoke could not create a project");
+
+    const Engine::Entity authoredEntity = CreateSceneEntity("Authored Entity");
+    const Engine::MeshRendererComponent* prototypeRenderer = m_ActiveScene.TryGetMeshRendererComponent(m_PrototypeMeshEntity);
+    if (!authoredEntity || !prototypeRenderer)
+        throw std::runtime_error("Scene authoring smoke could not create its entity or find the prototype renderer");
+
+    const HistoryState beforeAssignment = CaptureHistoryState();
+    m_ActiveScene.AddMeshRendererComponent(authoredEntity, *prototypeRenderer);
+    RecordHistory("Assign prototype mesh", beforeAssignment);
+    m_SelectedEntity = authoredEntity;
+
+    if (!DeleteSelectedEntity() || m_ActiveScene.IsEntityValid(authoredEntity))
+        throw std::runtime_error("Scene authoring smoke could not delete its entity");
+    if (!Undo() || !m_ActiveScene.FindEntityByName("Authored Entity"))
+        throw std::runtime_error("Scene authoring smoke could not undo entity deletion");
+    if (!Redo() || m_ActiveScene.FindEntityByName("Authored Entity"))
+        throw std::runtime_error("Scene authoring smoke could not redo entity deletion");
+    if (!Undo())
+        throw std::runtime_error("Scene authoring smoke could not restore its entity for persistence validation");
+
+    if (!SaveProject() || !LoadProject())
+        throw std::runtime_error("Scene authoring smoke could not save and reopen its project");
+
+    const Engine::Entity loadedEntity = m_ActiveScene.FindEntityByName("Authored Entity");
+    if (!loadedEntity || !m_ActiveScene.TryGetMeshRendererComponent(loadedEntity))
+        throw std::runtime_error("Scene authoring smoke did not preserve the authored mesh entity");
+
+    m_SceneAuthoringSmokeCompleted = true;
+    Engine::Log::Info("Scene authoring smoke passed");
+}
+
 bool EditorLayer::ImportGltfAsset(const std::filesystem::path& sourcePath)
 {
     m_LastGltfImport = Engine::GltfImporter::Import(sourcePath, m_AssetRegistry);
@@ -1245,6 +1377,110 @@ bool EditorLayer::SaveProject()
 
     Engine::Log::Info("Project saved: ", m_ProjectPath);
     m_ConsoleLines.emplace_back("Project saved: " + m_ProjectPath);
+    return true;
+}
+
+bool EditorLayer::CreateNewProject(std::string name, const std::filesystem::path& parentDirectory, bool overwriteExisting)
+{
+    const std::string fileStem = SanitizeFileStem(name);
+    if (name.empty() || fileStem.empty() || parentDirectory.empty())
+        return false;
+
+    const std::filesystem::path projectRoot = parentDirectory / fileStem;
+    const std::filesystem::path projectPath = projectRoot / (fileStem + ".spiralproject");
+    std::error_code pathError;
+    const bool projectExists = std::filesystem::exists(projectPath, pathError);
+    if (pathError)
+    {
+        m_ConsoleLines.emplace_back("Could not inspect project path: " + pathError.message());
+        return false;
+    }
+    if (!overwriteExisting && projectExists)
+    {
+        m_ConsoleLines.emplace_back("Project already exists: " + projectPath.string());
+        return false;
+    }
+
+    const HistoryState previousState = CaptureHistoryState();
+    const std::string previousProjectPath = m_ProjectPath;
+    const std::string previousScenePath = m_ScenePath;
+    const std::string previousAssetRegistryPath = m_AssetRegistryPath;
+    const std::vector<HistoryEntry> previousUndoHistory = m_UndoHistory;
+    const std::vector<HistoryEntry> previousRedoHistory = m_RedoHistory;
+
+    m_ProjectPath = projectPath.string();
+    m_ScenePath = (projectRoot / "Scenes" / "Main.spiral").string();
+    m_AssetRegistryPath = (projectRoot / "Assets" / "assets.spiralassets").string();
+    m_AssetRegistry = {};
+    m_MaterialLibrary = {};
+    m_ActiveScene = Engine::Scene(std::move(name));
+    m_PrototypeMeshEntity = {};
+    m_DirectionalLightEntity = {};
+    m_PlayerStartEntity = {};
+    m_SelectedEntity = {};
+    m_SelectedAssetHandle = Engine::kInvalidAssetHandle;
+    m_UndoHistory.clear();
+    m_RedoHistory.clear();
+
+    EnsureDefaultSceneEntities();
+    SyncEditorCameraStateFromMainCamera();
+    m_AssetWatcher.SyncRegistry(m_AssetRegistry);
+    if (!SaveProject())
+    {
+        m_ProjectPath = previousProjectPath;
+        m_ScenePath = previousScenePath;
+        m_AssetRegistryPath = previousAssetRegistryPath;
+        RestoreHistoryState(previousState);
+        m_UndoHistory = previousUndoHistory;
+        m_RedoHistory = previousRedoHistory;
+        return false;
+    }
+
+    Engine::Log::Info("Project created: ", m_ProjectPath);
+    m_ConsoleLines.emplace_back("Project created: " + m_ProjectPath);
+    return true;
+}
+
+Engine::Entity EditorLayer::CreateSceneEntity(std::string name)
+{
+    const HistoryState before = CaptureHistoryState();
+    if (name == "Entity")
+    {
+        unsigned int suffix = 1;
+        while (m_ActiveScene.FindEntityByName(name))
+            name = "Entity " + std::to_string(++suffix);
+    }
+
+    const Engine::Entity entity = m_ActiveScene.CreateEntity(std::move(name));
+    if (!entity)
+        return {};
+
+    m_SelectedEntity = entity;
+    RecordHistory("Create entity", before);
+    return entity;
+}
+
+bool EditorLayer::DeleteSelectedEntity()
+{
+    if (!m_ActiveScene.IsEntityValid(m_SelectedEntity)
+        || m_SelectedEntity == m_ActiveScene.GetMainCameraEntity())
+        return false;
+
+    const HistoryState before = CaptureHistoryState();
+    const Engine::Entity deletedEntity = m_SelectedEntity;
+    const Engine::SceneEntity* sceneEntity = m_ActiveScene.TryGetEntity(deletedEntity);
+    const std::string name = sceneEntity ? sceneEntity->Name : "entity";
+    if (!m_ActiveScene.DestroyEntity(deletedEntity))
+        return false;
+
+    if (deletedEntity == m_PrototypeMeshEntity)
+        m_PrototypeMeshEntity = {};
+    if (deletedEntity == m_DirectionalLightEntity)
+        m_DirectionalLightEntity = {};
+    if (deletedEntity == m_PlayerStartEntity)
+        m_PlayerStartEntity = {};
+    m_SelectedEntity = m_ActiveScene.GetMainCameraEntity();
+    RecordHistory("Delete " + name, before);
     return true;
 }
 
@@ -1482,13 +1718,14 @@ void EditorLayer::EnsureDefaultSceneEntities()
         Engine::AssetType::Mesh,
         "Engine/Generated/PrototypeCube.mesh",
         "Prototype Cube");
+    const std::filesystem::path prototypeMaterialPath = std::filesystem::path(m_AssetRegistryPath).parent_path() / "PrototypeDefault.spiralmat";
     const Engine::AssetHandle prototypeMaterialAsset = m_AssetRegistry.RegisterAsset(
         Engine::AssetType::Material,
-        "output/assets/PrototypeDefault.spiralmat",
+        prototypeMaterialPath.string(),
         "Prototype Default");
     if (!m_MaterialLibrary.Get(prototypeMaterialAsset))
     {
-        const std::filesystem::path materialPath = Engine::AssetFileSystem::ResolvePath("output/assets/PrototypeDefault.spiralmat");
+        const std::filesystem::path materialPath = Engine::AssetFileSystem::ResolvePath(prototypeMaterialPath.string());
         if (!m_MaterialLibrary.Load(prototypeMaterialAsset, materialPath))
         {
             Engine::MaterialAsset prototypeMaterial;

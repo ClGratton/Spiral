@@ -36,16 +36,21 @@ private:
     void DrawConsolePanel();
     void DrawProfilerPanel();
     void DrawProjectPanel();
+    void DrawNewProjectDialog();
     bool DrawMaterialAssetControls(Engine::AssetHandle handle);
     void HandleAssetWatchEvents();
     void RunAssetWatchSmokeMutation();
     void RunGltfImportSmoke();
     void RunMaterialAssetSmoke();
     void RunUndoRedoSmoke();
+    void RunSceneAuthoringSmoke();
     bool OnFileDrop(Engine::FileDropEvent& event);
     bool ImportGltfAsset(const std::filesystem::path& sourcePath);
     bool SaveProject();
     bool LoadProject();
+    bool CreateNewProject(std::string name, const std::filesystem::path& parentDirectory, bool overwriteExisting = false);
+    Engine::Entity CreateSceneEntity(std::string name = "Entity");
+    bool DeleteSelectedEntity();
     bool SaveActiveScene();
     bool SaveAssetRegistry();
     bool SaveMaterialAsset(Engine::AssetHandle handle);
@@ -74,6 +79,9 @@ private:
     bool m_ProjectSaveSmokeRequested = false;
     bool m_UndoRedoSmokeRequested = false;
     bool m_UndoRedoSmokeCompleted = false;
+    bool m_SceneAuthoringSmokeRequested = false;
+    bool m_SceneAuthoringSmokeCompleted = false;
+    bool m_ShowNewProjectDialog = false;
     std::string m_CaptureViewportPath = "output/captures/editor-viewport.bmp";
     std::string m_ProjectPath = "output/projects/default.spiralproject";
     std::string m_ScenePath = "output/scenes/sample.spiral";
@@ -102,6 +110,8 @@ private:
     Engine::AssetType m_AssetBrowserTypeFilter = Engine::AssetType::Unknown;
     std::array<char, 128> m_AssetBrowserFilter {};
     std::array<char, 512> m_GltfImportPath {};
+    std::array<char, 128> m_NewProjectName { 'U', 'n', 't', 'i', 't', 'l', 'e', 'd' };
+    std::array<char, 512> m_NewProjectParentPath { 'o', 'u', 't', 'p', 'u', 't', '/', 'p', 'r', 'o', 'j', 'e', 'c', 't', 's' };
     std::vector<std::string> m_ConsoleLines;
 
     struct HistoryState
