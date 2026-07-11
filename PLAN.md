@@ -173,7 +173,7 @@ Required:
 - [x] D3D12 first path on Windows, Vulkan path kept in design.
 - [ ] Swapchain, command queues, resource upload, transient resources.
 - [ ] Presentation pacing and measurement: DXGI waitable swapchain profiles, capability-gated Vulkan present timing, and separate app/present/display telemetry.
-- [ ] Slang or HLSL shader compilation pipeline.
+- [x] HLSL shader compilation pipeline through the D3D12 RHI; Slang remains a future portability option.
 - [ ] Mesh buffers, index buffers, constant/structured buffers.
 - [ ] Texture upload, samplers, mip generation.
 - [ ] Forward+/clustered light grid prototype.
