@@ -39,8 +39,8 @@ namespace Engine::RHI
         virtual ~CommandList() = default;
 
         virtual QueueType GetQueueType() const = 0;
-        virtual void Begin() = 0;
-        virtual void End() = 0;
+        virtual bool Begin() = 0;
+        virtual bool End() = 0;
         virtual void BeginDebugMarker(std::string_view name) = 0;
         virtual void EndDebugMarker() = 0;
         virtual void SetGraphicsPipeline(Pipeline& pipeline) = 0;

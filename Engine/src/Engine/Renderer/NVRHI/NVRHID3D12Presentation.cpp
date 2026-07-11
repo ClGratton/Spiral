@@ -207,6 +207,7 @@ namespace Engine
             if (!InitializeImGui())
                 return false;
 
+            m_ImGuiInitialized = true;
             m_Initialized = true;
             Log::Info("D3D12 presentation initialized (", m_SwapchainWidth, "x", m_SwapchainHeight, ")");
             return true;
@@ -214,11 +215,12 @@ namespace Engine
 
         void Shutdown()
         {
-            if (!m_Initialized)
-                return;
-
             WaitIdle();
-            ImGui_ImplDX12_Shutdown();
+            if (m_ImGuiInitialized)
+            {
+                ImGui_ImplDX12_Shutdown();
+                m_ImGuiInitialized = false;
+            }
             ReleaseViewportTexture();
             m_ViewportSceneRenderer.Shutdown();
             ReleaseBackBuffers();
@@ -240,7 +242,12 @@ namespace Engine
             m_DsvHeap.Reset();
             m_SrvHeap.Reset();
             m_SrvAllocated.clear();
+            m_Fence.Reset();
+            m_Window = nullptr;
             m_RHIDevice = nullptr;
+            m_Factory = nullptr;
+            m_Device = nullptr;
+            m_GraphicsQueue = nullptr;
             m_Initialized = false;
         }
 
@@ -982,7 +989,7 @@ namespace Engine
 
         void WaitIdle()
         {
-            if (!m_GraphicsQueue || !m_Fence)
+            if (!m_GraphicsQueue || !m_Fence || !m_FenceEvent)
                 return;
 
             const u64 fenceValue = ++m_LastFenceValue;
@@ -995,6 +1002,7 @@ namespace Engine
 
     private:
         bool m_Initialized = false;
+        bool m_ImGuiInitialized = false;
         GLFWwindow* m_Window = nullptr;
         RHI::Device* m_RHIDevice = nullptr;
         IDXGIFactory4* m_Factory = nullptr;

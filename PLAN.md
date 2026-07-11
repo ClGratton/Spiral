@@ -1,7 +1,7 @@
 # Engine Roadmap
 
 Status: Living roadmap
-Date: 2026-07-06
+Date: 2026-07-11
 
 This roadmap is the working plan for taking the engine from the current buildable shell to a shippable game engine. Deep rationale lives in [Docs/Architecture](Docs/Architecture/README.md); this file is the execution order.
 
@@ -18,7 +18,7 @@ Build a modern, sharp-in-motion, automation-first engine for small teams and amb
 
 ## Current State
 
-Phase 0 is partially complete.
+Phases 0 and 1 are complete. Phase 2 has working scene, asset, and editor foundations but has not met its authoring exit criteria. Phase 3 is in progress.
 
 Already present:
 
@@ -72,6 +72,7 @@ Immediate gap:
 - The KTX2/Basis texture import plan defines texture roles, color-space rules, target profiles, validation, streaming, and the future libktx boundary before any texture transcoder is vendored.
 - Material assets are versioned `.spiralmat` files with PBR factors, alpha/shading modes, Callisto controls, and texture handles; editor changes save and reload-validate through the material library.
 - GitHub dependency submission now reports vendored/tool dependencies from the dependency ledger so the repo dependency graph can show them.
+- A portable `EngineTests` executable covers deterministic engine contracts that are too narrow for editor smoke tests, including job-system failure handling and strict scene deserialization.
 
 ## Phase 0: Buildable Spine
 
@@ -93,6 +94,7 @@ Required:
 - [x] GitHub dependency graph submission for vendored/tool dependencies.
 - [x] Basic crash/error reporting path.
 - [x] Coding standards checked by script.
+- [x] Portable engine contract-test target run on Windows, Linux, and macOS CI.
 
 Exit criteria:
 
@@ -156,7 +158,9 @@ Required:
 - [x] Material asset format.
 - [x] Drag/drop asset browser.
 - [x] Save/load project and scene.
-- [x] Undo/redo command stack.
+- [x] Bounded undo/redo snapshot history for current editor-owned state.
+- [ ] New scene/project workflow in the editor UI.
+- [ ] Entity create/delete controls in the scene hierarchy.
 
 Exit criteria:
 
@@ -169,10 +173,10 @@ Goal: deliver a conventional-but-clean renderer before the advanced visibility-b
 
 Required:
 
-- [x] NVRHI backend integrated behind `Engine::RHI`.
+- [x] NVRHI D3D12 device integrated behind `Engine::RHI`, with the prototype viewport still using a scoped native D3D12 presentation bridge.
 - [x] D3D12 first path on Windows, Vulkan path kept in design.
 - [x] D3D12 flip-model swapchain lifecycle and native graphics/compute/copy queues.
-- [x] RHI command-list allocation, recording, and queue submission.
+- [x] RHI command-list allocation, validated recording lifecycle, and synchronous queue submission.
 - [ ] GPU resource-upload path with copy-queue synchronization.
 - [ ] Transient resource allocation and reuse from render-graph lifetimes.
 - [ ] Presentation pacing and measurement: DXGI waitable swapchain profiles, capability-gated Vulkan present timing, and separate app/present/display telemetry.

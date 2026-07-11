@@ -29,6 +29,10 @@ jobs:
         shell: pwsh
         run: .\Scripts\TestRender.ps1 -Configuration Debug -Action vs2022
 
+      - name: Run engine tests
+        shell: pwsh
+        run: .\bin\Debug-windows-x86_64\EngineTests\EngineTests.exe
+
       - name: Run asset watch smoke
         shell: pwsh
         run: .\bin\Debug-windows-x86_64\Editor\Editor.exe --headless --asset-watch-smoke
@@ -84,6 +88,14 @@ jobs:
 
       - name: Build portable target
         run: bash Scripts/Build.sh Debug gmake
+
+      - name: Run engine tests
+        run: |
+          if [[ "${{ runner.os }}" == "Linux" ]]; then
+            ./bin/Debug-linux-x86_64-gmake/EngineTests/EngineTests
+          else
+            ./bin/Debug-macosx-x86_64-gmake/EngineTests/EngineTests
+          fi
 
       - name: Run editor headless smoke
         run: |

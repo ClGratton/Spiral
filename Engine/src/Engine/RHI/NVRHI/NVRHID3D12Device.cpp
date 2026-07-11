@@ -730,6 +730,15 @@ namespace Engine::RHI
         class NVRHID3D12CommandList final : public CommandList
         {
         public:
+            enum class State
+            {
+                Initial,
+                Recording,
+                Closed,
+                Submitted,
+                Error
+            };
+
             NVRHID3D12CommandList(QueueType queueType, ID3D12GraphicsCommandList* commandList, std::string debugName)
                 : m_QueueType(queueType)
                 , m_CommandList(commandList)
@@ -755,46 +764,56 @@ namespace Engine::RHI
                 return m_QueueType;
             }
 
-            void Begin() override
+            bool Begin() override
             {
-                if (!m_CommandAllocator || !m_OwnedCommandList || m_IsRecording)
-                    return;
+                if (!m_CommandAllocator || !m_OwnedCommandList || m_State == State::Recording)
+                    return false;
 
                 HRESULT result = m_CommandAllocator->Reset();
                 if (FAILED(result))
                 {
                     Log::Error("Could not reset D3D12 RHI command allocator '", m_DebugName, "': ", HResultToString(result));
-                    return;
+                    m_State = State::Error;
+                    return false;
                 }
 
                 result = m_OwnedCommandList->Reset(m_CommandAllocator.Get(), nullptr);
                 if (FAILED(result))
                 {
                     Log::Error("Could not begin D3D12 RHI command list '", m_DebugName, "': ", HResultToString(result));
-                    return;
+                    m_State = State::Error;
+                    return false;
                 }
 
-                m_IsRecording = true;
+                m_State = State::Recording;
+                return true;
             }
 
-            void End() override
+            bool End() override
             {
-                if (!m_OwnedCommandList || !m_IsRecording)
-                    return;
+                if (!m_OwnedCommandList || m_State != State::Recording)
+                    return false;
 
                 const HRESULT result = m_OwnedCommandList->Close();
                 if (FAILED(result))
                 {
                     Log::Error("Could not close D3D12 RHI command list '", m_DebugName, "': ", HResultToString(result));
-                    return;
+                    m_State = State::Error;
+                    return false;
                 }
 
-                m_IsRecording = false;
+                m_State = State::Closed;
+                return true;
             }
 
             bool IsReadyToSubmit() const
             {
-                return m_OwnedCommandList && !m_IsRecording;
+                return m_OwnedCommandList && m_State == State::Closed;
+            }
+
+            void MarkSubmitted()
+            {
+                m_State = State::Submitted;
             }
 
             ID3D12CommandList* GetNativeCommandList() const
@@ -943,7 +962,7 @@ namespace Engine::RHI
             ComPtr<ID3D12GraphicsCommandList> m_OwnedCommandList;
             ID3D12GraphicsCommandList* m_CommandList = nullptr;
             std::string m_DebugName;
-            bool m_IsRecording = false;
+            State m_State = State::Initial;
         };
 
         class NVRHIQueryPoolStub final : public QueryPool
@@ -1103,7 +1122,7 @@ namespace Engine::RHI
                 return CreateScope<NVRHID3D12CommandList>(queueType, std::move(allocator), std::move(commandList), std::string(debugName));
             }
 
-            bool Submit(CommandList& commandList) override
+            bool SubmitAndWait(CommandList& commandList) override
             {
                 auto* nativeCommandList = dynamic_cast<NVRHID3D12CommandList*>(&commandList);
                 if (!nativeCommandList || !nativeCommandList->IsReadyToSubmit())
@@ -1121,6 +1140,13 @@ namespace Engine::RHI
                 }
 
                 queue->ExecuteCommandLists(1, nativeLists);
+                nativeCommandList->MarkSubmitted();
+                if (m_NVRHIDevice.Get() && !m_NVRHIDevice->waitForIdle())
+                {
+                    Log::Error("D3D12 RHI synchronous command-list submission failed while waiting for the device");
+                    return false;
+                }
+
                 return true;
             }
 

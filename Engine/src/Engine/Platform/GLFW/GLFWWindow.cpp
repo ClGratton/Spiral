@@ -1,6 +1,5 @@
 #include "Engine/Platform/GLFW/GLFWWindow.h"
 
-#include "Engine/Core/Assert.h"
 #include "Engine/Core/Log.h"
 #include "Engine/Events/ApplicationEvent.h"
 #include "Engine/Events/KeyEvent.h"
@@ -8,6 +7,7 @@
 
 #include <GLFW/glfw3.h>
 
+#include <stdexcept>
 #include <vector>
 
 namespace Engine
@@ -41,8 +41,8 @@ namespace Engine
 
         if (s_GLFWWindowCount == 0)
         {
-            const int success = glfwInit();
-            GE_CORE_ASSERT(success, "Could not initialize GLFW");
+            if (!glfwInit())
+                throw std::runtime_error("Could not initialize GLFW");
             glfwSetErrorCallback(GLFWErrorCallback);
         }
 
@@ -69,7 +69,12 @@ namespace Engine
         }
 
         m_Window = glfwCreateWindow(static_cast<int>(m_Data.Width), static_cast<int>(m_Data.Height), m_Data.Title.c_str(), nullptr, nullptr);
-        GE_CORE_ASSERT(m_Window, "Could not create GLFW window");
+        if (!m_Window)
+        {
+            if (s_GLFWWindowCount == 0)
+                glfwTerminate();
+            throw std::runtime_error("Could not create GLFW window");
+        }
         ++s_GLFWWindowCount;
 
         if (m_UsesOpenGLContext)
@@ -187,7 +192,12 @@ namespace Engine
         glfwDestroyWindow(m_Window);
         m_Window = nullptr;
 
-        GE_CORE_ASSERT(s_GLFWWindowCount > 0);
+        if (s_GLFWWindowCount == 0)
+        {
+            Log::Error("GLFW window count underflow during shutdown");
+            return;
+        }
+
         --s_GLFWWindowCount;
         if (s_GLFWWindowCount == 0)
             glfwTerminate();

@@ -1,7 +1,6 @@
 #include "Engine/UI/ImGuiLayer.h"
 
 #include "Engine/Core/Application.h"
-#include "Engine/Core/Assert.h"
 #include "Engine/Core/Window.h"
 #include "Engine/Renderer/Renderer.h"
 
@@ -9,6 +8,8 @@
 #include <imgui.h>
 #include <backends/imgui_impl_glfw.h>
 #include <backends/imgui_impl_opengl2.h>
+
+#include <stdexcept>
 
 namespace Engine
 {
@@ -31,7 +32,8 @@ namespace Engine
 
         Window& window = Application::Get().GetWindow();
         GLFWwindow* nativeWindow = static_cast<GLFWwindow*>(window.GetNativeWindow());
-        GE_CORE_ASSERT(nativeWindow, "ImGuiLayer requires a native GLFW window");
+        if (!nativeWindow)
+            throw std::runtime_error("ImGuiLayer requires a native GLFW window");
 
         m_UseNativeRenderer = Renderer::InitializeImGui(nativeWindow);
         if (m_UseNativeRenderer)

@@ -3,6 +3,7 @@
 #include "Engine/Core/Log.h"
 
 #include <algorithm>
+#include <exception>
 
 namespace Engine
 {
@@ -70,22 +71,31 @@ namespace Engine
         if (!function)
             return {};
 
+        JobHandle handle;
+        bool runInline = false;
         {
             std::scoped_lock lock(m_Mutex);
             if (!m_AcceptingJobs)
             {
-                function();
-                return {};
+                runInline = true;
             }
-
-            Job job;
-            job.Handle = { m_NextJobId++ };
-            job.Function = std::move(function);
-            job.Name = std::move(name);
-            m_Jobs.push(std::move(job));
-            m_WorkAvailable.notify_one();
-            return { m_NextJobId - 1 };
+            else
+            {
+                Job job;
+                job.Handle = { m_NextJobId++ };
+                job.Function = std::move(function);
+                job.Name = std::move(name);
+                handle = job.Handle;
+                m_Jobs.push(std::move(job));
+            }
         }
+
+        if (runInline)
+            function();
+        else
+            m_WorkAvailable.notify_one();
+
+        return handle;
     }
 
     void JobSystem::WaitIdle()
@@ -126,7 +136,18 @@ namespace Engine
                 ++m_ActiveJobs;
             }
 
-            job.Function();
+            try
+            {
+                job.Function();
+            }
+            catch (const std::exception& exception)
+            {
+                Log::Error("Job '", job.Name.empty() ? "unnamed" : job.Name, "' failed: ", exception.what());
+            }
+            catch (...)
+            {
+                Log::Error("Job '", job.Name.empty() ? "unnamed" : job.Name, "' failed with an unknown exception");
+            }
 
             {
                 std::scoped_lock lock(m_Mutex);

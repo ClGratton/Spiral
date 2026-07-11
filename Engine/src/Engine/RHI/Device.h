@@ -37,7 +37,7 @@ namespace Engine::RHI
         virtual Scope<Pipeline> CreatePipeline(const PipelineDescription& description) = 0;
         virtual Scope<QueryPool> CreateQueryPool(const QueryPoolDescription& description) = 0;
         virtual Scope<CommandList> CreateCommandList(QueueType queueType, std::string_view debugName) = 0;
-        virtual bool Submit(CommandList& commandList) = 0;
+        virtual bool SubmitAndWait(CommandList& commandList) = 0;
 
         virtual void WaitIdle() = 0;
     };

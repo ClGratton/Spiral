@@ -37,3 +37,7 @@ group ""
 group "Examples"
     include "Sandbox"
 group ""
+
+group "Tests"
+    include "Tests"
+group ""

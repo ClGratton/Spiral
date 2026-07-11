@@ -1,6 +1,5 @@
 #include "Engine/Core/Application.h"
 
-#include "Engine/Core/Assert.h"
 #include "Engine/Core/Log.h"
 #include "Engine/Jobs/JobSystem.h"
 #include "Engine/Renderer/Renderer.h"
@@ -8,6 +7,7 @@
 
 #include <chrono>
 #include <filesystem>
+#include <stdexcept>
 
 namespace Engine
 {
@@ -15,7 +15,8 @@ namespace Engine
 
     const char* ApplicationCommandLineArgs::operator[](int index) const
     {
-        GE_CORE_ASSERT(index >= 0 && index < Count);
+        if (index < 0 || index >= Count)
+            throw std::out_of_range("Application command-line argument index is out of range");
         return Args[index];
     }
 
@@ -33,17 +34,26 @@ namespace Engine
     Application::Application(ApplicationSpecification specification)
         : m_Specification(std::move(specification))
     {
-        GE_CORE_ASSERT(!s_Instance, "Application already exists");
+        if (s_Instance)
+            throw std::logic_error("Application already exists");
         s_Instance = this;
 
-        if (!m_Specification.WorkingDirectory.empty())
-            std::filesystem::current_path(m_Specification.WorkingDirectory);
+        try
+        {
+            if (!m_Specification.WorkingDirectory.empty())
+                std::filesystem::current_path(m_Specification.WorkingDirectory);
 
-        m_Specification.Window.Title = m_Specification.Name;
-        m_Window = Window::Create(m_Specification.Window);
-        m_Window->SetEventCallback(GE_BIND_EVENT_FN(Application::OnEvent));
+            m_Specification.Window.Title = m_Specification.Name;
+            m_Window = Window::Create(m_Specification.Window);
+            m_Window->SetEventCallback(GE_BIND_EVENT_FN(Application::OnEvent));
 
-        Renderer::Initialize();
+            Renderer::Initialize();
+        }
+        catch (...)
+        {
+            s_Instance = nullptr;
+            throw;
+        }
     }
 
     Application::~Application()
@@ -54,7 +64,8 @@ namespace Engine
 
     Application& Application::Get()
     {
-        GE_CORE_ASSERT(s_Instance, "Application has not been created");
+        if (!s_Instance)
+            throw std::logic_error("Application has not been created");
         return *s_Instance;
     }
 

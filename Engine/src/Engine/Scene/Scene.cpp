@@ -36,14 +36,41 @@ namespace Engine
             return "Directional";
         }
 
-        LightType ParseLightType(std::string_view value)
+        bool ParseLightType(std::string_view value, LightType& outType)
         {
+            if (value == "Directional")
+            {
+                outType = LightType::Directional;
+                return true;
+            }
             if (value == "Point")
-                return LightType::Point;
+            {
+                outType = LightType::Point;
+                return true;
+            }
             if (value == "Spot")
-                return LightType::Spot;
+            {
+                outType = LightType::Spot;
+                return true;
+            }
 
-            return LightType::Directional;
+            return false;
+        }
+
+        bool ParseBoolean(std::string_view value, bool& outValue)
+        {
+            if (value == "true")
+            {
+                outValue = true;
+                return true;
+            }
+            if (value == "false")
+            {
+                outValue = false;
+                return true;
+            }
+
+            return false;
         }
 
         SceneEntity* FindEntityInList(std::vector<SceneEntity>& entities, Entity entity)
@@ -366,8 +393,7 @@ namespace Engine
 
         std::string magic;
         int version = 0;
-        input >> magic >> version;
-        if (magic != "SpiralScene" || version != kSceneFormatVersion)
+        if (!(input >> magic >> version) || magic != "SpiralScene" || version != kSceneFormatVersion)
         {
             Log::Error("Unsupported scene file format: ", path.string());
             return false;
@@ -383,9 +409,17 @@ namespace Engine
         Entity parsedMainCameraEntity;
         EntityId parsedNextEntityId = 1;
         std::string section;
+        size_t lineNumber = 1;
+
+        const auto fail = [&](std::string_view message)
+        {
+            Log::Error("Could not parse scene file '", path.string(), "' at line ", lineNumber, ": ", message);
+            return false;
+        };
 
         while (std::getline(input, line))
         {
+            ++lineNumber;
             if (line.empty())
                 continue;
 
@@ -403,37 +437,49 @@ namespace Engine
 
             if (section.empty() && key == "Name")
             {
-                stream >> std::quoted(scene.m_Name);
+                if (!(stream >> std::quoted(scene.m_Name)))
+                    return fail("invalid scene name");
             }
             else if (section == "MainCamera")
             {
                 if (key == "Primary")
                 {
                     std::string value;
-                    stream >> value;
-                    camera.Primary = value == "true";
+                    if (!(stream >> value) || !ParseBoolean(value, camera.Primary))
+                        return fail("invalid MainCamera.Primary value");
                 }
                 else if (key == "VerticalFovDegrees")
                 {
-                    stream >> camera.Projection.VerticalFovDegrees;
+                    if (!(stream >> camera.Projection.VerticalFovDegrees))
+                        return fail("invalid MainCamera.VerticalFovDegrees value");
                 }
                 else if (key == "NearClip")
                 {
-                    stream >> camera.Projection.NearClip;
+                    if (!(stream >> camera.Projection.NearClip))
+                        return fail("invalid MainCamera.NearClip value");
                 }
                 else if (key == "FarClip")
                 {
-                    stream >> camera.Projection.FarClip;
+                    if (!(stream >> camera.Projection.FarClip))
+                        return fail("invalid MainCamera.FarClip value");
                 }
+                else
+                    return fail("unknown MainCamera field");
             }
             else if (section == "MainCamera.Transform")
             {
+                bool parsed = false;
                 if (key == "Position")
-                    ReadVec3(stream, cameraTransform.Position);
+                    parsed = ReadVec3(stream, cameraTransform.Position);
                 else if (key == "RotationDegrees")
-                    ReadVec3(stream, cameraTransform.RotationDegrees);
+                    parsed = ReadVec3(stream, cameraTransform.RotationDegrees);
                 else if (key == "Scale")
-                    ReadVec3(stream, cameraTransform.Scale);
+                    parsed = ReadVec3(stream, cameraTransform.Scale);
+                else
+                    return fail("unknown MainCamera.Transform field");
+
+                if (!parsed)
+                    return fail("invalid MainCamera.Transform value");
             }
             else if (section == "Entities")
             {
@@ -446,42 +492,47 @@ namespace Engine
 
                 if (key == "NextEntityId")
                 {
-                    stream >> parsedNextEntityId;
+                    if (!(stream >> parsedNextEntityId) || parsedNextEntityId == kInvalidEntityId)
+                        return fail("invalid NextEntityId value");
                 }
                 else if (key == "MainCameraEntity")
                 {
-                    stream >> parsedMainCameraEntity.Id;
+                    if (!(stream >> parsedMainCameraEntity.Id))
+                        return fail("invalid MainCameraEntity value");
                 }
                 else if (key == "Entity")
                 {
                     EntityId id = kInvalidEntityId;
                     std::string entityName;
-                    if (stream >> id >> std::quoted(entityName))
-                        scene.CreateEntityWithId(id, std::move(entityName));
+                    if (!(stream >> id >> std::quoted(entityName)) || !scene.CreateEntityWithId(id, std::move(entityName)))
+                        return fail("invalid or duplicate Entity record");
                 }
                 else if (key == "Transform")
                 {
                     Entity entity;
-                    stream >> entity.Id;
-                    if (SceneEntity* sceneEntity = scene.FindEntityStorage(entity))
-                    {
-                        stream
+                    if (!(stream >> entity.Id))
+                        return fail("invalid Transform entity ID");
+
+                    SceneEntity* sceneEntity = scene.FindEntityStorage(entity);
+                    if (!sceneEntity
+                        || !(stream
                             >> sceneEntity->Transform.Position.X >> sceneEntity->Transform.Position.Y >> sceneEntity->Transform.Position.Z
                             >> sceneEntity->Transform.RotationDegrees.X >> sceneEntity->Transform.RotationDegrees.Y >> sceneEntity->Transform.RotationDegrees.Z
-                            >> sceneEntity->Transform.Scale.X >> sceneEntity->Transform.Scale.Y >> sceneEntity->Transform.Scale.Z;
-                    }
+                            >> sceneEntity->Transform.Scale.X >> sceneEntity->Transform.Scale.Y >> sceneEntity->Transform.Scale.Z))
+                        return fail("invalid Transform record or unknown entity");
                 }
                 else if (key == "Camera")
                 {
                     Entity entity;
                     std::string primary;
                     CameraComponent entityCamera;
-                    stream >> entity.Id >> primary
-                        >> entityCamera.Projection.VerticalFovDegrees
-                        >> entityCamera.Projection.NearClip
-                        >> entityCamera.Projection.FarClip;
-                    entityCamera.Primary = primary == "true";
-                    scene.AddCameraComponent(entity, entityCamera);
+                    if (!(stream >> entity.Id >> primary
+                            >> entityCamera.Projection.VerticalFovDegrees
+                            >> entityCamera.Projection.NearClip
+                            >> entityCamera.Projection.FarClip)
+                        || !ParseBoolean(primary, entityCamera.Primary)
+                        || !scene.AddCameraComponent(entity, entityCamera))
+                        return fail("invalid Camera record or unknown entity");
                 }
                 else if (key == "Light")
                 {
@@ -489,18 +540,19 @@ namespace Engine
                     std::string type;
                     std::string castsShadows;
                     LightComponent light;
-                    stream >> entity.Id >> type
-                        >> light.Color.X
-                        >> light.Color.Y
-                        >> light.Color.Z
-                        >> light.Intensity
-                        >> light.Range
-                        >> light.InnerConeDegrees
-                        >> light.OuterConeDegrees
-                        >> castsShadows;
-                    light.Type = ParseLightType(type);
-                    light.CastsShadows = castsShadows == "true";
-                    scene.AddLightComponent(entity, light);
+                    if (!(stream >> entity.Id >> type
+                            >> light.Color.X
+                            >> light.Color.Y
+                            >> light.Color.Z
+                            >> light.Intensity
+                            >> light.Range
+                            >> light.InnerConeDegrees
+                            >> light.OuterConeDegrees
+                            >> castsShadows)
+                        || !ParseLightType(type, light.Type)
+                        || !ParseBoolean(castsShadows, light.CastsShadows)
+                        || !scene.AddLightComponent(entity, light))
+                        return fail("invalid Light record or unknown entity");
                 }
                 else if (key == "MeshRenderer")
                 {
@@ -508,18 +560,30 @@ namespace Engine
                     std::string visible;
                     std::string castsShadows;
                     MeshRendererComponent meshRenderer;
-                    stream >> entity.Id
-                        >> meshRenderer.MeshAsset
-                        >> meshRenderer.MaterialAsset
-                        >> std::quoted(meshRenderer.MeshName)
-                        >> visible
-                        >> castsShadows;
-                    meshRenderer.Visible = visible == "true";
-                    meshRenderer.CastsShadows = castsShadows == "true";
-                    scene.AddMeshRendererComponent(entity, meshRenderer);
+                    if (!(stream >> entity.Id
+                            >> meshRenderer.MeshAsset
+                            >> meshRenderer.MaterialAsset
+                            >> std::quoted(meshRenderer.MeshName)
+                            >> visible
+                            >> castsShadows)
+                        || !ParseBoolean(visible, meshRenderer.Visible)
+                        || !ParseBoolean(castsShadows, meshRenderer.CastsShadows)
+                        || !scene.AddMeshRendererComponent(entity, meshRenderer))
+                        return fail("invalid MeshRenderer record or unknown entity");
                 }
+                else
+                    return fail("unknown Entities field");
             }
+            else
+                return fail("field appears in an unknown section");
+
+            stream >> std::ws;
+            if (!stream.eof())
+                return fail("unexpected trailing data");
         }
+
+        if (input.bad())
+            return fail("I/O error while reading scene");
 
         if (parsedEntities && !scene.m_Entities.empty())
         {

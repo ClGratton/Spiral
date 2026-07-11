@@ -40,16 +40,13 @@ namespace Engine
                 return false;
             }
 
-            copyQueueProbe->Begin();
-            copyQueueProbe->End();
-            if (!m_Device->Submit(*copyQueueProbe))
+            if (!copyQueueProbe->Begin() || !copyQueueProbe->End() || !m_Device->SubmitAndWait(*copyQueueProbe))
             {
-                Log::Error("Could not submit the D3D12 copy-queue command-list probe");
+                Log::Error("Could not record and submit the D3D12 copy-queue command-list probe");
                 m_Device.reset();
                 return false;
             }
 
-            m_Device->WaitIdle();
             m_RendererBackend = RendererBackend::NVRHID3D12;
             return true;
         }
