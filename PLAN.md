@@ -171,7 +171,10 @@ Required:
 
 - [x] NVRHI backend integrated behind `Engine::RHI`.
 - [x] D3D12 first path on Windows, Vulkan path kept in design.
-- [ ] Swapchain, command queues, resource upload, transient resources.
+- [x] D3D12 flip-model swapchain lifecycle and native graphics/compute/copy queues.
+- [x] RHI command-list allocation, recording, and queue submission.
+- [ ] GPU resource-upload path with copy-queue synchronization.
+- [ ] Transient resource allocation and reuse from render-graph lifetimes.
 - [ ] Presentation pacing and measurement: DXGI waitable swapchain profiles, capability-gated Vulkan present timing, and separate app/present/display telemetry.
 - [x] HLSL shader compilation pipeline through the D3D12 RHI; Slang remains a future portability option.
 - [ ] Mesh buffers, index buffers, constant/structured buffers.

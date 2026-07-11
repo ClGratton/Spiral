@@ -32,6 +32,24 @@ namespace Engine
         m_Device = RHI::CreateNVRHID3D12Device(std::move(description), m_AdapterInfo, &m_D3D12NativeHandles);
         if (m_Device)
         {
+            Scope<RHI::CommandList> copyQueueProbe = m_Device->CreateCommandList(RHI::QueueType::Copy, "Renderer Startup Copy Queue Probe");
+            if (!copyQueueProbe)
+            {
+                Log::Error("Could not create the D3D12 copy-queue command-list probe");
+                m_Device.reset();
+                return false;
+            }
+
+            copyQueueProbe->Begin();
+            copyQueueProbe->End();
+            if (!m_Device->Submit(*copyQueueProbe))
+            {
+                Log::Error("Could not submit the D3D12 copy-queue command-list probe");
+                m_Device.reset();
+                return false;
+            }
+
+            m_Device->WaitIdle();
             m_RendererBackend = RendererBackend::NVRHID3D12;
             return true;
         }

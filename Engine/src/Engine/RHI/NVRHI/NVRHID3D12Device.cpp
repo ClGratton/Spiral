@@ -148,6 +148,18 @@ namespace Engine::RHI
             return D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA;
         }
 
+        D3D12_COMMAND_LIST_TYPE ConvertCommandListType(QueueType queueType)
+        {
+            switch (queueType)
+            {
+                case QueueType::Graphics: return D3D12_COMMAND_LIST_TYPE_DIRECT;
+                case QueueType::Compute: return D3D12_COMMAND_LIST_TYPE_COMPUTE;
+                case QueueType::Copy: return D3D12_COMMAND_LIST_TYPE_COPY;
+            }
+
+            return D3D12_COMMAND_LIST_TYPE_DIRECT;
+        }
+
         DXGI_FORMAT ConvertIndexFormat(IndexFormat format)
         {
             switch (format)
@@ -725,6 +737,19 @@ namespace Engine::RHI
             {
             }
 
+            NVRHID3D12CommandList(
+                QueueType queueType,
+                ComPtr<ID3D12CommandAllocator> commandAllocator,
+                ComPtr<ID3D12GraphicsCommandList> commandList,
+                std::string debugName)
+                : m_QueueType(queueType)
+                , m_CommandAllocator(std::move(commandAllocator))
+                , m_OwnedCommandList(std::move(commandList))
+                , m_CommandList(m_OwnedCommandList.Get())
+                , m_DebugName(std::move(debugName))
+            {
+            }
+
             QueueType GetQueueType() const override
             {
                 return m_QueueType;
@@ -732,10 +757,49 @@ namespace Engine::RHI
 
             void Begin() override
             {
+                if (!m_CommandAllocator || !m_OwnedCommandList || m_IsRecording)
+                    return;
+
+                HRESULT result = m_CommandAllocator->Reset();
+                if (FAILED(result))
+                {
+                    Log::Error("Could not reset D3D12 RHI command allocator '", m_DebugName, "': ", HResultToString(result));
+                    return;
+                }
+
+                result = m_OwnedCommandList->Reset(m_CommandAllocator.Get(), nullptr);
+                if (FAILED(result))
+                {
+                    Log::Error("Could not begin D3D12 RHI command list '", m_DebugName, "': ", HResultToString(result));
+                    return;
+                }
+
+                m_IsRecording = true;
             }
 
             void End() override
             {
+                if (!m_OwnedCommandList || !m_IsRecording)
+                    return;
+
+                const HRESULT result = m_OwnedCommandList->Close();
+                if (FAILED(result))
+                {
+                    Log::Error("Could not close D3D12 RHI command list '", m_DebugName, "': ", HResultToString(result));
+                    return;
+                }
+
+                m_IsRecording = false;
+            }
+
+            bool IsReadyToSubmit() const
+            {
+                return m_OwnedCommandList && !m_IsRecording;
+            }
+
+            ID3D12CommandList* GetNativeCommandList() const
+            {
+                return m_CommandList;
             }
 
             void BeginDebugMarker(std::string_view name) override
@@ -875,8 +939,11 @@ namespace Engine::RHI
             }
 
             QueueType m_QueueType = QueueType::Graphics;
+            ComPtr<ID3D12CommandAllocator> m_CommandAllocator;
+            ComPtr<ID3D12GraphicsCommandList> m_OwnedCommandList;
             ID3D12GraphicsCommandList* m_CommandList = nullptr;
             std::string m_DebugName;
+            bool m_IsRecording = false;
         };
 
         class NVRHIQueryPoolStub final : public QueryPool
@@ -1002,10 +1069,59 @@ namespace Engine::RHI
 
             Scope<CommandList> CreateCommandList(QueueType queueType, std::string_view debugName) override
             {
-                (void)queueType;
-                (void)debugName;
-                Log::Warn("NVRHI D3D12 command list creation is not implemented yet");
-                return nullptr;
+                const D3D12_COMMAND_LIST_TYPE commandListType = ConvertCommandListType(queueType);
+                ComPtr<ID3D12CommandAllocator> allocator;
+                HRESULT result = m_Device->CreateCommandAllocator(commandListType, IID_PPV_ARGS(&allocator));
+                if (FAILED(result))
+                {
+                    Log::Error("Could not create D3D12 RHI command allocator '", debugName, "': ", HResultToString(result));
+                    return nullptr;
+                }
+
+                ComPtr<ID3D12GraphicsCommandList> commandList;
+                result = m_Device->CreateCommandList(0, commandListType, allocator.Get(), nullptr, IID_PPV_ARGS(&commandList));
+                if (FAILED(result))
+                {
+                    Log::Error("Could not create D3D12 RHI command list '", debugName, "': ", HResultToString(result));
+                    return nullptr;
+                }
+
+                const std::wstring name = Utf8ToWide(std::string(debugName));
+                if (!name.empty())
+                {
+                    allocator->SetName((name + L" Allocator").c_str());
+                    commandList->SetName(name.c_str());
+                }
+
+                result = commandList->Close();
+                if (FAILED(result))
+                {
+                    Log::Error("Could not initialize D3D12 RHI command list '", debugName, "': ", HResultToString(result));
+                    return nullptr;
+                }
+
+                return CreateScope<NVRHID3D12CommandList>(queueType, std::move(allocator), std::move(commandList), std::string(debugName));
+            }
+
+            bool Submit(CommandList& commandList) override
+            {
+                auto* nativeCommandList = dynamic_cast<NVRHID3D12CommandList*>(&commandList);
+                if (!nativeCommandList || !nativeCommandList->IsReadyToSubmit())
+                {
+                    Log::Error("D3D12 RHI command list submission requires a closed, device-owned command list");
+                    return false;
+                }
+
+                ID3D12CommandQueue* queue = GetQueue(nativeCommandList->GetQueueType());
+                ID3D12CommandList* nativeLists[] = { nativeCommandList->GetNativeCommandList() };
+                if (!queue || !nativeLists[0])
+                {
+                    Log::Error("D3D12 RHI command list submission received incomplete native objects");
+                    return false;
+                }
+
+                queue->ExecuteCommandLists(1, nativeLists);
+                return true;
             }
 
             void WaitIdle() override
@@ -1161,6 +1277,18 @@ namespace Engine::RHI
                 return CreateQueue(D3D12_COMMAND_LIST_TYPE_DIRECT, L"Spiral Graphics Queue", &m_GraphicsQueue)
                     && CreateQueue(D3D12_COMMAND_LIST_TYPE_COMPUTE, L"Spiral Compute Queue", &m_ComputeQueue)
                     && CreateQueue(D3D12_COMMAND_LIST_TYPE_COPY, L"Spiral Copy Queue", &m_CopyQueue);
+            }
+
+            ID3D12CommandQueue* GetQueue(QueueType queueType) const
+            {
+                switch (queueType)
+                {
+                    case QueueType::Graphics: return m_GraphicsQueue.Get();
+                    case QueueType::Compute: return m_ComputeQueue.Get();
+                    case QueueType::Copy: return m_CopyQueue.Get();
+                }
+
+                return nullptr;
             }
 
             bool CreateNVRHIDevice()
