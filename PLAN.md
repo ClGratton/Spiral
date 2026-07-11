@@ -156,7 +156,7 @@ Required:
 - [x] Material asset format.
 - [x] Drag/drop asset browser.
 - [x] Save/load project and scene.
-- [ ] Undo/redo command stack.
+- [x] Undo/redo command stack.
 
 Exit criteria:
 

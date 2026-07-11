@@ -21,6 +21,9 @@ public:
     void OnEvent(Engine::Event& event) override;
 
 private:
+    struct HistoryState;
+    struct HistoryEntry;
+
     void DrawDockspace();
     void DrawMainMenuBar();
     void BuildDefaultDockLayout(unsigned int dockspaceId, const ImVec2& dockspaceSize);
@@ -33,11 +36,12 @@ private:
     void DrawConsolePanel();
     void DrawProfilerPanel();
     void DrawProjectPanel();
-    void DrawMaterialAssetControls(Engine::AssetHandle handle);
+    bool DrawMaterialAssetControls(Engine::AssetHandle handle);
     void HandleAssetWatchEvents();
     void RunAssetWatchSmokeMutation();
     void RunGltfImportSmoke();
     void RunMaterialAssetSmoke();
+    void RunUndoRedoSmoke();
     bool OnFileDrop(Engine::FileDropEvent& event);
     bool ImportGltfAsset(const std::filesystem::path& sourcePath);
     bool SaveProject();
@@ -46,6 +50,11 @@ private:
     bool SaveAssetRegistry();
     bool SaveMaterialAsset(Engine::AssetHandle handle);
     bool SaveMaterialAssets();
+    void RecordHistory(std::string label, HistoryState before);
+    bool Undo();
+    bool Redo();
+    HistoryState CaptureHistoryState() const;
+    void RestoreHistoryState(const HistoryState& state);
     void EnsureDefaultSceneEntities();
 
 private:
@@ -63,6 +72,8 @@ private:
     bool m_MaterialAssetSmokeRequested = false;
     bool m_MaterialAssetSmokeCompleted = false;
     bool m_ProjectSaveSmokeRequested = false;
+    bool m_UndoRedoSmokeRequested = false;
+    bool m_UndoRedoSmokeCompleted = false;
     std::string m_CaptureViewportPath = "output/captures/editor-viewport.bmp";
     std::string m_ProjectPath = "output/projects/default.spiralproject";
     std::string m_ScenePath = "output/scenes/sample.spiral";
@@ -92,4 +103,28 @@ private:
     std::array<char, 128> m_AssetBrowserFilter {};
     std::array<char, 512> m_GltfImportPath {};
     std::vector<std::string> m_ConsoleLines;
+
+    struct HistoryState
+    {
+        Engine::Scene Scene { "History Scene" };
+        Engine::AssetRegistry AssetRegistry;
+        Engine::MaterialLibrary MaterialLibrary;
+        Engine::ClearColor ClearColor;
+        Engine::Entity SelectedEntity;
+        std::array<float, 3> CameraPosition {};
+        std::array<float, 3> CameraRotation {};
+        float CameraFovDegrees = 60.0f;
+        float CameraNearClip = 0.1f;
+        float CameraFarClip = 100.0f;
+    };
+
+    struct HistoryEntry
+    {
+        std::string Label;
+        HistoryState Before;
+        HistoryState After;
+    };
+
+    std::vector<HistoryEntry> m_UndoHistory;
+    std::vector<HistoryEntry> m_RedoHistory;
 };

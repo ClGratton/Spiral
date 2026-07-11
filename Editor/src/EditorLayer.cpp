@@ -228,6 +228,7 @@ void EditorLayer::OnAttach()
     m_GltfImportSmokeRequested = Engine::Application::Get().GetSpecification().CommandLineArgs.HasFlag("--gltf-import-smoke");
     m_MaterialAssetSmokeRequested = Engine::Application::Get().GetSpecification().CommandLineArgs.HasFlag("--material-asset-smoke");
     m_ProjectSaveSmokeRequested = Engine::Application::Get().GetSpecification().CommandLineArgs.HasFlag("--project-save-smoke");
+    m_UndoRedoSmokeRequested = Engine::Application::Get().GetSpecification().CommandLineArgs.HasFlag("--undo-redo-smoke");
     if (m_AssetWatchSmokeRequested)
     {
         WriteTextFile(m_AssetWatchSmokePath, "asset watch smoke baseline\n");
@@ -267,6 +268,7 @@ void EditorLayer::OnUpdate(Engine::Timestep timestep)
     RunAssetWatchSmokeMutation();
     RunGltfImportSmoke();
     RunMaterialAssetSmoke();
+    RunUndoRedoSmoke();
     HandleAssetWatchEvents();
 
     if (m_FrameCounter == 1)
@@ -282,6 +284,15 @@ void EditorLayer::OnUiRender()
 {
     if (!ImGui::GetCurrentContext())
         return;
+
+    const ImGuiIO& io = ImGui::GetIO();
+    if (!io.WantTextInput && io.KeyCtrl)
+    {
+        if (ImGui::IsKeyPressed(ImGuiKey_Z, false))
+            Undo();
+        else if (ImGui::IsKeyPressed(ImGuiKey_Y, false))
+            Redo();
+    }
 
     DrawDockspace();
     DrawSceneHierarchyPanel();
@@ -369,6 +380,11 @@ void EditorLayer::DrawMainMenuBar()
             SaveActiveScene();
         if (ImGui::MenuItem("Save Asset Registry"))
             SaveAssetRegistry();
+        ImGui::Separator();
+        if (ImGui::MenuItem("Undo", "Ctrl+Z", false, !m_UndoHistory.empty()))
+            Undo();
+        if (ImGui::MenuItem("Redo", "Ctrl+Y", false, !m_RedoHistory.empty()))
+            Redo();
         ImGui::Separator();
         if (ImGui::MenuItem("Exit"))
             Engine::Application::Get().Close();
@@ -472,6 +488,8 @@ void EditorLayer::DrawInspectorPanel()
         return;
     }
 
+    const HistoryState inspectorState = CaptureHistoryState();
+    bool historyStateChanged = false;
     ImGui::Text("Selected: %s", selectedEntity->Name.c_str());
     ImGui::Separator();
     ImGui::PushID("TransformComponent");
@@ -486,6 +504,7 @@ void EditorLayer::DrawInspectorPanel()
         m_ActiveScene.SetMainCameraTransform(selectedEntity->Transform);
         SyncEditorCameraStateFromMainCamera();
     }
+    historyStateChanged |= transformChanged;
     ImGui::PopID();
 
     if (selectedEntity->Camera)
@@ -508,6 +527,7 @@ void EditorLayer::DrawInspectorPanel()
             m_ActiveScene.SetMainCamera(camera);
             SyncEditorCameraStateFromMainCamera();
         }
+        historyStateChanged |= cameraChanged;
         ImGui::PopID();
     }
 
@@ -517,6 +537,7 @@ void EditorLayer::DrawInspectorPanel()
         ImGui::PushID("LightComponent");
         ImGui::TextUnformatted("Light Component");
         Engine::LightComponent& light = *selectedEntity->Light;
+        bool lightChanged = false;
         const char* lightTypeName = ToLightTypeName(light.Type);
         if (ImGui::BeginCombo("Type", lightTypeName))
         {
@@ -529,20 +550,24 @@ void EditorLayer::DrawInspectorPanel()
             {
                 const bool selected = light.Type == candidate;
                 if (ImGui::Selectable(ToLightTypeName(candidate), selected))
+                {
                     light.Type = candidate;
+                    lightChanged = true;
+                }
                 if (selected)
                     ImGui::SetItemDefaultFocus();
             }
             ImGui::EndCombo();
         }
-        ImGui::ColorEdit3("Color", &light.Color.X);
-        ImGui::DragFloat("Intensity", &light.Intensity, 0.05f, 0.0f, 100000.0f);
-        ImGui::DragFloat("Range", &light.Range, 0.1f, 0.0f, 10000.0f);
-        ImGui::DragFloat("Inner Cone", &light.InnerConeDegrees, 0.5f, 0.0f, 180.0f);
-        ImGui::DragFloat("Outer Cone", &light.OuterConeDegrees, 0.5f, 0.0f, 180.0f);
+        lightChanged |= ImGui::ColorEdit3("Color", &light.Color.X);
+        lightChanged |= ImGui::DragFloat("Intensity", &light.Intensity, 0.05f, 0.0f, 100000.0f);
+        lightChanged |= ImGui::DragFloat("Range", &light.Range, 0.1f, 0.0f, 10000.0f);
+        lightChanged |= ImGui::DragFloat("Inner Cone", &light.InnerConeDegrees, 0.5f, 0.0f, 180.0f);
+        lightChanged |= ImGui::DragFloat("Outer Cone", &light.OuterConeDegrees, 0.5f, 0.0f, 180.0f);
         if (light.OuterConeDegrees < light.InnerConeDegrees)
             light.OuterConeDegrees = light.InnerConeDegrees;
-        ImGui::Checkbox("Casts Shadows", &light.CastsShadows);
+        lightChanged |= ImGui::Checkbox("Casts Shadows", &light.CastsShadows);
+        historyStateChanged |= lightChanged;
         ImGui::PopID();
     }
 
@@ -558,16 +583,19 @@ void EditorLayer::DrawInspectorPanel()
         char meshName[128] = {};
         const std::string meshDisplayName = GetMeshDisplayName(meshRenderer, m_AssetRegistry);
         std::snprintf(meshName, sizeof(meshName), "%s", meshDisplayName.c_str());
+        bool meshChanged = false;
         if (ImGui::InputText("Mesh Name", meshName, sizeof(meshName)))
         {
             meshRenderer.MeshName = meshName;
             m_AssetRegistry.SetAssetName(meshRenderer.MeshAsset, meshName);
+            meshChanged = true;
         }
-        DrawAssetHandleControl("Mesh Asset", meshRenderer.MeshAsset, m_AssetRegistry, Engine::AssetType::Mesh);
-        DrawAssetHandleControl("Material Asset", meshRenderer.MaterialAsset, m_AssetRegistry, Engine::AssetType::Material);
-        DrawMaterialAssetControls(meshRenderer.MaterialAsset);
-        ImGui::Checkbox("Visible", &meshRenderer.Visible);
-        ImGui::Checkbox("Casts Shadows", &meshRenderer.CastsShadows);
+        meshChanged |= DrawAssetHandleControl("Mesh Asset", meshRenderer.MeshAsset, m_AssetRegistry, Engine::AssetType::Mesh);
+        meshChanged |= DrawAssetHandleControl("Material Asset", meshRenderer.MaterialAsset, m_AssetRegistry, Engine::AssetType::Material);
+        meshChanged |= DrawMaterialAssetControls(meshRenderer.MaterialAsset);
+        meshChanged |= ImGui::Checkbox("Visible", &meshRenderer.Visible);
+        meshChanged |= ImGui::Checkbox("Casts Shadows", &meshRenderer.CastsShadows);
+        historyStateChanged |= meshChanged;
         ImGui::PopID();
     }
 
@@ -591,6 +619,7 @@ void EditorLayer::DrawInspectorPanel()
         Engine::Renderer::SetCameraView(m_EditorCamera.GetCameraView());
         ApplyEditorCameraStateToScene();
     }
+    historyStateChanged |= cameraChanged;
     ImGui::TextDisabled("Aspect %.3f", m_EditorCamera.GetAspectRatio());
     ImGui::PopID();
     ImGui::Separator();
@@ -602,28 +631,35 @@ void EditorLayer::DrawInspectorPanel()
         ImGui::TextDisabled("Native viewport requires the Windows VS2022 build.");
     ImGui::Separator();
     if (ImGui::ColorEdit4("Clear Color", &m_ClearColor.R))
+    {
         Engine::Renderer::SetClearColor(m_ClearColor);
+        historyStateChanged = true;
+    }
+    if (historyStateChanged)
+        RecordHistory("Inspector edit", inspectorState);
     ImGui::End();
 }
 
-void EditorLayer::DrawMaterialAssetControls(Engine::AssetHandle handle)
+bool EditorLayer::DrawMaterialAssetControls(Engine::AssetHandle handle)
 {
     Engine::MaterialAsset* material = m_MaterialLibrary.Get(handle);
     if (!material)
     {
         ImGui::TextDisabled("No loaded material asset for this handle");
-        return;
+        return false;
     }
 
     ImGui::Separator();
     ImGui::PushID("MaterialAsset");
     ImGui::TextUnformatted("Material Asset");
+    bool materialChanged = false;
     char materialName[128] = {};
     std::snprintf(materialName, sizeof(materialName), "%s", material->Name.c_str());
     if (ImGui::InputText("Material Name", materialName, sizeof(materialName)))
     {
         material->Name = materialName;
         m_AssetRegistry.SetAssetName(handle, materialName);
+        materialChanged = true;
     }
 
     if (ImGui::BeginCombo("Shading Model", Engine::ToString(material->ShadingModel)))
@@ -636,7 +672,10 @@ void EditorLayer::DrawMaterialAssetControls(Engine::AssetHandle handle)
         {
             const bool selected = material->ShadingModel == candidate;
             if (ImGui::Selectable(Engine::ToString(candidate), selected))
+            {
                 material->ShadingModel = candidate;
+                materialChanged = true;
+            }
             if (selected)
                 ImGui::SetItemDefaultFocus();
         }
@@ -654,23 +693,26 @@ void EditorLayer::DrawMaterialAssetControls(Engine::AssetHandle handle)
         {
             const bool selected = material->AlphaMode == candidate;
             if (ImGui::Selectable(Engine::ToString(candidate), selected))
+            {
                 material->AlphaMode = candidate;
+                materialChanged = true;
+            }
             if (selected)
                 ImGui::SetItemDefaultFocus();
         }
         ImGui::EndCombo();
     }
 
-    ImGui::Checkbox("Two Sided", &material->TwoSided);
-    ImGui::ColorEdit3("Base Color", &material->BaseColor.X);
-    ImGui::DragFloat("Metallic", &material->Metallic, 0.01f, 0.0f, 1.0f);
-    ImGui::DragFloat("Roughness", &material->Roughness, 0.01f, 0.0f, 1.0f);
-    ImGui::DragFloat("Normal Scale", &material->NormalScale, 0.01f, 0.0f, 4.0f);
-    ImGui::DragFloat("Occlusion Strength", &material->OcclusionStrength, 0.01f, 0.0f, 1.0f);
-    ImGui::ColorEdit3("Emissive Color", &material->EmissiveColor.X);
-    ImGui::DragFloat("Emissive Strength", &material->EmissiveStrength, 0.01f, 0.0f, 10000.0f);
+    materialChanged |= ImGui::Checkbox("Two Sided", &material->TwoSided);
+    materialChanged |= ImGui::ColorEdit3("Base Color", &material->BaseColor.X);
+    materialChanged |= ImGui::DragFloat("Metallic", &material->Metallic, 0.01f, 0.0f, 1.0f);
+    materialChanged |= ImGui::DragFloat("Roughness", &material->Roughness, 0.01f, 0.0f, 1.0f);
+    materialChanged |= ImGui::DragFloat("Normal Scale", &material->NormalScale, 0.01f, 0.0f, 4.0f);
+    materialChanged |= ImGui::DragFloat("Occlusion Strength", &material->OcclusionStrength, 0.01f, 0.0f, 1.0f);
+    materialChanged |= ImGui::ColorEdit3("Emissive Color", &material->EmissiveColor.X);
+    materialChanged |= ImGui::DragFloat("Emissive Strength", &material->EmissiveStrength, 0.01f, 0.0f, 10000.0f);
     if (material->AlphaMode == Engine::MaterialAlphaMode::Mask)
-        ImGui::DragFloat("Alpha Cutoff", &material->AlphaCutoff, 0.01f, 0.0f, 1.0f);
+        materialChanged |= ImGui::DragFloat("Alpha Cutoff", &material->AlphaCutoff, 0.01f, 0.0f, 1.0f);
 
     ImGui::Separator();
     ImGui::TextUnformatted("Texture Handles");
@@ -683,21 +725,22 @@ void EditorLayer::DrawMaterialAssetControls(Engine::AssetHandle handle)
         Engine::MaterialTextureSlot::CallistoControl
     };
     for (Engine::MaterialTextureSlot slot : textureSlots)
-        DrawAssetHandleControl(
+        materialChanged |= DrawAssetHandleControl(
             Engine::ToString(slot), material->GetTexture(slot), m_AssetRegistry, Engine::AssetType::Texture);
 
     ImGui::Separator();
     ImGui::TextUnformatted("Callisto Controls");
-    ImGui::DragFloat("Diffuse Fresnel", &material->DiffuseFresnelIntensity, 0.01f, 0.0f, 256.0f);
-    ImGui::DragFloat("Retroreflection", &material->RetroreflectionIntensity, 0.01f, 0.0f, 256.0f);
-    ImGui::DragFloat("Diffuse Falloff", &material->DiffuseFresnelFalloff, 0.01f, 0.0f, 1.0f);
-    ImGui::DragFloat("Retroreflection Falloff", &material->RetroreflectionFalloff, 0.01f, 0.0f, 1.0f);
-    ImGui::DragFloat("Smooth Terminator", &material->SmoothTerminator, 0.01f, -1.0f, 1.0f);
+    materialChanged |= ImGui::DragFloat("Diffuse Fresnel", &material->DiffuseFresnelIntensity, 0.01f, 0.0f, 256.0f);
+    materialChanged |= ImGui::DragFloat("Retroreflection", &material->RetroreflectionIntensity, 0.01f, 0.0f, 256.0f);
+    materialChanged |= ImGui::DragFloat("Diffuse Falloff", &material->DiffuseFresnelFalloff, 0.01f, 0.0f, 1.0f);
+    materialChanged |= ImGui::DragFloat("Retroreflection Falloff", &material->RetroreflectionFalloff, 0.01f, 0.0f, 1.0f);
+    materialChanged |= ImGui::DragFloat("Smooth Terminator", &material->SmoothTerminator, 0.01f, -1.0f, 1.0f);
     material->ClampValues();
 
     if (ImGui::Button("Save Material"))
         SaveMaterialAsset(handle);
     ImGui::PopID();
+    return materialChanged;
 }
 
 void EditorLayer::ApplyEditorCameraStateToScene()
@@ -1125,6 +1168,34 @@ void EditorLayer::RunMaterialAssetSmoke()
     Engine::Log::Info("Material asset smoke passed: ", m_MaterialAssetSmokePath);
 }
 
+void EditorLayer::RunUndoRedoSmoke()
+{
+    if (!m_UndoRedoSmokeRequested || m_UndoRedoSmokeCompleted || m_FrameCounter < 1)
+        return;
+
+    Engine::TransformComponent* transform = m_ActiveScene.TryGetTransform(m_PrototypeMeshEntity);
+    if (!transform)
+        throw std::runtime_error("Undo/redo smoke could not find the prototype transform");
+
+    const float originalX = transform->Position.X;
+    const HistoryState before = CaptureHistoryState();
+    transform->Position.X = originalX + 2.0f;
+    RecordHistory("Undo/redo smoke", before);
+
+    const bool undone = Undo();
+    const Engine::TransformComponent* restoredTransform = m_ActiveScene.TryGetTransform(m_PrototypeMeshEntity);
+    const bool restored = restoredTransform && std::abs(restoredTransform->Position.X - originalX) < 0.0001f;
+
+    const bool redone = Redo();
+    const Engine::TransformComponent* reappliedTransform = m_ActiveScene.TryGetTransform(m_PrototypeMeshEntity);
+    const bool reapplied = reappliedTransform && std::abs(reappliedTransform->Position.X - (originalX + 2.0f)) < 0.0001f;
+    if (!undone || !restored || !redone || !reapplied)
+        throw std::runtime_error("Undo/redo smoke did not restore the prototype transform");
+
+    m_UndoRedoSmokeCompleted = true;
+    Engine::Log::Info("Undo/redo smoke passed");
+}
+
 bool EditorLayer::ImportGltfAsset(const std::filesystem::path& sourcePath)
 {
     m_LastGltfImport = Engine::GltfImporter::Import(sourcePath, m_AssetRegistry);
@@ -1220,6 +1291,83 @@ bool EditorLayer::LoadProject()
 
     Engine::Log::Info("Project loaded: ", m_ProjectPath);
     m_ConsoleLines.emplace_back("Project loaded: " + m_ProjectPath);
+    return true;
+}
+
+EditorLayer::HistoryState EditorLayer::CaptureHistoryState() const
+{
+    HistoryState state;
+    state.Scene = m_ActiveScene;
+    state.AssetRegistry = m_AssetRegistry;
+    state.MaterialLibrary = m_MaterialLibrary;
+    state.ClearColor = m_ClearColor;
+    state.SelectedEntity = m_SelectedEntity;
+    state.CameraPosition = m_CameraPosition;
+    state.CameraRotation = m_CameraRotation;
+    state.CameraFovDegrees = m_CameraFovDegrees;
+    state.CameraNearClip = m_CameraNearClip;
+    state.CameraFarClip = m_CameraFarClip;
+    return state;
+}
+
+void EditorLayer::RestoreHistoryState(const HistoryState& state)
+{
+    m_ActiveScene = state.Scene;
+    m_AssetRegistry = state.AssetRegistry;
+    m_MaterialLibrary = state.MaterialLibrary;
+    m_ClearColor = state.ClearColor;
+    m_SelectedEntity = state.SelectedEntity;
+    m_CameraPosition = state.CameraPosition;
+    m_CameraRotation = state.CameraRotation;
+    m_CameraFovDegrees = state.CameraFovDegrees;
+    m_CameraNearClip = state.CameraNearClip;
+    m_CameraFarClip = state.CameraFarClip;
+    m_PrototypeMeshEntity = m_ActiveScene.FindEntityByName("Prototype Mesh");
+    m_DirectionalLightEntity = m_ActiveScene.FindEntityByName("Directional Light");
+    m_PlayerStartEntity = m_ActiveScene.FindEntityByName("Player Start");
+    if (!m_ActiveScene.IsEntityValid(m_SelectedEntity))
+        m_SelectedEntity = m_PrototypeMeshEntity ? m_PrototypeMeshEntity : m_ActiveScene.GetMainCameraEntity();
+
+    m_EditorCamera.SetPosition({ m_CameraPosition[0], m_CameraPosition[1], m_CameraPosition[2] });
+    m_EditorCamera.SetRotationDegrees({ m_CameraRotation[0], m_CameraRotation[1], m_CameraRotation[2] });
+    m_EditorCamera.SetProjection({ m_CameraFovDegrees, m_CameraNearClip, m_CameraFarClip });
+    Engine::Renderer::SetCameraView(m_EditorCamera.GetCameraView());
+    Engine::Renderer::SetClearColor(m_ClearColor);
+    m_AssetWatcher.SyncRegistry(m_AssetRegistry);
+}
+
+void EditorLayer::RecordHistory(std::string label, HistoryState before)
+{
+    m_RedoHistory.clear();
+    m_UndoHistory.push_back({ std::move(label), std::move(before), CaptureHistoryState() });
+    constexpr std::size_t maxHistoryEntries = 128;
+    if (m_UndoHistory.size() > maxHistoryEntries)
+        m_UndoHistory.erase(m_UndoHistory.begin());
+}
+
+bool EditorLayer::Undo()
+{
+    if (m_UndoHistory.empty())
+        return false;
+
+    HistoryEntry entry = std::move(m_UndoHistory.back());
+    m_UndoHistory.pop_back();
+    RestoreHistoryState(entry.Before);
+    m_ConsoleLines.emplace_back("Undid: " + entry.Label);
+    m_RedoHistory.push_back(std::move(entry));
+    return true;
+}
+
+bool EditorLayer::Redo()
+{
+    if (m_RedoHistory.empty())
+        return false;
+
+    HistoryEntry entry = std::move(m_RedoHistory.back());
+    m_RedoHistory.pop_back();
+    RestoreHistoryState(entry.After);
+    m_ConsoleLines.emplace_back("Redid: " + entry.Label);
+    m_UndoHistory.push_back(std::move(entry));
     return true;
 }
 
