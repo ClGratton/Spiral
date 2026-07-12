@@ -201,5 +201,7 @@ jobs:
         if: always()
         with:
           name: ${{ runner.os }}-vulkan-smoke-log
-          path: output/test-logs/vulkan-smoke-*-gmake.log
+          path: |
+            output/test-logs/vulkan-smoke-*-gmake.log
+            output/crashes/*.txt
           if-no-files-found: ignore

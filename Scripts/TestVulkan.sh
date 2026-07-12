@@ -68,6 +68,12 @@ set +e
 STATUS=${PIPESTATUS[0]}
 set -e
 if [[ $STATUS -ne 0 ]]; then
+    for CRASH_REPORT in "$ROOT"/output/crashes/*.txt; do
+        if [[ -f "$CRASH_REPORT" ]]; then
+            echo "Vulkan smoke crash report: $CRASH_REPORT" >&2
+            sed -n '1,240p' "$CRASH_REPORT" >&2
+        fi
+    done
     echo "Vulkan render smoke failed with exit code $STATUS." >&2
     exit "$STATUS"
 fi
