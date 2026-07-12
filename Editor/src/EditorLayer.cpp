@@ -316,6 +316,7 @@ void EditorLayer::OnUiRender()
     DrawDockspace();
     DrawSceneHierarchyPanel();
     DrawInspectorPanel();
+    DrawSettingsPanel();
     DrawViewportPanel();
     DrawConsolePanel();
     DrawProfilerPanel();
@@ -453,21 +454,22 @@ void EditorLayer::BuildDefaultDockLayout(unsigned int dockspaceId, const ImVec2&
     ImGuiID centerDock = dockspaceId;
     ImGuiID leftDock = 0;
     ImGuiID rightDock = 0;
-    ImGuiID rightTopDock = 0;
-    ImGuiID rightBottomDock = 0;
+    ImGuiID leftTopDock = 0;
+    ImGuiID leftBottomDock = 0;
     ImGuiID bottomDock = 0;
 
     ImGui::DockBuilderSplitNode(centerDock, ImGuiDir_Left, 0.20f, &leftDock, &centerDock);
     ImGui::DockBuilderSplitNode(centerDock, ImGuiDir_Right, 0.31f, &rightDock, &centerDock);
-    ImGui::DockBuilderSplitNode(centerDock, ImGuiDir_Down, 0.28f, &bottomDock, &centerDock);
-    ImGui::DockBuilderSplitNode(rightDock, ImGuiDir_Up, 0.50f, &rightTopDock, &rightBottomDock);
+    ImGui::DockBuilderSplitNode(centerDock, ImGuiDir_Down, 0.24f, &bottomDock, &centerDock);
+    ImGui::DockBuilderSplitNode(leftDock, ImGuiDir_Down, 0.52f, &leftBottomDock, &leftTopDock);
 
     ImGui::DockBuilderDockWindow("Viewport", centerDock);
-    ImGui::DockBuilderDockWindow("Project", leftDock);
+    ImGui::DockBuilderDockWindow("Scene Hierarchy", leftTopDock);
+    ImGui::DockBuilderDockWindow("Content Browser", leftBottomDock);
+    ImGui::DockBuilderDockWindow("Profiler", bottomDock);
     ImGui::DockBuilderDockWindow("Console", bottomDock);
-    ImGui::DockBuilderDockWindow("Inspector", rightTopDock);
-    ImGui::DockBuilderDockWindow("Profiler", rightTopDock);
-    ImGui::DockBuilderDockWindow("Scene Hierarchy", rightBottomDock);
+    ImGui::DockBuilderDockWindow("Settings", rightDock);
+    ImGui::DockBuilderDockWindow("Inspector", rightDock);
     ImGui::DockBuilderFinish(dockspaceId);
 }
 
@@ -492,11 +494,29 @@ void EditorLayer::DrawSceneHierarchyPanel()
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
         ImGui::SetTooltip(canDelete ? "Delete selected entity" : "The primary camera cannot be deleted");
     ImGui::Separator();
+    ImGui::SetNextItemWidth(-1.0f);
+    ImGui::InputTextWithHint("##HierarchyFilter", "Filter entities", m_HierarchyFilter.data(), m_HierarchyFilter.size());
 
     if (ImGui::TreeNodeEx("World", ImGuiTreeNodeFlags_DefaultOpen))
     {
         for (const Engine::SceneEntity& entity : m_ActiveScene.GetEntities())
         {
+            if (m_HierarchyFilter[0] != '\0')
+            {
+                std::string entityName = entity.Name;
+                std::string filter = m_HierarchyFilter.data();
+                std::transform(entityName.begin(), entityName.end(), entityName.begin(), [](unsigned char character)
+                {
+                    return static_cast<char>(std::tolower(character));
+                });
+                std::transform(filter.begin(), filter.end(), filter.begin(), [](unsigned char character)
+                {
+                    return static_cast<char>(std::tolower(character));
+                });
+                if (entityName.find(filter) == std::string::npos)
+                    continue;
+            }
+
             ImGui::PushID(static_cast<int>(entity.EntityHandle.Id));
             const bool selected = entity.EntityHandle == m_SelectedEntity;
             if (ImGui::Selectable(entity.Name.c_str(), selected))
@@ -543,7 +563,13 @@ void EditorLayer::DrawInspectorPanel()
 
     const HistoryState inspectorState = CaptureHistoryState();
     bool historyStateChanged = false;
-    ImGui::Text("Selected: %s", selectedEntity->Name.c_str());
+    char entityName[128] = {};
+    std::snprintf(entityName, sizeof(entityName), "%s", selectedEntity->Name.c_str());
+    if (ImGui::InputText("Name", entityName, sizeof(entityName)))
+    {
+        selectedEntity->Name = entityName;
+        historyStateChanged = true;
+    }
     ImGui::Separator();
     ImGui::PushID("TransformComponent");
     ImGui::TextUnformatted("Transform");
@@ -645,7 +671,8 @@ void EditorLayer::DrawInspectorPanel()
         }
         meshChanged |= DrawAssetHandleControl("Mesh Asset", meshRenderer.MeshAsset, m_AssetRegistry, Engine::AssetType::Mesh);
         meshChanged |= DrawAssetHandleControl("Material Asset", meshRenderer.MaterialAsset, m_AssetRegistry, Engine::AssetType::Material);
-        meshChanged |= DrawMaterialAssetControls(meshRenderer.MaterialAsset);
+        if (ImGui::CollapsingHeader("Material Properties"))
+            meshChanged |= DrawMaterialAssetControls(meshRenderer.MaterialAsset);
         meshChanged |= ImGui::Checkbox("Visible", &meshRenderer.Visible);
         meshChanged |= ImGui::Checkbox("Casts Shadows", &meshRenderer.CastsShadows);
         historyStateChanged |= meshChanged;
@@ -653,43 +680,90 @@ void EditorLayer::DrawInspectorPanel()
     }
 
     ImGui::Separator();
-    ImGui::PushID("EditorCamera");
-    ImGui::TextUnformatted("Editor Camera");
-    bool cameraChanged = false;
-    cameraChanged |= ImGui::DragFloat3("Camera Position", m_CameraPosition.data(), 0.05f);
-    cameraChanged |= ImGui::DragFloat3("Camera Rotation", m_CameraRotation.data(), 0.25f);
-    cameraChanged |= ImGui::DragFloat("Vertical FOV", &m_CameraFovDegrees, 0.25f, 20.0f, 110.0f);
-    cameraChanged |= ImGui::DragFloat("Near Clip", &m_CameraNearClip, 0.01f, 0.01f, 10.0f);
-    cameraChanged |= ImGui::DragFloat("Far Clip", &m_CameraFarClip, 1.0f, 1.0f, 10000.0f);
-    if (cameraChanged)
+    if (ImGui::Button("Add Component", ImVec2(-1.0f, 0.0f)))
+        ImGui::OpenPopup("AddComponentPopup");
+    if (ImGui::BeginPopup("AddComponentPopup"))
     {
-        if (m_CameraFarClip <= m_CameraNearClip)
-            m_CameraFarClip = m_CameraNearClip + 1.0f;
+        if (!selectedEntity->Camera && ImGui::MenuItem("Camera"))
+        {
+            Engine::CameraComponent camera;
+            camera.Primary = false;
+            m_ActiveScene.AddCameraComponent(selectedEntity->EntityHandle, camera);
+            historyStateChanged = true;
+        }
+        if (!selectedEntity->Light && ImGui::MenuItem("Light"))
+        {
+            m_ActiveScene.AddLightComponent(selectedEntity->EntityHandle);
+            historyStateChanged = true;
+        }
+        if (!selectedEntity->MeshRenderer && ImGui::MenuItem("Mesh Renderer"))
+        {
+            m_ActiveScene.AddMeshRendererComponent(selectedEntity->EntityHandle);
+            historyStateChanged = true;
+        }
+        if (selectedEntity->Camera && selectedEntity->Light && selectedEntity->MeshRenderer)
+            ImGui::TextDisabled("All available components are attached");
+        ImGui::EndPopup();
+    }
 
-        m_EditorCamera.SetPosition({ m_CameraPosition[0], m_CameraPosition[1], m_CameraPosition[2] });
-        m_EditorCamera.SetRotationDegrees({ m_CameraRotation[0], m_CameraRotation[1], m_CameraRotation[2] });
-        m_EditorCamera.SetProjection({ m_CameraFovDegrees, m_CameraNearClip, m_CameraFarClip });
-        Engine::Renderer::SetCameraView(m_EditorCamera.GetCameraView());
-        ApplyEditorCameraStateToScene();
-    }
-    historyStateChanged |= cameraChanged;
-    ImGui::TextDisabled("Aspect %.3f", m_EditorCamera.GetAspectRatio());
-    ImGui::PopID();
-    ImGui::Separator();
-    ImGui::TextUnformatted("Renderer");
-    ImGui::Text("Active: %s", Engine::Renderer::GetActiveBackendName());
-    DrawRendererBackendSelector();
-    const Engine::RendererBuildInfo& buildInfo = Engine::Renderer::GetBuildInfo();
-    if (!buildInfo.HasNVRHID3D12)
-        ImGui::TextDisabled("Native viewport requires the Windows VS2022 build.");
-    ImGui::Separator();
-    if (ImGui::ColorEdit4("Clear Color", &m_ClearColor.R))
-    {
-        Engine::Renderer::SetClearColor(m_ClearColor);
-        historyStateChanged = true;
-    }
     if (historyStateChanged)
         RecordHistory("Inspector edit", inspectorState);
+    ImGui::End();
+}
+
+void EditorLayer::DrawSettingsPanel()
+{
+    ImGui::Begin("Settings");
+    const HistoryState settingsState = CaptureHistoryState();
+    bool settingsChanged = false;
+
+    if (ImGui::BeginTabBar("EditorSettingsTabs"))
+    {
+        if (ImGui::BeginTabItem("Viewport"))
+        {
+            ImGui::TextUnformatted("Editor Camera");
+            bool cameraChanged = false;
+            cameraChanged |= ImGui::DragFloat3("Position", m_CameraPosition.data(), 0.05f);
+            cameraChanged |= ImGui::DragFloat3("Rotation", m_CameraRotation.data(), 0.25f);
+            cameraChanged |= ImGui::DragFloat("Vertical FOV", &m_CameraFovDegrees, 0.25f, 20.0f, 110.0f);
+            cameraChanged |= ImGui::DragFloat("Near Clip", &m_CameraNearClip, 0.01f, 0.01f, 10.0f);
+            cameraChanged |= ImGui::DragFloat("Far Clip", &m_CameraFarClip, 1.0f, 1.0f, 10000.0f);
+            if (cameraChanged)
+            {
+                if (m_CameraFarClip <= m_CameraNearClip)
+                    m_CameraFarClip = m_CameraNearClip + 1.0f;
+
+                m_EditorCamera.SetPosition({ m_CameraPosition[0], m_CameraPosition[1], m_CameraPosition[2] });
+                m_EditorCamera.SetRotationDegrees({ m_CameraRotation[0], m_CameraRotation[1], m_CameraRotation[2] });
+                m_EditorCamera.SetProjection({ m_CameraFovDegrees, m_CameraNearClip, m_CameraFarClip });
+                Engine::Renderer::SetCameraView(m_EditorCamera.GetCameraView());
+                ApplyEditorCameraStateToScene();
+            }
+            settingsChanged |= cameraChanged;
+            ImGui::TextDisabled("Aspect %.3f", m_EditorCamera.GetAspectRatio());
+            ImGui::Separator();
+            if (ImGui::ColorEdit4("Clear Color", &m_ClearColor.R))
+            {
+                Engine::Renderer::SetClearColor(m_ClearColor);
+                settingsChanged = true;
+            }
+            ImGui::EndTabItem();
+        }
+
+        if (ImGui::BeginTabItem("Rendering"))
+        {
+            ImGui::Text("Active backend: %s", Engine::Renderer::GetActiveBackendName());
+            DrawRendererBackendSelector();
+            const Engine::RendererBuildInfo& buildInfo = Engine::Renderer::GetBuildInfo();
+            if (!buildInfo.HasNVRHID3D12)
+                ImGui::TextDisabled("Native viewport requires the Windows VS2022 build.");
+            ImGui::EndTabItem();
+        }
+        ImGui::EndTabBar();
+    }
+
+    if (settingsChanged)
+        RecordHistory("Editor settings edit", settingsState);
     ImGui::End();
 }
 
@@ -702,9 +776,7 @@ bool EditorLayer::DrawMaterialAssetControls(Engine::AssetHandle handle)
         return false;
     }
 
-    ImGui::Separator();
     ImGui::PushID("MaterialAsset");
-    ImGui::TextUnformatted("Material Asset");
     bool materialChanged = false;
     char materialName[128] = {};
     std::snprintf(materialName, sizeof(materialName), "%s", material->Name.c_str());
@@ -995,7 +1067,7 @@ void EditorLayer::DrawProfilerPanel()
 
 void EditorLayer::DrawProjectPanel()
 {
-    ImGui::Begin("Project");
+    ImGui::Begin("Content Browser");
     ImGui::TextUnformatted("Assets");
     ImGui::Separator();
     ImGui::TextUnformatted("Import glTF");

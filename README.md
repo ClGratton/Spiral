@@ -1,6 +1,6 @@
 # Spiral
 
-Spiral is a cutting edge game engine, built from the grounds up for next gen visual quality. Its goal is to fix modern engines over-reliance on temporal effects.
+Spiral is a game engine focused on sharp motion, measured materials, transparent performance, and automation. Its baseline image-quality path does not require temporal antialiasing or temporal upscaling.
 
 ## Build
 
@@ -64,7 +64,7 @@ or:
 ## Current Slice
 
 - `Engine`: C++20 static library.
-- `Editor`: Hazel-style client application with an editor layer.
+- `Editor`: dockable scene-authoring application with hierarchy, content browser, selection Inspector, settings, viewport, and diagnostics panels.
 - `Sandbox`: public API smoke-test app.
 - `Scripts`: setup, project generation, build, and run helpers.
 - `Vendor/premake`: auto-bootstrapped Premake tool location.
@@ -115,7 +115,13 @@ To run the automated Windows render smoke test, including build, capture, BMP va
 .\Scripts\TestRender.ps1 -Configuration Debug -Action vs2022
 ```
 
-CI is scaffolded in `.github/workflows/ci.yml`. The Windows job runs the D3D12 render smoke and uploads the viewport BMP; Linux and macOS run portable gmake builds plus headless editor/sandbox smoke tests. The D3D12 device path falls back to WARP when no hardware adapter is available, which keeps hosted Windows runners usable.
+CI runs from `.github/workflows/ci.yml`. The Windows job runs the D3D12 render smoke and uploads the viewport BMP; Linux and macOS run portable gmake builds plus engine contract tests and headless editor/sandbox workflow smokes. The D3D12 device path falls back to WARP when no hardware adapter is available, which keeps hosted Windows runners usable.
+
+To validate project creation, entity authoring, component assignment, undo/redo, and save/reopen as one workflow:
+
+```powershell
+.\bin\Debug-windows-x86_64\Editor\Editor.exe --headless --scene-authoring-smoke
+```
 
 ## Platform Direction
 
@@ -128,6 +134,10 @@ Current limitation: the viewport mesh is still a bootstrap test pass, not an act
 Start with:
 
 - [PLAN.md](PLAN.md)
+- [PRODUCT.md](PRODUCT.md)
+- [DESIGN.md](DESIGN.md)
+- [Docs/ROADMAP_GOVERNANCE.md](Docs/ROADMAP_GOVERNANCE.md)
+- [Docs/EDITOR_UI_REVIEW.md](Docs/EDITOR_UI_REVIEW.md)
 - [Docs/Architecture/README.md](Docs/Architecture/README.md)
 - [Docs/DEPENDENCIES.md](Docs/DEPENDENCIES.md)
 - [Docs/Architecture/ENGINE_INSTRUCTIONS.md](Docs/Architecture/ENGINE_INSTRUCTIONS.md)

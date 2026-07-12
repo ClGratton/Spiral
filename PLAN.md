@@ -1,9 +1,13 @@
 # Engine Roadmap
 
 Status: Living roadmap
-Date: 2026-07-11
+Date: 2026-07-12
 
 This roadmap is the working plan for taking the engine from the current buildable shell to a shippable game engine. Deep rationale lives in [Docs/Architecture](Docs/Architecture/README.md); this file is the execution order.
+
+## Checkmark Contract
+
+`[x]` means the exact behavior written on that line is implemented, integrated into its real workflow, and verified. A build-only probe does not complete a runtime feature. Plans, stubs, placeholders, scaffolds, interfaces without behavior, and platform designs without a native implementation stay unchecked. Partial work must be split into an honestly narrow completed line and an unchecked follow-up. See [Docs/ROADMAP_GOVERNANCE.md](Docs/ROADMAP_GOVERNANCE.md).
 
 ## North Star
 
@@ -18,7 +22,7 @@ Build a modern, sharp-in-motion, automation-first engine for small teams and amb
 
 ## Current State
 
-Phases 0 and 1 are complete. Phase 2 has working scene, asset, and editor foundations but has not met its authoring exit criteria. Phase 3 is in progress.
+Phases 0, 1, and 2 meet their current exit criteria. Phase 3 is in progress.
 
 Already present:
 
@@ -89,9 +93,9 @@ Required:
 - [x] Headless smoke-test mode.
 - [x] Architecture docs moved out of root.
 - [x] GitHub repo, remote, first clean commit.
-- [x] CI workflow scaffold for Windows, Linux, and macOS.
+- [x] CI workflow runs native Windows, Linux, and macOS build/smoke jobs.
 - [x] First hosted CI run after GitHub remote exists.
-- [x] Dependency/license ledger for GLFW, ImGui, Premake, and future vendors.
+- [x] Dependency/license ledger for current dependencies and vendor-admission requirements.
 - [x] GitHub dependency graph submission for vendored/tool dependencies.
 - [x] Basic crash/error reporting path.
 - [x] Coding standards checked by script.
@@ -115,9 +119,9 @@ Required:
 - [x] Temporary backend decision:
   - short term: keep OpenGL only for ImGui/editor UI if needed,
   - production path: NVRHI-backed D3D12/Vulkan renderer.
-- [x] Renderer backend selector with disabled unsupported/pending choices.
+- [x] Renderer backend selector disables unavailable backend choices.
 - [x] Renderer service owns D3D12 swapchain resize, presentation command list, viewport texture, descriptor heaps, and debug names.
-- [x] Editor viewport displays a renderer-owned D3D12 render target, not only an ImGui placeholder rectangle.
+- [x] Editor viewport displays a renderer-owned D3D12 render target.
 - [x] Native D3D12 indexed prototype mesh pass with vertex, index, constant, and depth buffers.
 - [x] Disk-backed HLSL shader asset for the D3D12 viewport prototype pass.
 - [x] Renderer-owned OpenGL bootstrap backend removed.
@@ -128,9 +132,9 @@ Required:
 - [x] NVRHI Vulkan backend project enabled.
 - [x] Real RHI triangle/mesh draw pass.
 - [x] Camera component and editor camera.
-- [x] Basic shader pipeline and shader hot reload stub.
-- [x] Render graph skeleton: pass declaration, resource lifetimes, barriers as data even if backend is simple.
-- [x] GPU timestamp query interface stub.
+- [x] Disk-backed shader loading and D3D12 shader compilation pipeline.
+- [x] Render graph pass/resource declarations compile into lifetime and barrier data.
+- [x] GPU timestamp query contracts and renderer timing snapshots.
 - [x] Screenshot capture for render tests.
 - [x] Render smoke test scene and image validation script.
 
@@ -155,7 +159,6 @@ Required:
 - [x] Asset registry with stable handles.
 - [x] File watching and reimport hooks.
 - [x] glTF import prototype.
-- [x] KTX2/Basis texture import plan.
 - [x] Material asset format.
 - [x] Drag/drop asset browser.
 - [x] Save/load project and scene.
@@ -175,13 +178,16 @@ Goal: deliver a conventional-but-clean renderer before the advanced visibility-b
 Required:
 
 - [x] NVRHI D3D12 device integrated behind `Engine::RHI`, with the prototype viewport still using a scoped native D3D12 presentation bridge.
-- [x] D3D12 first path on Windows, Vulkan path kept in design.
+- [x] D3D12 first path on Windows.
+- [ ] Engine-owned Vulkan device, swapchain, presentation, and ImGui integration.
 - [x] D3D12 flip-model swapchain lifecycle and native graphics/compute/copy queues.
 - [x] RHI command-list allocation, validated recording lifecycle, and synchronous queue submission.
 - [ ] GPU resource-upload path with copy-queue synchronization.
 - [ ] Transient resource allocation and reuse from render-graph lifetimes.
 - [ ] Presentation pacing and measurement: DXGI waitable swapchain profiles, capability-gated Vulkan present timing, and separate app/present/display telemetry.
 - [x] HLSL shader compilation pipeline through the D3D12 RHI; Slang remains a future portability option.
+- [ ] Live D3D12 pipeline rebuild after shader source changes.
+- [ ] D3D12 timestamp query heap recording and resolve.
 - [ ] Mesh buffers, index buffers, constant/structured buffers.
 - [ ] Texture upload, samplers, mip generation.
 - [ ] Forward+/clustered light grid prototype.
@@ -499,31 +505,3 @@ Exit criteria:
 
 - Small teams can start and finish games in the engine.
 - The engine can be maintained without relying on undocumented tribal knowledge.
-
-## Rendering Start Checklist
-
-Before adding renderer code beyond stubs:
-
-- [x] Keep ImGui/OpenGL as editor UI only.
-- [x] Do not let OpenGL types leak into public `Renderer` or `Engine::RHI` headers.
-- [x] Define the first RHI device/swapchain interface.
-- [x] Keep headless smoke tests green.
-- [ ] Keep editor panels useful even when renderer initialization fails.
-- [x] Add debug names and capture markers from the first GPU pass.
-
-## Near-Term Next Tasks
-
-1. [x] Add a real renderer-owned clear path and editable clear color.
-2. [x] Add `Engine::RHI` device/swapchain interface files.
-3. [x] Add dependency/license ledger and pinned NVRHI fetch script.
-4. [x] Integrate NVRHI common core as vendored source with license notes.
-5. [x] Render a visible indexed prototype mesh into the editor viewport.
-6. [x] Pin DirectX-Headers and Vulkan-Headers for NVRHI backend builds.
-7. [x] Add renderer backend selector and remove the renderer-owned OpenGL bootstrap backend.
-8. [x] Enable first NVRHI backend and create a renderer-owned viewport texture.
-9. [x] Replace ImGui OpenGL backend with the active native graphics backend on Windows/MSVC.
-10. [x] Move the viewport prototype shader out of embedded C++ and into `Engine/Shaders`.
-11. [x] Add screenshot capture for the viewport.
-12. [x] Add a render smoke test scene.
-13. [x] Add CI workflow scaffold.
-14. [x] Create/push GitHub remote and verify first hosted CI run.

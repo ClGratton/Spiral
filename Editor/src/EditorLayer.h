@@ -29,6 +29,7 @@ private:
     void BuildDefaultDockLayout(unsigned int dockspaceId, const ImVec2& dockspaceSize);
     void DrawSceneHierarchyPanel();
     void DrawInspectorPanel();
+    void DrawSettingsPanel();
     void DrawRendererBackendSelector();
     void ApplyEditorCameraStateToScene();
     void SyncEditorCameraStateFromMainCamera();
@@ -109,6 +110,7 @@ private:
     Engine::AssetHandle m_SelectedAssetHandle = Engine::kInvalidAssetHandle;
     Engine::AssetType m_AssetBrowserTypeFilter = Engine::AssetType::Unknown;
     std::array<char, 128> m_AssetBrowserFilter {};
+    std::array<char, 128> m_HierarchyFilter {};
     std::array<char, 512> m_GltfImportPath {};
     std::array<char, 128> m_NewProjectName { 'U', 'n', 't', 'i', 't', 'l', 'e', 'd' };
     std::array<char, 512> m_NewProjectParentPath { 'o', 'u', 't', 'p', 'u', 't', '/', 'p', 'r', 'o', 'j', 'e', 'c', 't', 's' };

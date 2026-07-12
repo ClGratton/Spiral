@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -65,6 +66,10 @@ SPACE_INDENT_EXTENSIONS = {
 }
 
 CONFLICT_MARKERS = ("<<<<<<<", "=======", ">>>>>>>")
+ROADMAP_INCOMPLETE_TERMS = re.compile(
+    r"\b(stub|placeholder|skeleton|scaffold|pending|not implemented)\b",
+    re.IGNORECASE,
+)
 
 
 def repo_path(path: Path) -> str:
@@ -133,6 +138,28 @@ def check_file(path: Path) -> list[str]:
     return errors
 
 
+def check_roadmap() -> list[str]:
+    path = ROOT / "PLAN.md"
+    if not path.exists():
+        return ["PLAN.md: roadmap is missing"]
+
+    errors: list[str] = []
+    text = path.read_text(encoding="utf-8")
+    if "## Checkmark Contract" not in text:
+        errors.append("PLAN.md: missing Checkmark Contract")
+
+    for index, line in enumerate(text.splitlines(), start=1):
+        if not re.match(r"^\s*-\s+\[x\]", line):
+            continue
+        match = ROADMAP_INCOMPLETE_TERMS.search(line)
+        if match:
+            errors.append(
+                f"PLAN.md:{index}: checked item contains incomplete-status term '{match.group(0)}'"
+            )
+
+    return errors
+
+
 def main() -> int:
     errors: list[str] = []
 
@@ -146,6 +173,8 @@ def main() -> int:
             continue
 
         errors.extend(check_file(path))
+
+    errors.extend(check_roadmap())
 
     if errors:
         print("Code style check failed:")

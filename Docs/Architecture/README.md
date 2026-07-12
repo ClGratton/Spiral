@@ -2,6 +2,8 @@
 
 This folder contains the engine direction, research decisions, and implementation contracts.
 
+Repository-wide product, UI, and roadmap contracts live in [PRODUCT.md](../../PRODUCT.md), [DESIGN.md](../../DESIGN.md), [EDITOR_UI_REVIEW.md](../EDITOR_UI_REVIEW.md), and [ROADMAP_GOVERNANCE.md](../ROADMAP_GOVERNANCE.md).
+
 Recommended reading order:
 
 1. [ENGINE_INSTRUCTIONS.md](ENGINE_INSTRUCTIONS.md)
