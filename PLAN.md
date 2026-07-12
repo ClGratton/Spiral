@@ -50,8 +50,7 @@ Immediate gap:
 - The viewport prototype mesh uses a disk-backed HLSL shader asset loaded from `Engine/Shaders`, not an embedded shader string.
 - The Windows/MSVC editor can capture the native viewport to `output/captures/editor-viewport.bmp` with `--capture-viewport`.
 - `Scripts/TestRender.ps1` validates the D3D12 viewport capture as a non-blank BMP render smoke test.
-- GitHub Actions CI workflow is live for Windows D3D12 render smoke plus Linux/macOS portable headless smoke builds.
-- The Linux CI definition now provisions Mesa lavapipe and Xvfb for the strict native Vulkan presentation smoke; the roadmap keeps Linux runtime coverage unchecked until a hosted run passes.
+- GitHub Actions CI is live for Windows D3D12 render smoke, Linux X11 Vulkan presentation through Mesa lavapipe/Xvfb, and Linux/macOS portable headless smoke builds.
 - D3D12 device creation falls back to WARP when no hardware adapter accepts the minimum feature level, mainly for CI and diagnostics.
 - GMake/MinGW keeps OpenGL2 as its default editor fallback, while `--renderer-vulkan` selects the native Vulkan device/swapchain/ImGui path when a Vulkan 1.3 loader and device are available.
 - Crash/error reports are written to `output/crashes` for caught top-level exceptions, fatal signals, and Windows unhandled exceptions.
@@ -182,7 +181,7 @@ Required:
 - [x] D3D12 first path on Windows.
 - [x] Engine-owned Vulkan 1.3 device, window swapchain, FIFO presentation, and ImGui integration verified on Windows with MSVC and MinGW.
 - [x] Native Linux X11 Vulkan editor presentation, resize, and post-resize present verified locally through WSLg with Mesa llvmpipe.
-- [ ] Hosted Ubuntu Vulkan presentation smoke through Mesa lavapipe and Xvfb; the CI job is implemented but must pass before completion.
+- [x] Hosted Ubuntu Vulkan presentation smoke through Mesa lavapipe and Xvfb.
 - [ ] macOS renderer backend decision and implementation: validate MoltenVK viability against NVRHI or implement the planned native Metal path.
 - [ ] Vulkan `Engine::RHI::Device` resources and command submission for the scene viewport, using the wrapped `nvrhi::DeviceHandle`; keep raw Vulkan confined to bootstrap, WSI/presentation, and ImGui.
 - [x] D3D12 flip-model swapchain lifecycle and native graphics/compute/copy queues.

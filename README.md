@@ -84,7 +84,7 @@ To exercise Vulkan device creation, native ImGui presentation, and swapchain res
 .\Scripts\TestVulkan.ps1 -Configuration Debug -Action gmake
 ```
 
-Linux CI is configured to repeat the strict smoke through Mesa lavapipe and Xvfb; hosted coverage remains unchecked until that job passes:
+Linux CI repeats the strict smoke through Mesa lavapipe and Xvfb:
 
 ```bash
 bash Scripts/TestVulkan.sh Debug gmake
@@ -128,7 +128,7 @@ To run the automated Windows render smoke test, including build, capture, BMP va
 .\Scripts\TestRender.ps1 -Configuration Debug -Action vs2022
 ```
 
-CI runs from `.github/workflows/ci.yml`. The Windows job runs the D3D12 render smoke and uploads the viewport BMP; Linux and macOS run portable gmake builds plus engine contract tests and headless editor/sandbox workflow smokes. The Linux job is also configured for a strict X11 Vulkan presentation smoke through Mesa lavapipe and Xvfb, pending its first hosted pass. The D3D12 device path falls back to WARP when no hardware adapter is available, which keeps hosted Windows runners usable.
+CI runs from `.github/workflows/ci.yml`. The Windows job runs the D3D12 render smoke and uploads the viewport BMP; Linux and macOS run portable gmake builds plus engine contract tests and headless editor/sandbox workflow smokes. The Linux job also runs the strict X11 Vulkan presentation smoke through Mesa lavapipe and Xvfb. The D3D12 device path falls back to WARP when no hardware adapter is available, which keeps hosted Windows runners usable.
 
 To validate project creation, entity authoring, component assignment, undo/redo, and save/reopen as one workflow:
 
