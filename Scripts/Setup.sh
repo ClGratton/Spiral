@@ -13,7 +13,11 @@ case "$(uname -s)" in
         PREMAKE_EXE="$PREMAKE_DIR/premake5"
         ;;
     Darwin*)
-        ARCHIVE_NAME="premake-${PREMAKE_VERSION}-macosx.tar.gz"
+        if [[ "$(uname -m)" == "x86_64" ]]; then
+            ARCHIVE_NAME="premake-${PREMAKE_VERSION}-macosx-x64.tar.gz"
+        else
+            ARCHIVE_NAME="premake-${PREMAKE_VERSION}-macosx.tar.gz"
+        fi
         PREMAKE_EXE="$PREMAKE_DIR/premake5"
         if ! command -v brew >/dev/null 2>&1; then
             echo "Homebrew is required to install the macOS MoltenVK runtime." >&2
