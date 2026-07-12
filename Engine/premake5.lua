@@ -37,7 +37,7 @@ project "Engine"
 
     if has_vulkan_headers then
         includedirs { "%{wks.location}/Vendor/Vulkan-Headers/include" }
-        defines { "GE_HAS_VULKAN_HEADERS=1" }
+        defines { "GE_HAS_VULKAN_HEADERS=1", "VK_NO_PROTOTYPES" }
     end
 
     if has_nvrhi and has_vulkan_headers then

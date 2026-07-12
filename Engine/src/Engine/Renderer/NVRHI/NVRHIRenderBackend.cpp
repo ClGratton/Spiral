@@ -1,6 +1,7 @@
 #include "Engine/Renderer/NVRHI/NVRHIRenderBackend.h"
 
 #include "Engine/Core/Log.h"
+#include "Engine/Core/Application.h"
 #include "Engine/RHI/NVRHI/NVRHID3D12Device.h"
 
 namespace Engine
@@ -10,6 +11,7 @@ namespace Engine
         switch (m_RendererBackend)
         {
             case RendererBackend::NVRHID3D12: return "NVRHI D3D12";
+            case RendererBackend::NVRHIVulkan: return "NVRHI Vulkan";
             case RendererBackend::NVRHICommon: return "NVRHI Common";
             default: return "NVRHI";
         }
@@ -28,6 +30,22 @@ namespace Engine
 #else
         description.EnableValidation = false;
 #endif
+
+        if (m_RequestedBackend == RHI::Backend::NVRHIVulkan)
+        {
+            m_VulkanContext = CreateScope<RHI::NVRHIVulkanContext>();
+            if (!m_VulkanContext->Initialize(
+                    Application::Get().GetWindow().GetNativeWindow(),
+                    description.EnableValidation,
+                    m_AdapterInfo))
+            {
+                m_VulkanContext.reset();
+                return false;
+            }
+
+            m_RendererBackend = RendererBackend::NVRHIVulkan;
+            return true;
+        }
 
         m_Device = RHI::CreateNVRHID3D12Device(std::move(description), m_AdapterInfo, &m_D3D12NativeHandles);
         if (m_Device)
@@ -58,6 +76,13 @@ namespace Engine
     {
         ShutdownImGui();
 
+        if (m_VulkanContext)
+        {
+            m_VulkanContext->WaitIdle();
+            m_VulkanContext->Shutdown();
+            m_VulkanContext.reset();
+        }
+
         if (m_Device)
         {
             m_Device->WaitIdle();
@@ -66,6 +91,7 @@ namespace Engine
 
         m_AdapterInfo = {};
         m_RendererBackend = RendererBackend::NVRHICommon;
+        m_RequestedBackend = RHI::Backend::None;
     }
 
     void NVRHIRenderBackend::BeginFrame(const ClearColor& clearColor)
@@ -81,16 +107,27 @@ namespace Engine
 
     const RHI::DeviceCapabilities* NVRHIRenderBackend::GetDeviceCapabilities() const
     {
-        return m_Device ? &m_Device->GetCapabilities() : nullptr;
+        if (m_Device)
+            return &m_Device->GetCapabilities();
+        return m_VulkanContext ? &m_VulkanContext->GetCapabilities() : nullptr;
     }
 
     const RendererPresentationTiming* NVRHIRenderBackend::GetPresentationTiming() const
     {
-        return m_D3D12Presentation ? &m_D3D12Presentation->GetTiming() : nullptr;
+        if (m_D3D12Presentation)
+            return &m_D3D12Presentation->GetTiming();
+        return m_VulkanPresentation ? &m_VulkanPresentation->GetTiming() : nullptr;
     }
 
     bool NVRHIRenderBackend::InitializeImGui(void* nativeWindow, u32 width, u32 height)
     {
+        if (m_RendererBackend == RendererBackend::NVRHIVulkan && m_VulkanContext)
+        {
+            if (!m_VulkanPresentation)
+                m_VulkanPresentation = CreateScope<NVRHIVulkanPresentation>();
+            return m_VulkanPresentation->Initialize(m_VulkanContext.get(), nativeWindow, width, height);
+        }
+
         if (m_RendererBackend != RendererBackend::NVRHID3D12 || !m_Device)
             return false;
 
@@ -107,23 +144,33 @@ namespace Engine
             m_D3D12Presentation->Shutdown();
             m_D3D12Presentation.reset();
         }
+        if (m_VulkanPresentation)
+        {
+            m_VulkanPresentation->Shutdown();
+            m_VulkanPresentation.reset();
+        }
     }
 
     bool NVRHIRenderBackend::IsNativeImGuiEnabled() const
     {
-        return m_D3D12Presentation && m_D3D12Presentation->IsInitialized();
+        return (m_D3D12Presentation && m_D3D12Presentation->IsInitialized())
+            || (m_VulkanPresentation && m_VulkanPresentation->IsInitialized());
     }
 
     void NVRHIRenderBackend::BeginImGuiFrame()
     {
         if (m_D3D12Presentation)
             m_D3D12Presentation->BeginImGuiFrame();
+        else if (m_VulkanPresentation)
+            m_VulkanPresentation->BeginImGuiFrame();
     }
 
     void NVRHIRenderBackend::RenderImGuiDrawData(ImDrawData* drawData, const ClearColor& clearColor, u32 width, u32 height)
     {
         if (m_D3D12Presentation)
             m_D3D12Presentation->RenderImGuiDrawData(drawData, clearColor, width, height);
+        else if (m_VulkanPresentation)
+            m_VulkanPresentation->RenderImGuiDrawData(drawData, clearColor, width, height);
     }
 
     bool NVRHIRenderBackend::PrepareViewportTexture(u32 width, u32 height)

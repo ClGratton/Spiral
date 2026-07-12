@@ -221,6 +221,12 @@ namespace Engine
             glfwSetWindowShouldClose(m_Window, GLFW_TRUE);
     }
 
+    void GLFWWindow::SetSize(u32 width, u32 height)
+    {
+        if (m_Window)
+            glfwSetWindowSize(m_Window, static_cast<int>(width), static_cast<int>(height));
+    }
+
     void GLFWWindow::SwapBuffers()
     {
         if (m_Window && m_UsesOpenGLContext)

@@ -266,6 +266,8 @@ void EditorLayer::OnAttach()
     const Engine::RendererBuildInfo& buildInfo = Engine::Renderer::GetBuildInfo();
     if (Engine::Renderer::GetActiveBackend() == Engine::RendererBackend::NVRHID3D12)
         m_ConsoleLines.emplace_back("Native D3D12 prototype mesh pass active");
+    else if (Engine::Renderer::GetActiveBackend() == Engine::RendererBackend::NVRHIVulkan)
+        m_ConsoleLines.emplace_back("Native Vulkan editor presentation active; scene viewport rendering is pending");
     else if (!buildInfo.HasNVRHID3D12)
         m_ConsoleLines.emplace_back("Native D3D12 viewport unavailable in this executable; run the VS2022 build path on Windows");
     else

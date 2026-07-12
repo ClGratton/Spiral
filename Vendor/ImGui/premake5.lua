@@ -29,6 +29,16 @@ project "ImGui"
         "%{wks.location}/Vendor/GLFW/include"
     }
 
+    if has_vulkan_headers then
+        includedirs { "%{wks.location}/Vendor/Vulkan-Headers/include" }
+        defines { "VK_NO_PROTOTYPES", "IMGUI_IMPL_VULKAN_NO_PROTOTYPES" }
+        files
+        {
+            "backends/imgui_impl_vulkan.h",
+            "backends/imgui_impl_vulkan.cpp"
+        }
+    end
+
     filter "system:windows"
         systemversion "latest"
         defines { "GE_PLATFORM_WINDOWS" }

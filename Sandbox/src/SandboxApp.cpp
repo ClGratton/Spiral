@@ -21,7 +21,9 @@ Engine::Application* Engine::CreateApplication(ApplicationCommandLineArgs args)
     specification.Window.Width = 1280;
     specification.Window.Height = 720;
     specification.Window.Headless = args.HasFlag("--headless");
-    specification.MaxFrames = args.HasFlag("--smoke-test") ? 3 : 0;
+    if (args.HasFlag("--renderer-vulkan") || args.HasFlag("--vulkan-render-smoke"))
+        specification.Window.GraphicsAPI = WindowGraphicsAPI::None;
+    specification.MaxFrames = args.HasFlag("--vulkan-render-smoke") ? 4 : (args.HasFlag("--smoke-test") ? 3 : 0);
 
     return new SandboxApplication(specification);
 }

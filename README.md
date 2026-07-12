@@ -75,7 +75,20 @@ or:
 - `Vendor/Vulkan-Headers` and `Vendor/DirectX-Headers`: pinned platform headers for NVRHI backend builds.
 - `Engine/Shaders`: engine-owned shader assets loaded by renderer code during development.
 
-The current renderer initializes through an NVRHI backend boundary. On Windows/MSVC it creates a native NVRHI D3D12 device, DXGI swapchain, renderer-owned viewport texture, ImGui DX12 presentation path, and a first native D3D12 indexed prototype mesh pass using a disk-backed HLSL shader asset. The NVRHI Vulkan vendor backend now compiles against the pinned Vulkan-Headers, but the `gmake`/MinGW path still uses the common NVRHI probe and OpenGL2 ImGui fallback until the engine-owned Vulkan device, swapchain, and presentation path is implemented.
+The current renderer initializes through an NVRHI backend boundary. On Windows/MSVC it creates a native NVRHI D3D12 device, DXGI swapchain, renderer-owned viewport texture, ImGui DX12 presentation path, and a first native D3D12 indexed prototype mesh pass using a disk-backed HLSL shader asset. The editor also has an engine-owned Vulkan 1.3 device, GLFW window surface, FIFO swapchain, and native ImGui Vulkan presentation path selected with `--renderer-vulkan`. The Vulkan path is runtime-verified on Windows with MSVC and MinGW and on Linux X11 through WSLg with Mesa llvmpipe; its scene viewport renderer remains pending.
+
+To exercise Vulkan device creation, native ImGui presentation, and swapchain resize through a strict smoke test:
+
+```powershell
+.\Scripts\TestVulkan.ps1 -Configuration Debug -Action vs2022
+.\Scripts\TestVulkan.ps1 -Configuration Debug -Action gmake
+```
+
+Linux CI is configured to repeat the strict smoke through Mesa lavapipe and Xvfb; hosted coverage remains unchecked until that job passes:
+
+```bash
+bash Scripts/TestVulkan.sh Debug gmake
+```
 
 To produce a deterministic viewport capture from the native D3D12 editor path:
 
@@ -115,7 +128,7 @@ To run the automated Windows render smoke test, including build, capture, BMP va
 .\Scripts\TestRender.ps1 -Configuration Debug -Action vs2022
 ```
 
-CI runs from `.github/workflows/ci.yml`. The Windows job runs the D3D12 render smoke and uploads the viewport BMP; Linux and macOS run portable gmake builds plus engine contract tests and headless editor/sandbox workflow smokes. The D3D12 device path falls back to WARP when no hardware adapter is available, which keeps hosted Windows runners usable.
+CI runs from `.github/workflows/ci.yml`. The Windows job runs the D3D12 render smoke and uploads the viewport BMP; Linux and macOS run portable gmake builds plus engine contract tests and headless editor/sandbox workflow smokes. The Linux job is also configured for a strict X11 Vulkan presentation smoke through Mesa lavapipe and Xvfb, pending its first hosted pass. The D3D12 device path falls back to WARP when no hardware adapter is available, which keeps hosted Windows runners usable.
 
 To validate project creation, entity authoring, component assignment, undo/redo, and save/reopen as one workflow:
 
@@ -127,7 +140,7 @@ To validate project creation, entity authoring, component assignment, undo/redo,
 
 The current code slice is OS-neutral C++20 plus GLFW for native windows/input. It is structured to build on Windows, Linux, and macOS from the same Premake workspace.
 
-Current limitation: the viewport mesh is still a bootstrap test pass, not an actual scene draw through the full render graph. Its buffers, shaders, pipeline, and indexed draw now pass through `Engine::RHI`; descriptor binding, presentation, capture readback, and scene submission are the remaining bridge work before engine-owned Vulkan device and presentation code can sit on the same path.
+Current limitation: the viewport mesh is still a D3D12 bootstrap test pass, not an actual scene draw through the full render graph. Its buffers, shaders, pipeline, and indexed draw pass through `Engine::RHI`; descriptor binding, scene submission, and a backend-neutral viewport renderer are the remaining bridge work before Vulkan can display the same scene target.
 
 ## Architecture
 

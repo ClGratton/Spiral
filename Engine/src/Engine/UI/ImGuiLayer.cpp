@@ -38,10 +38,15 @@ namespace Engine
         m_UseNativeRenderer = Renderer::InitializeImGui(nativeWindow);
         if (m_UseNativeRenderer)
         {
-            ImGui_ImplGlfw_InitForOther(nativeWindow, true);
+            if (Renderer::GetActiveBackend() == RendererBackend::NVRHIVulkan)
+                ImGui_ImplGlfw_InitForVulkan(nativeWindow, true);
+            else
+                ImGui_ImplGlfw_InitForOther(nativeWindow, true);
         }
         else
         {
+            if (glfwGetWindowAttrib(nativeWindow, GLFW_CLIENT_API) == GLFW_NO_API)
+                throw std::runtime_error("Native renderer initialization failed for a GLFW_NO_API window");
             ImGui_ImplGlfw_InitForOpenGL(nativeWindow, true);
             ImGui_ImplOpenGL2_Init();
         }

@@ -37,6 +37,7 @@ namespace Engine
         virtual const std::string& GetTitle() const = 0;
         virtual bool ShouldClose() const = 0;
         virtual void RequestClose() = 0;
+        virtual void SetSize(u32 width, u32 height) = 0;
         virtual void SwapBuffers() = 0;
         virtual void* GetNativeWindow() const = 0;
         virtual void SetEventCallback(EventCallbackFn callback) = 0;

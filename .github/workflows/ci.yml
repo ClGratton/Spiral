@@ -84,11 +84,16 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             libgl1-mesa-dev \
+            libvulkan1 \
             libx11-dev \
             libxcursor-dev \
             libxi-dev \
             libxinerama-dev \
-            libxrandr-dev
+            libxrandr-dev \
+            mesa-vulkan-drivers \
+            vulkan-tools \
+            xauth \
+            xvfb
 
       - name: Build portable target
         run: bash Scripts/Build.sh Debug gmake
@@ -100,6 +105,23 @@ jobs:
           else
             ./bin/Debug-macosx-x86_64-gmake/EngineTests/EngineTests
           fi
+
+      - name: Run native Linux Vulkan presentation smoke
+        if: runner.os == 'Linux'
+        run: |
+          export XDG_RUNTIME_DIR="$RUNNER_TEMP/xdg-runtime"
+          mkdir -p "$XDG_RUNTIME_DIR"
+          chmod 700 "$XDG_RUNTIME_DIR"
+          LVP_ICD="$(find /usr/share/vulkan/icd.d -name 'lvp_icd*.json' -print -quit)"
+          if [[ -z "$LVP_ICD" ]]; then
+            echo "Mesa lavapipe Vulkan ICD was not found." >&2
+            exit 1
+          fi
+          export VK_DRIVER_FILES="$LVP_ICD"
+          xvfb-run -a -s '-screen 0 1920x1080x24 -nolisten tcp' \
+            vulkaninfo --summary
+          xvfb-run -a -s '-screen 0 1920x1080x24 -nolisten tcp' \
+            timeout 60s bash Scripts/TestVulkan.sh Debug gmake --skip-build
 
       - name: Run editor headless smoke
         run: |
@@ -164,3 +186,11 @@ jobs:
           else
             ./bin/Debug-macosx-x86_64-gmake/Sandbox/Sandbox --headless --smoke-test
           fi
+
+      - name: Upload Linux Vulkan smoke log
+        uses: actions/upload-artifact@v7
+        if: runner.os == 'Linux' && always()
+        with:
+          name: linux-vulkan-smoke-log
+          path: output/test-logs/vulkan-smoke-linux-gmake.log
+          if-no-files-found: ignore

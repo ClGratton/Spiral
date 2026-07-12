@@ -16,6 +16,7 @@ namespace Engine
         const std::string& GetTitle() const override { return m_Specification.Title; }
         bool ShouldClose() const override { return m_ShouldClose; }
         void RequestClose() override { m_ShouldClose = true; }
+        void SetSize(u32 width, u32 height) override { m_Specification.Width = width; m_Specification.Height = height; }
         void SwapBuffers() override {}
         void* GetNativeWindow() const override { return nullptr; }
         void SetEventCallback(EventCallbackFn callback) override { m_EventCallback = std::move(callback); }

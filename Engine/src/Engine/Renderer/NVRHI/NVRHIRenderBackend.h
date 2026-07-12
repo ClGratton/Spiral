@@ -3,7 +3,9 @@
 #include "Engine/RHI/Device.h"
 #include "Engine/RHI/NVRHI/NVRHIAdapter.h"
 #include "Engine/RHI/NVRHI/NVRHID3D12Device.h"
+#include "Engine/RHI/NVRHI/NVRHIVulkanContext.h"
 #include "Engine/Renderer/NVRHI/NVRHID3D12Presentation.h"
+#include "Engine/Renderer/NVRHI/NVRHIVulkanPresentation.h"
 #include "Engine/Renderer/RenderBackend.h"
 
 struct ImDrawData;
@@ -15,6 +17,7 @@ namespace Engine
     public:
         const char* GetName() const override;
         bool Initialize() override;
+        void SetRequestedBackend(RHI::Backend backend) { m_RequestedBackend = backend; }
         void Shutdown() override;
         void BeginFrame(const ClearColor& clearColor) override;
         void EndFrame() override;
@@ -37,6 +40,9 @@ namespace Engine
         RHI::NVRHID3D12NativeHandles m_D3D12NativeHandles;
         Scope<RHI::Device> m_Device;
         Scope<NVRHID3D12Presentation> m_D3D12Presentation;
+        Scope<RHI::NVRHIVulkanContext> m_VulkanContext;
+        Scope<NVRHIVulkanPresentation> m_VulkanPresentation;
+        RHI::Backend m_RequestedBackend = RHI::Backend::None;
         RendererBackend m_RendererBackend = RendererBackend::NVRHICommon;
     };
 }

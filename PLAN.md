@@ -51,8 +51,9 @@ Immediate gap:
 - The Windows/MSVC editor can capture the native viewport to `output/captures/editor-viewport.bmp` with `--capture-viewport`.
 - `Scripts/TestRender.ps1` validates the D3D12 viewport capture as a non-blank BMP render smoke test.
 - GitHub Actions CI workflow is live for Windows D3D12 render smoke plus Linux/macOS portable headless smoke builds.
+- The Linux CI definition now provisions Mesa lavapipe and Xvfb for the strict native Vulkan presentation smoke; the roadmap keeps Linux runtime coverage unchecked until a hosted run passes.
 - D3D12 device creation falls back to WARP when no hardware adapter accepts the minimum feature level, mainly for CI and diagnostics.
-- GMake/MinGW keeps the OpenGL2 ImGui fallback and NVRHI common probe path until a portable Vulkan editor path is added, even though the NVRHI Vulkan vendor backend now compiles.
+- GMake/MinGW keeps OpenGL2 as its default editor fallback, while `--renderer-vulkan` selects the native Vulkan device/swapchain/ImGui path when a Vulkan 1.3 loader and device are available.
 - Crash/error reports are written to `output/crashes` for caught top-level exceptions, fatal signals, and Windows unhandled exceptions.
 - Code style is checked by `Scripts/CheckCodeStyle.ps1` / `.sh` and a GitHub Actions style job.
 - Render graph pass/resource declarations now compile into resource lifetime and barrier data.
@@ -64,7 +65,7 @@ Immediate gap:
 - The D3D12 viewport color and depth targets are allocated through the RHI texture API, with D3D12 descriptors still created by the presentation layer.
 - Viewport capture readback now uses the RHI buffer API; texture copy commands and BMP writing remain in the D3D12 presentation layer.
 - The viewport prototype shader, graphics pipeline, root constant-buffer binding, vertex/index binding, and indexed draw now run through D3D12 RHI shader/pipeline/command-list APIs; render-target descriptor binding, texture copy commands, and BMP writing remain in the D3D12 presentation/viewport bridge.
-- The NVRHI Vulkan vendor backend compiles against the pinned Vulkan-Headers, but engine-owned Vulkan device, swapchain, presentation, and ImGui integration are not implemented yet.
+- The editor has an engine-owned Vulkan 1.3 device, window surface, FIFO swapchain, native ImGui presentation path, resize handling, and strict render smoke on Windows through both MSVC and MinGW plus Linux X11 through WSLg/Mesa llvmpipe. Scene viewport rendering remains D3D12-only.
 - The editor can serialize the active sample scene to a versioned `.spiral` scene file and reload-validate it through the same scene API.
 - Scenes now expose a small entity/component authoring facade with scene-local entity IDs, names, transforms, optional cameras, and save/load coverage.
 - The editor scene hierarchy lists actual scene entities rather than hard-coded placeholder rows.
@@ -179,7 +180,11 @@ Required:
 
 - [x] NVRHI D3D12 device integrated behind `Engine::RHI`, with the prototype viewport still using a scoped native D3D12 presentation bridge.
 - [x] D3D12 first path on Windows.
-- [ ] Engine-owned Vulkan device, swapchain, presentation, and ImGui integration.
+- [x] Engine-owned Vulkan 1.3 device, window swapchain, FIFO presentation, and ImGui integration verified on Windows with MSVC and MinGW.
+- [x] Native Linux X11 Vulkan editor presentation, resize, and post-resize present verified locally through WSLg with Mesa llvmpipe.
+- [ ] Hosted Ubuntu Vulkan presentation smoke through Mesa lavapipe and Xvfb; the CI job is implemented but must pass before completion.
+- [ ] macOS renderer backend decision and implementation: validate MoltenVK viability against NVRHI or implement the planned native Metal path.
+- [ ] Vulkan `Engine::RHI::Device` resources and command submission for the scene viewport, using the wrapped `nvrhi::DeviceHandle`; keep raw Vulkan confined to bootstrap, WSI/presentation, and ImGui.
 - [x] D3D12 flip-model swapchain lifecycle and native graphics/compute/copy queues.
 - [x] RHI command-list allocation, validated recording lifecycle, and synchronous queue submission.
 - [x] GPU buffer resource-upload path with copy-queue synchronization and synchronous fence ownership.

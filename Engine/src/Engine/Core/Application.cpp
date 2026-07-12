@@ -107,9 +107,25 @@ namespace Engine
             m_Window->OnUpdate();
             JobSystem::Get().WaitIdle();
 
+            if (m_Specification.CommandLineArgs.HasFlag("--vulkan-render-smoke") && m_FrameIndex == 0)
+            {
+                const u32 resizedWidth = m_Window->GetWidth() > 128 ? m_Window->GetWidth() - 64 : m_Window->GetWidth();
+                const u32 resizedHeight = m_Window->GetHeight() > 128 ? m_Window->GetHeight() - 64 : m_Window->GetHeight();
+                m_Window->SetSize(resizedWidth, resizedHeight);
+                Log::Info("Vulkan render smoke requested window resize to ", resizedWidth, "x", resizedHeight);
+            }
+
             ++m_FrameIndex;
             if (m_Specification.MaxFrames != 0 && m_FrameIndex >= m_Specification.MaxFrames)
                 Close();
+        }
+
+        if (m_Specification.CommandLineArgs.HasFlag("--vulkan-render-smoke"))
+        {
+            const RendererFrameTiming& timing = Renderer::GetLastFrameTiming();
+            if (Renderer::GetActiveBackend() != RendererBackend::NVRHIVulkan || !timing.Presentation.PresentSucceeded)
+                throw std::runtime_error("Vulkan render smoke did not complete a successful presentation after resize");
+            Log::Info("Vulkan render smoke verified native ImGui presentation after resize");
         }
 
         Log::Info("Application stopped after ", m_FrameIndex, " frame(s)");

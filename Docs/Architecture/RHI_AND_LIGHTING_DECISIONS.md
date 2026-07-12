@@ -178,6 +178,16 @@ Rules:
 - NVRHI automatic barriers are allowed early; render graph validation must still model intended states.
 - Once render graph matures, performance-critical passes can opt into manual barriers.
 
+### Native Device And Presentation Ownership
+
+NVRHI's Vulkan API consumes an application-created `VkInstance`, `VkPhysicalDevice`, `VkDevice`, and queues through `nvrhi::vulkan::DeviceDesc`; `nvrhi::vulkan::createDevice` then returns the NVRHI device used by renderer resources and command submission. Engine creation of those native bootstrap objects is therefore part of the NVRHI integration, not a competing raw-Vulkan renderer. The D3D12 integration follows the same pattern: the engine creates the native platform objects and wraps them with NVRHI.
+
+Window-system presentation remains an explicit native escape hatch. The engine owns the DXGI/Vulkan swapchain, acquire/present synchronization, and timing because NVRHI does not own presentation. Dear ImGui may consume the native device, queue, render-pass, and descriptor handles through its official backend because it has no NVRHI renderer backend. These native bridges must stop at presentation and editor UI.
+
+The current Vulkan slice ends at that boundary: it wraps the native device with NVRHI and presents the editor shell, but it does not yet provide an `Engine::RHI::Device` implementation for Vulkan scene resources or general command submission. The future Vulkan scene path must implement those operations behind `Engine::RHI` using the returned `nvrhi::DeviceHandle`; it must not grow a parallel raw-Vulkan scene renderer. The current D3D12 RHI implementation also uses native D3D12 operations behind the engine facade, so migration toward shared NVRHI resource/command behavior must be stated as future convergence rather than completed portability.
+
+Backend selection happens before native device creation. Strict requests such as the Vulkan render smoke fail if the requested path cannot initialize, while ordinary launches may retain an explicitly supported fallback. Adapter selection is capability-based and must not require an NVIDIA device merely because NVRHI is the first backend.
+
 ### Buffer Upload Contract
 
 Immutable GPU buffers use `BufferCpuAccess::None` and declare `BufferUsage::CopyDest` in addition to their consuming usage. They are populated through `Device::UploadBuffer`, which creates a CPU-write staging buffer and records `CommandList::CopyBuffer` on the copy queue.

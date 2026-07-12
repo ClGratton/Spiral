@@ -47,7 +47,8 @@ project "NVRHI"
 
         defines
         {
-            "GE_HAS_NVRHI_VULKAN=1"
+            "GE_HAS_NVRHI_VULKAN=1",
+            "VK_NO_PROTOTYPES"
         }
 
         files

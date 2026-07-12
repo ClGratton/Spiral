@@ -7,6 +7,7 @@
 #include "Engine/Renderer/RenderBackend.h"
 
 #include <chrono>
+#include <stdexcept>
 
 namespace Engine
 {
@@ -210,9 +211,11 @@ namespace Engine
                 RHI::Backend::NVRHIVulkan,
                 "NVRHI Vulkan",
                 HasNVRHIVulkan()
-                    ? "NVRHI Vulkan vendor backend is compiled; engine device/swapchain creation is not implemented yet."
+                    ? (s_ActiveBackend == RendererBackend::NVRHIVulkan
+                        ? "Active engine-owned Vulkan device, swapchain, and ImGui presentation path."
+                        : "Compiled and available through --renderer-vulkan; live backend switching is not implemented yet.")
                     : (HasVulkanHeaders() ? "Vulkan headers are pinned, but the NVRHI Vulkan backend is not compiled into this executable." : "Vulkan-Headers are not vendored."),
-                false,
+                s_ActiveBackend == RendererBackend::NVRHIVulkan,
                 s_ActiveBackend == RendererBackend::NVRHIVulkan
             });
             s_BackendOptions.push_back({
@@ -249,11 +252,19 @@ namespace Engine
 
         if (HasNativeWindow() && HasNVRHI())
         {
+            const ApplicationCommandLineArgs& args = Application::Get().GetSpecification().CommandLineArgs;
+            const bool requestVulkan = args.HasFlag("--renderer-vulkan") || args.HasFlag("--vulkan-render-smoke");
             Scope<NVRHIRenderBackend> backend = CreateScope<NVRHIRenderBackend>();
             NVRHIRenderBackend* backendPtr = backend.get();
+            if (requestVulkan)
+                backendPtr->SetRequestedBackend(RHI::Backend::NVRHIVulkan);
             s_Backend = std::move(backend);
             if (!s_Backend->Initialize())
+            {
                 s_Backend.reset();
+                if (requestVulkan)
+                    throw std::runtime_error("The requested Vulkan renderer could not be initialized");
+            }
             else
             {
                 s_ActiveBackend = backendPtr->GetRendererBackend();
