@@ -23,7 +23,7 @@ namespace Engine::RHI
         NVRHIVulkanContext();
         ~NVRHIVulkanContext();
 
-        bool Initialize(void* nativeWindow, bool enableValidation, NVRHIAdapterInfo& adapterInfo);
+        bool Initialize(void* nativeWindow, const DeviceDescription& description, NVRHIAdapterInfo& adapterInfo);
         void Shutdown();
         void WaitIdle();
 

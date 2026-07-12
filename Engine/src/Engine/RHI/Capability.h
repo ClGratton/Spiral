@@ -79,6 +79,7 @@ namespace Engine::RHI
     struct AdapterIdentity
     {
         std::string Name;
+        std::string StableId;
         std::string DriverVersion;
         u32 VendorId = 0;
         u32 DeviceId = 0;
@@ -159,7 +160,8 @@ namespace Engine::RHI
     AdapterSelectionResult EvaluateAdapterCandidates(
         const CapabilityProfile& profile,
         const std::vector<AdapterCandidate>& candidates,
-        std::string_view preferredAdapter = {});
+        std::string_view preferredAdapter = {},
+        bool requirePreferredAdapter = false);
     const char* ToString(DeviceFeature feature);
     const char* ToString(QualificationLevel level);
     const char* ToString(AdapterType type);

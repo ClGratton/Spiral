@@ -31,6 +31,21 @@ namespace Engine
         return false;
     }
 
+    std::string_view ApplicationCommandLineArgs::GetOptionValue(std::string_view option) const
+    {
+        const std::string prefix = std::string(option) + "=";
+        for (int i = 0; i < Count; ++i)
+        {
+            const std::string_view argument = Args[i];
+            if (argument.starts_with(prefix))
+                return argument.substr(prefix.size());
+            if (argument == option && i + 1 < Count)
+                return Args[i + 1];
+        }
+
+        return {};
+    }
+
     Application::Application(ApplicationSpecification specification)
         : m_Specification(std::move(specification))
     {

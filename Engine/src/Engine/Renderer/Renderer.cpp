@@ -264,8 +264,8 @@ namespace Engine
             if (!s_Backend->Initialize())
             {
                 s_Backend.reset();
-                if (requestVulkan)
-                    throw std::runtime_error("The requested Vulkan renderer could not be initialized");
+                if (requestVulkan || args.HasFlag("--renderer-adapter-strict"))
+                    throw std::runtime_error("The requested renderer or strict adapter could not be initialized");
             }
             else
             {

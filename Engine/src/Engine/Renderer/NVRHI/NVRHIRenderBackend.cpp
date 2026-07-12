@@ -30,13 +30,21 @@ namespace Engine
 #else
         description.EnableValidation = false;
 #endif
+        const ApplicationCommandLineArgs& args = Application::Get().GetSpecification().CommandLineArgs;
+        description.PreferredAdapterName = args.GetOptionValue("--renderer-adapter");
+        description.RequirePreferredAdapter = args.HasFlag("--renderer-adapter-strict");
+        if (description.RequirePreferredAdapter && description.PreferredAdapterName.empty())
+        {
+            Log::Error("--renderer-adapter-strict requires --renderer-adapter=<exact adapter name>");
+            return false;
+        }
 
         if (m_RequestedBackend == RHI::Backend::NVRHIVulkan)
         {
             m_VulkanContext = CreateScope<RHI::NVRHIVulkanContext>();
             if (!m_VulkanContext->Initialize(
                     Application::Get().GetWindow().GetNativeWindow(),
-                    description.EnableValidation,
+                    description,
                     m_AdapterInfo))
             {
                 m_VulkanContext.reset();
@@ -47,6 +55,7 @@ namespace Engine
             return true;
         }
 
+        const bool requirePreferredAdapter = description.RequirePreferredAdapter;
         m_Device = RHI::CreateNVRHID3D12Device(std::move(description), m_AdapterInfo, &m_D3D12NativeHandles);
         if (m_Device)
         {
@@ -66,6 +75,9 @@ namespace Engine
             m_RendererBackend = RendererBackend::NVRHID3D12;
             return true;
         }
+
+        if (requirePreferredAdapter)
+            return false;
 
         Log::Warn("NVRHI D3D12 device is unavailable; using NVRHI common probe backend");
         m_RendererBackend = RendererBackend::NVRHICommon;

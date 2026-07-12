@@ -21,11 +21,13 @@ An advertised extension is not an enabled or qualified renderer feature. Logs an
 
 ## Current Bootstrap Foundation
 
-The current implementation provides a backend-neutral capability lifecycle and pure profile evaluator. Synthetic EngineTests cover lifecycle invariants, required API/queue/presentation/format/limit rejection, explicit graphics-queue fallbacks, invalid preferred-adapter fallback, format-usage validation, and deterministic candidate tie-breaking.
+The current implementation provides a backend-neutral capability lifecycle and pure profile evaluator. Synthetic EngineTests cover lifecycle invariants, required API/queue/presentation/format/limit rejection, explicit graphics-queue fallbacks, invalid preferred-adapter fallback, strict preferred-adapter failure, format-usage validation, and deterministic candidate tie-breaking.
 
-The selected D3D12 and Vulkan devices publish conservative Bootstrap reports with adapter identity, queue mapping, feature lifecycle state, qualification, and fallback diagnostics. D3D12 no longer reports timestamps as implemented while query recording/resolve is a stub. Vulkan records buffer-device-address advertisement separately and leaves it disabled because the Bootstrap profile has no implemented consumer. Optional ray, mesh, work-graph, and neural paths are not presented as usable renderer features merely because NVRHI advertises support.
+Before native device creation, D3D12 and Vulkan now enumerate all visible adapters into the shared model and apply versioned Phase 3 Bootstrap profiles. The profiles gate minimum API level, maximum 2D texture dimension, graphics/presentation, timeline/fence synchronization, compatible compute/copy execution, `RGBA8_UNORM` sampled/color/copy use as required by the backend profile, and `D32_FLOAT` depth attachment use. Every candidate evaluation and selected fallback is retained in `DeviceCapabilities`, not only printed. Adapter identity includes a DXGI LUID or Vulkan device UUID so equal display names remain distinguishable on multi-GPU systems.
 
-This is not full completion of this contract. Native D3D12/Vulkan enumeration still performs backend-local selection rather than feeding all queried candidates through the shared evaluator before device creation. Required format usages and limits are not yet validated per candidate, rejection/fallback reports are not editor-visible, and consumer-specific Scene/Phase 4-9 groups and physical-device qualification remain pending.
+The selected devices publish conservative Bootstrap reports with adapter identity, queue mapping, queried formats, feature lifecycle state, qualification, and fallback diagnostics. D3D12 no longer reports timestamps as implemented while query recording/resolve is a stub. D3D12 heap-direct indexing and enhanced barriers are disabled because the Bootstrap profile has no implemented consumer. Vulkan records buffer-device-address advertisement separately and leaves it disabled for the same reason. Optional ray, mesh, work-graph, and neural paths are not presented as usable renderer features merely because NVRHI advertises support.
+
+This is not full completion of this contract. Rejection/fallback reports are retained but not editor-visible, dedicated Vulkan compute/copy families are detected but the Bootstrap profile deliberately aliases work to the unified graphics/present queue, and consumer-specific Scene/Phase 4-9 groups and physical-device qualification remain pending. D3D12 presentation support is necessarily finalized by real HWND swapchain creation after device selection; the pre-device profile can prove a direct queue but DXGI has no Vulkan-style per-surface physical-device query.
 
 ## Adapter Selection
 
@@ -40,6 +42,8 @@ The engine must enumerate adapters and select by required capabilities, limits, 
 - the reason a candidate was rejected or a fallback backend/device was selected.
 
 A strict backend request fails clearly if its minimum contract is not met. An ordinary launch may use a documented fallback selected before native device creation. The reported active backend must match the device actually running.
+
+Use `--renderer-adapter=<exact name or stable ID>` (or the split-value form) to prefer a device. A missing or unqualified preference falls back to the best qualified device and records the reason. Add `--renderer-adapter-strict` to reject every nonmatching device and terminate initialization instead of falling back. Stable IDs are the unambiguous choice when multiple devices expose the same display name; they are runtime identifiers, not content or save-file identifiers.
 
 ## Required Capability Groups
 

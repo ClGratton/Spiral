@@ -38,6 +38,7 @@ if ($LASTEXITCODE -ne 0) {
 
 $RequiredMarkers = @(
     "NVRHI D3D12 device created on adapter:",
+    "Selected D3D12 adapter for profile 'Phase 3 D3D12 Bootstrap V1':",
     "D3D12 capability state: Ray Tracing advertised=",
     "D3D12 capability state: Timestamps advertised=yes, enabled=no, implemented=no, exercised=no",
     "Renderer initialized with backend: NVRHI D3D12"

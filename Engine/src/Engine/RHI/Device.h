@@ -25,6 +25,8 @@ namespace Engine::RHI
         std::array<CapabilityState, static_cast<size_t>(DeviceFeature::Count)> Features;
         std::vector<FormatCapability> Formats;
         std::vector<std::string> Fallbacks;
+        std::vector<AdapterCandidate> AdapterCandidates;
+        AdapterSelectionResult AdapterSelection;
 
         const CapabilityState& GetFeature(DeviceFeature feature) const
         {

@@ -29,13 +29,16 @@ namespace Engine::RHI
 
         bool IsPreferred(const AdapterCandidate& candidate, std::string_view preferredAdapter)
         {
-            return !preferredAdapter.empty() && candidate.Identity.Name == preferredAdapter;
+            return !preferredAdapter.empty()
+                && (candidate.Identity.Name == preferredAdapter || candidate.Identity.StableId == preferredAdapter);
         }
 
         bool IsStableTieBreakBetter(const AdapterCandidate& candidate, const AdapterCandidate& current)
         {
             if (candidate.Identity.Name != current.Identity.Name)
                 return candidate.Identity.Name < current.Identity.Name;
+            if (candidate.Identity.StableId != current.Identity.StableId)
+                return candidate.Identity.StableId < current.Identity.StableId;
             if (candidate.Identity.VendorId != current.Identity.VendorId)
                 return candidate.Identity.VendorId < current.Identity.VendorId;
             return candidate.Identity.DeviceId < current.Identity.DeviceId;
@@ -62,7 +65,8 @@ namespace Engine::RHI
     AdapterSelectionResult EvaluateAdapterCandidates(
         const CapabilityProfile& profile,
         const std::vector<AdapterCandidate>& candidates,
-        std::string_view preferredAdapter)
+        std::string_view preferredAdapter,
+        bool requirePreferredAdapter)
     {
         AdapterSelectionResult result;
         result.Evaluations.reserve(candidates.size());
@@ -73,6 +77,9 @@ namespace Engine::RHI
             const AdapterCandidate& candidate = candidates[index];
             AdapterEvaluation evaluation;
             evaluation.CandidateIndex = index;
+
+            if (requirePreferredAdapter && !IsPreferred(candidate, preferredAdapter))
+                evaluation.RejectionReasons.emplace_back("adapter does not match the strict preference");
 
             if (!ApiMeetsMinimum(candidate, profile))
                 evaluation.RejectionReasons.emplace_back("API version is below the profile minimum");

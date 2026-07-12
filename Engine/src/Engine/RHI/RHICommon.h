@@ -107,6 +107,8 @@ namespace Engine::RHI
         bool EnableValidation = true;
         bool EnableRayTracing = false;
         bool EnableWorkGraphs = false;
+        std::string PreferredAdapterName;
+        bool RequirePreferredAdapter = false;
     };
 
     struct Extent2D

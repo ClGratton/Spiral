@@ -1332,28 +1332,56 @@ namespace Engine::RHI
 
             bool ChooseAdapter()
             {
+                std::vector<ComPtr<IDXGIAdapter1>> nativeAdapters;
+                std::vector<AdapterCandidate> candidates;
+
+                const auto appendAdapter = [&](ComPtr<IDXGIAdapter1> adapter, bool includeSoftware)
+                {
+                    DXGI_ADAPTER_DESC1 description {};
+                    if (!adapter || FAILED(adapter->GetDesc1(&description)))
+                        return;
+                    if (!includeSoftware && (description.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) != 0)
+                        return;
+
+                    AdapterCandidate candidate;
+                    QueryAdapterCandidate(adapter.Get(), description, candidate);
+                    nativeAdapters.push_back(std::move(adapter));
+                    candidates.push_back(std::move(candidate));
+                };
+
                 ComPtr<IDXGIFactory6> factory6;
                 if (SUCCEEDED(m_Factory.As(&factory6)))
                 {
                     for (UINT index = 0;; ++index)
                     {
                         ComPtr<IDXGIAdapter1> adapter;
-                        if (factory6->EnumAdapterByGpuPreference(index, DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE, IID_PPV_ARGS(&adapter)) == DXGI_ERROR_NOT_FOUND)
+                        const HRESULT enumerationResult = factory6->EnumAdapterByGpuPreference(
+                            index, DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE, IID_PPV_ARGS(&adapter));
+                        if (enumerationResult == DXGI_ERROR_NOT_FOUND)
                             break;
-
-                        if (AcceptAdapter(adapter.Get(), false))
-                            return true;
+                        if (FAILED(enumerationResult))
+                        {
+                            Log::Warn("DXGI high-performance adapter enumeration stopped: ", HResultToString(enumerationResult));
+                            break;
+                        }
+                        appendAdapter(std::move(adapter), false);
                     }
                 }
-
-                for (UINT index = 0;; ++index)
+                else
                 {
-                    ComPtr<IDXGIAdapter1> adapter;
-                    if (m_Factory->EnumAdapters1(index, &adapter) == DXGI_ERROR_NOT_FOUND)
-                        break;
-
-                    if (AcceptAdapter(adapter.Get(), false))
-                        return true;
+                    for (UINT index = 0;; ++index)
+                    {
+                        ComPtr<IDXGIAdapter1> adapter;
+                        const HRESULT enumerationResult = m_Factory->EnumAdapters1(index, &adapter);
+                        if (enumerationResult == DXGI_ERROR_NOT_FOUND)
+                            break;
+                        if (FAILED(enumerationResult))
+                        {
+                            Log::Warn("DXGI adapter enumeration stopped: ", HResultToString(enumerationResult));
+                            break;
+                        }
+                        appendAdapter(std::move(adapter), false);
+                    }
                 }
 
                 ComPtr<IDXGIAdapter> warpAdapter;
@@ -1361,44 +1389,217 @@ namespace Engine::RHI
                 if (SUCCEEDED(warpResult))
                 {
                     ComPtr<IDXGIAdapter1> warpAdapter1;
-                    if (SUCCEEDED(warpAdapter.As(&warpAdapter1)) && AcceptAdapter(warpAdapter1.Get(), true))
-                    {
-                        Log::Warn("No hardware D3D12 adapter accepted; using WARP software adapter");
-                        return true;
-                    }
+                    if (SUCCEEDED(warpAdapter.As(&warpAdapter1)))
+                        appendAdapter(std::move(warpAdapter1), true);
                 }
 
-                Log::Error("No hardware or WARP adapter supports the engine D3D12 minimum feature level");
-                return false;
+                const CapabilityProfile profile = CreateBootstrapProfile();
+                const AdapterSelectionResult selection = EvaluateAdapterCandidates(
+                    profile,
+                    candidates,
+                    m_Description.PreferredAdapterName,
+                    m_Description.RequirePreferredAdapter);
+                m_AdapterCandidates = candidates;
+                m_AdapterSelection = selection;
+                for (const AdapterEvaluation& evaluation : selection.Evaluations)
+                {
+                    if (evaluation.CandidateIndex >= candidates.size())
+                        continue;
+
+                    const AdapterCandidate& candidate = candidates[evaluation.CandidateIndex];
+                    if (evaluation.Accepted)
+                    {
+                        Log::Info("D3D12 adapter candidate accepted: ", candidate.Identity.Name,
+                            " [", candidate.Identity.StableId, "] (score=", evaluation.Score, ")");
+                    }
+                    else
+                    {
+                        for (const std::string& reason : evaluation.RejectionReasons)
+                            Log::Warn("D3D12 adapter candidate rejected: ", candidate.Identity.Name,
+                                " [", candidate.Identity.StableId, "]; ", reason);
+                    }
+
+                    for (const std::string& fallback : evaluation.Fallbacks)
+                        Log::Info("D3D12 adapter candidate fallback: ", candidate.Identity.Name, "; ", fallback);
+                }
+
+                if (!selection.HasSelection() || selection.SelectedIndex >= nativeAdapters.size())
+                {
+                    Log::Error("No D3D12 adapter satisfies capability profile '", profile.Name, "'");
+                    return false;
+                }
+
+                m_Adapter = nativeAdapters[selection.SelectedIndex];
+                m_SelectedAdapterCandidate = candidates[selection.SelectedIndex];
+                m_AdapterName = m_SelectedAdapterCandidate.Identity.Name;
+                m_AdapterDriverVersion = m_SelectedAdapterCandidate.Identity.DriverVersion;
+                m_AdapterVendorId = m_SelectedAdapterCandidate.Identity.VendorId;
+                m_AdapterDeviceId = m_SelectedAdapterCandidate.Identity.DeviceId;
+                m_AdapterDedicatedVideoMemoryBytes = m_SelectedAdapterCandidate.Identity.DedicatedVideoMemoryBytes;
+
+                DXGI_ADAPTER_DESC1 selectedDescription {};
+                if (FAILED(m_Adapter->GetDesc1(&selectedDescription)))
+                {
+                    Log::Error("Could not query the selected D3D12 adapter description");
+                    return false;
+                }
+                m_AdapterFlags = selectedDescription.Flags;
+
+                const AdapterEvaluation& selectedEvaluation = selection.Evaluations[selection.SelectedIndex];
+                m_SelectionFallbacks = selectedEvaluation.Fallbacks;
+                if (!m_Description.PreferredAdapterName.empty()
+                    && m_AdapterName != m_Description.PreferredAdapterName
+                    && m_SelectedAdapterCandidate.Identity.StableId != m_Description.PreferredAdapterName)
+                {
+                    m_SelectionFallbacks.emplace_back(
+                        "Preferred adapter '" + m_Description.PreferredAdapterName
+                        + "' was unavailable; selected '" + m_AdapterName + "'");
+                }
+                for (const std::string& fallback : m_SelectionFallbacks)
+                    Log::Warn("Selected D3D12 adapter fallback: ", fallback);
+
+                Log::Info("Selected D3D12 adapter for profile '", profile.Name, "': ", m_AdapterName,
+                    " [", m_SelectedAdapterCandidate.Identity.StableId, "]");
+                return true;
             }
 
-            bool AcceptAdapter(IDXGIAdapter1* adapter, bool allowSoftware)
+            static CapabilityProfile CreateBootstrapProfile()
             {
-                DXGI_ADAPTER_DESC1 description {};
-                adapter->GetDesc1(&description);
+                CapabilityProfile profile;
+                profile.Name = "Phase 3 D3D12 Bootstrap V1";
+                profile.MinimumApiMajor = 12;
+                profile.MinimumApiMinor = 0;
+                profile.MinimumTextureDimension2D = D3D12_REQ_TEXTURE2D_U_OR_V_DIMENSION;
+                profile.RequireGraphics = true;
+                profile.RequirePresent = true;
+                profile.RequireCompute = true;
+                profile.RequireCopy = true;
+                profile.AllowGraphicsQueueFallback = true;
+                profile.RequireTimelineSynchronization = true;
+                profile.AllowSoftwareAdapter = true;
+                profile.RequiredFormats.push_back({
+                    Format::R8G8B8A8Unorm,
+                    FormatUsage::Sampled | FormatUsage::ColorAttachment
+                        | FormatUsage::CopySource | FormatUsage::CopyDestination
+                });
+                profile.RequiredFormats.push_back({ Format::D32Float, FormatUsage::DepthStencil });
+                return profile;
+            }
 
-                if (!allowSoftware && (description.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) != 0)
-                    return false;
+            static bool ProbeQueue(ID3D12Device* device, D3D12_COMMAND_LIST_TYPE type)
+            {
+                D3D12_COMMAND_QUEUE_DESC description {};
+                description.Type = type;
+                ComPtr<ID3D12CommandQueue> queue;
+                return SUCCEEDED(device->CreateCommandQueue(&description, IID_PPV_ARGS(&queue)));
+            }
 
-                if (FAILED(D3D12CreateDevice(adapter, D3D_FEATURE_LEVEL_12_0, __uuidof(ID3D12Device), nullptr)))
-                    return false;
+            static FormatCapability QueryFormatCapability(ID3D12Device* device, Format format, DXGI_FORMAT nativeFormat)
+            {
+                FormatCapability capability;
+                capability.Value = format;
+                capability.SampleCountMask = 0;
 
-                m_Adapter = adapter;
-                m_AdapterName = WideToUtf8(description.Description);
-                m_AdapterVendorId = description.VendorId;
-                m_AdapterDeviceId = description.DeviceId;
-                m_AdapterDedicatedVideoMemoryBytes = static_cast<u64>(description.DedicatedVideoMemory);
-                m_AdapterFlags = description.Flags;
+                D3D12_FEATURE_DATA_FORMAT_SUPPORT support {};
+                support.Format = nativeFormat;
+                if (FAILED(device->CheckFeatureSupport(D3D12_FEATURE_FORMAT_SUPPORT, &support, sizeof(support))))
+                    return capability;
+
+                const bool texture2D = (support.Support1 & D3D12_FORMAT_SUPPORT1_TEXTURE2D) != 0;
+                if ((support.Support1 & D3D12_FORMAT_SUPPORT1_SHADER_SAMPLE) != 0)
+                    capability.Usages = capability.Usages | FormatUsage::Sampled;
+                if ((support.Support1 & D3D12_FORMAT_SUPPORT1_RENDER_TARGET) != 0)
+                    capability.Usages = capability.Usages | FormatUsage::ColorAttachment;
+                if ((support.Support1 & D3D12_FORMAT_SUPPORT1_DEPTH_STENCIL) != 0)
+                    capability.Usages = capability.Usages | FormatUsage::DepthStencil;
+                const UINT storageSupport = static_cast<UINT>(D3D12_FORMAT_SUPPORT2_UAV_TYPED_LOAD)
+                    | static_cast<UINT>(D3D12_FORMAT_SUPPORT2_UAV_TYPED_STORE);
+                if ((static_cast<UINT>(support.Support2) & storageSupport) == storageSupport)
+                    capability.Usages = capability.Usages | FormatUsage::Storage;
+                if (texture2D)
+                {
+                    capability.Usages = capability.Usages | FormatUsage::CopySource | FormatUsage::CopyDestination;
+                    capability.SampleCountMask = 1;
+                }
+                return capability;
+            }
+
+            static void QueryAdapterCandidate(
+                IDXGIAdapter1* adapter,
+                const DXGI_ADAPTER_DESC1& description,
+                AdapterCandidate& candidate)
+            {
+                candidate.CandidateBackend = Backend::NVRHID3D12;
+                candidate.Identity.Name = WideToUtf8(description.Description);
+                std::ostringstream stableId;
+                stableId << "dxgi-luid-" << std::hex << std::setfill('0')
+                    << std::setw(8) << static_cast<u32>(description.AdapterLuid.HighPart)
+                    << std::setw(8) << description.AdapterLuid.LowPart;
+                candidate.Identity.StableId = stableId.str();
+                candidate.Identity.VendorId = description.VendorId;
+                candidate.Identity.DeviceId = description.DeviceId;
+                candidate.Identity.DedicatedVideoMemoryBytes = static_cast<u64>(description.DedicatedVideoMemory);
+                candidate.PerformanceScore = static_cast<std::int64_t>(description.DedicatedVideoMemory / (1024ull * 1024ull));
 
                 LARGE_INTEGER driverVersion {};
                 if (SUCCEEDED(adapter->CheckInterfaceSupport(__uuidof(IDXGIDevice), &driverVersion)))
                 {
-                    m_AdapterDriverVersion = std::to_string(HIWORD(driverVersion.HighPart)) + "."
+                    candidate.Identity.DriverVersion = std::to_string(HIWORD(driverVersion.HighPart)) + "."
                         + std::to_string(LOWORD(driverVersion.HighPart)) + "."
                         + std::to_string(HIWORD(driverVersion.LowPart)) + "."
                         + std::to_string(LOWORD(driverVersion.LowPart));
                 }
-                return true;
+
+                ComPtr<ID3D12Device> probeDevice;
+                if (FAILED(D3D12CreateDevice(adapter, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&probeDevice))))
+                    return;
+
+                const D3D_FEATURE_LEVEL requestedLevels[] = {
+                    D3D_FEATURE_LEVEL_12_1,
+                    D3D_FEATURE_LEVEL_12_0,
+                    D3D_FEATURE_LEVEL_11_1,
+                    D3D_FEATURE_LEVEL_11_0
+                };
+                D3D12_FEATURE_DATA_FEATURE_LEVELS featureLevels {};
+                featureLevels.NumFeatureLevels = static_cast<UINT>(sizeof(requestedLevels) / sizeof(requestedLevels[0]));
+                featureLevels.pFeatureLevelsRequested = requestedLevels;
+                if (SUCCEEDED(probeDevice->CheckFeatureSupport(
+                    D3D12_FEATURE_FEATURE_LEVELS, &featureLevels, sizeof(featureLevels))))
+                {
+                    candidate.ApiMajor = featureLevels.MaxSupportedFeatureLevel >= D3D_FEATURE_LEVEL_12_0 ? 12u : 11u;
+                    candidate.ApiMinor = featureLevels.MaxSupportedFeatureLevel >= D3D_FEATURE_LEVEL_12_1 ? 1u
+                        : (featureLevels.MaxSupportedFeatureLevel >= D3D_FEATURE_LEVEL_11_1 ? 1u : 0u);
+                }
+
+                if ((description.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) != 0)
+                    candidate.Identity.Type = AdapterType::Software;
+                else if ((description.Flags & DXGI_ADAPTER_FLAG_REMOTE) != 0)
+                    candidate.Identity.Type = AdapterType::Virtual;
+                else
+                {
+                    D3D12_FEATURE_DATA_ARCHITECTURE architecture {};
+                    architecture.NodeIndex = 0;
+                    candidate.Identity.Type = SUCCEEDED(probeDevice->CheckFeatureSupport(
+                        D3D12_FEATURE_ARCHITECTURE, &architecture, sizeof(architecture))) && architecture.UMA
+                        ? AdapterType::Integrated
+                        : AdapterType::Discrete;
+                }
+
+                candidate.MaximumTextureDimension2D = D3D12_REQ_TEXTURE2D_U_OR_V_DIMENSION;
+                candidate.Queues.Graphics = ProbeQueue(probeDevice.Get(), D3D12_COMMAND_LIST_TYPE_DIRECT);
+                candidate.Queues.Compute = ProbeQueue(probeDevice.Get(), D3D12_COMMAND_LIST_TYPE_COMPUTE);
+                candidate.Queues.Copy = ProbeQueue(probeDevice.Get(), D3D12_COMMAND_LIST_TYPE_COPY);
+                candidate.Queues.Present = candidate.Queues.Graphics;
+                candidate.Queues.DedicatedCompute = candidate.Queues.Compute;
+                candidate.Queues.DedicatedCopy = candidate.Queues.Copy;
+
+                ComPtr<ID3D12Fence> fence;
+                candidate.TimelineSynchronization = SUCCEEDED(probeDevice->CreateFence(
+                    0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence)));
+                candidate.Formats.push_back(QueryFormatCapability(
+                    probeDevice.Get(), Format::R8G8B8A8Unorm, DXGI_FORMAT_R8G8B8A8_UNORM));
+                candidate.Formats.push_back(QueryFormatCapability(
+                    probeDevice.Get(), Format::D32Float, DXGI_FORMAT_D32_FLOAT));
             }
 
             bool CreateNativeDevice()
@@ -1435,9 +1636,30 @@ namespace Engine::RHI
 
             bool CreateQueues()
             {
-                return CreateQueue(D3D12_COMMAND_LIST_TYPE_DIRECT, L"Spiral Graphics Queue", &m_GraphicsQueue)
-                    && CreateQueue(D3D12_COMMAND_LIST_TYPE_COMPUTE, L"Spiral Compute Queue", &m_ComputeQueue)
-                    && CreateQueue(D3D12_COMMAND_LIST_TYPE_COPY, L"Spiral Copy Queue", &m_CopyQueue);
+                if (!CreateQueue(D3D12_COMMAND_LIST_TYPE_DIRECT, L"Spiral Graphics Queue", &m_GraphicsQueue))
+                    return false;
+
+                if (m_SelectedAdapterCandidate.Queues.Compute)
+                {
+                    if (!CreateQueue(D3D12_COMMAND_LIST_TYPE_COMPUTE, L"Spiral Compute Queue", &m_ComputeQueue))
+                        return false;
+                }
+                else
+                {
+                    m_ComputeQueue = m_GraphicsQueue;
+                }
+
+                if (m_SelectedAdapterCandidate.Queues.Copy)
+                {
+                    if (!CreateQueue(D3D12_COMMAND_LIST_TYPE_COPY, L"Spiral Copy Queue", &m_CopyQueue))
+                        return false;
+                }
+                else
+                {
+                    m_CopyQueue = m_GraphicsQueue;
+                }
+
+                return true;
             }
 
             ID3D12CommandQueue* GetQueue(QueueType queueType) const
@@ -1460,8 +1682,8 @@ namespace Engine::RHI
                 description.pGraphicsCommandQueue = m_GraphicsQueue.Get();
                 description.pComputeCommandQueue = m_ComputeQueue.Get();
                 description.pCopyCommandQueue = m_CopyQueue.Get();
-                description.enableHeapDirectlyIndexed = true;
-                description.enableEnhancedBarriers = true;
+                description.enableHeapDirectlyIndexed = false;
+                description.enableEnhancedBarriers = false;
 
                 nvrhi::d3d12::DeviceHandle nativeDevice = nvrhi::d3d12::createDevice(description);
                 if (!nativeDevice.Get())
@@ -1538,10 +1760,15 @@ namespace Engine::RHI
                 m_Capabilities.ProfileName = "Phase 3 D3D12 Bootstrap V1";
                 m_Capabilities.Qualification = QualificationLevel::Bootstrap;
                 m_Capabilities.Identity.Name = m_AdapterName;
+                m_Capabilities.Identity.StableId = m_SelectedAdapterCandidate.Identity.StableId;
                 m_Capabilities.Identity.DriverVersion = m_AdapterDriverVersion;
                 m_Capabilities.Identity.VendorId = m_AdapterVendorId;
                 m_Capabilities.Identity.DeviceId = m_AdapterDeviceId;
                 m_Capabilities.Identity.DedicatedVideoMemoryBytes = m_AdapterDedicatedVideoMemoryBytes;
+                m_Capabilities.Formats = m_SelectedAdapterCandidate.Formats;
+                m_Capabilities.Fallbacks = m_SelectionFallbacks;
+                m_Capabilities.AdapterCandidates = m_AdapterCandidates;
+                m_Capabilities.AdapterSelection = m_AdapterSelection;
 
                 if ((m_AdapterFlags & DXGI_ADAPTER_FLAG_SOFTWARE) != 0)
                 {
@@ -1565,8 +1792,8 @@ namespace Engine::RHI
                 m_Capabilities.Queues.Compute = m_ComputeQueue.Get() != nullptr;
                 m_Capabilities.Queues.Copy = m_CopyQueue.Get() != nullptr;
                 m_Capabilities.Queues.Present = m_GraphicsQueue.Get() != nullptr;
-                m_Capabilities.Queues.DedicatedCompute = m_ComputeQueue.Get() != nullptr;
-                m_Capabilities.Queues.DedicatedCopy = m_CopyQueue.Get() != nullptr;
+                m_Capabilities.Queues.DedicatedCompute = m_SelectedAdapterCandidate.Queues.Compute;
+                m_Capabilities.Queues.DedicatedCopy = m_SelectedAdapterCandidate.Queues.Copy;
 
                 const bool rayTracingAdvertised =
                     m_NVRHIDevice->queryFeatureSupport(nvrhi::Feature::RayTracingAccelStruct)
@@ -1609,6 +1836,10 @@ namespace Engine::RHI
             u32 m_AdapterDeviceId = 0;
             u64 m_AdapterDedicatedVideoMemoryBytes = 0;
             u32 m_AdapterFlags = 0;
+            AdapterCandidate m_SelectedAdapterCandidate;
+            std::vector<std::string> m_SelectionFallbacks;
+            std::vector<AdapterCandidate> m_AdapterCandidates;
+            AdapterSelectionResult m_AdapterSelection;
 
             ComPtr<IDXGIFactory4> m_Factory;
             ComPtr<IDXGIAdapter1> m_Adapter;

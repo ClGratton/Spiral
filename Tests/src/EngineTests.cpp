@@ -245,6 +245,29 @@ namespace
             && Expect(result.Evaluations.size() == 1 && result.Evaluations[0].RejectionReasons.size() == 3,
                 "each independent bootstrap requirement retains a rejection reason");
     }
+
+    bool TestCapabilitySelectionHonorsStrictPreference()
+    {
+        using namespace Engine::RHI;
+
+        CapabilityProfile profile = MakeBootstrapCapabilityProfile();
+        profile.RequireCompute = false;
+        profile.RequireCopy = false;
+        std::vector<AdapterCandidate> candidates;
+        candidates.push_back(MakeCapabilityCandidate("Requested Adapter", AdapterType::Integrated, 10));
+        candidates.back().Identity.StableId = "adapter-id-requested";
+        candidates.push_back(MakeCapabilityCandidate("Faster Adapter", AdapterType::Discrete, 1000));
+        candidates.back().Identity.StableId = "adapter-id-faster";
+
+        const AdapterSelectionResult selected = EvaluateAdapterCandidates(profile, candidates, "adapter-id-requested", true);
+        const AdapterSelectionResult missing = EvaluateAdapterCandidates(profile, candidates, "Missing Adapter", true);
+        return Expect(selected.HasSelection() && selected.SelectedIndex == 0,
+                   "strict preference selects the requested qualified adapter even when another adapter ranks higher")
+            && Expect(!selected.Evaluations[1].Accepted && selected.Evaluations[1].RejectionReasons.size() == 1,
+                "strict preference records why otherwise-qualified adapters are not eligible")
+            && Expect(!missing.HasSelection(), "strict preference fails when the requested adapter is unavailable");
+    }
+
 }
 
 int main()
@@ -261,7 +284,8 @@ int main()
         { "Capability state keeps lifecycle stages distinct", TestCapabilityStateKeepsLifecycleStagesDistinct },
         { "Capability selection retains fallbacks and rejections", TestCapabilitySelectionRetainsFallbacksAndRejections },
         { "Capability selection validates format usage and stable ranking", TestCapabilitySelectionValidatesFormatUsageAndStableRanking },
-        { "Capability selection rejects API limits and synchronization", TestCapabilitySelectionRejectsApiLimitsAndSynchronization }
+        { "Capability selection rejects API limits and synchronization", TestCapabilitySelectionRejectsApiLimitsAndSynchronization },
+        { "Capability selection honors strict preference", TestCapabilitySelectionHonorsStrictPreference }
     };
 
     size_t failures = 0;

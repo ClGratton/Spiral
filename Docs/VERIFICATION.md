@@ -65,12 +65,18 @@ Use the actual generated system/architecture path on the host.
 
 ## Renderer Verification
 
-`EngineTests` includes GPU-independent renderer-capability policy coverage. It proves lifecycle invariants, deterministic candidate ranking, retained rejection reasons, required format-usage validation, and compatible queue fallbacks; it does not prove a physical adapter or backend runtime path.
+`EngineTests` includes GPU-independent renderer-capability policy coverage. It proves lifecycle invariants, deterministic candidate ranking, retained rejection reasons, required format-usage validation, compatible queue fallbacks, and strict selection by stable adapter ID; it does not prove a physical adapter or backend runtime path.
 
 Windows D3D12 viewport behavior and non-blank capture:
 
 ```powershell
 .\Scripts\TestRender.ps1 -Configuration Debug -Action vs2022
+```
+
+This smoke requires the D3D12 versioned-profile selection marker before accepting the capture. To exercise the strict runtime failure path, launch a missing adapter and require a nonzero exit plus per-candidate strict-preference rejection diagnostics:
+
+```powershell
+.\bin\Debug-windows-x86_64\Editor\Editor.exe --smoke-test "--renderer-adapter=Definitely Missing Spiral Adapter" --renderer-adapter-strict
 ```
 
 Vulkan device, NVRHI wrapping, native ImGui presentation, resize, and successful post-resize present:
@@ -85,6 +91,8 @@ Linux/macOS use:
 ```bash
 bash Scripts/TestVulkan.sh Debug gmake
 ```
+
+The Vulkan smokes require the versioned-profile selection marker in addition to device/NVRHI creation and presentation evidence.
 
 Repeat the same full launch contract when investigating presentation reliability:
 

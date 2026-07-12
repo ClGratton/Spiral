@@ -22,6 +22,7 @@ namespace Engine
 
         const char* operator[](int index) const;
         bool HasFlag(std::string_view flag) const;
+        std::string_view GetOptionValue(std::string_view option) const;
     };
 
     struct ApplicationSpecification

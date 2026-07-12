@@ -24,7 +24,8 @@ if ($LASTEXITCODE -ne 0) {
 
 $RequiredMarkers = @(
     "NVRHI Vulkan device created on adapter:",
-    "Vulkan capability profile: Vulkan 1.3 Bootstrap Presentation, qualification=Bootstrap",
+    "Selected Vulkan adapter:",
+    "Vulkan capability profile: Phase 3 Vulkan Bootstrap Presentation V1, qualification=Bootstrap",
     "Vulkan capability state: Timeline Synchronization advertised=yes, enabled=yes, implemented=yes",
     "Vulkan capability state: Buffer Device Address advertised=",
     "Renderer initialized with backend: NVRHI Vulkan",

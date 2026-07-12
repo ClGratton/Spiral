@@ -14,6 +14,7 @@
     #include <vulkan/vulkan_beta.h>
 
     #include <cstring>
+    #include <iomanip>
     #include <limits>
     #include <sstream>
     #include <string>
@@ -71,13 +72,49 @@ namespace Engine::RHI
             }
         }
 
+        FormatCapability QueryFormatCapability(VkPhysicalDevice device, Format format, VkFormat nativeFormat)
+        {
+            VkFormatProperties properties {};
+            VULKAN_HPP_DEFAULT_DISPATCHER.vkGetPhysicalDeviceFormatProperties(device, nativeFormat, &properties);
+            const VkFormatFeatureFlags features = properties.optimalTilingFeatures;
+
+            FormatUsage usages = FormatUsage::None;
+            if ((features & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT) != 0)
+                usages = usages | FormatUsage::Sampled;
+            if ((features & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT) != 0)
+                usages = usages | FormatUsage::Storage;
+            if ((features & VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT) != 0)
+                usages = usages | FormatUsage::ColorAttachment;
+            if ((features & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT) != 0)
+                usages = usages | FormatUsage::DepthStencil;
+            if ((features & VK_FORMAT_FEATURE_TRANSFER_SRC_BIT) != 0)
+                usages = usages | FormatUsage::CopySource;
+            if ((features & VK_FORMAT_FEATURE_TRANSFER_DST_BIT) != 0)
+                usages = usages | FormatUsage::CopyDestination;
+
+            FormatCapability result;
+            result.Value = format;
+            result.Usages = usages;
+            result.SampleCountMask = 1;
+            return result;
+        }
+
+        std::string FormatDeviceUuid(const u8* bytes)
+        {
+            std::ostringstream stream;
+            stream << "vulkan-uuid-" << std::hex << std::setfill('0');
+            for (u32 index = 0; index < VK_UUID_SIZE; ++index)
+                stream << std::setw(2) << static_cast<u32>(bytes[index]);
+            return stream.str();
+        }
+
         constexpr const char* kPortabilitySubsetExtensionName = "VK_KHR_portability_subset";
     }
 #endif
 
     struct NVRHIVulkanContext::Impl
     {
-        bool Initialize(void* nativeWindow, bool enableValidation, NVRHIAdapterInfo& adapterInfo)
+        bool Initialize(void* nativeWindow, const DeviceDescription& description, NVRHIAdapterInfo& adapterInfo)
         {
 #if defined(GE_HAS_NVRHI_VULKAN)
             m_PortabilityEnumerationEnabled = false;
@@ -182,14 +219,14 @@ namespace Engine::RHI
                 return false;
             }
 
-            if (!SelectPhysicalDevice())
+            if (!SelectPhysicalDevice(description))
                 return false;
             LogPortabilitySubsetFeatures();
             if (!CreateLogicalDevice())
                 return false;
 
             VULKAN_HPP_DEFAULT_DISPATCHER.init(m_Instance, m_GetInstanceProcAddr, m_Device);
-            if (!CreateNVRHIDevice(enableValidation))
+            if (!CreateNVRHIDevice(description.EnableValidation))
                 return false;
 
             adapterInfo.Available = true;
@@ -198,18 +235,16 @@ namespace Engine::RHI
             adapterInfo.NativeBackendName = "Vulkan";
 
             m_Capabilities.ActiveBackend = Backend::NVRHIVulkan;
-            m_Capabilities.ProfileName = "Vulkan 1.3 Bootstrap Presentation";
-            m_Capabilities.Identity.Name = m_SelectedProperties.deviceName;
-            m_Capabilities.Identity.DriverVersion =
-                "raw Vulkan driverVersion " + std::to_string(m_SelectedProperties.driverVersion);
-            m_Capabilities.Identity.VendorId = m_SelectedProperties.vendorID;
-            m_Capabilities.Identity.DeviceId = m_SelectedProperties.deviceID;
-            m_Capabilities.Identity.Type = ConvertAdapterType(m_SelectedProperties.deviceType);
+            m_Capabilities.ProfileName = "Phase 3 Vulkan Bootstrap Presentation V1";
+            m_Capabilities.Identity = m_SelectedIdentity;
             m_Capabilities.Queues.Graphics = (m_SelectedQueueProperties.queueFlags & VK_QUEUE_GRAPHICS_BIT) != 0;
             m_Capabilities.Queues.Compute = (m_SelectedQueueProperties.queueFlags & VK_QUEUE_COMPUTE_BIT) != 0;
             m_Capabilities.Queues.Copy = (m_SelectedQueueProperties.queueFlags & VK_QUEUE_TRANSFER_BIT) != 0;
             m_Capabilities.Queues.Present = true;
             m_Capabilities.Qualification = QualificationLevel::Bootstrap;
+            m_Capabilities.Formats = m_SelectedFormats;
+            m_Capabilities.AdapterCandidates = m_AdapterCandidates;
+            m_Capabilities.AdapterSelection = m_AdapterSelection;
 
             const bool nvrhiRayTracingAdvertised =
                 m_NVRHIDevice->queryFeatureSupport(nvrhi::Feature::RayTracingAccelStruct)
@@ -247,14 +282,7 @@ namespace Engine::RHI
                     ? "Advertised but deliberately not enabled: the bootstrap profile has no implemented consumer"
                     : "Not advertised by the selected Vulkan device");
 
-            if (m_Capabilities.Queues.Compute)
-                m_Capabilities.Fallbacks.emplace_back("Compute work uses the selected graphics queue; no dedicated compute queue is enabled");
-            else
-                m_Capabilities.Fallbacks.emplace_back("No compute queue is enabled by the bootstrap presentation profile");
-            if (m_Capabilities.Queues.Copy)
-                m_Capabilities.Fallbacks.emplace_back("Copy work uses the selected graphics queue; no dedicated copy queue is enabled");
-            else
-                m_Capabilities.Fallbacks.emplace_back("No copy queue is enabled by the bootstrap presentation profile");
+            m_Capabilities.Fallbacks = m_SelectionFallbacks;
 
             m_NativeHandles.Instance = m_Instance;
             m_NativeHandles.PhysicalDevice = m_PhysicalDevice;
@@ -291,7 +319,7 @@ namespace Engine::RHI
             return true;
 #else
             (void)nativeWindow;
-            (void)enableValidation;
+            (void)description;
             (void)adapterInfo;
             return false;
 #endif
@@ -346,8 +374,13 @@ namespace Engine::RHI
         }
 
 #if defined(GE_HAS_NVRHI_VULKAN)
-        bool SelectPhysicalDevice()
+        bool SelectPhysicalDevice(const DeviceDescription& description)
         {
+            m_PhysicalDevice = VK_NULL_HANDLE;
+            m_SelectedFormats.clear();
+            m_SelectionFallbacks.clear();
+            m_AdapterCandidates.clear();
+            m_AdapterSelection = {};
             u32 deviceCount = 0;
             if (VULKAN_HPP_DEFAULT_DISPATCHER.vkEnumeratePhysicalDevices(m_Instance, &deviceCount, nullptr) != VK_SUCCESS || deviceCount == 0)
             {
@@ -356,51 +389,152 @@ namespace Engine::RHI
             }
 
             std::vector<VkPhysicalDevice> devices(deviceCount);
-            VULKAN_HPP_DEFAULT_DISPATCHER.vkEnumeratePhysicalDevices(m_Instance, &deviceCount, devices.data());
+            if (VULKAN_HPP_DEFAULT_DISPATCHER.vkEnumeratePhysicalDevices(m_Instance, &deviceCount, devices.data()) != VK_SUCCESS)
+            {
+                Log::Error("Could not enumerate Vulkan physical devices");
+                return false;
+            }
 
-            int bestScore = std::numeric_limits<int>::min();
+            struct NativeCandidate
+            {
+                VkPhysicalDevice Device = VK_NULL_HANDLE;
+                VkPhysicalDeviceProperties Properties {};
+                VkQueueFamilyProperties GraphicsQueueProperties {};
+                u32 GraphicsQueueFamily = std::numeric_limits<u32>::max();
+                bool BufferDeviceAddress = false;
+                bool PortabilitySubset = false;
+                std::vector<std::string> QueryNotes;
+            };
+
+            CapabilityProfile profile;
+            profile.Name = "Phase 3 Vulkan Bootstrap Presentation V1";
+            profile.MinimumApiMajor = 1;
+            profile.MinimumApiMinor = 3;
+            profile.MinimumTextureDimension2D = 4096;
+            profile.RequirePresent = true;
+            profile.RequireCompute = true;
+            profile.RequireCopy = true;
+            profile.AllowGraphicsQueueFallback = true;
+            profile.RequireTimelineSynchronization = true;
+            profile.AllowSoftwareAdapter = true;
+            profile.RequiredFormats.push_back({
+                Format::R8G8B8A8Unorm,
+                FormatUsage::ColorAttachment | FormatUsage::CopySource
+            });
+            profile.RequiredFormats.push_back({ Format::D32Float, FormatUsage::DepthStencil });
+
+            std::vector<AdapterCandidate> candidates;
+            std::vector<NativeCandidate> nativeCandidates;
+            candidates.reserve(devices.size());
+            nativeCandidates.reserve(devices.size());
             for (VkPhysicalDevice device : devices)
             {
-                VkPhysicalDeviceProperties properties {};
-                VULKAN_HPP_DEFAULT_DISPATCHER.vkGetPhysicalDeviceProperties(device, &properties);
-                if (VK_API_VERSION_MAJOR(properties.apiVersion) < 1
-                    || (VK_API_VERSION_MAJOR(properties.apiVersion) == 1 && VK_API_VERSION_MINOR(properties.apiVersion) < 3))
-                    continue;
+                AdapterCandidate candidate;
+                NativeCandidate native;
+                native.Device = device;
+                VkPhysicalDeviceIDProperties idProperties {};
+                idProperties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ID_PROPERTIES;
+                VkPhysicalDeviceProperties2 properties2 {};
+                properties2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+                properties2.pNext = &idProperties;
+                VULKAN_HPP_DEFAULT_DISPATCHER.vkGetPhysicalDeviceProperties2(device, &properties2);
+                const VkPhysicalDeviceProperties& properties = properties2.properties;
+                native.Properties = properties;
+
+                candidate.CandidateBackend = Backend::NVRHIVulkan;
+                candidate.Identity.Name = properties.deviceName;
+                candidate.Identity.StableId = FormatDeviceUuid(idProperties.deviceUUID);
+                candidate.Identity.DriverVersion =
+                    "raw Vulkan driverVersion " + std::to_string(properties.driverVersion);
+                candidate.Identity.VendorId = properties.vendorID;
+                candidate.Identity.DeviceId = properties.deviceID;
+                candidate.Identity.Type = ConvertAdapterType(properties.deviceType);
+                candidate.ApiMajor = VK_API_VERSION_MAJOR(properties.apiVersion);
+                candidate.ApiMinor = VK_API_VERSION_MINOR(properties.apiVersion);
+                candidate.MaximumTextureDimension2D = properties.limits.maxImageDimension2D;
+                candidate.PerformanceScore = static_cast<std::int64_t>(properties.limits.maxImageDimension2D);
+                if (properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU)
+                    candidate.PerformanceScore += 1000000;
+                else if (properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU)
+                    candidate.PerformanceScore += 500000;
+
+                VkPhysicalDeviceMemoryProperties memoryProperties {};
+                VULKAN_HPP_DEFAULT_DISPATCHER.vkGetPhysicalDeviceMemoryProperties(device, &memoryProperties);
+                for (u32 index = 0; index < memoryProperties.memoryHeapCount; ++index)
+                {
+                    if ((memoryProperties.memoryHeaps[index].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) != 0)
+                        candidate.Identity.DedicatedVideoMemoryBytes += memoryProperties.memoryHeaps[index].size;
+                }
+
+                candidate.Formats.push_back(QueryFormatCapability(
+                    device, Format::R8G8B8A8Unorm, VK_FORMAT_R8G8B8A8_UNORM));
+                candidate.Formats.push_back(QueryFormatCapability(
+                    device, Format::D32Float, VK_FORMAT_D32_SFLOAT));
 
                 u32 extensionCount = 0;
-                VULKAN_HPP_DEFAULT_DISPATCHER.vkEnumerateDeviceExtensionProperties(device, nullptr, &extensionCount, nullptr);
+                VkResult extensionResult = VULKAN_HPP_DEFAULT_DISPATCHER.vkEnumerateDeviceExtensionProperties(
+                    device, nullptr, &extensionCount, nullptr);
                 std::vector<VkExtensionProperties> extensions(extensionCount);
-                VULKAN_HPP_DEFAULT_DISPATCHER.vkEnumerateDeviceExtensionProperties(device, nullptr, &extensionCount, extensions.data());
-                if (!HasExtension(extensions, VK_KHR_SWAPCHAIN_EXTENSION_NAME))
-                    continue;
+                if (extensionResult == VK_SUCCESS)
+                    extensionResult = VULKAN_HPP_DEFAULT_DISPATCHER.vkEnumerateDeviceExtensionProperties(
+                        device, nullptr, &extensionCount, extensions.data());
+                const bool hasSwapchain = extensionResult == VK_SUCCESS
+                    && HasExtension(extensions, VK_KHR_SWAPCHAIN_EXTENSION_NAME);
+                if (extensionResult != VK_SUCCESS)
+                    native.QueryNotes.emplace_back("device-extension enumeration failed");
+                else if (!hasSwapchain)
+                    native.QueryNotes.emplace_back("VK_KHR_swapchain is unavailable");
+                native.PortabilitySubset = HasExtension(extensions, kPortabilitySubsetExtensionName);
 
                 u32 surfaceFormatCount = 0;
                 u32 presentModeCount = 0;
-                VULKAN_HPP_DEFAULT_DISPATCHER.vkGetPhysicalDeviceSurfaceFormatsKHR(
+                const VkResult surfaceFormatResult = VULKAN_HPP_DEFAULT_DISPATCHER.vkGetPhysicalDeviceSurfaceFormatsKHR(
                     device, m_Surface, &surfaceFormatCount, nullptr);
-                VULKAN_HPP_DEFAULT_DISPATCHER.vkGetPhysicalDeviceSurfacePresentModesKHR(
+                const VkResult presentModeResult = VULKAN_HPP_DEFAULT_DISPATCHER.vkGetPhysicalDeviceSurfacePresentModesKHR(
                     device, m_Surface, &presentModeCount, nullptr);
-                if (surfaceFormatCount == 0 || presentModeCount == 0)
-                    continue;
+                if (surfaceFormatResult != VK_SUCCESS || surfaceFormatCount == 0)
+                    native.QueryNotes.emplace_back("no usable surface format was reported");
+                if (presentModeResult != VK_SUCCESS || presentModeCount == 0)
+                    native.QueryNotes.emplace_back("no usable presentation mode was reported");
 
                 u32 queueFamilyCount = 0;
                 VULKAN_HPP_DEFAULT_DISPATCHER.vkGetPhysicalDeviceQueueFamilyProperties(device, &queueFamilyCount, nullptr);
                 std::vector<VkQueueFamilyProperties> queueFamilies(queueFamilyCount);
                 VULKAN_HPP_DEFAULT_DISPATCHER.vkGetPhysicalDeviceQueueFamilyProperties(device, &queueFamilyCount, queueFamilies.data());
 
-                u32 queueFamily = std::numeric_limits<u32>::max();
                 for (u32 index = 0; index < queueFamilyCount; ++index)
                 {
                     VkBool32 supportsPresent = VK_FALSE;
-                    VULKAN_HPP_DEFAULT_DISPATCHER.vkGetPhysicalDeviceSurfaceSupportKHR(device, index, m_Surface, &supportsPresent);
-                    if ((queueFamilies[index].queueFlags & VK_QUEUE_GRAPHICS_BIT) != 0 && supportsPresent)
+                    const VkResult supportResult = VULKAN_HPP_DEFAULT_DISPATCHER.vkGetPhysicalDeviceSurfaceSupportKHR(
+                        device, index, m_Surface, &supportsPresent);
+                    const VkQueueFlags flags = queueFamilies[index].queueFlags;
+                    if ((flags & VK_QUEUE_COMPUTE_BIT) != 0 && (flags & VK_QUEUE_GRAPHICS_BIT) == 0)
+                        candidate.Queues.DedicatedCompute = true;
+                    if ((flags & VK_QUEUE_TRANSFER_BIT) != 0
+                        && (flags & (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT)) == 0)
+                        candidate.Queues.DedicatedCopy = true;
+                    if (native.GraphicsQueueFamily == std::numeric_limits<u32>::max()
+                        && supportResult == VK_SUCCESS
+                        && (flags & VK_QUEUE_GRAPHICS_BIT) != 0
+                        && supportsPresent)
                     {
-                        queueFamily = index;
-                        break;
+                        native.GraphicsQueueFamily = index;
+                        native.GraphicsQueueProperties = queueFamilies[index];
                     }
                 }
-                if (queueFamily == std::numeric_limits<u32>::max())
-                    continue;
+                const bool hasCombinedGraphicsPresent =
+                    native.GraphicsQueueFamily != std::numeric_limits<u32>::max();
+                candidate.Queues.Graphics = hasCombinedGraphicsPresent;
+                candidate.Queues.Present = hasCombinedGraphicsPresent
+                    && hasSwapchain
+                    && surfaceFormatResult == VK_SUCCESS && surfaceFormatCount > 0
+                    && presentModeResult == VK_SUCCESS && presentModeCount > 0;
+                // This bootstrap admits one unified queue. The evaluator records the
+                // required compute/copy classes as explicit graphics-queue fallbacks.
+                candidate.Queues.Compute = false;
+                candidate.Queues.Copy = false;
+                if (!hasCombinedGraphicsPresent)
+                    native.QueryNotes.emplace_back("no queue family supports both graphics and presentation");
 
                 VkPhysicalDeviceVulkan12Features vulkan12Features {};
                 vulkan12Features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
@@ -408,36 +542,86 @@ namespace Engine::RHI
                 features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
                 features.pNext = &vulkan12Features;
                 VULKAN_HPP_DEFAULT_DISPATCHER.vkGetPhysicalDeviceFeatures2(device, &features);
-                if (!vulkan12Features.timelineSemaphore)
-                    continue;
+                candidate.TimelineSynchronization = vulkan12Features.timelineSemaphore == VK_TRUE;
+                native.BufferDeviceAddress = vulkan12Features.bufferDeviceAddress == VK_TRUE;
 
-                int score = properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU ? 1000 : 0;
-                score += static_cast<int>(properties.limits.maxImageDimension2D);
-                if (score > bestScore)
-                {
-                    bestScore = score;
-                    m_PhysicalDevice = device;
-                    m_GraphicsQueueFamily = queueFamily;
-                    m_SelectedProperties = properties;
-                    m_SelectedQueueProperties = queueFamilies[queueFamily];
-                    m_TimelineSemaphoreAdvertised = vulkan12Features.timelineSemaphore == VK_TRUE;
-                    m_BufferDeviceAddressAdvertised = vulkan12Features.bufferDeviceAddress == VK_TRUE;
-                    m_BufferDeviceAddressEnabled = false;
-                    m_DeviceExtensions = { VK_KHR_SWAPCHAIN_EXTENSION_NAME };
-                    m_PortabilitySubsetEnabled = false;
-                    if (HasExtension(extensions, kPortabilitySubsetExtensionName))
-                    {
-                        m_DeviceExtensions.push_back(kPortabilitySubsetExtensionName);
-                        m_PortabilitySubsetEnabled = true;
-                    }
-                }
+                candidates.push_back(std::move(candidate));
+                nativeCandidates.push_back(std::move(native));
             }
 
-            if (!m_PhysicalDevice)
+            const AdapterSelectionResult selection = EvaluateAdapterCandidates(
+                profile,
+                candidates,
+                description.PreferredAdapterName,
+                description.RequirePreferredAdapter);
+            m_AdapterCandidates = candidates;
+            m_AdapterSelection = selection;
+            for (const AdapterEvaluation& evaluation : selection.Evaluations)
             {
-                Log::Error("No Vulkan 1.3 device supports graphics presentation and timeline semaphores");
+                const AdapterCandidate& candidate = candidates[evaluation.CandidateIndex];
+                const NativeCandidate& native = nativeCandidates[evaluation.CandidateIndex];
+                for (const std::string& note : native.QueryNotes)
+                    Log::Warn("Vulkan adapter '", candidate.Identity.Name, "': ", note);
+                if (evaluation.Accepted)
+                    Log::Info("Vulkan adapter accepted: ", candidate.Identity.Name,
+                        " [", candidate.Identity.StableId, "] (score ", evaluation.Score, ")");
+                else
+                {
+                    for (const std::string& reason : evaluation.RejectionReasons)
+                        Log::Warn("Vulkan adapter rejected: ", candidate.Identity.Name,
+                            " [", candidate.Identity.StableId, "] - ", reason);
+                }
+                for (const std::string& fallback : evaluation.Fallbacks)
+                    Log::Info("Vulkan adapter fallback: ", candidate.Identity.Name, " - ", fallback);
+            }
+
+            if (!selection.HasSelection())
+            {
+                Log::Error("No Vulkan adapter satisfies capability profile '", profile.Name, "'");
                 return false;
             }
+
+            const AdapterCandidate& selectedCandidate = candidates[selection.SelectedIndex];
+            const NativeCandidate& selectedNative = nativeCandidates[selection.SelectedIndex];
+            if (description.RequirePreferredAdapter
+                && (description.PreferredAdapterName.empty()
+                    || (selectedCandidate.Identity.Name != description.PreferredAdapterName
+                        && selectedCandidate.Identity.StableId != description.PreferredAdapterName)))
+            {
+                Log::Error("Required Vulkan adapter was not selected: '", description.PreferredAdapterName, "'");
+                return false;
+            }
+
+            m_PhysicalDevice = selectedNative.Device;
+            m_GraphicsQueueFamily = selectedNative.GraphicsQueueFamily;
+            m_SelectedProperties = selectedNative.Properties;
+            m_SelectedQueueProperties = selectedNative.GraphicsQueueProperties;
+            m_SelectedIdentity = selectedCandidate.Identity;
+            m_TimelineSemaphoreAdvertised = selectedCandidate.TimelineSynchronization;
+            m_BufferDeviceAddressAdvertised = selectedNative.BufferDeviceAddress;
+            m_BufferDeviceAddressEnabled = false;
+            m_SelectedFormats = selectedCandidate.Formats;
+            m_SelectionFallbacks = selection.Evaluations[selection.SelectedIndex].Fallbacks;
+            if (selectedCandidate.Queues.DedicatedCompute)
+                m_SelectionFallbacks.emplace_back("A dedicated compute queue is advertised but not enabled by the bootstrap profile");
+            if (selectedCandidate.Queues.DedicatedCopy)
+                m_SelectionFallbacks.emplace_back("A dedicated copy queue is advertised but not enabled by the bootstrap profile");
+            if (!description.PreferredAdapterName.empty()
+                && selectedCandidate.Identity.Name != description.PreferredAdapterName
+                && selectedCandidate.Identity.StableId != description.PreferredAdapterName)
+            {
+                m_SelectionFallbacks.emplace_back(
+                    "Preferred adapter '" + description.PreferredAdapterName
+                    + "' was unavailable; selected '" + selectedCandidate.Identity.Name + "'");
+            }
+
+            m_DeviceExtensions = { VK_KHR_SWAPCHAIN_EXTENSION_NAME };
+            m_PortabilitySubsetEnabled = selectedNative.PortabilitySubset;
+            if (m_PortabilitySubsetEnabled)
+                m_DeviceExtensions.push_back(kPortabilitySubsetExtensionName);
+
+            Log::Info("Selected Vulkan adapter: ", selectedCandidate.Identity.Name,
+                " [", selectedCandidate.Identity.StableId, "] for profile '", profile.Name, "'");
             if (m_PortabilitySubsetEnabled)
                 Log::Info("Vulkan portability subset device extension enabled");
             return true;
@@ -567,11 +751,16 @@ namespace Engine::RHI
         u32 m_GraphicsQueueFamily = 0;
         VkPhysicalDeviceProperties m_SelectedProperties {};
         VkQueueFamilyProperties m_SelectedQueueProperties {};
+        AdapterIdentity m_SelectedIdentity;
         bool m_TimelineSemaphoreAdvertised = false;
         bool m_BufferDeviceAddressAdvertised = false;
         bool m_BufferDeviceAddressEnabled = false;
         bool m_PortabilityEnumerationEnabled = false;
         bool m_PortabilitySubsetEnabled = false;
+        std::vector<FormatCapability> m_SelectedFormats;
+        std::vector<std::string> m_SelectionFallbacks;
+        std::vector<AdapterCandidate> m_AdapterCandidates;
+        AdapterSelectionResult m_AdapterSelection;
         std::vector<const char*> m_InstanceExtensions;
         std::vector<const char*> m_DeviceExtensions;
         NVRHIVulkanMessageCallback m_MessageCallback;
@@ -593,9 +782,12 @@ namespace Engine::RHI
         Shutdown();
     }
 
-    bool NVRHIVulkanContext::Initialize(void* nativeWindow, bool enableValidation, NVRHIAdapterInfo& adapterInfo)
+    bool NVRHIVulkanContext::Initialize(
+        void* nativeWindow,
+        const DeviceDescription& description,
+        NVRHIAdapterInfo& adapterInfo)
     {
-        return m_Impl->Initialize(nativeWindow, enableValidation, adapterInfo);
+        return m_Impl->Initialize(nativeWindow, description, adapterInfo);
     }
 
     void NVRHIVulkanContext::Shutdown()
