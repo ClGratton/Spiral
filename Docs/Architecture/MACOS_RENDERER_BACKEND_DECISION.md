@@ -95,7 +95,7 @@ The strict [hosted macOS 15 Intel run](https://github.com/ClGratton/Spiral/actio
 
 The later documentation-only [CI run 29209877228](https://github.com/ClGratton/Spiral/actions/runs/29209877228) and its failed-job retry both queried the same feature matrix, created the NVRHI device, initialized presentation, and recreated the swapchain through generation 4. Both then failed because the four-frame smoke deadline expired before a successful post-resize present completed.
 
-No engine source changed between the earlier passing head and this documentation-only commit, so this is evidence of a repeatability/timing weakness in the smoke contract rather than evidence that the portability-feature query changed. The roadmap keeps the narrow functional presentation proof checked because completed runs demonstrated it, and adds a separate unchecked item to make the hosted resize/post-resize-present smoke reliable across repeated runs. Current head CI is not fully green until that follow-up is fixed and verified.
+No engine source changed between the earlier passing head and this documentation-only commit, so this is evidence of a repeatability/timing weakness in the smoke contract rather than evidence that the portability-feature query changed. The subsequent [final-head CI run 29210246689](https://github.com/ClGratton/Spiral/actions/runs/29210246689) passed all jobs, including the same macOS smoke, confirming that the failure is intermittent rather than permanent. The roadmap keeps the narrow functional presentation proof checked because completed runs demonstrated it, and adds a separate unchecked item to make the hosted resize/post-resize-present smoke reliable across repeated runs.
 
 Impact attribution for the unsupported fields:
 

@@ -39,7 +39,7 @@ This pass read every workspace-authored Markdown file and compared the roadmap c
 - The Phase 1 render-graph declaration compiler is an unused scaffold with no focused tests. It remains documented in current-state prose but is no longer a checked runtime behavior.
 - The Phase 1 timestamp query pool and command operations are stubs/no-ops, and renderer GPU status remains pending. They remain documented in current-state prose and the real D3D12 timestamp item stays unchecked in Phase 3.
 - The experimental x86_64 macOS presentation item remains correctly checked because strict hosted CI completed device/NVRHI creation, swapchain presentation, resize/recreation, and a successful post-resize present. Apple Silicon, scene rendering, packaging, profiling, and production qualification remain unchecked.
-- A later documentation-only head run and its retry reproduced a hosted timing failure after swapchain recreation but before a successful post-resize present within the four-frame smoke window. The functional proof remains checked, while repeatable hosted verification is an adjacent unchecked Phase 3 reliability item and current head CI is recorded as not fully green.
+- A later documentation-only run and its retry reproduced a hosted timing failure after swapchain recreation but before a successful post-resize present within the four-frame smoke window; the following final-head run passed. The functional proof remains checked, while this demonstrated intermittency is an adjacent unchecked Phase 3 reliability item.
 
 ### Missing Prerequisites Added To The Roadmap
 
