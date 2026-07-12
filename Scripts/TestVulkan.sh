@@ -93,6 +93,7 @@ if [[ "$SYSTEM_DIR" == "macosx" ]]; then
     REQUIRED_MARKERS+=(
         "Vulkan portability enumeration enabled"
         "Vulkan portability subset device extension enabled"
+        "Vulkan portability subset unsupported features:"
     )
 fi
 

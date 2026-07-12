@@ -5,6 +5,7 @@ Date: 2026-07-06
 
 Low-level implementation details live in [LOW_LEVEL_ARCHITECTURE.md](LOW_LEVEL_ARCHITECTURE.md).
 Renderer implementation contracts live in [RENDERER_IMPLEMENTATION_CONTRACTS.md](RENDERER_IMPLEMENTATION_CONTRACTS.md).
+Frame/render graph construction, execution, synchronization, and transient-resource prerequisites live in [RENDER_GRAPH_ARCHITECTURE.md](RENDER_GRAPH_ARCHITECTURE.md).
 RHI and lighting decisions live in [RHI_AND_LIGHTING_DECISIONS.md](RHI_AND_LIGHTING_DECISIONS.md).
 The first macOS renderer decision lives in [MACOS_RENDERER_BACKEND_DECISION.md](MACOS_RENDERER_BACKEND_DECISION.md).
 Probe lighting, Detroit: Become Human lessons, screen-space GI/AO, and static/dynamic GI consistency live in [PROBE_LIGHTING_AND_GI_DECISIONS.md](PROBE_LIGHTING_AND_GI_DECISIONS.md).

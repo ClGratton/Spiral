@@ -66,6 +66,7 @@ Immediate gap:
 - The viewport prototype shader, graphics pipeline, root constant-buffer binding, vertex/index binding, and indexed draw now run through D3D12 RHI shader/pipeline/command-list APIs; render-target descriptor binding, texture copy commands, and BMP writing remain in the D3D12 presentation/viewport bridge.
 - The editor has an engine-owned Vulkan 1.3 device, window surface, FIFO swapchain, native ImGui presentation path, resize handling, and strict render smoke on Windows through both MSVC and MinGW plus Linux X11 through WSLg/Mesa llvmpipe. Scene viewport rendering remains D3D12-only.
 - The first macOS backend decision is MoltenVK through the existing NVRHI Vulkan boundary. Hosted macOS 15 Intel CI verifies portability enumeration, NVRHI wrapping on the Apple Paravirtual device, native ImGui presentation, swapchain recreation, and successful post-resize present. The hosted smoke disables MoltenVK Metal argument buffers and `MTLHeap`; Apple Silicon and production scene-renderer qualification remain pending.
+- The current render-graph foundation compiles pass/resource declarations in registration order into first/last-use intervals and abstract state transitions. It does not yet resolve dependency order, execute passes, bind physical resources, record RHI barriers, or synchronize queues; the full frame/render graph is now an explicit Phase 3 prerequisite for transient reuse and later multi-pass rendering.
 - The editor can serialize the active sample scene to a versioned `.spiral` scene file and reload-validate it through the same scene API.
 - Scenes now expose a small entity/component authoring facade with scene-local entity IDs, names, transforms, optional cameras, and save/load coverage.
 - The editor scene hierarchy lists actual scene entities rather than hard-coded placeholder rows.
@@ -190,6 +191,7 @@ Required:
 - [x] D3D12 flip-model swapchain lifecycle and native graphics/compute/copy queues.
 - [x] RHI command-list allocation, validated recording lifecycle, and synchronous queue submission.
 - [x] GPU buffer resource-upload path with copy-queue synchronization and synchronous fence ownership.
+- [ ] Frame/render graph construction: pass registration with declared resource reads/writes, automatic resource lifetime tracking, dependency resolution and pass ordering, and barrier/queue-transition insertion derived from the graph.
 - [ ] Transient resource allocation and reuse from render-graph lifetimes.
 - [ ] Presentation pacing and measurement: DXGI waitable swapchain profiles, capability-gated Vulkan present timing, and separate app/present/display telemetry.
 - [x] HLSL shader compilation pipeline through the D3D12 RHI; Slang remains a future portability option.

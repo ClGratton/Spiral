@@ -1,5 +1,9 @@
 #include "Engine/RHI/NVRHI/NVRHIVulkanContext.h"
 
+#if defined(GE_HAS_NVRHI_VULKAN)
+    #define VK_ENABLE_BETA_EXTENSIONS
+#endif
+
 #include "Engine/Core/Log.h"
 #include "Engine/RHI/NVRHI/VulkanDispatch.h"
 
@@ -7,9 +11,11 @@
     #include <GLFW/glfw3.h>
     #include <nvrhi/validation.h>
     #include <nvrhi/vulkan.h>
+    #include <vulkan/vulkan_beta.h>
 
     #include <cstring>
     #include <limits>
+    #include <sstream>
     #include <string>
     #include <vector>
 
@@ -165,6 +171,7 @@ namespace Engine::RHI
 
             if (!SelectPhysicalDevice())
                 return false;
+            LogPortabilitySubsetFeatures();
             if (!CreateLogicalDevice())
                 return false;
 
@@ -377,6 +384,54 @@ namespace Engine::RHI
             VULKAN_HPP_DEFAULT_DISPATCHER.init(m_Instance, m_GetInstanceProcAddr, m_Device);
             VULKAN_HPP_DEFAULT_DISPATCHER.vkGetDeviceQueue(m_Device, m_GraphicsQueueFamily, 0, &m_GraphicsQueue);
             return m_GraphicsQueue != VK_NULL_HANDLE;
+        }
+
+        void LogPortabilitySubsetFeatures() const
+        {
+            if (!m_PortabilitySubsetEnabled)
+                return;
+
+            VkPhysicalDevicePortabilitySubsetFeaturesKHR portabilityFeatures {};
+            portabilityFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PORTABILITY_SUBSET_FEATURES_KHR;
+            VkPhysicalDeviceFeatures2 features {};
+            features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+            features.pNext = &portabilityFeatures;
+            VULKAN_HPP_DEFAULT_DISPATCHER.vkGetPhysicalDeviceFeatures2(m_PhysicalDevice, &features);
+
+            struct NamedFeature
+            {
+                const char* Name;
+                VkBool32 Supported;
+            };
+            const NamedFeature namedFeatures[] = {
+                { "constantAlphaColorBlendFactors", portabilityFeatures.constantAlphaColorBlendFactors },
+                { "events", portabilityFeatures.events },
+                { "imageViewFormatReinterpretation", portabilityFeatures.imageViewFormatReinterpretation },
+                { "imageViewFormatSwizzle", portabilityFeatures.imageViewFormatSwizzle },
+                { "imageView2DOn3DImage", portabilityFeatures.imageView2DOn3DImage },
+                { "multisampleArrayImage", portabilityFeatures.multisampleArrayImage },
+                { "mutableComparisonSamplers", portabilityFeatures.mutableComparisonSamplers },
+                { "pointPolygons", portabilityFeatures.pointPolygons },
+                { "samplerMipLodBias", portabilityFeatures.samplerMipLodBias },
+                { "separateStencilMaskRef", portabilityFeatures.separateStencilMaskRef },
+                { "shaderSampleRateInterpolationFunctions", portabilityFeatures.shaderSampleRateInterpolationFunctions },
+                { "tessellationIsolines", portabilityFeatures.tessellationIsolines },
+                { "tessellationPointMode", portabilityFeatures.tessellationPointMode },
+                { "triangleFans", portabilityFeatures.triangleFans },
+                { "vertexAttributeAccessBeyondStride", portabilityFeatures.vertexAttributeAccessBeyondStride }
+            };
+
+            std::ostringstream stream;
+            bool hasUnsupportedFeature = false;
+            for (const NamedFeature& feature : namedFeatures)
+            {
+                if (feature.Supported)
+                    continue;
+                stream << (hasUnsupportedFeature ? ", " : "") << feature.Name;
+                hasUnsupportedFeature = true;
+            }
+            Log::Info("Vulkan portability subset unsupported features: ",
+                hasUnsupportedFeature ? stream.str() : std::string("none"));
         }
 
         bool CreateNVRHIDevice(bool enableValidation)
