@@ -27,6 +27,14 @@ Before changing `[ ]` to `[x]`:
 
 If only part is complete, rewrite it as two lines. The narrow completed behavior gets `[x]`; the remaining behavior stays `[ ]`.
 
+## Batched Roadmap Work
+
+Agents may integrate up to three small roadmap slices before a shared build and CI run when doing so avoids repeating an expensive build. A valid batch preserves roadmap order: the first unchecked item is included, every additional slice is immediately eligible, and no selected slice depends on unfinished work inside or before the batch.
+
+Batch completion is evaluated per checkbox, not per build. Each slice must have distinct implementation ownership, focused behavior evidence, accurate current-state wording, and platform/backend scope. One passing build cannot check three items by itself. If only part of a batch meets its gate, check only that part and leave precise follow-up wording for the rest.
+
+The primary agent must record why the items were safe to batch, prevent overlapping edits, reconcile the integrated result, and run the shared regression suite. The detailed agent and build coordination contract lives in [../AGENTS.md](../AGENTS.md); verification selection lives in [VERIFICATION.md](VERIFICATION.md).
+
 ## Review Rule
 
 Code review must treat an unsupported checkmark as a correctness defect. Fix the wording or implementation before merge. CI validates obvious status-language violations, while reviewers remain responsible for whether the evidence actually supports the claim.

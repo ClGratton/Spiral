@@ -1,7 +1,7 @@
 # Verification Guide
 
 Status: Living contract
-Date: 2026-07-12
+Date: 2026-07-13
 
 Verification must exercise the behavior claimed by the change. Compilation proves build compatibility; it does not prove a runtime or editor workflow.
 
@@ -37,6 +37,8 @@ if ($Broken.Count) { $Broken; throw 'Broken Markdown links found.' }
 ```
 
 ## Build And Contract Tests
+
+When up to three independent roadmap slices are intentionally batched, do not launch overlapping full builds against the same output tree. Perform cheap slice-specific checks during implementation, integrate and review all diffs, then run the applicable build matrix once against the combined state. After that shared build, run each slice's focused behavior test separately so a passing compile or unrelated smoke cannot mask an incomplete item. Push the integrated batch once and monitor the complete CI run; if it fails, identify the responsible slice before changing roadmap status.
 
 Windows/MSVC:
 
