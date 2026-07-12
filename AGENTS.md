@@ -1,30 +1,98 @@
 # Workspace Agent Instructions
 
+These instructions are the persistent operating contract for any AI or human agent working in this repository. Do not rely on chat memory, screenshots, or another agent's summary when repository evidence is available.
+
+## Start Here
+
+Before roadmap, architecture, or implementation work:
+
+1. Read this file.
+2. Read [PLAN.md](PLAN.md) for current state and execution order.
+3. Read [Docs/README.md](Docs/README.md) for the complete documentation catalog, authority rules, and update responsibilities.
+4. Read [Docs/ROADMAP_GOVERNANCE.md](Docs/ROADMAP_GOVERNANCE.md) before changing roadmap wording or checkboxes.
+5. Read [Docs/VERIFICATION.md](Docs/VERIFICATION.md) before claiming behavior is complete.
+6. Read the task-relevant architecture contracts linked by [Docs/Architecture/README.md](Docs/Architecture/README.md) and the nearest `OWNERSHIP.md` before editing a subsystem.
+
+For a broad architecture audit, read every document listed in `Docs/README.md`. For a bounded implementation, read the mandatory set above plus every contract named for that subsystem; do not substitute a stale “first implementation order” in a research document for `PLAN.md`.
+
+## Documentation Authority And Conflicts
+
+- `PLAN.md` alone owns current implementation state, roadmap order, and completion checkboxes.
+- `PRODUCT.md` owns product goals and user-facing principles. `DESIGN.md` owns editor visual and interaction rules.
+- `Docs/Architecture/*` owns technical decisions and implementation contracts. ADRs record choices and their consequences; research/reference documents do not override accepted contracts.
+- `Docs/DEPENDENCIES.md` owns admitted dependency versions, licenses, and integration boundaries.
+- `OWNERSHIP.md` files own directory/module scope and forbidden dependencies.
+- Source code, tests, runtime captures, and CI are the evidence of actual behavior. When prose disagrees with evidence, do not rationalize the mismatch: report it and update the relevant current-state or contract document in the same scoped change.
+- A user instruction can change project direction. If that change is intended to persist, update the repository documents that future agents will read; do not leave the decision only in chat.
+- If two authoritative documents conflict and the intended resolution cannot be established from code, tests, roadmap order, or an accepted ADR, stop and flag the decision instead of silently choosing one.
+
+## Workspace Scope Map
+
+| Path | Scope |
+| --- | --- |
+| `Engine/src/Engine/Core` | Application lifecycle, layers, windows, logging, assertions, command-line handling, and lightweight utilities. Must not depend on renderer, scene, assets, scripting, or editor code. |
+| `Engine/src/Engine/RHI` | Backend-neutral GPU device/resource/command contracts and NVRHI-backed implementations. No scene, material, or editor policy. |
+| `Engine/src/Engine/RenderGraph` | Pass/resource declarations, dependency compilation, lifetime/state planning, execution scheduling, and transient-resource policy as those stages are implemented. |
+| `Engine/src/Engine/Renderer` | High-level rendering, presentation bridges, shader management, scene rendering, and renderer diagnostics. Depends on RHI/render graph; does not own gameplay entities. |
+| `Engine/src/Engine/Scene` | Entity/component authoring facade, scene data, serialization, cameras, and future runtime extraction. No editor panels or backend-native GPU types. |
+| `Engine/src/Engine/Assets` | Asset identity, import, metadata, cooked artifacts, dependency tracking, reimport, and streaming inputs. It does not render. |
+| `Engine/src/Engine/Jobs` | Worker scheduling and task dependencies. It does not own renderer, scene, asset, or editor policy. |
+| `Engine/src/Engine/Platform` | GLFW/headless and future OS services hidden behind engine interfaces. |
+| `Engine/src/Engine/UI` | Engine/editor tool UI integration such as ImGui. Native graphics access is limited to documented UI/presentation bridges. |
+| `Engine/src/Engine/Diagnostics` | Crash reporting, profiling contracts, logs, captures, and diagnostic data surfaces. |
+| `Engine/src/Engine/Automation` | Deterministic workflow contracts and future agent/editor automation through normal engine APIs. |
+| `Editor` | Panels, inspectors, viewports, authoring workflows, settings UI, and editor orchestration. It is a client of Engine. |
+| `Sandbox` | Public engine API proving ground; no editor-private access. |
+| `Tests` | Deterministic contract and integration tests. Tests may consume public/test-facing APIs but must not become production behavior. |
+| `Scripts` | Reproducible setup, generation, build, style, smoke, and validation entry points. |
+| `.github/workflows` | Hosted verification matching the scripts; do not invent CI-only behavior when a reusable script is practical. |
+| `Vendor` | Pinned third-party source. Do not edit casually or admit a dependency without updating `Docs/DEPENDENCIES.md`. |
+
+More detailed engine/editor/sandbox boundaries live in their nearest `OWNERSHIP.md`. When a new top-level module or materially different responsibility is added, update this table, `Docs/README.md`, and the nearest ownership document in the same change.
+
 ## Verification
 
+- Follow [Docs/VERIFICATION.md](Docs/VERIFICATION.md) and use the smallest test set that exercises the changed behavior plus proportionate regression coverage.
 - When a completed feature can be exercised locally, test the new behavior itself rather than relying only on compilation.
 - For editor-facing changes, run the editor and inspect a screenshot when practical. Use an existing automated smoke test when it covers the interaction; otherwise add focused coverage that does.
-- Report any verification that cannot be performed, together with the reason.
+- For platform/backend claims, run that backend. If local hardware is unavailable and the repository has matching hosted CI, push the scoped change and use the completed job as evidence.
+- Agent reports, source inspection, successful compilation, and a matching log marker are not substitutes for the required runtime behavior.
+- Report verification that could not be performed and the reason.
 
 ## Roadmap Integrity
 
-- In `PLAN.md`, `[x]` means the described behavior is implemented, integrated into its real workflow, and verified. Compilation alone is not enough for a runtime or editor-facing feature.
-- Never check an item whose delivered artifact is only a stub, placeholder, skeleton, plan, scaffold, or interface without its claimed behavior. Split partial work into a precisely worded completed item and an unchecked follow-up.
-- Before changing a roadmap checkbox, update the current-state prose, add or identify focused verification, run `Scripts/CheckCodeStyle`, and confirm the checked wording does not overstate platform or backend coverage.
-- Phase completion means its exit criteria are demonstrably met. A phase may have useful checked foundations without being complete.
+- In `PLAN.md`, `[x]` means the exact behavior written on that line is implemented, integrated into its real workflow, and verified. Compilation alone is not enough for a runtime or editor-facing feature.
+- Never check an item whose delivered artifact is only a stub, placeholder, skeleton, plan, scaffold, interface, or unused implementation. Put foundations in current-state prose and keep the behavioral item unchecked.
+- Before changing a roadmap checkbox, update current-state prose, add or identify focused verification, run `Scripts/CheckCodeStyle`, and confirm the checked wording does not overstate platform, backend, device, or workflow coverage.
+- Phase completion means every required item and exit criterion is demonstrably met. A phase may have useful checked foundations without being complete.
+- Do not reorder unrelated roadmap items silently. Record new prerequisites immediately before their consumers and explain cross-phase dependencies in the relevant architecture contract.
 
 ## Agentic Workflow
 
-- For requests to continue the roadmap, read all workspace-authored Markdown guidance, inspect the first unchecked `PLAN.md` item in order, and implement that item rather than substituting an invented slice. If the item must be split for honest platform or verification scope, preserve the original intent with a precisely worded checked result and an adjacent unchecked remainder.
-- Use parallel agents when the user asks for agentic work and the task has independent bounded concerns. Typical renderer assignments are architecture/backend audit, editor/runtime integration audit, and verification/roadmap audit. The primary agent owns the implementation, reconciles findings, prevents overlapping edits, and remains responsible for the final result.
-- Prefer GPT-5.6-Terra for agentic engine work when model choice is available: it retains the long context and current multi-agent workflow while reducing cost relative to the frontier model. Use Luna only for bounded, low-risk, mechanical work; do not use it as the lead for renderer architecture, cross-platform backend work, roadmap governance, or broad refactors. Use the frontier model when Terra cannot safely carry the complexity.
-- Agents may accelerate analysis and verification, but their reports are not evidence by themselves. Inspect the real call sites, run the behavior, and apply the Verification and Roadmap Integrity rules before claiming completion.
-- Roadmap-continuation requests authorize the agent to finish required hosted verification without asking again: stage the scoped workspace changes, create an appropriate commit on the current branch, push it to the existing configured remote, monitor the resulting CI jobs, and fix/retry failures that remain within the requested roadmap item. Do not use this authorization for unrelated changes, destructive history edits, releases, or deployment outside the repository's existing CI workflow.
+- For requests to continue the roadmap, inspect the first unchecked `PLAN.md` item in order and implement that item rather than substituting an invented slice. If it must be split for honest platform or verification scope, preserve the original intent with precise completed and remaining wording.
+- Evaluate architecture and roadmap integrity before implementation. If the next item depends on missing infrastructure, document and schedule the prerequisite first; do not build dependent behavior on an implicit subsystem.
+- Use parallel agents when the user asks for agentic work and the task has independent bounded concerns. Typical renderer assignments are architecture/backend audit, editor/runtime integration audit, and verification/roadmap audit. The primary agent owns edits, reconciles findings, prevents overlap, and remains responsible for evidence.
+- Prefer GPT-5.6-Terra for agentic engine work when model choice is available. Use Luna only for bounded, low-risk, mechanical work; do not use it as the lead for renderer architecture, cross-platform backend work, roadmap governance, or broad refactors. Use the frontier model when Terra cannot safely carry the complexity.
+- Agents may accelerate analysis and verification, but their reports are not evidence by themselves. Inspect real call sites and run the required behavior.
+- Roadmap-continuation requests authorize staging the scoped changes, committing on the current branch, pushing to the configured remote, monitoring resulting CI, and fixing/retrying in-scope failures. This does not authorize unrelated changes, destructive history edits, releases, or deployment outside existing CI.
+- Before handoff, ensure the working tree contains no accidental generated files and that every durable decision from the task is present in the appropriate Markdown file.
 
 ## Renderer Portability
 
 - Keep gameplay, scene, editor, and backend-neutral renderer code on `Engine::RHI`. NVRHI is the first implementation backend; it has not been replaced by raw Vulkan or raw D3D12.
-- Vulkan follows NVRHI's required ownership model: the engine/platform layer creates the native instance, surface, physical/logical device, and queues, then must wrap the device with `nvrhi::vulkan::createDevice` and use the returned `nvrhi::DeviceHandle` for renderer resources and command submission.
-- Native API use is allowed only in explicit backend escape hatches. Window-system swapchain/presentation and Dear ImGui backend integration may consume native handles because NVRHI does not own presentation and Dear ImGui has no NVRHI renderer backend. Do not let that bridge expand into scene rendering.
-- Backend selection and fallback happen before native device creation. A strict backend request must fail clearly when unavailable; an ordinary portable launch may select a supported fallback. Never silently report one backend while running another.
-- Preserve multi-device and multi-vendor behavior: enumerate adapters, select by required capabilities rather than vendor identity, avoid unconditional optional extensions, and keep platform/backend coverage accurately stated in `PLAN.md`.
+- Vulkan follows NVRHI's ownership model: the engine/platform layer creates the native instance, surface, physical/logical device, and queues, then wraps them with `nvrhi::vulkan::createDevice`. Renderer resources and command submission use the returned `nvrhi::DeviceHandle` behind `Engine::RHI`.
+- Native API use is limited to documented backend escape hatches. Window-system swapchain/presentation and Dear ImGui may consume native handles because NVRHI does not own presentation and Dear ImGui has no NVRHI renderer backend. Do not let those bridges expand into scene rendering.
+- Backend selection and fallback happen before native device creation. A strict request fails clearly when unavailable; an ordinary portable launch may select a documented fallback. Never report one backend while running another.
+- Preserve multi-device and multi-vendor behavior: enumerate adapters, select by required capabilities rather than vendor identity, distinguish supported from enabled features, avoid unconditional optional extensions, and record fallbacks and qualification coverage accurately.
+- The renderer capability and fallback contract lives in [Docs/Architecture/RENDERER_CAPABILITY_CONTRACT.md](Docs/Architecture/RENDERER_CAPABILITY_CONTRACT.md). The macOS/MoltenVK decision and measured limitations live in [Docs/Architecture/MACOS_RENDERER_BACKEND_DECISION.md](Docs/Architecture/MACOS_RENDERER_BACKEND_DECISION.md).
+
+## Documentation Maintenance
+
+- Update `PLAN.md` whenever current behavior, roadmap prerequisites, ordering, or verification status changes.
+- Update the relevant architecture contract/ADR when ownership, synchronization, data layout, fallback, platform, or technology decisions change.
+- Update `Docs/DEPENDENCIES.md` in the same change that admits, removes, upgrades, or changes the use of a dependency.
+- Update `PRODUCT.md`, `DESIGN.md`, or `Docs/EDITOR_UI_REVIEW.md` when user workflow or editor interaction rules change.
+- Update the nearest `OWNERSHIP.md`, this scope map, and `Docs/README.md` when files or responsibilities move across modules.
+- Add every new Markdown document to `Docs/README.md`; add architecture documents to `Docs/Architecture/README.md` as well.
+- Keep facts in one authoritative location and link to them elsewhere. Do not create competing copies of version numbers, platform status, completion claims, or execution order.
+- When an instruction in this file becomes incomplete because of a project change, update `AGENTS.md` in the same change. Future chats and other AI systems must be able to recover the workflow from the repository alone.

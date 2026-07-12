@@ -1,7 +1,7 @@
 # Architecture Coherence Audit
 
-Status: Draft v0.1
-Date: 2026-07-06
+Status: Living audit
+Date: 2026-07-12
 
 Purpose: audit the current engine decision set after reviewing the Fox Engine optimization video and cross-checking the existing engine documents for contradictions.
 
@@ -9,7 +9,7 @@ Post-audit research additions live in [MISSING_RESEARCH_AUDIT_2026.md](MISSING_R
 
 ## Short Verdict
 
-The architecture is coherent after the updates in this audit.
+The architectural direction remains coherent, but the 2026-07-12 integrity pass found missing execution prerequisites, ambiguous roadmap wording, and documentation-authority gaps. Those gaps are now explicit contracts or unchecked roadmap items; no engine behavior was implemented by the documentation pass.
 
 The core shape should remain:
 
@@ -28,7 +28,43 @@ C++ engine core
   + C# gameplay + visual graphs + DOTS-like data runtime
 ```
 
-No major system is currently fighting another major system.
+No major system is currently fighting another major system once the state/barrier authority and fallback contracts below are observed.
+
+## 2026-07-12 Integrity Pass
+
+This pass read every workspace-authored Markdown file and compared the roadmap claims with current source/test call sites.
+
+### Corrected Completion Claims
+
+- The Phase 1 render-graph declaration compiler is an unused scaffold with no focused tests. It remains documented in current-state prose but is no longer a checked runtime behavior.
+- The Phase 1 timestamp query pool and command operations are stubs/no-ops, and renderer GPU status remains pending. They remain documented in current-state prose and the real D3D12 timestamp item stays unchecked in Phase 3.
+- The experimental x86_64 macOS presentation item remains correctly checked because strict hosted CI completed device/NVRHI creation, swapchain presentation, resize/recreation, and a successful post-resize present. Apple Silicon, scene rendering, packaging, profiling, and production qualification remain unchecked.
+
+### Missing Prerequisites Added To The Roadmap
+
+| Gap | Why it is required |
+| --- | --- |
+| Render-graph execution/integration | Dependency/lifetime compilation alone cannot bind resources, execute callbacks, record barriers/commands, submit queues, retire frames, or drive the scene viewport. |
+| Renderer capability/qualification system | Platform names and advertised extensions cannot safely choose formats, features, queues, shader paths, or fallbacks across vendors/devices. |
+| Portable scene-shader path | Vulkan scene rendering cannot follow from a D3D12-only compiler; shared DXIL/SPIR-V outputs, reflection/layout validation, conventions, caching, and diagnostics are prerequisites. |
+| Scene render snapshot | The renderer needs immutable backend-neutral camera/mesh/material/light input rather than editor state or backend-native types. |
+| Descriptor/bindless model | Material, draw-cluster, texture, and structured-buffer tables require capacity, update, retirement, error-resource, writable-resource, and bounded-fallback rules. |
+| Virtual-geometry page format and streamer | Phase 7's streaming exit criterion requires deterministic cooked pages, dependency metadata, feedback, upload, eviction, GPU retirement, and coarse fallbacks. |
+| Baked-lighting base data/bake path | Time-keyed lighting cannot exist before a versioned single-time probe/lightmap artifact and preview/final bake or validated import path. |
+| Ray-tracing RHI contracts | BLAS/TLAS policy assumes acceleration-structure resources, build/update/compaction, ray pipeline/table binding, synchronization, capability reporting, and raster fallback. |
+
+### Ownership And Ordering Corrections
+
+- `PLAN.md` is now explicitly the only implementation-order authority. “First implementation order,” prototype lists, and proposed trees in research/reference documents do not override it.
+- Render-graph logical state/dependency policy is authoritative above `Engine::RHI`. A graph-owned command list uses either validated NVRHI automatic barriers or explicit graph-derived RHI barriers for its whole recording lifetime; it cannot mix both ambiguously.
+- Production macOS scene qualification is a late Phase 3 gate after the shared shader, Vulkan `Engine::RHI` scene, and render-graph paths. It is not implied by presentation bootstrap.
+- The Phase 13 guided project wizard now explicitly extends the basic Phase 2 project creator rather than duplicating it.
+- Phase 16 packaged-player verification and production crash reporting now explicitly extend Phase 0 build/smoke and local crash-file foundations.
+- Phase 12 animation/material graph compiler wording now states which Phase 10 animation and Phase 3/5 shader/material foundations it consumes.
+
+### Intentional Future Design Work
+
+The following areas are roadmapped but are not yet detailed enough to implement without a later design pass: shipping package/cooker format, Player packaging and clean-machine runtime dependencies, networking/replication, script/plugin/asset trust and sandboxing, save/API migration, marketplace packages, and contribution governance. They are not current Phase 3 blockers, but future agents must not infer designs from the phase titles alone.
 
 ## 2026 Research Addendum
 

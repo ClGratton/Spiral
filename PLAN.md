@@ -55,10 +55,10 @@ Immediate gap:
 - GMake/MinGW keeps OpenGL2 as its default editor fallback, while `--renderer-vulkan` selects the native Vulkan device/swapchain/ImGui path when a Vulkan 1.3 loader and device are available.
 - Crash/error reports are written to `output/crashes` for caught top-level exceptions, fatal signals, and Windows unhandled exceptions.
 - Code style is checked by `Scripts/CheckCodeStyle.ps1` / `.sh` and a GitHub Actions style job.
-- Render graph pass/resource declarations now compile into resource lifetime and barrier data.
+- Render graph pass/resource declarations compile into registration-order lifetime and abstract barrier data, but the scaffold is unused by the real renderer and has no focused tests; it is current-state inventory, not a completed roadmap behavior.
 - Editor camera and camera component scaffolding provide a shared `CameraView` for renderer code.
 - Shader source loading and hot-reload detection are centralized through `ShaderLibrary`.
-- GPU timestamp query contracts and renderer timing snapshots are stubbed; the D3D12 query heap resolve path is still pending.
+- GPU timestamp query contracts and renderer timing snapshots are stubbed/no-op; they are current-state inventory, not a completed roadmap behavior, and the D3D12 query heap recording/resolve path remains pending.
 - The first D3D12 viewport pass has resource debug names and capture markers for frame, viewport, ImGui, and capture readback scopes.
 - The D3D12 viewport prototype mesh creates vertex, index, and constant buffers through the RHI buffer API, uploads immutable vertex/index payloads through a staged copy-queue submission, and records its indexed draw through the D3D12 RHI command-list bridge.
 - The D3D12 viewport color and depth targets are allocated through the RHI texture API, with D3D12 descriptors still created by the presentation layer.
@@ -135,10 +135,10 @@ Required:
 - [x] Real RHI triangle/mesh draw pass.
 - [x] Camera component and editor camera.
 - [x] Disk-backed shader loading and D3D12 shader compilation pipeline.
-- [x] Render graph pass/resource declarations compile into lifetime and barrier data.
-- [x] GPU timestamp query contracts and renderer timing snapshots.
 - [x] Screenshot capture for render tests.
 - [x] Render smoke test scene and image validation script.
+
+Foundation inventory note: the unused render-graph declaration compiler and no-op timestamp/query interfaces are recorded in Current State, not checked here. Their executable, integrated, and verified behaviors are explicit unchecked Phase 3 items.
 
 Exit criteria:
 
@@ -185,27 +185,32 @@ Required:
 - [x] Native Linux X11 Vulkan editor presentation, resize, and post-resize present verified locally through WSLg with Mesa llvmpipe.
 - [x] Hosted Ubuntu Vulkan presentation smoke through Mesa lavapipe and Xvfb.
 - [x] Experimental x86_64 macOS editor presentation through MoltenVK and NVRHI Vulkan, including swapchain recreation and successful post-resize present on hosted macOS 15 Intel CI.
+- [ ] Renderer capability negotiation and qualification: distinguish advertised/enabled/implemented/exercised features, validate required formats/limits/queues per adapter, expose fallbacks, and record backend/device coverage.
 - [ ] Native Apple Silicon project generation, build, and MoltenVK editor-presentation verification.
-- [ ] Production macOS renderer qualification: validate scene resources, commands, shaders, representative captures, packaging, and profiling through MoltenVK/NVRHI, or implement native Metal where measured gaps justify it.
-- [ ] Vulkan `Engine::RHI::Device` resources and command submission for the scene viewport, using the wrapped `nvrhi::DeviceHandle`; keep raw Vulkan confined to bootstrap, WSI/presentation, and ImGui.
 - [x] D3D12 flip-model swapchain lifecycle and native graphics/compute/copy queues.
 - [x] RHI command-list allocation, validated recording lifecycle, and synchronous queue submission.
 - [x] GPU buffer resource-upload path with copy-queue synchronization and synchronous fence ownership.
+- [ ] Backend-neutral scene-to-renderer extraction into an immutable per-frame render snapshot with mesh/material/light/camera handles and no editor or backend-native types.
+- [ ] Shared scene-shader portability path with deterministic DXIL and SPIR-V output, reflected RHI layouts, backend convention validation, caching, and diagnostics; Slang/HLSL-style authoring remains the planned direction.
+- [ ] Vulkan `Engine::RHI::Device` resources and command submission for the scene viewport, using the wrapped `nvrhi::DeviceHandle`; keep raw Vulkan confined to bootstrap, WSI/presentation, and ImGui.
 - [ ] Frame/render graph construction: pass registration with declared resource reads/writes, automatic resource lifetime tracking, dependency resolution and pass ordering, and barrier/queue-transition insertion derived from the graph.
+- [ ] Frame/render graph execution and real-workflow integration: bind imported/physical resources, invoke pass callbacks, record RHI barriers and commands, submit queue dependencies, retire frame contexts by GPU completion, and drive a representative multi-pass scene viewport.
 - [ ] Transient resource allocation and reuse from render-graph lifetimes.
 - [ ] Presentation pacing and measurement: DXGI waitable swapchain profiles, capability-gated Vulkan present timing, and separate app/present/display telemetry.
 - [x] HLSL shader compilation pipeline through the D3D12 RHI; Slang remains a future portability option.
 - [ ] Live D3D12 pipeline rebuild after shader source changes.
 - [ ] D3D12 timestamp query heap recording and resolve.
-- [ ] Mesh buffers, index buffers, constant/structured buffers.
+- [ ] Scene mesh/index/constant/structured-buffer integration beyond the prototype draw, populated from the render snapshot through `Engine::RHI`.
 - [ ] Texture upload, samplers, mip generation.
+- [ ] Descriptor/sampler and read-only bindless table model with declared capacities, error resources, GPU-retired updates, writable-resource rules, and a capability-gated bounded fallback.
 - [ ] Forward+/clustered light grid prototype.
 - [ ] Basic PBR shading with material IDs.
 - [ ] Directional, point, and spot lights.
 - [ ] Shadow map prototype.
-- [ ] Sky/atmosphere placeholder.
+- [ ] Basic sky/atmosphere pass producing a visible sky and the lighting inputs required by the Phase 3 scene.
 - [ ] Debug draw and overlays.
-- [ ] RenderDoc/PIX/Nsight capture labels.
+- [ ] Render-graph and scene-pass capture labels readable in RenderDoc/PIX/Nsight on every backend claimed by the item.
+- [ ] Production macOS renderer qualification after the shared Vulkan scene and render-graph paths exist: validate representative resources, commands, shaders, captures, packaging, profiling, and fallbacks through MoltenVK/NVRHI, or implement native Metal where measured gaps justify it.
 
 Exit criteria:
 
@@ -286,12 +291,14 @@ Required:
 - [ ] Vertex/index optimization and quantization.
 - [ ] Projected-area/quad-utilization topology scoring.
 - [ ] Curvature/silhouette-aware simplification.
+- [ ] Versioned engine-native mesh cluster/page format with dependency metadata, integrity validation, and deterministic cook outputs.
 - [ ] Coarse resident fallback pages.
+- [ ] Asynchronous mesh-page residency system with feedback, upload, eviction, GPU-safe retirement, and nearest-resident fallback; render threads never block on storage/decompression.
 - [ ] Runtime GPU culling and LOD selection.
 - [ ] Stable ordered/complementary LOD transitions.
 - [ ] Asset-class policies: static scans, foliage, skinned meshes, hair, wires, debris.
 - [ ] DGF/DGFS evaluation path.
-- [ ] RTX Mega Geometry/CLAS optional backend notes.
+- [ ] RTX Mega Geometry/CLAS capability-gated evaluation with a representative benchmark and a recorded adopt/defer/reject decision; ordinary meshlet data remains the fallback.
 
 Exit criteria:
 
@@ -312,9 +319,10 @@ Required:
 - [ ] Probe leak/confidence debug views.
 - [ ] Portal/zone GI blending.
 - [ ] Directional lightmap support.
+- [ ] Versioned baked-lighting/probe data format plus a single-time preview/final bake or validated import path before time-keyed variants.
 - [ ] Adaptive time-of-day keyframe baker.
 - [ ] Reflection probe integration.
-- [ ] idTech 8 / Neural Light Grid-inspired research prototype.
+- [ ] Measured idTech 8 / Neural Light Grid-inspired GI experiment with explicit baseline comparison, debug validity, and a recorded keep/defer/reject decision.
 
 Exit criteria:
 
@@ -327,6 +335,7 @@ Goal: implement the signature renderer idea: stable raster base plus sparse curr
 
 Required:
 
+- [ ] `Engine::RHI` ray-tracing capability and resource contracts: acceleration structures, build/update/compaction, ray pipeline/shader-table binding, synchronization, diagnostics, and stable raster/probe fallback when unavailable.
 - [ ] BLAS/TLAS object-class update policy.
 - [ ] Ray-budget classifier.
 - [ ] Sparse RT shadow residuals.
@@ -397,7 +406,7 @@ Required:
 - [ ] C# restricted jobs.
 - [ ] Command buffers for structural changes.
 - [ ] Visual gameplay graph compiling to C#/IR.
-- [ ] Animation graph and material graph foundations.
+- [ ] Runtime visual-graph compiler foundations: animation integration builds on Phase 10's animation runtime, while material graph output builds on the Phase 3 shader path and Phase 5 material model.
 
 Exit criteria:
 
@@ -410,7 +419,7 @@ Goal: turn advanced engine systems into approachable workflows.
 
 Required:
 
-- [ ] New project wizard.
+- [ ] Guided project-template wizard extending Phase 2's basic project creation with game-type choices, explainable generated systems, validation, and reversible changes.
 - [ ] First playable workflow.
 - [ ] Visual style workflow.
 - [ ] Asset import workflow.
@@ -477,13 +486,13 @@ Goal: ship games reliably.
 
 Required:
 
-- [ ] Windows, Linux, macOS build verification.
+- [ ] Packaged Player build and clean-machine launch verification on Windows, Linux, and macOS; Phase 0 editor/sandbox CI is foundation evidence only.
 - [ ] Platform abstraction audit.
 - [ ] Asset cooker and package format.
 - [ ] Runtime player executable.
 - [ ] Project templates.
 - [ ] Installer/export pipeline.
-- [ ] Crash reporting and logs.
+- [ ] Production crash reporting and logs: packaged Player coverage, symbols/build identity, actionable reports, privacy/retention policy, and platform-appropriate collection; Phase 0 local crash files are the foundation only.
 - [ ] Settings/scalability system.
 - [ ] Optional DLSS/XeSS/FSR integrations as scalability features.
 - [ ] Steam/storefront demo packaging.

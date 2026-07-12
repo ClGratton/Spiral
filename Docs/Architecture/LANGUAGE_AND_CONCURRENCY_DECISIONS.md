@@ -18,6 +18,8 @@ Purpose: choose the engine implementation language, user-facing scripting langua
 | Tools/offline automation | C# and Python are allowed for tools. Runtime/gameplay defaults to C# plus native engine APIs. |
 | ECS/DOTS | Use DOTS principles: archetype/chunk storage, job scheduling, data-oriented transforms. Do not copy Unity DOTS wholesale. |
 
+The current workspace compiles as C++20. “C++23/26-style” describes the long-term language direction, not permission to raise the repository toolchain standard without an explicit build/CI decision in `PLAN.md` and the dependency/toolchain documentation.
+
 ## Core Engine Language
 
 Decision:

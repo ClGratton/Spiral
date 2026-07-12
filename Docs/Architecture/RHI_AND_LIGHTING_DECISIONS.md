@@ -6,6 +6,8 @@ Date: 2026-07-06
 Purpose: choose the first real rendering abstraction layer and define support for daylight cycles, sun/sky, baked lighting, and time-of-day global illumination.
 
 Probe lighting, Detroit: Become Human lessons, screen-space GI/AO, and static/dynamic GI consistency are specified in [PROBE_LIGHTING_AND_GI_DECISIONS.md](PROBE_LIGHTING_AND_GI_DECISIONS.md).
+Cross-adapter capability negotiation, shader portability, descriptor fallback, and qualification levels are specified in [RENDERER_CAPABILITY_CONTRACT.md](RENDERER_CAPABILITY_CONTRACT.md).
+Frame-graph state, barrier authority, execution, and GPU retirement are specified in [RENDER_GRAPH_ARCHITECTURE.md](RENDER_GRAPH_ARCHITECTURE.md).
 
 ## Short Decisions
 
@@ -177,6 +179,8 @@ Rules:
 - Render graph owns high-level resource state policy.
 - NVRHI automatic barriers are allowed early; render graph validation must still model intended states.
 - Once render graph matures, performance-critical passes can opt into manual barriers.
+
+The graph-owned command-list mode is selected for the whole recording lifetime. Validated automatic barriers and explicit graph-derived barriers may be separate backend modes, but they must not be mixed ambiguously for the same graph-owned resources. Imported-resource states and cross-queue synchronization are always explicit graph contracts.
 
 ### Native Device And Presentation Ownership
 

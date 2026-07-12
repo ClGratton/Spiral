@@ -5,6 +5,8 @@ Date: 2026-07-06
 
 Purpose: define a coherent project skeleton, naming style, folder layout, app/editor split, module boundaries, and coding conventions inspired by public Hazel/The Cherno patterns, without committing to a Hazel fork or copying Hazel's renderer.
 
+This is a reference structure, not a manifest of directories that currently exist and not an execution plan. The actual repository map lives in the [project documentation map](../README.md), module scopes live in `AGENTS.md` and the nearest `OWNERSHIP.md`, and `PLAN.md` alone controls implementation order.
+
 ## Position
 
 Use Hazel as a coherence scaffold.
@@ -674,9 +676,9 @@ Build-system requirements:
 
 ## AI-Agent Guardrails
 
-Because this project expects AI-assisted development, the skeleton must include guardrails:
+Because this project expects AI-assisted development, the repository uses these guardrails:
 
-- Every module has an `OWNERSHIP.md` explaining responsibilities and forbidden dependencies.
+- `AGENTS.md` and `Engine/src/Engine/OWNERSHIP.md` provide the current complete scope map; add a local `OWNERSHIP.md` when a subsystem grows rules that cannot be stated clearly there.
 - Every public subsystem has a short `README.md`.
 - New files must land in an existing module or create a module with ownership docs.
 - Cross-module calls should go through public interfaces.
@@ -687,6 +689,8 @@ Because this project expects AI-assisted development, the skeleton must include 
 This is the real reason to use Hazel's style: not nostalgia, but coherence.
 
 ## First Implementation Order
+
+This list is historical skeleton rationale. Use `PLAN.md`, not this list, to choose work.
 
 1. Root workspace and build scripts.
 2. Engine library with Core, Application, Events, Platform.

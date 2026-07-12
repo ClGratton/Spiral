@@ -34,9 +34,25 @@ Each frame builds a graph from pass registrations. Every pass declares its resou
 
 Execution must bind logical resources to physical `Engine::RHI` resources, invoke pass callbacks with a restricted execution context, record the compiled barriers and commands, and submit work in dependency order. Imported resources must declare initial and required final states. Queue transitions must include the required signal/wait relationship; a queue-name change alone is not synchronization.
 
+Construction and execution are separate roadmap gates. A compiled dependency/barrier plan does not complete execution until real passes, physical/imported resources, command recording/submission, frame contexts, GPU retirement, and the scene viewport use it.
+
+## Barrier Authority
+
+The graph is the authority for intended logical resource states, pass dependencies, and queue ownership. `Engine::RHI` translates compiled transitions into backend commands. NVRHI automatic state tracking may remain a bootstrap implementation aid only under this rule:
+
+- a graph-owned command list uses one declared mode for its whole recording lifetime;
+- in automatic mode, the backend may ask NVRHI to emit barriers, but it must validate that the observed transitions match the compiled graph;
+- in explicit mode, the graph-derived RHI transition batches are recorded and NVRHI automatic barriers are disabled for graph-owned resources/commands;
+- a pass must never mix automatic and explicit ownership in a way that can emit duplicate, reordered, or contradictory transitions;
+- imported-resource initial/final states and cross-queue signal/wait edges remain explicit regardless of backend automation.
+
+The transition from bootstrap automatic barriers to explicit graph barriers is measured per backend. It does not change renderer pass declarations or permit native API state policy to leak above `Engine::RHI`.
+
 ## Transient Resource Contract
 
 Transient allocation depends on the compiled graph above. Reuse is legal only when lifetimes do not overlap in resolved execution order and resource compatibility requirements are satisfied. Cross-frame reuse must be gated by GPU retirement, not CPU frame number. Aliasing or ownership barriers required by the backend must be emitted by the compiled graph.
+
+Heap placement/aliasing is an optimization, not a correctness requirement. A backend/device that cannot safely use aliasing heaps must fall back to separately allocated or non-aliased pooled resources while preserving the same graph lifetimes and results. Diagnostics must report the selected allocation mode and its memory cost; the hosted MoltenVK `MTLHeap` workaround must not become an assumed production capability.
 
 This is why the Phase 3 transient-allocation item follows frame/render graph construction.
 

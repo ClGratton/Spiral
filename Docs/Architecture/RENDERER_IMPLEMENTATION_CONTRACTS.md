@@ -5,6 +5,8 @@ Date: 2026-07-06
 
 Purpose: close low-level ambiguities before culling, visibility, streaming, ray tracing, and resolve code are written.
 
+Adapter/feature negotiation, portable shader targets, descriptor fallback, and qualification levels are specified in [RENDERER_CAPABILITY_CONTRACT.md](RENDERER_CAPABILITY_CONTRACT.md). Frame scheduling, execution, barrier authority, and transient lifetime are specified in [RENDER_GRAPH_ARCHITECTURE.md](RENDER_GRAPH_ARCHITECTURE.md). `PLAN.md` remains the implementation-order authority.
+
 ## Summary Decisions
 
 | Topic | Decision |
@@ -116,6 +118,8 @@ This prevents fast-turn disocclusion pop-in caused by trusting stale depth.
 
 ## 3. Ray Tracing Acceleration Structure Policy
 
+This policy consumes an `Engine::RHI` ray-tracing implementation. Before it can execute, the RHI must expose capability-gated acceleration structures, build/update/compaction commands, ray pipelines/shader-table binding, synchronization, diagnostics, and the stable raster/probe fallback defined by the roadmap and capability contract.
+
 Acceleration structures are not updated uniformly. The policy depends on object class.
 
 | Object class | BLAS policy | TLAS policy | Notes |
@@ -208,6 +212,8 @@ Quality rule:
 ```text
 Missing data may reduce detail this frame. It must not stall the frame.
 ```
+
+Phase 7 therefore requires a versioned engine-native cluster/page artifact with hashes/dependencies plus an asynchronous residency manager that turns feedback into storage/decompression jobs, RHI uploads, GPU-safe descriptor/page-table updates, eviction, and nearest-resident fallback. A coarse page without that lifecycle does not meet the streaming exit criterion.
 
 ## 7. World-Space Precision Contract
 

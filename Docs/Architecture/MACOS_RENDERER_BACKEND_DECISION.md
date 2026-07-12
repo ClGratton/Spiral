@@ -89,13 +89,32 @@ The strict [hosted macOS 15 Intel run](https://github.com/ClGratton/Spiral/actio
 | Supported | `constantAlphaColorBlendFactors`, `events`, `imageViewFormatReinterpretation`, `imageViewFormatSwizzle`, `multisampleArrayImage`, `mutableComparisonSamplers`, `separateStencilMaskRef`, `triangleFans`, `vertexAttributeAccessBeyondStride` |
 | Unsupported | `imageView2DOn3DImage`, `pointPolygons`, `samplerMipLodBias`, `shaderSampleRateInterpolationFunctions`, `tessellationIsolines`, `tessellationPointMode` |
 
-This directly corrects the preliminary risk list: events, image-view swizzle, separate stencil mask/reference, and triangle fans are supported on the measured device. That result is specific to the hosted device and its CI configuration; physical Intel and Apple Silicon devices still require their own query.
+**Hosted CI conclusion: PASS.** The matrix-producing run completed successfully, including NVRHI device creation, native ImGui presentation, swapchain recreation, and a successful post-resize present. The documentation-only follow-up was also verified by the completed, successful [final-head CI run](https://github.com/ClGratton/Spiral/actions/runs/29209189654). This directly corrects the preliminary risk list: events, image-view swizzle, separate stencil mask/reference, and triangle fans are supported on the measured device. That result is specific to the hosted device and its CI configuration; physical Intel and Apple Silicon devices still require their own query.
 
-The measured gaps do not block Phase 6's basic `R32_UINT` visibility buffer, 2D HZB, material worklists, or compact G-buffer. The coverage-aware foliage/masked-material path must not assume sample-rate interpolation functions, and fixed sampler mip LOD bias must have an explicit-LOD or equivalent capability-gated path. Phase 6 does not require 2D views of 3D images, point polygons, or tessellation.
+Impact attribution for the unsupported fields:
+
+| Unsupported feature | Roadmap impact |
+| --- | --- |
+| `imageView2DOn3DImage` | No current roadmap item requires a 2D view onto a 3D image. If volumetric fog or a froxel-grid pass is added, its common 2D-slice-of-3D-image technique must be capability-checked or implemented with another layout. |
+| `pointPolygons` | No current roadmap consumer. Current geometry, visibility, debug, and meshlet plans use triangles/lines or analytic coverage rather than polygon-mode points. |
+| `samplerMipLodBias` | Direct constraint on Phase 4's correct mip-selection and anisotropic-filtering item. The MoltenVK path must use explicit LOD/gradients or a capability-gated equivalent instead of fixed sampler mip bias. It is not a Phase 6-only concern. |
+| `shaderSampleRateInterpolationFunctions` | Constrains Phase 4's MSAA/analytic coverage and specular-AA work as well as Phase 6's coverage-aware foliage/hair/masked carve-outs. Those paths must not assume sample-rate interpolation functions on this device. |
+| `tessellationIsolines` | No current roadmap consumer; the baseline geometry path is meshlet/cluster plus indexed/indirect drawing. |
+| `tessellationPointMode` | No current roadmap consumer; tessellation point mode must not become a hidden geometry fallback. |
+
+The measured gaps do not block Phase 6's basic `R32_UINT` visibility buffer, 2D HZB, material worklists, or compact G-buffer.
 
 The measured portability fields do not block Phase 7's offline meshlet builder or a triangle-list, compute-culling, indirect indexed-draw runtime. Phase 7 must keep packed attributes within their declared stride despite `vertexAttributeAccessBeyondStride` being supported, and must obey the still-to-be-queried minimum vertex-input stride alignment. It must not acquire a hidden dependency on point-polygon or tessellation modes. `imageView2DOn3DImage` is more relevant to future volume/probe storage than to the listed geometry path.
 
 The portability-subset struct is not a complete production capability audit. Phase 6 and Phase 7 qualification must also query descriptor indexing, buffer device address, fragment-shader barycentrics, subgroup behavior, indirect draw count, required image formats, and the portability subset's minimum vertex-input stride alignment. The hosted smoke disables MoltenVK argument buffers and `MTLHeap`, so bindless material tables and heap-backed transient aliasing require explicit testing rather than inference.
+
+## Phase 3 Roadmap Completion Call
+
+The checked Phase 3 item is deliberately narrow: **experimental x86_64 macOS editor presentation through MoltenVK and NVRHI Vulkan, including swapchain recreation and successful post-resize present on hosted macOS 15 Intel CI**. It should remain checked because the strict smoke proves the same resize/post-resize presentation gate required by the Linux Vulkan presentation items, and both cited CI runs finished successfully.
+
+This does not check off a generic production macOS renderer. Native Apple Silicon generation/presentation and production scene resources, commands, shaders, representative captures, packaging, profiling, and physical-device qualification remain explicit unchecked work in `PLAN.md`.
+
+There is no broader checked “macOS renderer backend decision and implementation” claim in the current roadmap. If wording like that is reintroduced, it must remain unchecked until it states and proves a bounded presentation or production qualification level under the renderer capability contract.
 
 ## Linking And End-User Packaging
 
@@ -125,7 +144,7 @@ Phase 7 must therefore keep meshlet/cluster data independent of mesh-shader avai
 5. [ ] Add native Apple Silicon generation, build, and runtime coverage.
 6. [ ] Qualify scene resources, commands, shaders, and representative captures before declaring production macOS renderer support.
 7. [ ] Choose and verify a self-contained macOS runtime packaging model on a clean end-user Mac.
-8. [x] Record the hosted Apple Paravirtual portability-subset result and cross-check the Phase 6 and Phase 7 plans.
+8. [x] Record the hosted Apple Paravirtual portability-subset result and cross-check the Phase 4, Phase 6, and Phase 7 plans.
 9. [ ] Repeat the capability record on physical Intel and Apple Silicon qualification devices.
 
 ## Primary References

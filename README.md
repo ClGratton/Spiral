@@ -154,7 +154,10 @@ Current limitation: the viewport mesh is still a D3D12 bootstrap test pass, not 
 
 Start with:
 
+- [AGENTS.md](AGENTS.md)
 - [PLAN.md](PLAN.md)
+- [Docs/README.md](Docs/README.md)
+- [Docs/VERIFICATION.md](Docs/VERIFICATION.md)
 - [PRODUCT.md](PRODUCT.md)
 - [DESIGN.md](DESIGN.md)
 - [Docs/ROADMAP_GOVERNANCE.md](Docs/ROADMAP_GOVERNANCE.md)
@@ -165,6 +168,9 @@ Start with:
 - [Docs/Architecture/HAZEL_INSPIRED_SKELETON.md](Docs/Architecture/HAZEL_INSPIRED_SKELETON.md)
 - [Docs/Architecture/LOW_LEVEL_ARCHITECTURE.md](Docs/Architecture/LOW_LEVEL_ARCHITECTURE.md)
 - [Docs/Architecture/RENDERER_IMPLEMENTATION_CONTRACTS.md](Docs/Architecture/RENDERER_IMPLEMENTATION_CONTRACTS.md)
+- [Docs/Architecture/RENDER_GRAPH_ARCHITECTURE.md](Docs/Architecture/RENDER_GRAPH_ARCHITECTURE.md)
+- [Docs/Architecture/RENDERER_CAPABILITY_CONTRACT.md](Docs/Architecture/RENDERER_CAPABILITY_CONTRACT.md)
+- [Docs/Architecture/MACOS_RENDERER_BACKEND_DECISION.md](Docs/Architecture/MACOS_RENDERER_BACKEND_DECISION.md)
 
 ## Run Existing Executables
 

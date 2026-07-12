@@ -12,6 +12,10 @@ SSR, AO, reflection, shadow exclusion, profiling, instancing, mesh merging, and 
 The 2026 missing-research audit and optional accelerator policy live in [MISSING_RESEARCH_AUDIT_2026.md](MISSING_RESEARCH_AUDIT_2026.md).
 LOD transition and native multithreading decisions live in [LOD_TRANSITIONS_AND_MULTITHREADING_DECISIONS.md](LOD_TRANSITIONS_AND_MULTITHREADING_DECISIONS.md).
 Language, scripting, visual graph, shader, and DOTS-like concurrency decisions live in [LANGUAGE_AND_CONCURRENCY_DECISIONS.md](LANGUAGE_AND_CONCURRENCY_DECISIONS.md).
+Frame-graph construction/execution and state authority live in [RENDER_GRAPH_ARCHITECTURE.md](RENDER_GRAPH_ARCHITECTURE.md).
+Adapter capabilities, shader portability, descriptor fallback, and qualification live in [RENDERER_CAPABILITY_CONTRACT.md](RENDERER_CAPABILITY_CONTRACT.md).
+
+`PLAN.md` is the implementation-order authority. The prototype order later in this document explains technical dependency intent but does not override current roadmap prerequisites or verification gates.
 
 ## Core Decision
 
