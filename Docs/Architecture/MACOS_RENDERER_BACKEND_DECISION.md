@@ -82,9 +82,18 @@ Cons:
 
 The engine queries `VkPhysicalDevicePortabilitySubsetFeaturesKHR` on the selected physical device before logical-device creation and logs every unsupported field. The device result is authoritative because several fields vary with the Metal device and MoltenVK configuration; source defaults alone are not a qualification result. Querying support also does not enable a feature: any later renderer path that uses one of these behaviors must explicitly request the supported feature during device creation.
 
-The hosted macOS 15 Intel result will be recorded here after the strict smoke runs with MoltenVK 1.4.1. Until that measurement is present, the production macOS qualification item stays unchecked and no Phase 6 or Phase 7 implementation may assume portability-subset support. As a source-level baseline, MoltenVK 1.4.1 generally reports events, image-view swizzle, separate stencil mask/reference, and triangle fans as supported; it reports point polygons, tessellation isolines, and tessellation point mode as unsupported. Device-dependent fields still require the runtime result.
+The strict [hosted macOS 15 Intel run](https://github.com/ClGratton/Spiral/actions/runs/29208977496/job/86693298182) queried the Apple Paravirtual device with MoltenVK 1.4.1 and reported:
 
-Phase 6's planned visibility-buffer and material-resolve design does not require point polygons, tessellation isolines, or tessellation point mode. Phase 7's meshlet representation and offline builder also do not require those features. If the runtime result reports gaps in image-view reinterpretation/swizzle, sampler mip LOD bias, sample-rate interpolation, or vertex access beyond stride, the relevant resource views, filtering/coverage path, or packed vertex layouts must be adjusted or capability-gated before those phases are checked.
+| Result | Portability-subset features |
+| --- | --- |
+| Supported | `constantAlphaColorBlendFactors`, `events`, `imageViewFormatReinterpretation`, `imageViewFormatSwizzle`, `multisampleArrayImage`, `mutableComparisonSamplers`, `separateStencilMaskRef`, `triangleFans`, `vertexAttributeAccessBeyondStride` |
+| Unsupported | `imageView2DOn3DImage`, `pointPolygons`, `samplerMipLodBias`, `shaderSampleRateInterpolationFunctions`, `tessellationIsolines`, `tessellationPointMode` |
+
+This directly corrects the preliminary risk list: events, image-view swizzle, separate stencil mask/reference, and triangle fans are supported on the measured device. That result is specific to the hosted device and its CI configuration; physical Intel and Apple Silicon devices still require their own query.
+
+The measured gaps do not block Phase 6's basic `R32_UINT` visibility buffer, 2D HZB, material worklists, or compact G-buffer. The coverage-aware foliage/masked-material path must not assume sample-rate interpolation functions, and fixed sampler mip LOD bias must have an explicit-LOD or equivalent capability-gated path. Phase 6 does not require 2D views of 3D images, point polygons, or tessellation.
+
+The measured portability fields do not block Phase 7's offline meshlet builder or a triangle-list, compute-culling, indirect indexed-draw runtime. Phase 7 must keep packed attributes within their declared stride despite `vertexAttributeAccessBeyondStride` being supported, and must obey the still-to-be-queried minimum vertex-input stride alignment. It must not acquire a hidden dependency on point-polygon or tessellation modes. `imageView2DOn3DImage` is more relevant to future volume/probe storage than to the listed geometry path.
 
 The portability-subset struct is not a complete production capability audit. Phase 6 and Phase 7 qualification must also query descriptor indexing, buffer device address, fragment-shader barycentrics, subgroup behavior, indirect draw count, required image formats, and the portability subset's minimum vertex-input stride alignment. The hosted smoke disables MoltenVK argument buffers and `MTLHeap`, so bindless material tables and heap-backed transient aliasing require explicit testing rather than inference.
 
@@ -116,7 +125,8 @@ Phase 7 must therefore keep meshlet/cluster data independent of mesh-shader avai
 5. [ ] Add native Apple Silicon generation, build, and runtime coverage.
 6. [ ] Qualify scene resources, commands, shaders, and representative captures before declaring production macOS renderer support.
 7. [ ] Choose and verify a self-contained macOS runtime packaging model on a clean end-user Mac.
-8. [ ] Record the actual portability-subset feature result for every macOS qualification device and cross-check planned renderer features.
+8. [x] Record the hosted Apple Paravirtual portability-subset result and cross-check the Phase 6 and Phase 7 plans.
+9. [ ] Repeat the capability record on physical Intel and Apple Silicon qualification devices.
 
 ## Primary References
 
