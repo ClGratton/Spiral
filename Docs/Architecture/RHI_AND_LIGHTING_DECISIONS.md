@@ -178,6 +178,12 @@ Rules:
 - NVRHI automatic barriers are allowed early; render graph validation must still model intended states.
 - Once render graph matures, performance-critical passes can opt into manual barriers.
 
+### Buffer Upload Contract
+
+Immutable GPU buffers use `BufferCpuAccess::None` and declare `BufferUsage::CopyDest` in addition to their consuming usage. They are populated through `Device::UploadBuffer`, which creates a CPU-write staging buffer and records `CommandList::CopyBuffer` on the copy queue.
+
+The initial implementation signals and waits on an engine-owned D3D12 queue fence before the staging resource is released or the destination is used by another queue. The destination is returned to its prior state, currently `Common`, so the first graphics read can use D3D12 common-state promotion. A future asynchronous uploader must retain this explicit fence ownership in the render graph; it must not release staging allocations merely after recording a copy.
+
 ## Advanced Backend Features
 
 The RHI facade must reserve extension points for features that are too new or too vendor/platform-specific to be baseline:

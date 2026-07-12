@@ -29,7 +29,6 @@ private:
     void BuildDefaultDockLayout(unsigned int dockspaceId, const ImVec2& dockspaceSize);
     void DrawSceneHierarchyPanel();
     void DrawInspectorPanel();
-    void DrawSettingsPanel();
     void DrawRendererBackendSelector();
     void ApplyEditorCameraStateToScene();
     void SyncEditorCameraStateFromMainCamera();

@@ -32,17 +32,15 @@ namespace Engine
         m_Device = RHI::CreateNVRHID3D12Device(std::move(description), m_AdapterInfo, &m_D3D12NativeHandles);
         if (m_Device)
         {
-            Scope<RHI::CommandList> copyQueueProbe = m_Device->CreateCommandList(RHI::QueueType::Copy, "Renderer Startup Copy Queue Probe");
-            if (!copyQueueProbe)
+            RHI::BufferDescription copyQueueProbeDescription;
+            copyQueueProbeDescription.DebugName = "Renderer Startup Copy Queue Upload Probe";
+            copyQueueProbeDescription.SizeBytes = sizeof(u32);
+            copyQueueProbeDescription.Usage = RHI::BufferUsage::CopyDest;
+            Scope<RHI::Buffer> copyQueueProbe = m_Device->CreateBuffer(copyQueueProbeDescription);
+            const u32 copyQueueProbeValue = 0x53504952u;
+            if (!copyQueueProbe || !m_Device->UploadBuffer(*copyQueueProbe, &copyQueueProbeValue, sizeof(copyQueueProbeValue)))
             {
-                Log::Error("Could not create the D3D12 copy-queue command-list probe");
-                m_Device.reset();
-                return false;
-            }
-
-            if (!copyQueueProbe->Begin() || !copyQueueProbe->End() || !m_Device->SubmitAndWait(*copyQueueProbe))
-            {
-                Log::Error("Could not record and submit the D3D12 copy-queue command-list probe");
+                Log::Error("Could not create and submit the D3D12 copy-queue upload probe");
                 m_Device.reset();
                 return false;
             }

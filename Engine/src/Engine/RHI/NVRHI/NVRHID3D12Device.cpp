@@ -24,6 +24,7 @@
         #undef DeviceCapabilities
     #endif
 
+    #include <cstring>
     #include <iomanip>
     #include <limits>
     #include <sstream>
@@ -53,6 +54,11 @@ namespace Engine::RHI
                 case ResourceState::Unknown:
                 default: return D3D12_RESOURCE_STATE_COMMON;
             }
+        }
+
+        bool HasBufferUsage(BufferUsage usage, BufferUsage flag)
+        {
+            return (static_cast<u32>(usage) & static_cast<u32>(flag)) != 0;
         }
 
         bool HasTextureUsage(TextureUsage usage, TextureUsage flag)
@@ -300,6 +306,7 @@ namespace Engine::RHI
                 if (!name.empty())
                     m_Resource->SetName(name.c_str());
 
+                m_CurrentState = GetInitialState();
                 return true;
             }
 
@@ -348,6 +355,11 @@ namespace Engine::RHI
                 return m_Resource.Get();
             }
 
+            D3D12_RESOURCE_STATES GetCurrentState() const
+            {
+                return m_CurrentState;
+            }
+
         private:
             D3D12_HEAP_TYPE GetHeapType() const
             {
@@ -375,6 +387,7 @@ namespace Engine::RHI
             BufferDescription m_Description;
             ComPtr<ID3D12Resource> m_Resource;
             void* m_MappedData = nullptr;
+            D3D12_RESOURCE_STATES m_CurrentState = D3D12_RESOURCE_STATE_COMMON;
         };
 
         class NVRHID3D12Texture final : public Texture
@@ -921,6 +934,68 @@ namespace Engine::RHI
                 m_CommandList->IASetIndexBuffer(&view);
             }
 
+            bool CopyBuffer(Buffer& destination, u64 destinationOffset, Buffer& source, u64 sourceOffset, u64 sizeBytes) override
+            {
+                if (!m_CommandList || m_State != State::Recording || sizeBytes == 0)
+                    return false;
+
+                auto* nativeDestination = dynamic_cast<NVRHID3D12Buffer*>(&destination);
+                auto* nativeSource = dynamic_cast<NVRHID3D12Buffer*>(&source);
+                if (!nativeDestination || !nativeSource || !HasBufferUsage(destination.GetDescription().Usage, BufferUsage::CopyDest))
+                {
+                    Log::Error("D3D12 RHI buffer copy requires D3D12 buffers and CopyDest destination usage: ", m_DebugName);
+                    return false;
+                }
+
+                const BufferDescription& destinationDescription = destination.GetDescription();
+                const BufferDescription& sourceDescription = source.GetDescription();
+                if (destinationOffset > destinationDescription.SizeBytes
+                    || sourceOffset > sourceDescription.SizeBytes
+                    || sizeBytes > destinationDescription.SizeBytes - destinationOffset
+                    || sizeBytes > sourceDescription.SizeBytes - sourceOffset)
+                {
+                    Log::Error("D3D12 RHI buffer copy range is outside the source or destination buffer: ", m_DebugName);
+                    return false;
+                }
+
+                ID3D12Resource* destinationResource = nativeDestination->GetResource();
+                ID3D12Resource* sourceResource = nativeSource->GetResource();
+                if (!destinationResource || !sourceResource)
+                    return false;
+
+                const D3D12_RESOURCE_STATES previousState = nativeDestination->GetCurrentState();
+                if (previousState != D3D12_RESOURCE_STATE_COPY_DEST)
+                {
+                    D3D12_RESOURCE_BARRIER barrier {};
+                    barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+                    barrier.Transition.pResource = destinationResource;
+                    barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+                    barrier.Transition.StateBefore = previousState;
+                    barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+                    m_CommandList->ResourceBarrier(1, &barrier);
+                }
+
+                m_CommandList->CopyBufferRegion(
+                    destinationResource,
+                    destinationOffset,
+                    sourceResource,
+                    sourceOffset,
+                    sizeBytes);
+
+                if (previousState != D3D12_RESOURCE_STATE_COPY_DEST)
+                {
+                    D3D12_RESOURCE_BARRIER barrier {};
+                    barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+                    barrier.Transition.pResource = destinationResource;
+                    barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+                    barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+                    barrier.Transition.StateAfter = previousState;
+                    m_CommandList->ResourceBarrier(1, &barrier);
+                }
+
+                return true;
+            }
+
             void DrawIndexed(u32 indexCount, u32 instanceCount, u32 startIndex, int baseVertex, u32 startInstance) override
             {
                 if (m_CommandList)
@@ -999,6 +1074,8 @@ namespace Engine::RHI
             ~NVRHID3D12Device() override
             {
                 WaitIdle();
+                if (m_SubmissionFenceEvent)
+                    CloseHandle(m_SubmissionFenceEvent);
             }
 
             bool Initialize(NVRHIAdapterInfo& adapterInfo)
@@ -1015,6 +1092,9 @@ namespace Engine::RHI
                     return false;
 
                 if (!CreateQueues())
+                    return false;
+
+                if (!CreateSubmissionFence())
                     return false;
 
                 if (!CreateNVRHIDevice())
@@ -1122,6 +1202,40 @@ namespace Engine::RHI
                 return CreateScope<NVRHID3D12CommandList>(queueType, std::move(allocator), std::move(commandList), std::string(debugName));
             }
 
+            bool UploadBuffer(Buffer& destination, const void* sourceData, u64 sizeBytes, u64 destinationOffset) override
+            {
+                if (!sourceData || sizeBytes == 0 || destination.GetDescription().CpuAccess != BufferCpuAccess::None
+                    || !HasBufferUsage(destination.GetDescription().Usage, BufferUsage::CopyDest))
+                    return false;
+
+                if (destinationOffset > destination.GetDescription().SizeBytes
+                    || sizeBytes > destination.GetDescription().SizeBytes - destinationOffset)
+                    return false;
+
+                BufferDescription uploadDescription;
+                uploadDescription.DebugName = destination.GetDescription().DebugName + " Upload Staging";
+                uploadDescription.SizeBytes = sizeBytes;
+                uploadDescription.Usage = BufferUsage::CopySource;
+                uploadDescription.CpuAccess = BufferCpuAccess::Write;
+                Scope<Buffer> uploadBuffer = CreateBuffer(uploadDescription);
+                if (!uploadBuffer)
+                    return false;
+
+                void* mappedData = uploadBuffer->Map();
+                if (!mappedData)
+                    return false;
+                std::memcpy(mappedData, sourceData, static_cast<size_t>(sizeBytes));
+                uploadBuffer->Unmap();
+
+                Scope<CommandList> commandList = CreateCommandList(QueueType::Copy, uploadDescription.DebugName);
+                if (!commandList || !commandList->Begin()
+                    || !commandList->CopyBuffer(destination, destinationOffset, *uploadBuffer, 0, sizeBytes)
+                    || !commandList->End())
+                    return false;
+
+                return SubmitAndWait(*commandList);
+            }
+
             bool SubmitAndWait(CommandList& commandList) override
             {
                 auto* nativeCommandList = dynamic_cast<NVRHID3D12CommandList*>(&commandList);
@@ -1141,13 +1255,7 @@ namespace Engine::RHI
 
                 queue->ExecuteCommandLists(1, nativeLists);
                 nativeCommandList->MarkSubmitted();
-                if (m_NVRHIDevice.Get() && !m_NVRHIDevice->waitForIdle())
-                {
-                    Log::Error("D3D12 RHI synchronous command-list submission failed while waiting for the device");
-                    return false;
-                }
-
-                return true;
+                return WaitForQueueSubmission(queue);
             }
 
             void WaitIdle() override
@@ -1346,6 +1454,57 @@ namespace Engine::RHI
                 return true;
             }
 
+            bool CreateSubmissionFence()
+            {
+                const HRESULT result = m_Device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&m_SubmissionFence));
+                if (FAILED(result))
+                {
+                    Log::Error("Could not create D3D12 RHI submission fence: ", HResultToString(result));
+                    return false;
+                }
+
+                m_SubmissionFenceEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
+                if (!m_SubmissionFenceEvent)
+                {
+                    Log::Error("Could not create D3D12 RHI submission-fence event");
+                    return false;
+                }
+
+                return true;
+            }
+
+            bool WaitForQueueSubmission(ID3D12CommandQueue* queue)
+            {
+                if (!queue || !m_SubmissionFence || !m_SubmissionFenceEvent)
+                    return false;
+
+                const u64 fenceValue = m_NextSubmissionFenceValue++;
+                const HRESULT signalResult = queue->Signal(m_SubmissionFence.Get(), fenceValue);
+                if (FAILED(signalResult))
+                {
+                    Log::Error("Could not signal D3D12 RHI submission fence: ", HResultToString(signalResult));
+                    return false;
+                }
+
+                if (m_SubmissionFence->GetCompletedValue() >= fenceValue)
+                    return true;
+
+                const HRESULT eventResult = m_SubmissionFence->SetEventOnCompletion(fenceValue, m_SubmissionFenceEvent);
+                if (FAILED(eventResult))
+                {
+                    Log::Error("Could not wait for D3D12 RHI submission fence: ", HResultToString(eventResult));
+                    return false;
+                }
+
+                if (WaitForSingleObject(m_SubmissionFenceEvent, INFINITE) != WAIT_OBJECT_0)
+                {
+                    Log::Error("D3D12 RHI submission fence wait did not complete");
+                    return false;
+                }
+
+                return true;
+            }
+
             void QueryCapabilities()
             {
                 m_Capabilities.ActiveBackend = Backend::NVRHID3D12;
@@ -1371,6 +1530,9 @@ namespace Engine::RHI
             ComPtr<ID3D12CommandQueue> m_GraphicsQueue;
             ComPtr<ID3D12CommandQueue> m_ComputeQueue;
             ComPtr<ID3D12CommandQueue> m_CopyQueue;
+            ComPtr<ID3D12Fence> m_SubmissionFence;
+            HANDLE m_SubmissionFenceEvent = nullptr;
+            u64 m_NextSubmissionFenceValue = 1;
             nvrhi::DeviceHandle m_NVRHIDevice;
         };
     }

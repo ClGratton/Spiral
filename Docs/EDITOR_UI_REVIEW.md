@@ -19,8 +19,8 @@ These engines differ visually, but their information architecture agrees. Spiral
 
 - Scene Hierarchy above Content Browser on the left.
 - Viewport remains the central work surface.
-- Inspector on the right contains only the selected entity's name, transform, and attached components.
-- Settings is a sibling right-side tab for editor camera, viewport clear color, and renderer backend.
+- Inspector on the right contains only the selected entity's name, transform, and attached components. Camera controls appear only when a camera entity is selected.
+- Renderer backend and clear-color controls live in the top-bar Settings menu rather than a dock.
 - Console and Profiler share the bottom diagnostics region.
 - Hierarchy filtering, create/delete actions, editable entity names, and Add Component are available where users expect them.
 

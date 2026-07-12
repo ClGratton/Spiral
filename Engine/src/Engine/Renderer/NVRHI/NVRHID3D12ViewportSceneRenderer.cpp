@@ -9,7 +9,6 @@
 #if defined(GE_HAS_NVRHI_D3D12)
     #include <array>
     #include <cstddef>
-    #include <cstring>
     #include <string>
     #include <string_view>
 #endif
@@ -260,20 +259,6 @@ namespace Engine
             return true;
         }
 
-        bool WriteBuffer(RHI::Buffer& buffer, const void* sourceData, u64 sizeBytes)
-        {
-            if (!sourceData || sizeBytes == 0)
-                return false;
-
-            void* mappedData = buffer.Map();
-            if (!mappedData)
-                return false;
-
-            std::memcpy(mappedData, sourceData, static_cast<size_t>(sizeBytes));
-            buffer.Unmap();
-            return true;
-        }
-
         bool CreateMeshResources()
         {
             const u64 vertexBufferSize = sizeof(ViewportVertex) * kPrototypeMeshVertices.size();
@@ -281,12 +266,12 @@ namespace Engine
             vertexBufferDesc.DebugName = "Editor Viewport Prototype Vertex Buffer";
             vertexBufferDesc.SizeBytes = vertexBufferSize;
             vertexBufferDesc.StrideBytes = sizeof(ViewportVertex);
-            vertexBufferDesc.Usage = RHI::BufferUsage::Vertex;
-            vertexBufferDesc.CpuAccess = RHI::BufferCpuAccess::Write;
+            vertexBufferDesc.Usage = static_cast<RHI::BufferUsage>(
+                static_cast<u32>(RHI::BufferUsage::Vertex) | static_cast<u32>(RHI::BufferUsage::CopyDest));
             if (!CreateRhiBuffer(vertexBufferDesc, m_VertexBuffer))
                 return false;
 
-            if (!WriteBuffer(*m_VertexBuffer, kPrototypeMeshVertices.data(), vertexBufferSize))
+            if (!m_RHIDevice->UploadBuffer(*m_VertexBuffer, kPrototypeMeshVertices.data(), vertexBufferSize))
                 return false;
 
             const u64 indexBufferSize = sizeof(u16) * kPrototypeMeshIndices.size();
@@ -294,12 +279,12 @@ namespace Engine
             indexBufferDesc.DebugName = "Editor Viewport Prototype Index Buffer";
             indexBufferDesc.SizeBytes = indexBufferSize;
             indexBufferDesc.StrideBytes = sizeof(u16);
-            indexBufferDesc.Usage = RHI::BufferUsage::Index;
-            indexBufferDesc.CpuAccess = RHI::BufferCpuAccess::Write;
+            indexBufferDesc.Usage = static_cast<RHI::BufferUsage>(
+                static_cast<u32>(RHI::BufferUsage::Index) | static_cast<u32>(RHI::BufferUsage::CopyDest));
             if (!CreateRhiBuffer(indexBufferDesc, m_IndexBuffer))
                 return false;
 
-            if (!WriteBuffer(*m_IndexBuffer, kPrototypeMeshIndices.data(), indexBufferSize))
+            if (!m_RHIDevice->UploadBuffer(*m_IndexBuffer, kPrototypeMeshIndices.data(), indexBufferSize))
                 return false;
 
             m_IndexCount = static_cast<u32>(kPrototypeMeshIndices.size());

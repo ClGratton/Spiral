@@ -60,7 +60,7 @@ Immediate gap:
 - Shader source loading and hot-reload detection are centralized through `ShaderLibrary`.
 - GPU timestamp query contracts and renderer timing snapshots are stubbed; the D3D12 query heap resolve path is still pending.
 - The first D3D12 viewport pass has resource debug names and capture markers for frame, viewport, ImGui, and capture readback scopes.
-- The D3D12 viewport prototype mesh creates vertex, index, and constant buffers through the RHI buffer API and records its indexed draw through the D3D12 RHI command-list bridge.
+- The D3D12 viewport prototype mesh creates vertex, index, and constant buffers through the RHI buffer API, uploads immutable vertex/index payloads through a staged copy-queue submission, and records its indexed draw through the D3D12 RHI command-list bridge.
 - The D3D12 viewport color and depth targets are allocated through the RHI texture API, with D3D12 descriptors still created by the presentation layer.
 - Viewport capture readback now uses the RHI buffer API; texture copy commands and BMP writing remain in the D3D12 presentation layer.
 - The viewport prototype shader, graphics pipeline, root constant-buffer binding, vertex/index binding, and indexed draw now run through D3D12 RHI shader/pipeline/command-list APIs; render-target descriptor binding, texture copy commands, and BMP writing remain in the D3D12 presentation/viewport bridge.
@@ -182,7 +182,7 @@ Required:
 - [ ] Engine-owned Vulkan device, swapchain, presentation, and ImGui integration.
 - [x] D3D12 flip-model swapchain lifecycle and native graphics/compute/copy queues.
 - [x] RHI command-list allocation, validated recording lifecycle, and synchronous queue submission.
-- [ ] GPU resource-upload path with copy-queue synchronization.
+- [x] GPU buffer resource-upload path with copy-queue synchronization and synchronous fence ownership.
 - [ ] Transient resource allocation and reuse from render-graph lifetimes.
 - [ ] Presentation pacing and measurement: DXGI waitable swapchain profiles, capability-gated Vulkan present timing, and separate app/present/display telemetry.
 - [x] HLSL shader compilation pipeline through the D3D12 RHI; Slang remains a future portability option.

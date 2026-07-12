@@ -32,13 +32,14 @@ Use the editor's single default sans/monospace-compatible UI font at a compact, 
 - Left upper: Scene Hierarchy with search and entity actions.
 - Left lower: Content Browser with import, search, type filters, and drag sources.
 - Center: renderer-owned viewport.
-- Right: selection-scoped Inspector, with Settings as a sibling tab.
+- Right: selection-scoped Inspector only.
 - Bottom: Console and Profiler as sibling tabs.
+- Top menu: global renderer and clear-color settings.
 
 ## Interaction Contracts
 
 - Inspector content follows the selected entity or asset.
-- Viewport camera and renderer backend controls live in Settings.
+- Camera component controls live on the selected camera in the Inspector; renderer and clear-color controls live in the top-bar Settings menu.
 - Unsupported backends are visibly disabled and explain why.
 - Destructive hierarchy actions are contextual, undoable, and protect the primary camera.
 - New projects reject path collisions instead of silently overwriting existing manifests.
