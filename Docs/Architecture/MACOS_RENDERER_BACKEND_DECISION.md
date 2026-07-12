@@ -74,6 +74,7 @@ Cons:
 - macOS presentation can share the same strict smoke contract as Windows and Linux Vulkan.
 - Portability extensions are selected by capability on every platform, not by vendor identity.
 - CI uses an architecture-matching x86_64 macOS runner until Premake and artifact paths support Apple Silicon natively.
+- The hosted Apple Paravirtual device requires Metal argument buffers and `MTLHeap` allocation to be disabled for the presentation smoke. These are CI-device constraints, not production renderer defaults.
 - Passing presentation smoke is not evidence of ray tracing, mesh shaders, shared-resource interop, full Vulkan parity, or production macOS scene rendering.
 - A future Metal decision must be based on captured MoltenVK gaps and measured costs.
 
@@ -82,7 +83,7 @@ Cons:
 1. [x] Enable Vulkan portability enumeration and the advertised portability-subset device extension.
 2. [x] Share the dynamically loaded Vulkan entry point with GLFW.
 3. [x] Add a strict swapchain-generation and post-resize-present smoke contract.
-4. [ ] Pass the hosted x86_64 macOS MoltenVK presentation smoke.
+4. [x] Pass the hosted x86_64 macOS MoltenVK presentation smoke on macOS 15 Intel with MoltenVK 1.4.1 and Vulkan Loader 1.4.350.1.
 5. [ ] Add native Apple Silicon generation, build, and runtime coverage.
 6. [ ] Qualify scene resources, commands, shaders, and representative captures before declaring production macOS renderer support.
 

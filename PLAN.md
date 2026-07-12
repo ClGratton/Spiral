@@ -65,7 +65,7 @@ Immediate gap:
 - Viewport capture readback now uses the RHI buffer API; texture copy commands and BMP writing remain in the D3D12 presentation layer.
 - The viewport prototype shader, graphics pipeline, root constant-buffer binding, vertex/index binding, and indexed draw now run through D3D12 RHI shader/pipeline/command-list APIs; render-target descriptor binding, texture copy commands, and BMP writing remain in the D3D12 presentation/viewport bridge.
 - The editor has an engine-owned Vulkan 1.3 device, window surface, FIFO swapchain, native ImGui presentation path, resize handling, and strict render smoke on Windows through both MSVC and MinGW plus Linux X11 through WSLg/Mesa llvmpipe. Scene viewport rendering remains D3D12-only.
-- The first macOS backend decision is MoltenVK through the existing NVRHI Vulkan boundary. Portability enumeration, portability-subset device creation, Homebrew setup, and strict x86_64 hosted presentation verification are implemented; hosted runtime evidence is pending.
+- The first macOS backend decision is MoltenVK through the existing NVRHI Vulkan boundary. Hosted macOS 15 Intel CI verifies portability enumeration, NVRHI wrapping on the Apple Paravirtual device, native ImGui presentation, swapchain recreation, and successful post-resize present. The hosted smoke disables MoltenVK Metal argument buffers and `MTLHeap`; Apple Silicon and production scene-renderer qualification remain pending.
 - The editor can serialize the active sample scene to a versioned `.spiral` scene file and reload-validate it through the same scene API.
 - Scenes now expose a small entity/component authoring facade with scene-local entity IDs, names, transforms, optional cameras, and save/load coverage.
 - The editor scene hierarchy lists actual scene entities rather than hard-coded placeholder rows.
@@ -183,7 +183,7 @@ Required:
 - [x] Engine-owned Vulkan 1.3 device, window swapchain, FIFO presentation, and ImGui integration verified on Windows with MSVC and MinGW.
 - [x] Native Linux X11 Vulkan editor presentation, resize, and post-resize present verified locally through WSLg with Mesa llvmpipe.
 - [x] Hosted Ubuntu Vulkan presentation smoke through Mesa lavapipe and Xvfb.
-- [ ] Experimental x86_64 macOS editor presentation through MoltenVK and NVRHI Vulkan, including swapchain recreation and successful post-resize present on a hosted Mac.
+- [x] Experimental x86_64 macOS editor presentation through MoltenVK and NVRHI Vulkan, including swapchain recreation and successful post-resize present on hosted macOS 15 Intel CI.
 - [ ] Native Apple Silicon project generation, build, and MoltenVK editor-presentation verification.
 - [ ] Production macOS renderer qualification: validate scene resources, commands, shaders, representative captures, packaging, and profiling through MoltenVK/NVRHI, or implement native Metal where measured gaps justify it.
 - [ ] Vulkan `Engine::RHI::Device` resources and command submission for the scene viewport, using the wrapped `nvrhi::DeviceHandle`; keep raw Vulkan confined to bootstrap, WSI/presentation, and ImGui.

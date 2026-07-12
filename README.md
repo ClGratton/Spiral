@@ -96,7 +96,7 @@ On macOS, `Scripts/Setup.sh` installs Homebrew's Vulkan loader and MoltenVK runt
 bash Scripts/TestVulkan.sh Debug gmake
 ```
 
-The current macOS target is an experimental x86_64 editor-presentation path. Apple Silicon generation and production scene-renderer qualification remain pending.
+The experimental macOS path is verified on hosted macOS 15 Intel CI with Vulkan Loader 1.4.350.1, MoltenVK 1.4.1, and the Apple Paravirtual device. That hosted device requires Metal argument buffers and `MTLHeap` allocation to be disabled for the correctness smoke. Apple Silicon generation, normal hardware capability coverage, runtime packaging, and production scene-renderer qualification remain pending.
 
 To produce a deterministic viewport capture from the native D3D12 editor path:
 
