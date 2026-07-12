@@ -51,6 +51,8 @@ namespace Engine::RHI
             }
             return false;
         }
+
+        constexpr const char* kPortabilitySubsetExtensionName = "VK_KHR_portability_subset";
     }
 #endif
 
@@ -59,16 +61,12 @@ namespace Engine::RHI
         bool Initialize(void* nativeWindow, bool enableValidation, NVRHIAdapterInfo& adapterInfo)
         {
 #if defined(GE_HAS_NVRHI_VULKAN)
+            m_PortabilityEnumerationEnabled = false;
+            m_PortabilitySubsetEnabled = false;
             m_Window = static_cast<GLFWwindow*>(nativeWindow);
             if (!m_Window || glfwGetWindowAttrib(m_Window, GLFW_CLIENT_API) != GLFW_NO_API)
             {
                 Log::Warn("Vulkan requires a GLFW window created with GLFW_NO_API");
-                return false;
-            }
-
-            if (!glfwVulkanSupported())
-            {
-                Log::Warn("GLFW reports that the Vulkan loader or a Vulkan ICD is unavailable");
                 return false;
             }
 
@@ -88,6 +86,15 @@ namespace Engine::RHI
                 Log::Error("Vulkan loader does not export vkGetInstanceProcAddr");
                 return false;
             }
+
+            // GLFW normally opens the platform Vulkan loader independently. Sharing the
+            // entry point also supports MoltenVK's directly loaded dylib on macOS.
+            glfwInitVulkanLoader(m_GetInstanceProcAddr);
+            if (!glfwVulkanSupported())
+            {
+                Log::Warn("GLFW reports that the Vulkan loader or a Vulkan ICD is unavailable");
+                return false;
+            }
             VULKAN_HPP_DEFAULT_DISPATCHER.init(m_GetInstanceProcAddr);
 
             u32 requiredExtensionCount = 0;
@@ -98,6 +105,31 @@ namespace Engine::RHI
                 return false;
             }
             m_InstanceExtensions.assign(requiredExtensions, requiredExtensions + requiredExtensionCount);
+
+            u32 availableExtensionCount = 0;
+            VULKAN_HPP_DEFAULT_DISPATCHER.vkEnumerateInstanceExtensionProperties(
+                nullptr, &availableExtensionCount, nullptr);
+            std::vector<VkExtensionProperties> availableExtensions(availableExtensionCount);
+            VULKAN_HPP_DEFAULT_DISPATCHER.vkEnumerateInstanceExtensionProperties(
+                nullptr, &availableExtensionCount, availableExtensions.data());
+
+#if defined(VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME)
+            if (HasExtension(availableExtensions, VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME))
+            {
+                bool alreadyRequired = false;
+                for (const char* extension : m_InstanceExtensions)
+                {
+                    if (std::strcmp(extension, VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME) == 0)
+                    {
+                        alreadyRequired = true;
+                        break;
+                    }
+                }
+                if (!alreadyRequired)
+                    m_InstanceExtensions.push_back(VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME);
+                m_PortabilityEnumerationEnabled = true;
+            }
+#endif
 
             VkApplicationInfo applicationInfo {};
             applicationInfo.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
@@ -110,6 +142,8 @@ namespace Engine::RHI
             VkInstanceCreateInfo instanceInfo {};
             instanceInfo.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
             instanceInfo.pApplicationInfo = &applicationInfo;
+            if (m_PortabilityEnumerationEnabled)
+                instanceInfo.flags |= VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR;
             instanceInfo.enabledExtensionCount = static_cast<u32>(m_InstanceExtensions.size());
             instanceInfo.ppEnabledExtensionNames = m_InstanceExtensions.data();
 
@@ -119,6 +153,9 @@ namespace Engine::RHI
                 return false;
             }
             VULKAN_HPP_DEFAULT_DISPATCHER.init(m_Instance, m_GetInstanceProcAddr);
+
+            if (m_PortabilityEnumerationEnabled)
+                Log::Info("Vulkan portability enumeration enabled");
 
             if (glfwCreateWindowSurface(m_Instance, m_Window, nullptr, &m_Surface) != VK_SUCCESS)
             {
@@ -290,10 +327,12 @@ namespace Engine::RHI
                     m_GraphicsQueueFamily = queueFamily;
                     m_BufferDeviceAddressSupported = vulkan12Features.bufferDeviceAddress == VK_TRUE;
                     m_DeviceExtensions = { VK_KHR_SWAPCHAIN_EXTENSION_NAME };
-#if defined(VK_KHR_PORTABILITY_SUBSET_EXTENSION_NAME)
-                    if (HasExtension(extensions, VK_KHR_PORTABILITY_SUBSET_EXTENSION_NAME))
-                        m_DeviceExtensions.push_back(VK_KHR_PORTABILITY_SUBSET_EXTENSION_NAME);
-#endif
+                    m_PortabilitySubsetEnabled = false;
+                    if (HasExtension(extensions, kPortabilitySubsetExtensionName))
+                    {
+                        m_DeviceExtensions.push_back(kPortabilitySubsetExtensionName);
+                        m_PortabilitySubsetEnabled = true;
+                    }
                 }
             }
 
@@ -302,6 +341,8 @@ namespace Engine::RHI
                 Log::Error("No Vulkan 1.3 device supports graphics presentation and timeline semaphores");
                 return false;
             }
+            if (m_PortabilitySubsetEnabled)
+                Log::Info("Vulkan portability subset device extension enabled");
             return true;
         }
 
@@ -380,6 +421,8 @@ namespace Engine::RHI
         VkQueue m_GraphicsQueue = VK_NULL_HANDLE;
         u32 m_GraphicsQueueFamily = 0;
         bool m_BufferDeviceAddressSupported = false;
+        bool m_PortabilityEnumerationEnabled = false;
+        bool m_PortabilitySubsetEnabled = false;
         std::vector<const char*> m_InstanceExtensions;
         std::vector<const char*> m_DeviceExtensions;
         NVRHIVulkanMessageCallback m_MessageCallback;

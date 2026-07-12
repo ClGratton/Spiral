@@ -48,6 +48,21 @@ LOG_DIR="$ROOT/output/test-logs"
 LOG_FILE="$LOG_DIR/vulkan-smoke-${SYSTEM_DIR}-${ACTION}.log"
 mkdir -p "$LOG_DIR"
 
+if [[ "$SYSTEM_DIR" == "macosx" ]]; then
+    if ! command -v brew >/dev/null 2>&1; then
+        echo "Homebrew is required for the macOS MoltenVK smoke." >&2
+        exit 1
+    fi
+    VULKAN_LOADER_PREFIX="$(brew --prefix vulkan-loader)"
+    MOLTENVK_PREFIX="$(brew --prefix molten-vk)"
+    export DYLD_LIBRARY_PATH="$VULKAN_LOADER_PREFIX/lib:$MOLTENVK_PREFIX/lib${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
+    export VK_DRIVER_FILES="$MOLTENVK_PREFIX/etc/vulkan/icd.d/MoltenVK_icd.json"
+    if [[ ! -f "$VK_DRIVER_FILES" ]]; then
+        echo "MoltenVK ICD manifest was not found: $VK_DRIVER_FILES" >&2
+        exit 1
+    fi
+fi
+
 set +e
 (cd "$ROOT" && "$EDITOR" --vulkan-render-smoke) 2>&1 | tee "$LOG_FILE"
 STATUS=${PIPESTATUS[0]}
@@ -62,8 +77,16 @@ REQUIRED_MARKERS=(
     "Renderer initialized with backend: NVRHI Vulkan"
     "Vulkan swapchain and ImGui presentation initialized"
     "Vulkan render smoke requested window resize"
+    "Vulkan swapchain recreated after window resize"
     "Vulkan render smoke verified native ImGui presentation after resize"
 )
+
+if [[ "$SYSTEM_DIR" == "macosx" ]]; then
+    REQUIRED_MARKERS+=(
+        "Vulkan portability enumeration enabled"
+        "Vulkan portability subset device extension enabled"
+    )
+fi
 
 for MARKER in "${REQUIRED_MARKERS[@]}"; do
     if ! grep -Fq "$MARKER" "$LOG_FILE"; then

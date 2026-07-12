@@ -156,6 +156,7 @@ namespace Engine
         {
 #if defined(GE_HAS_NVRHI_VULKAN)
             m_Timing = {};
+            m_Timing.SwapchainGeneration = m_SwapchainGeneration;
             if (!m_Initialized || !drawData)
                 return;
 
@@ -301,7 +302,14 @@ namespace Engine
                 static_cast<int>(height),
                 kMinimumImageCount,
                 0);
-            return m_WindowData.Swapchain != VK_NULL_HANDLE && m_WindowData.RenderPass != VK_NULL_HANDLE;
+            if (m_WindowData.Swapchain == VK_NULL_HANDLE || m_WindowData.RenderPass == VK_NULL_HANDLE)
+                return false;
+
+            ++m_SwapchainGeneration;
+            m_Timing.SwapchainGeneration = m_SwapchainGeneration;
+            if (m_SwapchainGeneration > 1)
+                Log::Info("Vulkan swapchain recreated after window resize (generation ", m_SwapchainGeneration, ")");
+            return true;
         }
 
         static constexpr u32 kMinimumImageCount = 2;
@@ -319,6 +327,7 @@ namespace Engine
 #endif
         RendererPresentationTiming m_Timing;
         u64 m_SuccessfulPresentCount = 0;
+        u64 m_SwapchainGeneration = 0;
         bool m_Initialized = false;
     };
 

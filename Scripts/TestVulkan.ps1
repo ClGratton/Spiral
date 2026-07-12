@@ -27,6 +27,7 @@ $RequiredMarkers = @(
     "Renderer initialized with backend: NVRHI Vulkan",
     "Vulkan swapchain and ImGui presentation initialized",
     "Vulkan render smoke requested window resize",
+    "Vulkan swapchain recreated after window resize",
     "Vulkan render smoke verified native ImGui presentation after resize"
 )
 

@@ -72,7 +72,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ ubuntu-latest, macos-latest ]
+        os: [ ubuntu-latest, macos-15-intel ]
 
     steps:
       - name: Checkout
@@ -122,6 +122,15 @@ jobs:
             vulkaninfo --summary
           xvfb-run -a -s '-screen 0 1920x1080x24 -nolisten tcp' \
             timeout 60s bash Scripts/TestVulkan.sh Debug gmake --skip-build
+
+      - name: Run native macOS MoltenVK presentation smoke
+        if: runner.os == 'macOS'
+        timeout-minutes: 5
+        run: |
+          uname -m
+          file ./bin/Debug-macosx-x86_64-gmake/Editor/Editor
+          brew list --versions vulkan-loader molten-vk
+          bash Scripts/TestVulkan.sh Debug gmake --skip-build
 
       - name: Run editor headless smoke
         run: |
@@ -187,10 +196,10 @@ jobs:
             ./bin/Debug-macosx-x86_64-gmake/Sandbox/Sandbox --headless --smoke-test
           fi
 
-      - name: Upload Linux Vulkan smoke log
+      - name: Upload Vulkan smoke log
         uses: actions/upload-artifact@v7
-        if: runner.os == 'Linux' && always()
+        if: always()
         with:
-          name: linux-vulkan-smoke-log
-          path: output/test-logs/vulkan-smoke-linux-gmake.log
+          name: ${{ runner.os }}-vulkan-smoke-log
+          path: output/test-logs/vulkan-smoke-*-gmake.log
           if-no-files-found: ignore

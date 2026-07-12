@@ -15,6 +15,20 @@ case "$(uname -s)" in
     Darwin*)
         ARCHIVE_NAME="premake-${PREMAKE_VERSION}-macosx.tar.gz"
         PREMAKE_EXE="$PREMAKE_DIR/premake5"
+        if ! command -v brew >/dev/null 2>&1; then
+            echo "Homebrew is required to install the macOS MoltenVK runtime." >&2
+            exit 1
+        fi
+        MISSING_VULKAN_FORMULAE=()
+        for FORMULA in vulkan-loader molten-vk; do
+            if ! brew list --versions "$FORMULA" >/dev/null 2>&1; then
+                MISSING_VULKAN_FORMULAE+=("$FORMULA")
+            fi
+        done
+        if [[ ${#MISSING_VULKAN_FORMULAE[@]} -ne 0 ]]; then
+            echo "Installing Vulkan loader and MoltenVK for the macOS NVRHI Vulkan backend..."
+            brew install "${MISSING_VULKAN_FORMULAE[@]}"
+        fi
         ;;
     MINGW*|MSYS*|CYGWIN*)
         ARCHIVE_NAME="premake-${PREMAKE_VERSION}-windows.zip"

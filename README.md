@@ -90,6 +90,14 @@ Linux CI repeats the strict smoke through Mesa lavapipe and Xvfb:
 bash Scripts/TestVulkan.sh Debug gmake
 ```
 
+On macOS, `Scripts/Setup.sh` installs Homebrew's Vulkan loader and MoltenVK runtime when missing. The same strict smoke selects MoltenVK through the loader, enables Vulkan portability enumeration, wraps the device with NVRHI, recreates the swapchain after resize, and requires a successful post-resize present:
+
+```bash
+bash Scripts/TestVulkan.sh Debug gmake
+```
+
+The current macOS target is an experimental x86_64 editor-presentation path. Apple Silicon generation and production scene-renderer qualification remain pending.
+
 To produce a deterministic viewport capture from the native D3D12 editor path:
 
 ```powershell
@@ -128,7 +136,7 @@ To run the automated Windows render smoke test, including build, capture, BMP va
 .\Scripts\TestRender.ps1 -Configuration Debug -Action vs2022
 ```
 
-CI runs from `.github/workflows/ci.yml`. The Windows job runs the D3D12 render smoke and uploads the viewport BMP; Linux and macOS run portable gmake builds plus engine contract tests and headless editor/sandbox workflow smokes. The Linux job also runs the strict X11 Vulkan presentation smoke through Mesa lavapipe and Xvfb. The D3D12 device path falls back to WARP when no hardware adapter is available, which keeps hosted Windows runners usable.
+CI runs from `.github/workflows/ci.yml`. The Windows job runs the D3D12 render smoke and uploads the viewport BMP; Linux and macOS run portable gmake builds plus engine contract tests and headless editor/sandbox workflow smokes. Linux also runs the strict X11 Vulkan presentation smoke through Mesa lavapipe and Xvfb. The x86_64 macOS job runs the equivalent strict presentation smoke through the Homebrew Vulkan loader and MoltenVK. The D3D12 device path falls back to WARP when no hardware adapter is available, which keeps hosted Windows runners usable.
 
 To validate project creation, entity authoring, component assignment, undo/redo, and save/reopen as one workflow:
 

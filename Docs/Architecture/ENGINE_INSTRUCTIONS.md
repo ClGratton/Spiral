@@ -6,6 +6,7 @@ Date: 2026-07-06
 Low-level implementation details live in [LOW_LEVEL_ARCHITECTURE.md](LOW_LEVEL_ARCHITECTURE.md).
 Renderer implementation contracts live in [RENDERER_IMPLEMENTATION_CONTRACTS.md](RENDERER_IMPLEMENTATION_CONTRACTS.md).
 RHI and lighting decisions live in [RHI_AND_LIGHTING_DECISIONS.md](RHI_AND_LIGHTING_DECISIONS.md).
+The first macOS renderer decision lives in [MACOS_RENDERER_BACKEND_DECISION.md](MACOS_RENDERER_BACKEND_DECISION.md).
 Probe lighting, Detroit: Become Human lessons, screen-space GI/AO, and static/dynamic GI consistency live in [PROBE_LIGHTING_AND_GI_DECISIONS.md](PROBE_LIGHTING_AND_GI_DECISIONS.md).
 Rendering feature and performance decisions live in [RENDERING_FEATURE_AND_PERFORMANCE_DECISIONS.md](RENDERING_FEATURE_AND_PERFORMANCE_DECISIONS.md).
 The 2026 missing-research audit and optional accelerator policy live in [MISSING_RESEARCH_AUDIT_2026.md](MISSING_RESEARCH_AUDIT_2026.md).

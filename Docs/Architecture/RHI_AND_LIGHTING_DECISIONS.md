@@ -186,6 +186,8 @@ Window-system presentation remains an explicit native escape hatch. The engine o
 
 The current Vulkan slice ends at that boundary: it wraps the native device with NVRHI and presents the editor shell, but it does not yet provide an `Engine::RHI::Device` implementation for Vulkan scene resources or general command submission. The future Vulkan scene path must implement those operations behind `Engine::RHI` using the returned `nvrhi::DeviceHandle`; it must not grow a parallel raw-Vulkan scene renderer. The current D3D12 RHI implementation also uses native D3D12 operations behind the engine facade, so migration toward shared NVRHI resource/command behavior must be stated as future convergence rather than completed portability.
 
+On macOS, the first implementation path is MoltenVK through this same Vulkan/NVRHI boundary. It is deliberately experimental because NVRHI does not list macOS as an upstream-supported platform. Hosted presentation verification, Apple Silicon coverage, and production scene-renderer conformance are separate gates; native Metal remains a future measured alternative rather than a parallel bootstrap renderer. See [MACOS_RENDERER_BACKEND_DECISION.md](MACOS_RENDERER_BACKEND_DECISION.md).
+
 Backend selection happens before native device creation. Strict requests such as the Vulkan render smoke fail if the requested path cannot initialize, while ordinary launches may retain an explicitly supported fallback. Adapter selection is capability-based and must not require an NVIDIA device merely because NVRHI is the first backend.
 
 ### Buffer Upload Contract

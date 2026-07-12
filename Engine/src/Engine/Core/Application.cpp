@@ -123,7 +123,9 @@ namespace Engine
         if (m_Specification.CommandLineArgs.HasFlag("--vulkan-render-smoke"))
         {
             const RendererFrameTiming& timing = Renderer::GetLastFrameTiming();
-            if (Renderer::GetActiveBackend() != RendererBackend::NVRHIVulkan || !timing.Presentation.PresentSucceeded)
+            if (Renderer::GetActiveBackend() != RendererBackend::NVRHIVulkan
+                || !timing.Presentation.PresentSucceeded
+                || timing.Presentation.SwapchainGeneration < 2)
                 throw std::runtime_error("Vulkan render smoke did not complete a successful presentation after resize");
             Log::Info("Vulkan render smoke verified native ImGui presentation after resize");
         }
