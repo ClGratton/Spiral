@@ -81,6 +81,14 @@ Immediate gap:
 - A portable `EngineTests` executable covers deterministic engine contracts that are too narrow for editor smoke tests, including job-system failure handling and strict scene deserialization.
 - The editor can create an isolated project and starter scene from a name/location modal, and hierarchy controls create or delete entities with undo/redo coverage.
 
+## Phase Sizing And Design Gates
+
+Phases are outcome gates, not equal-size sprints. Phase 3 is intentionally larger because every later renderer feature consumes its cross-backend RHI, task/snapshot, shader, render-graph, resource, color, lighting, and diagnostic foundations. It is divided into ordered sub-milestones so agents can implement bounded slices without declaring the whole renderer complete.
+
+Phases 4 through 9 are feature layers and must name both their algorithms and the infrastructure they consume. Their technical traceability lives in [Docs/Architecture/TECHNICAL_ROADMAP_COVERAGE.md](Docs/Architecture/TECHNICAL_ROADMAP_COVERAGE.md).
+
+Later non-renderer phases are product outcome summaries where the project has not yet accepted a detailed subsystem design. Before implementing Phase 10 animation, Phase 11 physics, Phase 13 automation, Phase 14 game systems/networking, or Phase 16 packaging, add or update the task-relevant architecture contract and expand that phase's prerequisites, data ownership, fallback/error behavior, and focused verification. This design gate is prose, not a checkable substitute for runtime behavior.
+
 ## Phase 0: Buildable Spine
 
 Goal: make the repo cloneable, buildable, runnable, and navigable.
@@ -179,6 +187,8 @@ Goal: deliver a conventional-but-clean renderer before the advanced visibility-b
 
 Required:
 
+### Phase 3A: Backend Bootstrap And Qualification
+
 - [x] NVRHI D3D12 device integrated behind `Engine::RHI`, with the prototype viewport still using a scoped native D3D12 presentation bridge.
 - [x] D3D12 first path on Windows.
 - [x] Engine-owned Vulkan 1.3 device, window swapchain, FIFO presentation, and ImGui integration verified on Windows with MSVC and MinGW.
@@ -188,34 +198,57 @@ Required:
 - [ ] Make the hosted macOS MoltenVK resize/post-resize-present smoke repeatable across CI runs; the current four-frame deadline can expire after successful swapchain recreation before a later present completes.
 - [ ] Renderer capability negotiation and qualification: distinguish advertised/enabled/implemented/exercised features, validate required formats/limits/queues per adapter, expose fallbacks, and record backend/device coverage.
 - [ ] Native Apple Silicon project generation, build, and MoltenVK editor-presentation verification.
+
+### Phase 3B: Frame And RHI Infrastructure
+
 - [x] D3D12 flip-model swapchain lifecycle and native graphics/compute/copy queues.
 - [x] RHI command-list allocation, validated recording lifecycle, and synchronous queue submission.
 - [x] GPU buffer resource-upload path with copy-queue synchronization and synchronous fence ownership.
+- [ ] Large-world rendering foundation: authoritative double/sector world transforms, camera-relative GPU transforms, and one translated coordinate frame shared by raster, culling, debug, and future ray tracing.
+- [ ] CPU frame task graph on the native job system with declared dependencies, immutable publication points, failure propagation, deterministic single-thread fallback, and profiler hooks.
 - [ ] Backend-neutral scene-to-renderer extraction into an immutable per-frame render snapshot with mesh/material/light/camera handles and no editor or backend-native types.
-- [ ] Shared scene-shader portability path with deterministic DXIL and SPIR-V output, reflected RHI layouts, backend convention validation, caching, and diagnostics; Slang/HLSL-style authoring remains the planned direction.
+
+### Phase 3C: Portable GPU Execution
+
+- [ ] Shared asynchronous scene-shader portability path with deterministic DXIL and SPIR-V output, reflected RHI layouts, backend convention validation, versioned caching, and diagnostics; Slang/HLSL-style authoring remains the planned direction.
 - [ ] Vulkan `Engine::RHI::Device` resources and command submission for the scene viewport, using the wrapped `nvrhi::DeviceHandle`; keep raw Vulkan confined to bootstrap, WSI/presentation, and ImGui.
 - [ ] Frame/render graph construction: pass registration with declared resource reads/writes, automatic resource lifetime tracking, dependency resolution and pass ordering, and barrier/queue-transition insertion derived from the graph.
 - [ ] Frame/render graph execution and real-workflow integration: bind imported/physical resources, invoke pass callbacks, record RHI barriers and commands, submit queue dependencies, retire frame contexts by GPU completion, and drive a representative multi-pass scene viewport.
 - [ ] Transient resource allocation and reuse from render-graph lifetimes.
+- [ ] Multithreaded render preparation and command recording driven by the CPU task graph and compiled render graph, with deterministic single-thread validation mode.
 - [ ] Presentation pacing and measurement: DXGI waitable swapchain profiles, capability-gated Vulkan present timing, and separate app/present/display telemetry.
 - [x] HLSL shader compilation pipeline through the D3D12 RHI; Slang remains a future portability option.
 - [ ] Live D3D12 pipeline rebuild after shader source changes.
 - [ ] D3D12 timestamp query heap recording and resolve.
+
+### Phase 3D: Scene Resources And Asset Inputs
+
 - [ ] Scene mesh/index/constant/structured-buffer integration beyond the prototype draw, populated from the render snapshot through `Engine::RHI`.
 - [ ] Texture upload, samplers, mip generation.
+- [ ] KTX2/Basis texture import and deterministic target cooking: versioned `TextureAsset` metadata, validated libktx boundary, `DesktopBC`/`Astc`/`RGBAFallback` artifacts, color-space/role rules, and headless fixtures.
 - [ ] Descriptor/sampler and read-only bindless table model with declared capacities, error resources, GPU-retired updates, writable-resource rules, and a capability-gated bounded fallback.
+
+### Phase 3E: Conventional Renderer Baseline
+
 - [ ] Forward+/clustered light grid prototype.
+- [ ] Scene-referred HDR color pipeline with calibrated exposure, a neutral baseline tone mapper, and grading/LUTs applied only after tone mapping.
+- [ ] Photometric light units and exposure/debug readouts used by the actual Phase 3 lights and material validation path.
 - [ ] Basic PBR shading with material IDs.
 - [ ] Directional, point, and spot lights.
-- [ ] Shadow map prototype.
+- [ ] Stable shadow-map base with explicit caster/material modes and capture/debug visibility; advanced receiver-aware exclusions remain Phase 9.
 - [ ] Basic sky/atmosphere pass producing a visible sky and the lighting inputs required by the Phase 3 scene.
 - [ ] Debug draw and overlays.
 - [ ] Render-graph and scene-pass capture labels readable in RenderDoc/PIX/Nsight on every backend claimed by the item.
+
+### Phase 3F: Platform Qualification Gate
+
 - [ ] Production macOS renderer qualification after the shared Vulkan scene and render-graph paths exist: validate representative resources, commands, shaders, captures, packaging, profiling, and fallbacks through MoltenVK/NVRHI, or implement native Metal where measured gaps justify it.
 
 Exit criteria:
 
 - Simple scenes render with mesh materials, camera, lights, and shadows.
+- The representative scene uses the shared render snapshot, portable shader contract, `Engine::RHI`, and executable render graph on every backend/device class claimed by the phase wording.
+- CPU task scheduling, render preparation, command recording, GPU retirement, and transient reuse are observable and have deterministic validation modes.
 - GPU captures are readable.
 - Editor viewport is backed by the renderer, not special editor drawing.
 
@@ -225,14 +258,14 @@ Goal: establish the engine's motion-clarity promise before advanced ray features
 
 Required:
 
-- [ ] MSAA or analytic/fractional coverage strategy for edges.
+- [ ] Pass-level MSAA or analytic/fractional coverage strategy with declared pixel/sample-frequency behavior and resolves that preserve material IDs, normals, roughness, lighting, AO, and edge coverage.
 - [ ] Alpha-to-coverage path for masked materials.
 - [ ] SMAA/CMAA-style spatial cleanup.
 - [ ] Specular antialiasing and roughness remapping.
 - [ ] Correct mip selection and anisotropic filtering.
 - [ ] Normal-map filtering.
-- [ ] Stable LOD transition manager.
-- [ ] Motion clarity test scenes.
+- [ ] Stable LOD transition manager for conventional meshes and impostor/card swaps; Phase 7 extends it to virtual-geometry clusters.
+- [ ] Motion-clarity suite covering camera pans/cuts, thin geometry, foliage, alpha masks, high-contrast specular, normal/roughness maps, and LOD changes at 30/60/90/120 Hz without temporal accumulation.
 - [ ] Native-resolution validation captures.
 
 Exit criteria:
@@ -252,6 +285,8 @@ Required:
 - [ ] Optional dual specular lobe.
 - [ ] Material class system: default, skin, eye, hair, cloth, foliage, glass, emissive.
 - [ ] Compact BRDF parameter buffers.
+- [ ] Material texture-set compilation and channel packing by color space, mip behavior, compression tolerance, residency, and pass usage, including separate coverage/opacity data when depth/shadow passes do not need base-color RGB.
+- [ ] CPU/GPU BRDF reference tests for finite outputs, grazing angles, energy behavior, parameter defaults/ranges, and Lambert-only debug fallback.
 - [ ] Material calibration scene.
 - [ ] OpenPBR/MaterialX import mapping.
 - [ ] Tone mapper comparison: GT-style, AgX, ACES/filmic, Khronos PBR Neutral.
@@ -270,11 +305,14 @@ Required:
 - [ ] Visibility buffer pass with `R32_UINT` ID.
 - [ ] `drawClusterId:25 | localTriangleId:7` decode.
 - [ ] `DrawClusterBuffer` and material table.
+- [ ] Visible-attribute reconstruction: barycentric or functional fallback reconstruction, vertex/UV fetch, derivative recovery, and explicit texture gradients validated across D3D12 and Vulkan.
 - [ ] Material resolve worklists sized for worst case.
 - [ ] Compact G-buffer outputs.
 - [ ] Selected occluder prepass: depth/coverage/visibility only.
 - [ ] Two-pass HZB culling.
 - [ ] Coverage-aware carve-outs for foliage/hair/masked materials.
+- [ ] Clustered Forward+ special/transparent pass reusing the Phase 3 light grid and Phase 5 material model for glass, eyes, hair, particles/VFX, and other visibility-buffer exclusions.
+- [ ] Texture and geometry residency feedback emitted by visibility/material resolve for the Phase 7 streamers.
 - [ ] Debug views: visibility ID, material ID, overdraw, quad waste.
 
 Exit criteria:
@@ -295,7 +333,9 @@ Required:
 - [ ] Versioned engine-native mesh cluster/page format with dependency metadata, integrity validation, and deterministic cook outputs.
 - [ ] Coarse resident fallback pages.
 - [ ] Asynchronous mesh-page residency system with feedback, upload, eviction, GPU-safe retirement, and nearest-resident fallback; render threads never block on storage/decompression.
-- [ ] Runtime GPU culling and LOD selection.
+- [ ] Virtual-texture page generation and runtime residency: mip tails, visibility/material feedback, async transcode/decompression/upload, GPU-safe page-table updates, eviction, and neutral fallbacks.
+- [ ] Portable runtime GPU culling and LOD selection through compute plus indirect indexed draws, with mesh shaders only as a capability-gated fast path.
+- [ ] GPU-driven instancing and selective static assembly/material consolidation that preserves occlusion bounds, streaming cells, lighting zones, LOD independence, and material quality.
 - [ ] Stable ordered/complementary LOD transitions.
 - [ ] Asset-class policies: static scans, foliage, skinned meshes, hair, wires, debris.
 - [ ] DGF/DGFS evaluation path.
@@ -312,13 +352,15 @@ Goal: create a stable indirect-lighting backbone for static and dynamic objects.
 
 Required:
 
-- [ ] Photometric light units and exposure debug.
-- [ ] Basic sky/sun model.
+- [ ] Production daylight controller and sky/sun/atmosphere model extending the calibrated Phase 3 lighting/color foundation.
 - [ ] Adaptive probe volume.
 - [ ] Unified `IndirectLightingSample`.
 - [ ] Static/dynamic same-pass indirect lighting.
+- [ ] Spatial GTAO/XeGTAO-style diffuse AO with bent normals, specular occlusion, confidence, and comparison against ray-traced ground truth; no temporal dependency.
+- [ ] Current-frame screen-space GI/contact-bounce candidate with validity/confidence and probe/sky/ray fallback for missing data.
 - [ ] Probe leak/confidence debug views.
 - [ ] Portal/zone GI blending.
+- [ ] Spatially resolved volumetric fog/froxel lighting using the same sky/probe/zone data, with no temporal baseline and a layout fallback when 2D views of 3D images are unavailable.
 - [ ] Directional lightmap support.
 - [ ] Versioned baked-lighting/probe data format plus a single-time preview/final bake or validated import path before time-keyed variants.
 - [ ] Adaptive time-of-day keyframe baker.
@@ -339,6 +381,9 @@ Required:
 - [ ] `Engine::RHI` ray-tracing capability and resource contracts: acceleration structures, build/update/compaction, ray pipeline/shader-table binding, synchronization, diagnostics, and stable raster/probe fallback when unavailable.
 - [ ] BLAS/TLAS object-class update policy.
 - [ ] Ray-budget classifier.
+- [ ] Receiver-aware shadow caster culling, per-material/object culling modes, proxy shadows, conservative exclusions, and reason/cost diagnostics.
+- [ ] BRDF-aware current-frame stochastic SSR candidate pass with hierarchical traversal, spatial resolve, confidence, and explicit miss classification.
+- [ ] Planar/reflected-scene path for bounded hero mirrors, water, glasses, and cinematics where it is cheaper or more reliable than full-rate rays.
 - [ ] Sparse RT shadow residuals.
 - [ ] Sparse RT reflection miss fill.
 - [ ] Sparse RT AO/GI residuals.
@@ -424,6 +469,7 @@ Required:
 - [ ] First playable workflow.
 - [ ] Visual style workflow.
 - [ ] Asset import workflow.
+- [ ] USD/OpenAssetIO editor/studio pipeline evaluation for asset resolution, variants, and DCC workflows; shipping runtime data remains engine-cooked.
 - [ ] Lighting bake/probe workflow.
 - [ ] Motion pack workflow.
 - [ ] Performance workflow.
@@ -470,11 +516,13 @@ Required:
 - [ ] Asset size and texture residency views.
 - [ ] Overdraw and quad-waste views.
 - [ ] Draw/dispatch/material-bin counters.
+- [ ] Presentation telemetry validation with engine markers plus PresentMon or platform-equivalent evidence that distinguishes app, present, GPU-complete, and display cadence.
 - [ ] Shadow caster cost view.
 - [ ] Ray density/confidence views.
 - [ ] External capture docs for Intel GPA, Nsight, RGP/RMV/GPU Detective, PIX, RenderDoc.
 - [ ] Golden image tests.
 - [ ] Automated render scene suite.
+- [ ] Offline/path-traced reference comparisons for material response, lighting, shadows, reflections, AO/GI, and motion-clarity failure scenes.
 
 Exit criteria:
 
@@ -496,6 +544,8 @@ Required:
 - [ ] Production crash reporting and logs: packaged Player coverage, symbols/build identity, actionable reports, privacy/retention policy, and platform-appropriate collection; Phase 0 local crash files are the foundation only.
 - [ ] Settings/scalability system.
 - [ ] Optional DLSS/XeSS/FSR integrations as scalability features.
+- [ ] Optional Work Graphs/device-generated commands, SER, Cooperative Vector, and neural/vendor fast-path evaluations with ordinary portable execution and content fallbacks.
+- [ ] Backend-2 evaluation after render-graph conformance exists: NRI versus a custom Vulkan/D3D12 path, with no migration based on feature lists alone.
 - [ ] Steam/storefront demo packaging.
 
 Exit criteria:

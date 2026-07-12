@@ -67,6 +67,30 @@ This pass read every workspace-authored Markdown file and compared the roadmap c
 
 The following areas are roadmapped but are not yet detailed enough to implement without a later design pass: shipping package/cooker format, Player packaging and clean-machine runtime dependencies, networking/replication, script/plugin/asset trust and sandboxing, save/API migration, marketplace packages, and contribution governance. They are not current Phase 3 blockers, but future agents must not infer designs from the phase titles alone.
 
+## 2026-07-12 Technical Roadmap Coverage Pass
+
+The renderer contracts were traced feature-by-feature into `PLAN.md`; the durable matrix is [TECHNICAL_ROADMAP_COVERAGE.md](TECHNICAL_ROADMAP_COVERAGE.md).
+
+Phase 3 remains larger than later phases because it owns cross-backend foundations, not because it is intended as one coding slice. It is divided into six ordered sub-milestones: backend qualification, CPU/frame data, portable GPU execution, scene resources/assets, conventional rendering, and platform qualification.
+
+The pass added missing prerequisites or consumers for:
+
+- large-world/camera-relative rendering;
+- a CPU frame task graph distinct from the GPU render graph;
+- asynchronous portable shaders and multithreaded command recording;
+- KTX2/Basis cooking and later virtual-texture streaming;
+- calibrated HDR/exposure/photometric lighting before BRDF calibration;
+- pass-level coverage and multi-refresh-rate motion tests;
+- BRDF reference validation and material texture-set packing;
+- visibility attribute/barycentric fallback and explicit-gradient reconstruction;
+- Forward+ transparent/special-material routing and residency feedback;
+- GPU instancing/selective merging;
+- spatial GTAO/SSGI and same-frame volumetrics;
+- stochastic SSR, planar reflections, receiver-aware shadows, and ray fallbacks;
+- USD/OpenAssetIO workflow evaluation, presentation telemetry, offline reference scenes, optional GPU fast paths, and backend-2 evaluation.
+
+Later non-renderer phases are not assumed complete designs merely because their checklists are shorter. The roadmap now requires task-relevant architecture expansion before implementation of animation, physics, automation, game systems/networking, or packaging.
+
 ## 2026 Research Addendum
 
 The deeper research pass did not overturn the architecture. It added extension points:

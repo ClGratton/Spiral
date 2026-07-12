@@ -126,6 +126,8 @@ jobs:
       - name: Run native macOS MoltenVK presentation smoke
         if: runner.os == 'macOS'
         timeout-minutes: 5
+        env:
+          VULKAN_SMOKE_ITERATIONS: 3
         run: |
           uname -m
           file ./bin/Debug-macosx-x86_64-gmake/Editor/Editor
@@ -202,6 +204,6 @@ jobs:
         with:
           name: ${{ runner.os }}-vulkan-smoke-log
           path: |
-            output/test-logs/vulkan-smoke-*-gmake.log
+            output/test-logs/vulkan-smoke-*-gmake*.log
             output/crashes/*.txt
           if-no-files-found: ignore

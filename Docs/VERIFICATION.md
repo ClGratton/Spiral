@@ -82,6 +82,14 @@ Linux/macOS use:
 bash Scripts/TestVulkan.sh Debug gmake
 ```
 
+Repeat the same full launch contract when investigating presentation reliability:
+
+```bash
+VULKAN_SMOKE_ITERATIONS=3 bash Scripts/TestVulkan.sh Debug gmake --skip-build
+```
+
+The Vulkan smoke requests a resize once, then exits successfully only when the currently tracked recreated swapchain generation has completed an actual present. Its frame limit is a bounded failure deadline, not the success condition. Hosted macOS CI runs three complete launches and uploads every attempt log.
+
 A backend claim requires that backend's smoke or a stronger representative scene/capture test. A presentation smoke does not qualify scene-resource rendering. A WARP/lavapipe/llvmpipe/Apple-Paravirtual result must be labeled as that device class and must not be generalized to physical production hardware.
 
 ## Editor And Asset Workflows

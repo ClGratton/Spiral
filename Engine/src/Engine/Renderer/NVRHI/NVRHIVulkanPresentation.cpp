@@ -157,6 +157,7 @@ namespace Engine
 #if defined(GE_HAS_NVRHI_VULKAN)
             m_Timing = {};
             m_Timing.SwapchainGeneration = m_SwapchainGeneration;
+            m_Timing.LastSuccessfulPresentGeneration = m_LastSuccessfulPresentGeneration;
             if (!m_Initialized || !drawData)
                 return;
 
@@ -255,6 +256,8 @@ namespace Engine
             else if (result == VK_SUCCESS)
             {
                 m_Timing.PresentSucceeded = true;
+                m_LastSuccessfulPresentGeneration = m_SwapchainGeneration;
+                m_Timing.LastSuccessfulPresentGeneration = m_LastSuccessfulPresentGeneration;
                 ++m_SuccessfulPresentCount;
             }
             else
@@ -328,6 +331,7 @@ namespace Engine
         RendererPresentationTiming m_Timing;
         u64 m_SuccessfulPresentCount = 0;
         u64 m_SwapchainGeneration = 0;
+        u64 m_LastSuccessfulPresentGeneration = 0;
         bool m_Initialized = false;
     };
 

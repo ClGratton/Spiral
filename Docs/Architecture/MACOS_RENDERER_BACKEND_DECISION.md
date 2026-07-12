@@ -97,6 +97,10 @@ The later documentation-only [CI run 29209877228](https://github.com/ClGratton/S
 
 No engine source changed between the earlier passing head and this documentation-only commit, so this is evidence of a repeatability/timing weakness in the smoke contract rather than evidence that the portability-feature query changed. The subsequent [final-head CI run 29210246689](https://github.com/ClGratton/Spiral/actions/runs/29210246689) passed all jobs, including the same macOS smoke, confirming that the failure is intermittent rather than permanent. The roadmap keeps the narrow functional presentation proof checked because completed runs demonstrated it, and adds a separate unchecked item to make the hosted resize/post-resize-present smoke reliable across repeated runs.
 
+The root cause is now identified. The smoke requested its resize after frame zero, allowed only four frames, and judged only the final frame's transient `PresentSucceeded` flag. MoltenVK can report several framebuffer extents while the hosted window settles, so one logical resize can produce several swapchain generations. The deadline could therefore land immediately after the last recreation, before that generation had a later successful present. This was a fixed-frame/final-frame validation race, not a raw-Vulkan or NVRHI-device ownership change.
+
+The correction makes completion state-based. Presentation timing now retains the generation of the last successful present; the smoke exits successfully only when that generation equals the current post-resize generation. Sixty frames are a bounded failure deadline, not a success condition. Hosted macOS CI also launches the complete strict smoke three times so a one-off pass cannot close the repeatability item. Action item 10 remains unchecked until a hosted run proves all three attempts and the required NVRHI, portability, resize, and later-present markers.
+
 Impact attribution for the unsupported fields:
 
 | Unsupported feature | Roadmap impact |

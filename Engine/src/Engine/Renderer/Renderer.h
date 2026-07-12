@@ -49,6 +49,7 @@ namespace Engine
         bool PresentSucceeded = false;
         u32 MaximumFrameLatency = 0;
         u64 SwapchainGeneration = 0;
+        u64 LastSuccessfulPresentGeneration = 0;
         double FrameLatencyWaitMilliseconds = 0.0;
         double PresentMilliseconds = 0.0;
     };

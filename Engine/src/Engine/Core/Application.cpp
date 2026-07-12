@@ -115,6 +115,17 @@ namespace Engine
                 Log::Info("Vulkan render smoke requested window resize to ", resizedWidth, "x", resizedHeight);
             }
 
+            if (m_Specification.CommandLineArgs.HasFlag("--vulkan-render-smoke"))
+            {
+                const RendererPresentationTiming& presentation = Renderer::GetLastFrameTiming().Presentation;
+                if (Renderer::GetActiveBackend() == RendererBackend::NVRHIVulkan
+                    && presentation.SwapchainGeneration >= 2
+                    && presentation.LastSuccessfulPresentGeneration == presentation.SwapchainGeneration)
+                {
+                    Close();
+                }
+            }
+
             ++m_FrameIndex;
             if (m_Specification.MaxFrames != 0 && m_FrameIndex >= m_Specification.MaxFrames)
                 Close();
@@ -124,9 +135,15 @@ namespace Engine
         {
             const RendererFrameTiming& timing = Renderer::GetLastFrameTiming();
             if (Renderer::GetActiveBackend() != RendererBackend::NVRHIVulkan
-                || !timing.Presentation.PresentSucceeded
-                || timing.Presentation.SwapchainGeneration < 2)
+                || timing.Presentation.SwapchainGeneration < 2
+                || timing.Presentation.LastSuccessfulPresentGeneration != timing.Presentation.SwapchainGeneration)
+            {
+                Log::Error("Vulkan render smoke stopped at swapchain generation ",
+                    timing.Presentation.SwapchainGeneration,
+                    " with last successful present generation ",
+                    timing.Presentation.LastSuccessfulPresentGeneration);
                 throw std::runtime_error("Vulkan render smoke did not complete a successful presentation after resize");
+            }
             Log::Info("Vulkan render smoke verified native ImGui presentation after resize");
         }
 

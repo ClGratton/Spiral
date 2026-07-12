@@ -4,6 +4,7 @@ set -euo pipefail
 CONFIGURATION="${1:-Debug}"
 ACTION="${2:-gmake}"
 BUILD_MODE="${3:-build}"
+ITERATIONS="${VULKAN_SMOKE_ITERATIONS:-1}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 case "$CONFIGURATION" in
@@ -16,6 +17,10 @@ case "$ACTION" in
 esac
 if [[ "$BUILD_MODE" != "build" && "$BUILD_MODE" != "--skip-build" ]]; then
     echo "Unsupported build mode: $BUILD_MODE" >&2
+    exit 1
+fi
+if [[ ! "$ITERATIONS" =~ ^[1-9][0-9]*$ ]]; then
+    echo "VULKAN_SMOKE_ITERATIONS must be a positive integer: $ITERATIONS" >&2
     exit 1
 fi
 
@@ -45,7 +50,7 @@ if [[ ! -x "$EDITOR" ]]; then
 fi
 
 LOG_DIR="$ROOT/output/test-logs"
-LOG_FILE="$LOG_DIR/vulkan-smoke-${SYSTEM_DIR}-${ACTION}.log"
+LOG_BASE="$LOG_DIR/vulkan-smoke-${SYSTEM_DIR}-${ACTION}"
 mkdir -p "$LOG_DIR"
 
 if [[ "$SYSTEM_DIR" == "macosx" ]]; then
@@ -65,21 +70,6 @@ if [[ "$SYSTEM_DIR" == "macosx" ]]; then
     fi
 fi
 
-set +e
-(cd "$ROOT" && "$EDITOR" --vulkan-render-smoke) 2>&1 | tee "$LOG_FILE"
-STATUS=${PIPESTATUS[0]}
-set -e
-if [[ $STATUS -ne 0 ]]; then
-    for CRASH_REPORT in "$ROOT"/output/crashes/*.txt; do
-        if [[ -f "$CRASH_REPORT" ]]; then
-            echo "Vulkan smoke crash report: $CRASH_REPORT" >&2
-            sed -n '1,240p' "$CRASH_REPORT" >&2
-        fi
-    done
-    echo "Vulkan render smoke failed with exit code $STATUS." >&2
-    exit "$STATUS"
-fi
-
 REQUIRED_MARKERS=(
     "NVRHI Vulkan device created on adapter:"
     "Renderer initialized with backend: NVRHI Vulkan"
@@ -97,11 +87,34 @@ if [[ "$SYSTEM_DIR" == "macosx" ]]; then
     )
 fi
 
-for MARKER in "${REQUIRED_MARKERS[@]}"; do
-    if ! grep -Fq "$MARKER" "$LOG_FILE"; then
-        echo "Vulkan render smoke did not emit required marker: $MARKER" >&2
-        exit 1
+for ((ATTEMPT = 1; ATTEMPT <= ITERATIONS; ++ATTEMPT)); do
+    LOG_FILE="$LOG_BASE.log"
+    if [[ $ITERATIONS -gt 1 ]]; then
+        LOG_FILE="$LOG_BASE-attempt-$ATTEMPT.log"
     fi
+
+    echo "Vulkan render smoke attempt $ATTEMPT/$ITERATIONS"
+    set +e
+    (cd "$ROOT" && "$EDITOR" --vulkan-render-smoke) 2>&1 | tee "$LOG_FILE"
+    STATUS=${PIPESTATUS[0]}
+    set -e
+    if [[ $STATUS -ne 0 ]]; then
+        for CRASH_REPORT in "$ROOT"/output/crashes/*.txt; do
+            if [[ -f "$CRASH_REPORT" ]]; then
+                echo "Vulkan smoke crash report: $CRASH_REPORT" >&2
+                sed -n '1,240p' "$CRASH_REPORT" >&2
+            fi
+        done
+        echo "Vulkan render smoke failed with exit code $STATUS on attempt $ATTEMPT/$ITERATIONS." >&2
+        exit "$STATUS"
+    fi
+
+    for MARKER in "${REQUIRED_MARKERS[@]}"; do
+        if ! grep -Fq "$MARKER" "$LOG_FILE"; then
+            echo "Vulkan render smoke did not emit required marker on attempt $ATTEMPT/$ITERATIONS: $MARKER" >&2
+            exit 1
+        fi
+    done
 done
 
-echo "Vulkan render smoke passed: $CONFIGURATION ($ACTION)"
+echo "Vulkan render smoke passed $ITERATIONS iteration(s): $CONFIGURATION ($ACTION)"
