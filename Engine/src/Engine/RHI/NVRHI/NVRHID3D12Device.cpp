@@ -1107,10 +1107,24 @@ namespace Engine::RHI
                 adapterInfo.AdapterName = m_AdapterName;
                 adapterInfo.NativeBackendName = "D3D12";
 
-                Log::Info("NVRHI D3D12 device created on adapter: ", m_AdapterName);
-                Log::Info("D3D12 capabilities: ray tracing=", m_Capabilities.SupportsRayTracing ? "yes" : "no",
-                    ", mesh shaders=", m_Capabilities.SupportsMeshShaders ? "yes" : "no",
-                    ", cooperative vectors=", m_Capabilities.SupportsNeuralShaders ? "yes" : "no");
+                Log::Info("NVRHI D3D12 device created on adapter: ", m_AdapterName,
+                    " (type=", ToString(m_Capabilities.Identity.Type),
+                    ", vendor=", m_Capabilities.Identity.VendorId,
+                    ", device=", m_Capabilities.Identity.DeviceId,
+                    ", qualification=", ToString(m_Capabilities.Qualification), ")");
+                for (u32 featureIndex = 0; featureIndex < static_cast<u32>(DeviceFeature::Count); ++featureIndex)
+                {
+                    const DeviceFeature feature = static_cast<DeviceFeature>(featureIndex);
+                    const CapabilityState& state = m_Capabilities.GetFeature(feature);
+                    Log::Info("D3D12 capability state: ", ToString(feature),
+                        " advertised=", state.Advertised ? "yes" : "no",
+                        ", enabled=", state.Enabled ? "yes" : "no",
+                        ", implemented=", state.Implemented ? "yes" : "no",
+                        ", exercised=", state.Exercised ? "yes" : "no",
+                        state.Detail.empty() ? "" : ", detail=", state.Detail);
+                }
+                for (const std::string& fallback : m_Capabilities.Fallbacks)
+                    Log::Info("D3D12 capability fallback: ", fallback);
 
                 return true;
             }
@@ -1371,6 +1385,19 @@ namespace Engine::RHI
 
                 m_Adapter = adapter;
                 m_AdapterName = WideToUtf8(description.Description);
+                m_AdapterVendorId = description.VendorId;
+                m_AdapterDeviceId = description.DeviceId;
+                m_AdapterDedicatedVideoMemoryBytes = static_cast<u64>(description.DedicatedVideoMemory);
+                m_AdapterFlags = description.Flags;
+
+                LARGE_INTEGER driverVersion {};
+                if (SUCCEEDED(adapter->CheckInterfaceSupport(__uuidof(IDXGIDevice), &driverVersion)))
+                {
+                    m_AdapterDriverVersion = std::to_string(HIWORD(driverVersion.HighPart)) + "."
+                        + std::to_string(LOWORD(driverVersion.HighPart)) + "."
+                        + std::to_string(HIWORD(driverVersion.LowPart)) + "."
+                        + std::to_string(LOWORD(driverVersion.LowPart));
+                }
                 return true;
             }
 
@@ -1508,13 +1535,67 @@ namespace Engine::RHI
             void QueryCapabilities()
             {
                 m_Capabilities.ActiveBackend = Backend::NVRHID3D12;
-                m_Capabilities.SupportsRayTracing =
+                m_Capabilities.ProfileName = "Phase 3 D3D12 Bootstrap V1";
+                m_Capabilities.Qualification = QualificationLevel::Bootstrap;
+                m_Capabilities.Identity.Name = m_AdapterName;
+                m_Capabilities.Identity.DriverVersion = m_AdapterDriverVersion;
+                m_Capabilities.Identity.VendorId = m_AdapterVendorId;
+                m_Capabilities.Identity.DeviceId = m_AdapterDeviceId;
+                m_Capabilities.Identity.DedicatedVideoMemoryBytes = m_AdapterDedicatedVideoMemoryBytes;
+
+                if ((m_AdapterFlags & DXGI_ADAPTER_FLAG_SOFTWARE) != 0)
+                {
+                    m_Capabilities.Identity.Type = AdapterType::Software;
+                    m_Capabilities.Fallbacks.emplace_back(
+                        "No hardware adapter met the D3D12 bootstrap minimum; selected the WARP software adapter");
+                }
+                else if ((m_AdapterFlags & DXGI_ADAPTER_FLAG_REMOTE) != 0)
+                    m_Capabilities.Identity.Type = AdapterType::Virtual;
+                else
+                {
+                    D3D12_FEATURE_DATA_ARCHITECTURE architecture {};
+                    architecture.NodeIndex = 0;
+                    m_Capabilities.Identity.Type = SUCCEEDED(m_Device->CheckFeatureSupport(
+                        D3D12_FEATURE_ARCHITECTURE, &architecture, sizeof(architecture))) && architecture.UMA
+                        ? AdapterType::Integrated
+                        : AdapterType::Discrete;
+                }
+
+                m_Capabilities.Queues.Graphics = m_GraphicsQueue.Get() != nullptr;
+                m_Capabilities.Queues.Compute = m_ComputeQueue.Get() != nullptr;
+                m_Capabilities.Queues.Copy = m_CopyQueue.Get() != nullptr;
+                m_Capabilities.Queues.Present = m_GraphicsQueue.Get() != nullptr;
+                m_Capabilities.Queues.DedicatedCompute = m_ComputeQueue.Get() != nullptr;
+                m_Capabilities.Queues.DedicatedCopy = m_CopyQueue.Get() != nullptr;
+
+                const bool rayTracingAdvertised =
                     m_NVRHIDevice->queryFeatureSupport(nvrhi::Feature::RayTracingAccelStruct)
                     && m_NVRHIDevice->queryFeatureSupport(nvrhi::Feature::RayTracingPipeline);
-                m_Capabilities.SupportsMeshShaders = m_NVRHIDevice->queryFeatureSupport(nvrhi::Feature::Meshlets);
-                m_Capabilities.SupportsWorkGraphs = false;
-                m_Capabilities.SupportsNeuralShaders = m_NVRHIDevice->queryFeatureSupport(nvrhi::Feature::CooperativeVectorInferencing);
-                m_Capabilities.SupportsTimestamps = true;
+                const bool meshShadersAdvertised = m_NVRHIDevice->queryFeatureSupport(nvrhi::Feature::Meshlets);
+                const bool neuralShadersAdvertised =
+                    m_NVRHIDevice->queryFeatureSupport(nvrhi::Feature::CooperativeVectorInferencing);
+
+                m_Capabilities.GetFeature(DeviceFeature::RayTracing) = MakeCapabilityState(
+                    rayTracingAdvertised, false, false, false,
+                    "Reported by NVRHI; no engine ray-tracing path is enabled or implemented");
+                m_Capabilities.GetFeature(DeviceFeature::MeshShaders) = MakeCapabilityState(
+                    meshShadersAdvertised, false, false, false,
+                    "Reported by NVRHI; the renderer retains the future indexed-indirect baseline");
+                m_Capabilities.GetFeature(DeviceFeature::WorkGraphs) = MakeCapabilityState(
+                    false, false, false, false,
+                    "Not queried or enabled by the Phase 3 D3D12 bootstrap profile");
+                m_Capabilities.GetFeature(DeviceFeature::NeuralShaders) = MakeCapabilityState(
+                    neuralShadersAdvertised, false, false, false,
+                    "Reported by NVRHI; no engine neural-shader path is enabled or implemented");
+                m_Capabilities.GetFeature(DeviceFeature::Timestamps) = MakeCapabilityState(
+                    true, false, false, false,
+                    "Native D3D12 timestamp queries are advertised, but RHI recording and resolve remain a stub");
+                m_Capabilities.GetFeature(DeviceFeature::TimelineSynchronization) = MakeCapabilityState(
+                    true, true, true, false,
+                    "D3D12 fence synchronization backs synchronous RHI queue submission; runtime exercise is reported separately");
+                m_Capabilities.GetFeature(DeviceFeature::BufferDeviceAddress) = MakeCapabilityState(
+                    false, false, false, false,
+                    "Not required or queried by the Phase 3 D3D12 bootstrap profile");
             }
 
         private:
@@ -1523,6 +1604,11 @@ namespace Engine::RHI
             NVRHIMessageCallback m_MessageCallback;
             bool m_DebugLayerEnabled = false;
             std::string m_AdapterName = "Unknown Adapter";
+            std::string m_AdapterDriverVersion;
+            u32 m_AdapterVendorId = 0;
+            u32 m_AdapterDeviceId = 0;
+            u64 m_AdapterDedicatedVideoMemoryBytes = 0;
+            u32 m_AdapterFlags = 0;
 
             ComPtr<IDXGIFactory4> m_Factory;
             ComPtr<IDXGIAdapter1> m_Adapter;

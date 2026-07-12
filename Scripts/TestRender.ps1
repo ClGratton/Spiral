@@ -31,9 +31,22 @@ if (Test-Path $ResolvedCapturePath) {
     Remove-Item -LiteralPath $ResolvedCapturePath
 }
 
-& $Editor --capture-viewport --smoke-test
+$Output = & $Editor --capture-viewport --smoke-test 2>&1 | Tee-Object -Variable RenderLog
 if ($LASTEXITCODE -ne 0) {
     throw "Editor render smoke run failed with exit code $LASTEXITCODE."
+}
+
+$RequiredMarkers = @(
+    "NVRHI D3D12 device created on adapter:",
+    "D3D12 capability state: Ray Tracing advertised=",
+    "D3D12 capability state: Timestamps advertised=yes, enabled=no, implemented=no, exercised=no",
+    "Renderer initialized with backend: NVRHI D3D12"
+)
+$JoinedLog = $RenderLog -join "`n"
+foreach ($Marker in $RequiredMarkers) {
+    if (!$JoinedLog.Contains($Marker)) {
+        throw "D3D12 render smoke did not emit required marker: $Marker"
+    }
 }
 
 if (!(Test-Path $ResolvedCapturePath)) {

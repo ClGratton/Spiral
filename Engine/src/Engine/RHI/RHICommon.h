@@ -81,6 +81,26 @@ namespace Engine::RHI
         return "Unknown";
     }
 
+    inline const char* ToString(Format format)
+    {
+        switch (format)
+        {
+            case Format::Unknown: return "Unknown";
+            case Format::R8Unorm: return "R8_UNORM";
+            case Format::R8G8B8A8Unorm: return "RGBA8_UNORM";
+            case Format::R8G8B8A8UnormSrgb: return "RGBA8_UNORM_SRGB";
+            case Format::R11G11B10Float: return "R11G11B10_FLOAT";
+            case Format::R16G16B16A16Float: return "RGBA16_FLOAT";
+            case Format::R32G32Float: return "RG32_FLOAT";
+            case Format::R32G32B32Float: return "RGB32_FLOAT";
+            case Format::R32G32B32A32Float: return "RGBA32_FLOAT";
+            case Format::R32Uint: return "R32_UINT";
+            case Format::D24UnormS8Uint: return "D24_UNORM_S8_UINT";
+            case Format::D32Float: return "D32_FLOAT";
+        }
+        return "Unknown";
+    }
+
     struct DeviceDescription
     {
         Backend RequestedBackend = Backend::None;

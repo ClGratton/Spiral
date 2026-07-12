@@ -1,5 +1,6 @@
 #include "Engine/Core/Log.h"
 #include "Engine/Jobs/JobSystem.h"
+#include "Engine/RHI/Capability.h"
 #include "Engine/Scene/Scene.h"
 
 #include <atomic>
@@ -132,6 +133,118 @@ namespace
         std::filesystem::remove(path, error);
         return Expect(rejected, "duplicate entity IDs are rejected");
     }
+
+    Engine::RHI::AdapterCandidate MakeCapabilityCandidate(std::string name, Engine::RHI::AdapterType type, std::int64_t score)
+    {
+        using namespace Engine::RHI;
+
+        AdapterCandidate candidate;
+        candidate.CandidateBackend = Backend::NVRHIVulkan;
+        candidate.Identity.Name = std::move(name);
+        candidate.Identity.Type = type;
+        candidate.Queues.Graphics = true;
+        candidate.Queues.Present = true;
+        candidate.ApiMajor = 1;
+        candidate.ApiMinor = 3;
+        candidate.MaximumTextureDimension2D = 8192;
+        candidate.TimelineSynchronization = true;
+        candidate.PerformanceScore = score;
+        candidate.Formats.push_back({
+            Format::R8G8B8A8Unorm,
+            FormatUsage::Sampled | FormatUsage::ColorAttachment | FormatUsage::CopySource,
+            1
+        });
+        candidate.Formats.push_back({ Format::D32Float, FormatUsage::DepthStencil, 1 });
+        return candidate;
+    }
+
+    Engine::RHI::CapabilityProfile MakeBootstrapCapabilityProfile()
+    {
+        using namespace Engine::RHI;
+
+        CapabilityProfile profile;
+        profile.Name = "Test Bootstrap Presentation V1";
+        profile.MinimumApiMajor = 1;
+        profile.MinimumApiMinor = 3;
+        profile.MinimumTextureDimension2D = 4096;
+        profile.RequirePresent = true;
+        profile.RequireCompute = true;
+        profile.RequireCopy = true;
+        profile.RequireTimelineSynchronization = true;
+        profile.RequiredFormats.push_back({ Format::R8G8B8A8Unorm, FormatUsage::ColorAttachment | FormatUsage::CopySource });
+        profile.RequiredFormats.push_back({ Format::D32Float, FormatUsage::DepthStencil });
+        return profile;
+    }
+
+    bool TestCapabilityStateKeepsLifecycleStagesDistinct()
+    {
+        using namespace Engine::RHI;
+
+        const CapabilityState advertisedOnly = MakeCapabilityState(true, false, false, false, "reported by adapter");
+        const CapabilityState implementedWithoutHardware = MakeCapabilityState(false, true, true, true, "portable fallback exists");
+        const CapabilityState exercised = MakeCapabilityState(true, true, true, true, "runtime smoke");
+        return Expect(advertisedOnly.IsValid() && !advertisedOnly.IsUsable(), "advertised support is not treated as enabled or implemented")
+            && Expect(implementedWithoutHardware.IsValid() && !implementedWithoutHardware.Enabled && !implementedWithoutHardware.Exercised,
+                "unadvertised hardware support cannot become enabled or exercised")
+            && Expect(exercised.IsValid() && exercised.IsUsable() && exercised.Exercised,
+                "an exercised feature records all prerequisite lifecycle stages");
+    }
+
+    bool TestCapabilitySelectionRetainsFallbacksAndRejections()
+    {
+        using namespace Engine::RHI;
+
+        CapabilityProfile profile = MakeBootstrapCapabilityProfile();
+        std::vector<AdapterCandidate> candidates;
+        candidates.push_back(MakeCapabilityCandidate("Preferred But Incomplete", AdapterType::Discrete, 100));
+        candidates.back().Queues.Present = false;
+        candidates.push_back(MakeCapabilityCandidate("Integrated Complete", AdapterType::Integrated, 50));
+
+        const AdapterSelectionResult result = EvaluateAdapterCandidates(profile, candidates, "Preferred But Incomplete");
+        return Expect(result.HasSelection() && result.SelectedIndex == 1, "an invalid preferred adapter falls back to a qualified candidate")
+            && Expect(!result.Evaluations[0].Accepted && !result.Evaluations[0].RejectionReasons.empty(),
+                "the preferred adapter rejection reason is retained")
+            && Expect(result.Evaluations[1].Fallbacks.size() == 2,
+                "missing compute and copy queues select explicit graphics-queue fallbacks");
+    }
+
+    bool TestCapabilitySelectionValidatesFormatUsageAndStableRanking()
+    {
+        using namespace Engine::RHI;
+
+        CapabilityProfile profile = MakeBootstrapCapabilityProfile();
+        profile.RequireCompute = false;
+        profile.RequireCopy = false;
+
+        std::vector<AdapterCandidate> candidates;
+        candidates.push_back(MakeCapabilityCandidate("Zulu", AdapterType::Discrete, 100));
+        candidates.push_back(MakeCapabilityCandidate("Alpha", AdapterType::Discrete, 100));
+        candidates.push_back(MakeCapabilityCandidate("Missing Color Usage", AdapterType::Discrete, 1000));
+        candidates.back().Formats[0].Usages = FormatUsage::Sampled;
+
+        const AdapterSelectionResult result = EvaluateAdapterCandidates(profile, candidates);
+        return Expect(result.HasSelection() && result.SelectedIndex == 1, "equal candidates use a stable identity tie-break")
+            && Expect(!result.Evaluations[2].Accepted && !result.Evaluations[2].RejectionReasons.empty(),
+                "format presence without the required usage is rejected");
+    }
+
+    bool TestCapabilitySelectionRejectsApiLimitsAndSynchronization()
+    {
+        using namespace Engine::RHI;
+
+        CapabilityProfile profile = MakeBootstrapCapabilityProfile();
+        profile.RequireCompute = false;
+        profile.RequireCopy = false;
+        AdapterCandidate candidate = MakeCapabilityCandidate("Old Limited Device", AdapterType::Integrated, 10);
+        candidate.ApiMinor = 2;
+        candidate.MaximumTextureDimension2D = 2048;
+        candidate.TimelineSynchronization = false;
+
+        const AdapterSelectionResult result = EvaluateAdapterCandidates(profile, { candidate });
+        return Expect(!result.HasSelection(), "a candidate that misses API, limit, and synchronization requirements is rejected")
+            && Expect(result.Evaluations.size() == 1 && result.Evaluations[0].RejectionReasons.size() == 3,
+                "each independent bootstrap requirement retains a rejection reason");
+    }
 }
 
 int main()
@@ -144,7 +257,11 @@ int main()
         { "Scene round trip", TestSceneRoundTrip },
         { "Scene rejects truncated components", TestSceneRejectsTruncatedComponent },
         { "Scene loads version-one camera", TestSceneLoadsVersionOneCamera },
-        { "Scene rejects duplicate entities", TestSceneRejectsDuplicateEntities }
+        { "Scene rejects duplicate entities", TestSceneRejectsDuplicateEntities },
+        { "Capability state keeps lifecycle stages distinct", TestCapabilityStateKeepsLifecycleStagesDistinct },
+        { "Capability selection retains fallbacks and rejections", TestCapabilitySelectionRetainsFallbacksAndRejections },
+        { "Capability selection validates format usage and stable ranking", TestCapabilitySelectionValidatesFormatUsageAndStableRanking },
+        { "Capability selection rejects API limits and synchronization", TestCapabilitySelectionRejectsApiLimitsAndSynchronization }
     };
 
     size_t failures = 0;

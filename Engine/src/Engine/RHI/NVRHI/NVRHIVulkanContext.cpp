@@ -58,6 +58,19 @@ namespace Engine::RHI
             return false;
         }
 
+        AdapterType ConvertAdapterType(VkPhysicalDeviceType type)
+        {
+            switch (type)
+            {
+                case VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU: return AdapterType::Discrete;
+                case VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU: return AdapterType::Integrated;
+                case VK_PHYSICAL_DEVICE_TYPE_VIRTUAL_GPU: return AdapterType::Virtual;
+                case VK_PHYSICAL_DEVICE_TYPE_CPU: return AdapterType::Cpu;
+                case VK_PHYSICAL_DEVICE_TYPE_OTHER:
+                default: return AdapterType::Unknown;
+            }
+        }
+
         constexpr const char* kPortabilitySubsetExtensionName = "VK_KHR_portability_subset";
     }
 #endif
@@ -179,18 +192,69 @@ namespace Engine::RHI
             if (!CreateNVRHIDevice(enableValidation))
                 return false;
 
-            VkPhysicalDeviceProperties properties {};
-            VULKAN_HPP_DEFAULT_DISPATCHER.vkGetPhysicalDeviceProperties(m_PhysicalDevice, &properties);
             adapterInfo.Available = true;
             adapterInfo.HasNativeDevice = true;
-            adapterInfo.AdapterName = properties.deviceName;
+            adapterInfo.AdapterName = m_SelectedProperties.deviceName;
             adapterInfo.NativeBackendName = "Vulkan";
 
             m_Capabilities.ActiveBackend = Backend::NVRHIVulkan;
-            m_Capabilities.SupportsRayTracing = m_NVRHIDevice->queryFeatureSupport(nvrhi::Feature::RayTracingAccelStruct)
+            m_Capabilities.ProfileName = "Vulkan 1.3 Bootstrap Presentation";
+            m_Capabilities.Identity.Name = m_SelectedProperties.deviceName;
+            m_Capabilities.Identity.DriverVersion =
+                "raw Vulkan driverVersion " + std::to_string(m_SelectedProperties.driverVersion);
+            m_Capabilities.Identity.VendorId = m_SelectedProperties.vendorID;
+            m_Capabilities.Identity.DeviceId = m_SelectedProperties.deviceID;
+            m_Capabilities.Identity.Type = ConvertAdapterType(m_SelectedProperties.deviceType);
+            m_Capabilities.Queues.Graphics = (m_SelectedQueueProperties.queueFlags & VK_QUEUE_GRAPHICS_BIT) != 0;
+            m_Capabilities.Queues.Compute = (m_SelectedQueueProperties.queueFlags & VK_QUEUE_COMPUTE_BIT) != 0;
+            m_Capabilities.Queues.Copy = (m_SelectedQueueProperties.queueFlags & VK_QUEUE_TRANSFER_BIT) != 0;
+            m_Capabilities.Queues.Present = true;
+            m_Capabilities.Qualification = QualificationLevel::Bootstrap;
+
+            const bool nvrhiRayTracingAdvertised =
+                m_NVRHIDevice->queryFeatureSupport(nvrhi::Feature::RayTracingAccelStruct)
                 && m_NVRHIDevice->queryFeatureSupport(nvrhi::Feature::RayTracingPipeline);
-            m_Capabilities.SupportsMeshShaders = m_NVRHIDevice->queryFeatureSupport(nvrhi::Feature::Meshlets);
-            m_Capabilities.SupportsNeuralShaders = m_NVRHIDevice->queryFeatureSupport(nvrhi::Feature::CooperativeVectorInferencing);
+            const bool nvrhiMeshShadersAdvertised = m_NVRHIDevice->queryFeatureSupport(nvrhi::Feature::Meshlets);
+            const bool nvrhiNeuralShadersAdvertised =
+                m_NVRHIDevice->queryFeatureSupport(nvrhi::Feature::CooperativeVectorInferencing);
+            m_Capabilities.GetFeature(DeviceFeature::RayTracing) = MakeCapabilityState(
+                nvrhiRayTracingAdvertised, false, false, false,
+                "NVRHI advertisement only; the bootstrap profile does not enable or implement ray tracing");
+            m_Capabilities.GetFeature(DeviceFeature::MeshShaders) = MakeCapabilityState(
+                nvrhiMeshShadersAdvertised, false, false, false,
+                "NVRHI advertisement only; the bootstrap profile does not enable or implement mesh shaders");
+            m_Capabilities.GetFeature(DeviceFeature::WorkGraphs) = MakeCapabilityState(
+                false, false, false, false, "No Vulkan work-graph path is selected by the bootstrap profile");
+            m_Capabilities.GetFeature(DeviceFeature::NeuralShaders) = MakeCapabilityState(
+                nvrhiNeuralShadersAdvertised, false, false, false,
+                "NVRHI advertisement only; the bootstrap profile does not enable or implement neural shaders");
+            m_Capabilities.GetFeature(DeviceFeature::Timestamps) = MakeCapabilityState(
+                m_SelectedQueueProperties.timestampValidBits > 0,
+                m_SelectedQueueProperties.timestampValidBits > 0,
+                false,
+                false,
+                "Selected queue timestampValidBits=" + std::to_string(m_SelectedQueueProperties.timestampValidBits)
+                    + "; Vulkan timestamp recording is not implemented or exercised");
+            m_Capabilities.GetFeature(DeviceFeature::TimelineSynchronization) = MakeCapabilityState(
+                m_TimelineSemaphoreAdvertised, true, true, false,
+                "Required and enabled for the NVRHI Vulkan bootstrap; no focused timeline exercise is recorded yet");
+            m_Capabilities.GetFeature(DeviceFeature::BufferDeviceAddress) = MakeCapabilityState(
+                m_BufferDeviceAddressAdvertised,
+                m_BufferDeviceAddressEnabled,
+                false,
+                false,
+                m_BufferDeviceAddressAdvertised
+                    ? "Advertised but deliberately not enabled: the bootstrap profile has no implemented consumer"
+                    : "Not advertised by the selected Vulkan device");
+
+            if (m_Capabilities.Queues.Compute)
+                m_Capabilities.Fallbacks.emplace_back("Compute work uses the selected graphics queue; no dedicated compute queue is enabled");
+            else
+                m_Capabilities.Fallbacks.emplace_back("No compute queue is enabled by the bootstrap presentation profile");
+            if (m_Capabilities.Queues.Copy)
+                m_Capabilities.Fallbacks.emplace_back("Copy work uses the selected graphics queue; no dedicated copy queue is enabled");
+            else
+                m_Capabilities.Fallbacks.emplace_back("No copy queue is enabled by the bootstrap presentation profile");
 
             m_NativeHandles.Instance = m_Instance;
             m_NativeHandles.PhysicalDevice = m_PhysicalDevice;
@@ -202,6 +266,28 @@ namespace Engine::RHI
             m_Initialized = true;
 
             Log::Info("NVRHI Vulkan device created on adapter: ", adapterInfo.AdapterName);
+            Log::Info("Vulkan capability profile: ", m_Capabilities.ProfileName,
+                ", qualification=", ToString(m_Capabilities.Qualification),
+                ", type=", ToString(m_Capabilities.Identity.Type),
+                ", vendor=", m_Capabilities.Identity.VendorId,
+                ", device=", m_Capabilities.Identity.DeviceId,
+                ", API=", VK_API_VERSION_MAJOR(m_SelectedProperties.apiVersion), ".",
+                VK_API_VERSION_MINOR(m_SelectedProperties.apiVersion), ".",
+                VK_API_VERSION_PATCH(m_SelectedProperties.apiVersion),
+                ", driver=", m_Capabilities.Identity.DriverVersion);
+            for (u32 featureIndex = 0; featureIndex < static_cast<u32>(DeviceFeature::Count); ++featureIndex)
+            {
+                const DeviceFeature feature = static_cast<DeviceFeature>(featureIndex);
+                const CapabilityState& state = m_Capabilities.GetFeature(feature);
+                Log::Info("Vulkan capability state: ", ToString(feature),
+                    " advertised=", state.Advertised ? "yes" : "no",
+                    ", enabled=", state.Enabled ? "yes" : "no",
+                    ", implemented=", state.Implemented ? "yes" : "no",
+                    ", exercised=", state.Exercised ? "yes" : "no",
+                    state.Detail.empty() ? "" : ", detail=", state.Detail);
+            }
+            for (const std::string& fallback : m_Capabilities.Fallbacks)
+                Log::Info("Vulkan capability fallback: ", fallback);
             return true;
 #else
             (void)nativeWindow;
@@ -332,7 +418,11 @@ namespace Engine::RHI
                     bestScore = score;
                     m_PhysicalDevice = device;
                     m_GraphicsQueueFamily = queueFamily;
-                    m_BufferDeviceAddressSupported = vulkan12Features.bufferDeviceAddress == VK_TRUE;
+                    m_SelectedProperties = properties;
+                    m_SelectedQueueProperties = queueFamilies[queueFamily];
+                    m_TimelineSemaphoreAdvertised = vulkan12Features.timelineSemaphore == VK_TRUE;
+                    m_BufferDeviceAddressAdvertised = vulkan12Features.bufferDeviceAddress == VK_TRUE;
+                    m_BufferDeviceAddressEnabled = false;
                     m_DeviceExtensions = { VK_KHR_SWAPCHAIN_EXTENSION_NAME };
                     m_PortabilitySubsetEnabled = false;
                     if (HasExtension(extensions, kPortabilitySubsetExtensionName))
@@ -365,7 +455,7 @@ namespace Engine::RHI
             VkPhysicalDeviceVulkan12Features vulkan12Features {};
             vulkan12Features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
             vulkan12Features.timelineSemaphore = VK_TRUE;
-            vulkan12Features.bufferDeviceAddress = m_BufferDeviceAddressSupported ? VK_TRUE : VK_FALSE;
+            vulkan12Features.bufferDeviceAddress = m_BufferDeviceAddressEnabled ? VK_TRUE : VK_FALSE;
 
             VkDeviceCreateInfo deviceInfo {};
             deviceInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
@@ -447,7 +537,7 @@ namespace Engine::RHI
             description.numInstanceExtensions = m_InstanceExtensions.size();
             description.deviceExtensions = m_DeviceExtensions.data();
             description.numDeviceExtensions = m_DeviceExtensions.size();
-            description.bufferDeviceAddressSupported = m_BufferDeviceAddressSupported;
+            description.bufferDeviceAddressSupported = m_BufferDeviceAddressEnabled;
 
             m_NativeNVRHIDevice = nvrhi::vulkan::createDevice(description);
             if (!m_NativeNVRHIDevice)
@@ -475,7 +565,11 @@ namespace Engine::RHI
         VkSurfaceKHR m_Surface = VK_NULL_HANDLE;
         VkQueue m_GraphicsQueue = VK_NULL_HANDLE;
         u32 m_GraphicsQueueFamily = 0;
-        bool m_BufferDeviceAddressSupported = false;
+        VkPhysicalDeviceProperties m_SelectedProperties {};
+        VkQueueFamilyProperties m_SelectedQueueProperties {};
+        bool m_TimelineSemaphoreAdvertised = false;
+        bool m_BufferDeviceAddressAdvertised = false;
+        bool m_BufferDeviceAddressEnabled = false;
         bool m_PortabilityEnumerationEnabled = false;
         bool m_PortabilitySubsetEnabled = false;
         std::vector<const char*> m_InstanceExtensions;

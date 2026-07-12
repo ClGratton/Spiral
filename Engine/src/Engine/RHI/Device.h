@@ -2,6 +2,7 @@
 
 #include "Engine/Core/Base.h"
 #include "Engine/RHI/Buffer.h"
+#include "Engine/RHI/Capability.h"
 #include "Engine/RHI/CommandList.h"
 #include "Engine/RHI/Pipeline.h"
 #include "Engine/RHI/Query.h"
@@ -9,6 +10,7 @@
 #include "Engine/RHI/Swapchain.h"
 #include "Engine/RHI/Texture.h"
 
+#include <array>
 #include <string_view>
 
 namespace Engine::RHI
@@ -16,11 +18,23 @@ namespace Engine::RHI
     struct DeviceCapabilities
     {
         Backend ActiveBackend = Backend::None;
-        bool SupportsRayTracing = false;
-        bool SupportsMeshShaders = false;
-        bool SupportsWorkGraphs = false;
-        bool SupportsNeuralShaders = false;
-        bool SupportsTimestamps = false;
+        std::string ProfileName;
+        AdapterIdentity Identity;
+        QueueCapabilities Queues;
+        QualificationLevel Qualification = QualificationLevel::None;
+        std::array<CapabilityState, static_cast<size_t>(DeviceFeature::Count)> Features;
+        std::vector<FormatCapability> Formats;
+        std::vector<std::string> Fallbacks;
+
+        const CapabilityState& GetFeature(DeviceFeature feature) const
+        {
+            return Features[static_cast<size_t>(feature)];
+        }
+
+        CapabilityState& GetFeature(DeviceFeature feature)
+        {
+            return Features[static_cast<size_t>(feature)];
+        }
     };
 
     class Device

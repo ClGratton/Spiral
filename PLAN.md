@@ -81,6 +81,7 @@ Immediate gap:
 - A portable `EngineTests` executable covers deterministic engine contracts that are too narrow for editor smoke tests, including job-system failure handling and strict scene deserialization.
 - The editor can create an isolated project and starter scene from a name/location modal, and hierarchy controls create or delete entities with undo/redo coverage.
 - The physics architecture is now a documented planning contract: CPU-authoritative fixed-step gameplay physics, an engine-owned backend boundary and bake-off, versioned collision cooking, explicit determinism levels, optional one-way GPU visual deformation, and measured FEM/PD/IPC/ABD hero research. No physics backend or runtime module is implemented or admitted yet.
+- Renderer capability state now has separate advertised, enabled, implemented, and exercised stages; a GPU-independent profile evaluator deterministically validates synthetic API/queue/presentation/format/limit requirements, selects queue fallbacks, ranks candidates, and retains rejection reasons. Current D3D12 and Vulkan startup paths publish conservative Bootstrap reports with adapter identity, queue mapping, feature lifecycle state, qualification, and fallback diagnostics. Native adapter selection does not consume the evaluator yet, required format/limit validation and editor diagnostics remain pending, and the reports do not claim Scene or Production qualification.
 
 ## Phase Sizing And Design Gates
 
@@ -197,7 +198,10 @@ Required:
 - [x] Hosted Ubuntu Vulkan presentation smoke through Mesa lavapipe and Xvfb.
 - [x] Experimental x86_64 macOS editor presentation through MoltenVK and NVRHI Vulkan, including swapchain recreation and successful post-resize present on hosted macOS 15 Intel CI.
 - [x] Hosted macOS MoltenVK resize/post-resize-present smoke uses generation-aware completion and passes three consecutive strict launches in CI, including the multi-recreation timing case.
-- [ ] Renderer capability negotiation and qualification: distinguish advertised/enabled/implemented/exercised features, validate required formats/limits/queues per adapter, expose fallbacks, and record backend/device coverage.
+- [x] Backend-neutral renderer capability lifecycle and deterministic profile evaluator distinguish advertised/enabled/implemented/exercised state, validate synthetic API/queue/presentation/format/limit requirements, rank candidates, retain rejection reasons, and select compatible-queue fallbacks with focused EngineTests.
+- [x] Current D3D12 and Vulkan devices publish conservative Bootstrap capability reports with selected adapter identity, queue mapping, qualification, optional-feature lifecycle state, and fallback diagnostics; D3D12 and Vulkan smokes require the report markers without claiming Scene qualification.
+- [ ] Drive D3D12 and Vulkan adapter selection from versioned capability profiles before device creation: query required format usages/limits/queues per candidate, retain every rejection and selected fallback, honor adapter preference/strict failure, and gate optional device features rather than enabling them speculatively.
+- [ ] Expose the selected capability/profile report and fallback reasons in editor diagnostics, add consumer-specific Phase 3-9 capability groups as their implementations arrive, exercise each functional fallback, and record backend/device qualification coverage without conflating Bootstrap, Presentation, Scene, or Production evidence.
 - [ ] Native Apple Silicon project generation, build, and MoltenVK editor-presentation verification.
 
 ### Phase 3B: Frame And RHI Infrastructure

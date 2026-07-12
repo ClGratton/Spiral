@@ -1,7 +1,7 @@
 # Renderer Capability And Qualification Contract
 
 **Status:** Required design contract
-**Date:** 2026-07-12
+**Date:** 2026-07-13
 
 ## Purpose
 
@@ -18,6 +18,14 @@ Keep these states distinct:
 - **Qualified:** representative workloads, captures, performance, and failure/fallback behavior meet the roadmap wording.
 
 An advertised extension is not an enabled or qualified renderer feature. Logs and UI must not collapse these states into one “supported” flag.
+
+## Current Bootstrap Foundation
+
+The current implementation provides a backend-neutral capability lifecycle and pure profile evaluator. Synthetic EngineTests cover lifecycle invariants, required API/queue/presentation/format/limit rejection, explicit graphics-queue fallbacks, invalid preferred-adapter fallback, format-usage validation, and deterministic candidate tie-breaking.
+
+The selected D3D12 and Vulkan devices publish conservative Bootstrap reports with adapter identity, queue mapping, feature lifecycle state, qualification, and fallback diagnostics. D3D12 no longer reports timestamps as implemented while query recording/resolve is a stub. Vulkan records buffer-device-address advertisement separately and leaves it disabled because the Bootstrap profile has no implemented consumer. Optional ray, mesh, work-graph, and neural paths are not presented as usable renderer features merely because NVRHI advertises support.
+
+This is not full completion of this contract. Native D3D12/Vulkan enumeration still performs backend-local selection rather than feeding all queried candidates through the shared evaluator before device creation. Required format usages and limits are not yet validated per candidate, rejection/fallback reports are not editor-visible, and consumer-specific Scene/Phase 4-9 groups and physical-device qualification remain pending.
 
 ## Adapter Selection
 

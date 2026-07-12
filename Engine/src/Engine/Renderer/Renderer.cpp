@@ -127,7 +127,9 @@ namespace Engine
         {
             const NVRHIRenderBackend* backend = dynamic_cast<const NVRHIRenderBackend*>(s_Backend.get());
             const RHI::DeviceCapabilities* capabilities = backend ? backend->GetDeviceCapabilities() : nullptr;
-            return capabilities && capabilities->SupportsTimestamps ? RendererTimingStatus::Pending : RendererTimingStatus::Unavailable;
+            return capabilities && capabilities->GetFeature(RHI::DeviceFeature::Timestamps).Implemented
+                ? RendererTimingStatus::Pending
+                : RendererTimingStatus::Unavailable;
         }
 
         void BeginTimingFrame()
@@ -270,9 +272,9 @@ namespace Engine
                 s_ActiveBackend = backendPtr->GetRendererBackend();
                 if (const RHI::DeviceCapabilities* capabilities = backendPtr->GetDeviceCapabilities())
                 {
-                    s_Capabilities.HasNativeRayTracing = capabilities->SupportsRayTracing;
-                    s_Capabilities.HasWorkGraphs = capabilities->SupportsWorkGraphs;
-                    s_Capabilities.HasNeuralAccelerators = capabilities->SupportsNeuralShaders;
+                    s_Capabilities.HasNativeRayTracing = capabilities->GetFeature(RHI::DeviceFeature::RayTracing).IsUsable();
+                    s_Capabilities.HasWorkGraphs = capabilities->GetFeature(RHI::DeviceFeature::WorkGraphs).IsUsable();
+                    s_Capabilities.HasNeuralAccelerators = capabilities->GetFeature(RHI::DeviceFeature::NeuralShaders).IsUsable();
                 }
             }
         }
