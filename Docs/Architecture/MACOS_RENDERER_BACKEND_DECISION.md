@@ -99,7 +99,9 @@ No engine source changed between the earlier passing head and this documentation
 
 The root cause is now identified. The smoke requested its resize after frame zero, allowed only four frames, and judged only the final frame's transient `PresentSucceeded` flag. MoltenVK can report several framebuffer extents while the hosted window settles, so one logical resize can produce several swapchain generations. The deadline could therefore land immediately after the last recreation, before that generation had a later successful present. This was a fixed-frame/final-frame validation race, not a raw-Vulkan or NVRHI-device ownership change.
 
-The correction makes completion state-based. Presentation timing now retains the generation of the last successful present; the smoke exits successfully only when that generation equals the current post-resize generation. Sixty frames are a bounded failure deadline, not a success condition. Hosted macOS CI also launches the complete strict smoke three times so a one-off pass cannot close the repeatability item. Action item 10 remains unchecked until a hosted run proves all three attempts and the required NVRHI, portability, resize, and later-present markers.
+The correction makes completion state-based. Presentation timing now retains the generation of the last successful present; the smoke exits successfully only when that generation equals the current post-resize generation. Sixty frames are a bounded failure deadline, not a success condition. Hosted macOS CI also launches the complete strict smoke three times so a one-off pass cannot close the repeatability item.
+
+**Reliability correction conclusion: PASS.** [CI run 29211138323](https://github.com/ClGratton/Spiral/actions/runs/29211138323) completed successfully on the final code head. Its macOS log contains attempts 1/3, 2/3, and 3/3; every attempt queried the expected portability matrix, created the NVRHI Vulkan device, requested the resize, recreated the swapchain, and verified native ImGui presentation afterward. Attempt 1 reproduced the important timing shape by recreating generations 2, 3, and 4 before succeeding on generation 4. The run therefore verifies the state-based fix rather than avoiding the original multi-recreation condition.
 
 Impact attribution for the unsupported fields:
 
@@ -122,7 +124,7 @@ The portability-subset struct is not a complete production capability audit. Pha
 
 The checked Phase 3 item is deliberately narrow: **experimental x86_64 macOS editor presentation through MoltenVK and NVRHI Vulkan, including swapchain recreation and successful post-resize present on hosted macOS 15 Intel CI**. It should remain checked because the strict smoke proves the same resize/post-resize presentation gate required by the Linux Vulkan presentation items, and both cited CI runs finished successfully.
 
-The check records demonstrated functional coverage, not repeatability of the current four-frame deadline. The adjacent unchecked hosted-smoke reliability item prevents future agents from treating the latest failing runs as invisible.
+The original check recorded demonstrated functional coverage. The adjacent reliability item is now also checked because generation-aware completion passed three consecutive hosted launches, including a launch with three post-request recreations before the successful current-generation present.
 
 This does not check off a generic production macOS renderer. Native Apple Silicon generation/presentation and production scene resources, commands, shaders, representative captures, packaging, profiling, and physical-device qualification remain explicit unchecked work in `PLAN.md`.
 
@@ -158,7 +160,7 @@ Phase 7 must therefore keep meshlet/cluster data independent of mesh-shader avai
 7. [ ] Choose and verify a self-contained macOS runtime packaging model on a clean end-user Mac.
 8. [x] Record the hosted Apple Paravirtual portability-subset result and cross-check the Phase 4, Phase 6, and Phase 7 plans.
 9. [ ] Repeat the capability record on physical Intel and Apple Silicon qualification devices.
-10. [ ] Make hosted resize/post-resize-present verification reliable across repeated CI runs without weakening the requirement for an actual later present.
+10. [x] Make hosted resize/post-resize-present verification reliable across repeated CI runs without weakening the requirement for an actual later present; generation-aware completion passed three consecutive strict launches in [CI run 29211138323](https://github.com/ClGratton/Spiral/actions/runs/29211138323).
 
 ## Primary References
 
