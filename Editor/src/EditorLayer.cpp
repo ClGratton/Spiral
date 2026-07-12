@@ -232,7 +232,6 @@ EditorLayer::EditorLayer()
 void EditorLayer::OnAttach()
 {
     Engine::Log::Info("Editor layer attached");
-    m_ClearColor = Engine::Renderer::GetClearColor();
     m_ConsoleLines.emplace_back("Editor booted");
     m_ConsoleLines.emplace_back("GLFW window backend active");
     m_ConsoleLines.emplace_back(std::string("Renderer backend: ") + Engine::Renderer::GetActiveBackendName());
@@ -450,13 +449,6 @@ void EditorLayer::DrawMainMenuBar()
         if (!buildInfo.HasNVRHID3D12)
             ImGui::TextDisabled("Native viewport requires the Windows VS2022 build.");
 
-        ImGui::Separator();
-        const HistoryState settingsState = CaptureHistoryState();
-        if (ImGui::ColorEdit4("Clear Color", &m_ClearColor.R))
-        {
-            Engine::Renderer::SetClearColor(m_ClearColor);
-            RecordHistory("Renderer settings edit", settingsState);
-        }
         ImGui::EndMenu();
     }
 
@@ -614,6 +606,7 @@ void EditorLayer::DrawInspectorPanel()
         cameraChanged |= ImGui::DragFloat("Vertical FOV", &camera.Projection.VerticalFovDegrees, 0.25f, 20.0f, 110.0f);
         cameraChanged |= ImGui::DragFloat("Near Clip", &camera.Projection.NearClip, 0.01f, 0.01f, 10.0f);
         cameraChanged |= ImGui::DragFloat("Far Clip", &camera.Projection.FarClip, 1.0f, 1.0f, 10000.0f);
+        cameraChanged |= ImGui::ColorEdit3("Background Color", &camera.BackgroundColor.X);
         if (camera.Projection.FarClip <= camera.Projection.NearClip)
             camera.Projection.FarClip = camera.Projection.NearClip + 1.0f;
         if (camera.Primary)
@@ -836,7 +829,7 @@ void EditorLayer::ApplyEditorCameraStateToScene()
     cameraTransform.RotationDegrees = { m_CameraRotation[0], m_CameraRotation[1], m_CameraRotation[2] };
     cameraTransform.Scale = { 1.0f, 1.0f, 1.0f };
 
-    Engine::CameraComponent camera;
+    Engine::CameraComponent camera = m_ActiveScene.GetMainCamera();
     camera.Primary = true;
     camera.Projection = { m_CameraFovDegrees, m_CameraNearClip, m_CameraFarClip };
 
@@ -859,6 +852,7 @@ void EditorLayer::SyncEditorCameraStateFromMainCamera()
     m_EditorCamera.SetRotationDegrees(cameraTransform.RotationDegrees);
     m_EditorCamera.SetProjection(camera.Projection);
     Engine::Renderer::SetCameraView(m_EditorCamera.GetCameraView());
+    Engine::Renderer::SetClearColor({ camera.BackgroundColor.X, camera.BackgroundColor.Y, camera.BackgroundColor.Z, 1.0f });
 }
 
 void EditorLayer::DrawRendererBackendSelector()
@@ -1581,7 +1575,6 @@ EditorLayer::HistoryState EditorLayer::CaptureHistoryState() const
     state.Scene = m_ActiveScene;
     state.AssetRegistry = m_AssetRegistry;
     state.MaterialLibrary = m_MaterialLibrary;
-    state.ClearColor = m_ClearColor;
     state.SelectedEntity = m_SelectedEntity;
     state.CameraPosition = m_CameraPosition;
     state.CameraRotation = m_CameraRotation;
@@ -1596,7 +1589,6 @@ void EditorLayer::RestoreHistoryState(const HistoryState& state)
     m_ActiveScene = state.Scene;
     m_AssetRegistry = state.AssetRegistry;
     m_MaterialLibrary = state.MaterialLibrary;
-    m_ClearColor = state.ClearColor;
     m_SelectedEntity = state.SelectedEntity;
     m_CameraPosition = state.CameraPosition;
     m_CameraRotation = state.CameraRotation;
@@ -1609,11 +1601,7 @@ void EditorLayer::RestoreHistoryState(const HistoryState& state)
     if (!m_ActiveScene.IsEntityValid(m_SelectedEntity))
         m_SelectedEntity = m_PrototypeMeshEntity ? m_PrototypeMeshEntity : m_ActiveScene.GetMainCameraEntity();
 
-    m_EditorCamera.SetPosition({ m_CameraPosition[0], m_CameraPosition[1], m_CameraPosition[2] });
-    m_EditorCamera.SetRotationDegrees({ m_CameraRotation[0], m_CameraRotation[1], m_CameraRotation[2] });
-    m_EditorCamera.SetProjection({ m_CameraFovDegrees, m_CameraNearClip, m_CameraFarClip });
-    Engine::Renderer::SetCameraView(m_EditorCamera.GetCameraView());
-    Engine::Renderer::SetClearColor(m_ClearColor);
+    SyncEditorCameraStateFromMainCamera();
     m_AssetWatcher.SyncRegistry(m_AssetRegistry);
 }
 

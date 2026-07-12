@@ -30,6 +30,7 @@ namespace Engine
     struct CameraComponent
     {
         CameraProjection Projection;
+        Math::Vec3 BackgroundColor = { 0.08f, 0.09f, 0.10f };
         bool Primary = true;
     };
 

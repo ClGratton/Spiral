@@ -89,7 +89,6 @@ private:
     std::string m_AssetWatchSmokePath = "output/assets/watch-smoke.mesh";
     std::string m_GltfImportSmokePath = "output/assets/gltf-smoke/triangle.gltf";
     std::string m_MaterialAssetSmokePath = "output/assets/material-smoke.spiralmat";
-    Engine::ClearColor m_ClearColor;
     Engine::AssetRegistry m_AssetRegistry;
     Engine::AssetWatcher m_AssetWatcher;
     Engine::GltfImportResult m_LastGltfImport;
@@ -120,7 +119,6 @@ private:
         Engine::Scene Scene { "History Scene" };
         Engine::AssetRegistry AssetRegistry;
         Engine::MaterialLibrary MaterialLibrary;
-        Engine::ClearColor ClearColor;
         Engine::Entity SelectedEntity;
         std::array<float, 3> CameraPosition {};
         std::array<float, 3> CameraRotation {};

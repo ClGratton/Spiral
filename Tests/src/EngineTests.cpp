@@ -55,6 +55,9 @@ namespace
     {
         const std::filesystem::path path = TestFilePath("scene-round-trip.spiral");
         Engine::Scene source("Round Trip");
+        Engine::CameraComponent camera = source.GetMainCamera();
+        camera.BackgroundColor = { 0.21f, 0.34f, 0.55f };
+        source.SetMainCamera(camera);
         const Engine::Entity cube = source.CreateEntity("Cube");
         Engine::MeshRendererComponent mesh;
         mesh.MeshAsset = 42;
@@ -71,7 +74,10 @@ namespace
         const Engine::MeshRendererComponent* loadedMesh = loaded.TryGetMeshRendererComponent(loadedCube);
         return Expect(result, "a valid scene saves and loads")
             && Expect(loaded.GetName() == "Round Trip", "the scene name round trips")
-            && Expect(loadedMesh && loadedMesh->MeshAsset == 42 && loadedMesh->MaterialAsset == 84, "mesh handles round trip");
+            && Expect(loadedMesh && loadedMesh->MeshAsset == 42 && loadedMesh->MaterialAsset == 84, "mesh handles round trip")
+            && Expect(loaded.GetMainCamera().BackgroundColor.X == 0.21f
+                && loaded.GetMainCamera().BackgroundColor.Y == 0.34f
+                && loaded.GetMainCamera().BackgroundColor.Z == 0.55f, "camera background color round trips");
     }
 
     bool TestSceneRejectsTruncatedComponent()
@@ -88,6 +94,27 @@ namespace
         std::error_code error;
         std::filesystem::remove(path, error);
         return Expect(rejected, "a truncated Transform record is rejected");
+    }
+
+    bool TestSceneLoadsVersionOneCamera()
+    {
+        const std::filesystem::path path = TestFilePath("scene-version-one.spiral");
+        {
+            std::ofstream file(path);
+            file << "SpiralScene 1\nName \"Legacy\"\n\n[MainCamera]\nPrimary true\nVerticalFovDegrees 60\nNearClip 0.1\nFarClip 100\n\n"
+                 << "[MainCamera.Transform]\nPosition 0 0 -3.35\nRotationDegrees 0 0 0\nScale 1 1 1\n\n"
+                 << "[Entities]\nNextEntityId 2\nMainCameraEntity 1\nEntity 1 \"Main Camera\"\n"
+                 << "Transform 1 0 0 -3.35 0 0 0 1 1 1\nCamera 1 true 60 0.1 100\n";
+        }
+
+        Engine::Scene loaded;
+        const bool result = Engine::Scene::LoadFromFile(path, loaded);
+        std::error_code error;
+        std::filesystem::remove(path, error);
+        const Engine::Math::Vec3& background = loaded.GetMainCamera().BackgroundColor;
+        return Expect(result, "a version-one scene still loads")
+            && Expect(background.X == 0.08f && background.Y == 0.09f && background.Z == 0.10f,
+                "a version-one camera receives the default background color");
     }
 
     bool TestSceneRejectsDuplicateEntities()
@@ -116,6 +143,7 @@ int main()
         { "JobSystem inline fallback is reentrant", TestJobSystemInlineFallbackIsReentrant },
         { "Scene round trip", TestSceneRoundTrip },
         { "Scene rejects truncated components", TestSceneRejectsTruncatedComponent },
+        { "Scene loads version-one camera", TestSceneLoadsVersionOneCamera },
         { "Scene rejects duplicate entities", TestSceneRejectsDuplicateEntities }
     };
 

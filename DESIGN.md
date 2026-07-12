@@ -34,12 +34,12 @@ Use the editor's single default sans/monospace-compatible UI font at a compact, 
 - Center: renderer-owned viewport.
 - Right: selection-scoped Inspector only.
 - Bottom: Console and Profiler as sibling tabs.
-- Top menu: global renderer and clear-color settings.
+- Top menu: global renderer backend selection.
 
 ## Interaction Contracts
 
 - Inspector content follows the selected entity or asset.
-- Camera component controls live on the selected camera in the Inspector; renderer and clear-color controls live in the top-bar Settings menu.
+- Camera projection and background color live on the selected camera in the Inspector. The top-bar Settings menu is limited to global renderer backend selection.
 - Unsupported backends are visibly disabled and explain why.
 - Destructive hierarchy actions are contextual, undoable, and protect the primary camera.
 - New projects reject path collisions instead of silently overwriting existing manifests.

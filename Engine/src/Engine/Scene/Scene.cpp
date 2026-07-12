@@ -12,7 +12,7 @@ namespace Engine
 {
     namespace
     {
-        constexpr int kSceneFormatVersion = 1;
+        constexpr int kSceneFormatVersion = 2;
 
         void WriteVec3(std::ostream& stream, std::string_view name, const Math::Vec3& value)
         {
@@ -328,6 +328,7 @@ namespace Engine
         output << "VerticalFovDegrees " << m_MainCamera.Projection.VerticalFovDegrees << '\n';
         output << "NearClip " << m_MainCamera.Projection.NearClip << '\n';
         output << "FarClip " << m_MainCamera.Projection.FarClip << '\n';
+        WriteVec3(output, "BackgroundColor", m_MainCamera.BackgroundColor);
         output << '\n';
         output << "[MainCamera.Transform]\n";
         WriteVec3(output, "Position", m_MainCameraTransform.Position);
@@ -351,7 +352,10 @@ namespace Engine
                     << ' ' << (entity.Camera->Primary ? "true" : "false")
                     << ' ' << entity.Camera->Projection.VerticalFovDegrees
                     << ' ' << entity.Camera->Projection.NearClip
-                    << ' ' << entity.Camera->Projection.FarClip << '\n';
+                    << ' ' << entity.Camera->Projection.FarClip
+                    << ' ' << entity.Camera->BackgroundColor.X
+                    << ' ' << entity.Camera->BackgroundColor.Y
+                    << ' ' << entity.Camera->BackgroundColor.Z << '\n';
             }
 
             if (entity.Light)
@@ -393,7 +397,7 @@ namespace Engine
 
         std::string magic;
         int version = 0;
-        if (!(input >> magic >> version) || magic != "SpiralScene" || version != kSceneFormatVersion)
+        if (!(input >> magic >> version) || magic != "SpiralScene" || version < 1 || version > kSceneFormatVersion)
         {
             Log::Error("Unsupported scene file format: ", path.string());
             return false;
@@ -463,6 +467,11 @@ namespace Engine
                     if (!(stream >> camera.Projection.FarClip))
                         return fail("invalid MainCamera.FarClip value");
                 }
+                else if (key == "BackgroundColor")
+                {
+                    if (version < 2 || !ReadVec3(stream, camera.BackgroundColor))
+                        return fail("invalid MainCamera.BackgroundColor value");
+                }
                 else
                     return fail("unknown MainCamera field");
             }
@@ -530,6 +539,10 @@ namespace Engine
                             >> entityCamera.Projection.VerticalFovDegrees
                             >> entityCamera.Projection.NearClip
                             >> entityCamera.Projection.FarClip)
+                        || (version >= 2 && !(stream
+                            >> entityCamera.BackgroundColor.X
+                            >> entityCamera.BackgroundColor.Y
+                            >> entityCamera.BackgroundColor.Z))
                         || !ParseBoolean(primary, entityCamera.Primary)
                         || !scene.AddCameraComponent(entity, entityCamera))
                         return fail("invalid Camera record or unknown entity");

@@ -19,10 +19,16 @@ These engines differ visually, but their information architecture agrees. Spiral
 
 - Scene Hierarchy above Content Browser on the left.
 - Viewport remains the central work surface.
-- Inspector on the right contains only the selected entity's name, transform, and attached components. Camera controls appear only when a camera entity is selected.
-- Renderer backend and clear-color controls live in the top-bar Settings menu rather than a dock.
+- Inspector on the right contains only the selected entity's name, transform, and attached components. Camera projection and background color appear only when a camera entity is selected.
+- Renderer backend selection lives in the top-bar Settings menu rather than a dock.
 - Console and Profiler share the bottom diagnostics region.
 - Hierarchy filtering, create/delete actions, editable entity names, and Add Component are available where users expect them.
+
+## Ownership Rule
+
+Controls belong with the data that owns their effect. Backend choice is application-level and belongs in the top bar. A camera background color is scene-authored view state, belongs to `CameraComponent`, is serialized with that camera, and is edited in the camera Inspector. Future sky, fog, and global ambient controls belong to a scene environment asset or component, not application Settings; a camera may override that environment when the renderer supports the distinction.
+
+This follows established editor ownership models: [Unity's Camera Inspector](https://docs.unity3d.com/current/Manual/class-Camera.html) exposes background color on the camera, [Unreal's Camera Component](https://dev.epicgames.com/documentation/en-us/unreal-engine/API/Runtime/Engine/UCameraComponent) owns view and post-process overrides, and [Godot's Environment](https://docs.godotengine.org/en/stable/tutorials/3d/environment_and_post_processing.html) owns broader scene environment state with an optional camera override.
 
 ## Follow-up
 
