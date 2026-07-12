@@ -1,7 +1,7 @@
 # Technical Architecture To Roadmap Coverage
 
 **Status:** Required traceability contract
-**Date:** 2026-07-12
+**Date:** 2026-07-13
 
 ## Purpose
 
@@ -81,7 +81,7 @@ The current technical document set is renderer-heavy. Phase 12 is backed by the 
 Before entering those phases:
 
 - Animation needs pose/skeleton/clip formats, compression, graph evaluation, root motion, task scheduling, skinning/morph publication, retarget, and motion-matching contracts.
-- Physics needs backend/library boundaries, fixed-step authority, determinism policy, scene snapshot synchronization, collision/query ownership, and hero-solver fallbacks.
+- Physics now has an accepted planning contract in [PHYSICS_ARCHITECTURE_AND_RESEARCH.md](PHYSICS_ARCHITECTURE_AND_RESEARCH.md) and dependency-ordered Phase 11A-11D coverage for backend boundaries, fixed-step authority, determinism/state capabilities, task-graph publication, collision cooking/queries, CPU/GPU synchronization, hero-solver research, fallbacks, and qualification.
 - Automation needs tool permissions, provenance, undo/transaction boundaries, validation, and failure recovery.
 - Audio/UI/save/navigation/networking need separate domain contracts; Phase 14 is a product grouping, not one implementation slice.
 - Packaging needs target profiles, cooked package/manifest/versioning, runtime dependency bundling, signing/notarization, clean-machine verification, update/migration, and rollback policy.

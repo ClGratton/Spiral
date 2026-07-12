@@ -1,7 +1,7 @@
 # Architecture Coherence Audit
 
 Status: Living audit
-Date: 2026-07-12
+Date: 2026-07-13
 
 Purpose: audit the current engine decision set after reviewing the Fox Engine optimization video and cross-checking the existing engine documents for contradictions.
 
@@ -255,6 +255,15 @@ These are not contradictions. They are prototype decisions:
 - Whether NRI or a custom Vulkan/D3D12 backend becomes backend 2.
 - Exact ECS implementation: build engine-owned ECS after studying Flecs, EnTT, Bevy ECS, and Unity DOTS.
 - Exact SSR denoising/reconstruction budget without temporal history.
+- Exact CPU physics backend after the Jolt/Box3D conformance bake-off, and which optional hero deformation method, if any, earns production retention.
+
+## Physics Architecture Audit
+
+The earlier physics direction was incomplete and over-prescriptive: it named ABD, IPC, PD, FEM-adjacent behavior, and RT collision ideas without first defining gameplay authority, fixed-step ownership, backend isolation, collision cooking, determinism levels, publication, GPU synchronization, or fallback behavior.
+
+[PHYSICS_ARCHITECTURE_AND_RESEARCH.md](PHYSICS_ARCHITECTURE_AND_RESEARCH.md) resolves the infrastructure gap and fact-checks the underlying research. Phase 11 is now ordered as foundation/authority, gameplay collision/queries, optional deformables/hero contact, then diagnostics/qualification. CPU fixed-step rigid physics remains authoritative; GPU deformation is one-way visual/secondary by default. The new alpha Box3D is the leading architecture-fit candidate and Jolt is the maturity-control candidate; neither is an admitted dependency. FEM, PD+barrier, IPC-family methods, and ABD remain measured hero/offline candidates rather than universal performance or zero-penetration promises.
+
+The cross-phase order is also explicit: Phase 10 publishes locomotion/root-motion intent and deformation attachments; Phase 11 resolves collision and owns simulation; Phase 14 consumes the determinism/state capability already designed in Phase 11 when selecting networking and rollback policy.
 
 ## Implementation Guardrails
 

@@ -1,7 +1,7 @@
 # Engine Roadmap
 
 Status: Living roadmap
-Date: 2026-07-12
+Date: 2026-07-13
 
 This roadmap is the working plan for taking the engine from the current buildable shell to a shippable game engine. Deep rationale lives in [Docs/Architecture](Docs/Architecture/README.md); this file is the execution order.
 
@@ -80,6 +80,7 @@ Immediate gap:
 - GitHub dependency submission now reports vendored/tool dependencies from the dependency ledger so the repo dependency graph can show them.
 - A portable `EngineTests` executable covers deterministic engine contracts that are too narrow for editor smoke tests, including job-system failure handling and strict scene deserialization.
 - The editor can create an isolated project and starter scene from a name/location modal, and hierarchy controls create or delete entities with undo/redo coverage.
+- The physics architecture is now a documented planning contract: CPU-authoritative fixed-step gameplay physics, an engine-owned backend boundary and bake-off, versioned collision cooking, explicit determinism levels, optional one-way GPU visual deformation, and measured FEM/PD/IPC/ABD hero research. No physics backend or runtime module is implemented or admitted yet.
 
 ## Phase Sizing And Design Gates
 
@@ -87,7 +88,7 @@ Phases are outcome gates, not equal-size sprints. Phase 3 is intentionally large
 
 Phases 4 through 9 are feature layers and must name both their algorithms and the infrastructure they consume. Their technical traceability lives in [Docs/Architecture/TECHNICAL_ROADMAP_COVERAGE.md](Docs/Architecture/TECHNICAL_ROADMAP_COVERAGE.md).
 
-Later non-renderer phases are product outcome summaries where the project has not yet accepted a detailed subsystem design. Before implementing Phase 10 animation, Phase 11 physics, Phase 13 automation, Phase 14 game systems/networking, or Phase 16 packaging, add or update the task-relevant architecture contract and expand that phase's prerequisites, data ownership, fallback/error behavior, and focused verification. This design gate is prose, not a checkable substitute for runtime behavior.
+Later non-renderer phases are product outcome summaries where the project has not yet accepted a detailed subsystem design. Phase 11 physics now has an accepted planning contract in [Docs/Architecture/PHYSICS_ARCHITECTURE_AND_RESEARCH.md](Docs/Architecture/PHYSICS_ARCHITECTURE_AND_RESEARCH.md) and the expanded checklist below. Before implementing Phase 10 animation, Phase 13 automation, Phase 14 game systems/networking, or Phase 16 packaging, add or update the task-relevant architecture contract and expand that phase's prerequisites, data ownership, fallback/error behavior, and focused verification. This design gate is prose, not a checkable substitute for runtime behavior.
 
 ## Phase 0: Buildable Spine
 
@@ -409,9 +410,9 @@ Required:
 - [ ] Starter motion-matched packs.
 - [ ] Trajectory prediction and feature extraction.
 - [ ] Foot locking, inertialization, warping.
-- [ ] Character controller templates.
+- [ ] Character locomotion/controller-intent templates that publish root motion and desired motion through the future physics contract; collision resolution is Phase 11.
 - [ ] Facial/eye/skin rendering hooks.
-- [ ] Cloth/hair simulation hooks.
+- [ ] Animation/render-facing cloth and hair attachment/deformation hooks; simulation ownership and contact are Phase 11.
 
 Exit criteria:
 
@@ -423,19 +424,44 @@ Goal: make contact/clipping quality a visible engine feature.
 
 Required:
 
-- [ ] General rigid-body physics integration.
-- [ ] Continuous collision detection for fast movers.
-- [ ] Character collision bodies.
-- [ ] SDF/proxy collision workflow for characters.
-- [ ] Cloth/hair collision hooks.
-- [ ] ABD/IPC hero-contact prototypes.
-- [ ] Physics debug draw and profiler.
-- [ ] Async scene-query interface.
+### Phase 11A: Physics Foundation And Authority
+
+- [ ] Backend-neutral `Engine::Physics` world/API with generation-safe handles, backend isolation, capability reporting, and no Scene, Editor, or renderer-native type leakage.
+- [ ] Engine-owned fixed-step clock and accumulator with configurable tick rate, bounded catch-up/overload policy, render interpolation, pause/single-step, and replayable tick numbering.
+- [ ] Physics authority and determinism contract in the runtime: stable command/event ordering, deterministic single-thread validation, replay hashes, state snapshot/restore capability, and an explicit supported/unsupported matrix for same-build, thread-count, cross-platform, rollback, and network guarantees.
+- [ ] Staged Scene-to-Physics commands and immutable Physics-to-Scene result/event snapshots on the CPU frame task graph, including origin shifts, late commands, destruction, and failed-tick behavior.
+- [ ] Collision asset cooking and versioned runtime artifacts for primitives, compounds, convex hulls/decomposition, static triangle meshes, heightfields, character proxies/SDFs, and deformable shell/tet meshes, with deterministic semantic hashes and invalid-input diagnostics.
+- [ ] Engine-owned backend conformance and bake-off harness; qualify architecture-fit candidate Box3D and maturity-control candidate Jolt first under identical assets/settings, and admit a dependency only after correctness, maturity, determinism, platform, tooling, memory, and p50/p95/p99 cost evidence.
+
+### Phase 11B: Gameplay Collision And Queries
+
+- [ ] Qualified CPU-authoritative rigid-body backend with body, shape, constraint, material, filter, event, threading, serialization, and fallback contracts on every claimed platform.
+- [ ] General rigid bodies: broadphase, narrowphase, islands, constraints, sleeping/waking, triggers, and deterministic contact-event publication.
+- [ ] Continuous collision detection and speculative-contact policy for fast translation/rotation, with per-body controls and tunneling fixtures.
+- [ ] Snapshot-scoped immediate and asynchronous batched ray/shape-cast/overlap queries with filters, result epochs, cancellation/lifetime, stable ordering, and stale-result rules.
+- [ ] Collision-resolved character controller/body pipeline consuming Phase 10 locomotion/root-motion intent, including slopes, steps, moving platforms, grounding, and push interaction.
+- [ ] Character SDF/proxy workflow for body, cloth, and hair interaction, with a coarse portable fallback.
+
+### Phase 11C: Deformables And Hero Contact
+
+- [ ] Cloth, hair, and soft-body simulation contract plus an ordinary portable PBD/XPBD-class baseline with attachments, collision thickness, bounded substeps, and proxy/skinning fallback.
+- [ ] CPU/GPU ownership and synchronization for optional deformation solvers: RHI capability gates, explicit queues/fences/publication epochs, no gameplay-critical same-step readback by default, memory budgets, and renderer-safe scheduling.
+- [ ] Measured PD+barrier, IPC-family, ABD, and mixed-FEM hero/offline prototypes on representative assets and low/mid/high hardware while rendering; retain only paths that beat the portable baseline within stated quality and p50/p95/p99 budgets.
+- [ ] Tiered over-budget/unsupported fallback: reduced iterations/resolution/frequency, then portable deformation, then proxy/skinning, without changing gameplay authority.
+
+### Phase 11D: Diagnostics And Qualification
+
+- [ ] Physics debug draw and profiler for shapes, contacts, broadphase/islands, constraints, sleeping, CCD/TOI, queries, substeps, solver residuals/termination, CPU/GPU time, queues/fences/transfers, memory, collision thickness, authority proxy, and fallback tier.
+- [ ] Deterministic fixtures and stress suite covering replay/thread-count/platform hashes at every claimed level, stacks, joints, events, CCD, queries, origin shifts, cook golden files, pause/step/catch-up, scene mutation, characters, and GPU fallback/synchronization.
+- [ ] Platform/backend performance and quality qualification with fixed settings, representative scenes, renderer contention, failure behavior from infeasible inputs, and documented determinism/capability scope.
 
 Exit criteria:
 
-- Gameplay physics is stable.
-- Hero contact/clipping cases have a higher-quality path.
+- Fixed-step gameplay physics is stable and render-rate independent within documented catch-up limits.
+- CPU-authoritative rigid bodies, character motion, contacts/events, and queries work on every claimed platform with reproducible focused tests.
+- Cooked collision artifacts are versioned/reproducible and invalid inputs fail diagnostically.
+- Optional GPU/hero paths never silently become gameplay authority, expose synchronization and cost, and have validated portable fallbacks.
+- Representative hero contact materially reduces clipping within a measured budget; no absolute zero-penetration promise exceeds the qualified algorithm, tolerance, input, backend, and fallback scope.
 
 ## Phase 12: Scripting, Visual Graphs, And Runtime Data
 
@@ -498,7 +524,7 @@ Required:
 - [ ] Navigation/pathfinding.
 - [ ] AI behavior tools.
 - [ ] Networking/replication plan.
-- [ ] Determinism/rollback evaluation for game types that need it.
+- [ ] Networking authority, prediction, replication, lockstep, and rollback evaluation for game types that need them, consuming Phase 11's measured physics determinism/state capabilities rather than choosing them after physics integration.
 
 Exit criteria:
 

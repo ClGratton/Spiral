@@ -1,7 +1,7 @@
 # Project Documentation Map
 
 Status: Authoritative catalog
-Date: 2026-07-12
+Date: 2026-07-13
 
 This file tells contributors and AI agents where project knowledge lives. It catalogs every workspace-authored Markdown document, identifies its role, and prevents implementation order or completion state from depending on chat context.
 
@@ -53,6 +53,7 @@ Technical documents are indexed in recommended reading order by [Architecture/RE
 | [Docs/Architecture/RENDERING_FEATURE_AND_PERFORMANCE_DECISIONS.md](Architecture/RENDERING_FEATURE_AND_PERFORMANCE_DECISIONS.md) | Decision contract | Reflections, AO, shadows, optional accelerators, profiling, batching, and topology. |
 | [Docs/Architecture/LOD_TRANSITIONS_AND_MULTITHREADING_DECISIONS.md](Architecture/LOD_TRANSITIONS_AND_MULTITHREADING_DECISIONS.md) | Decision contract | Stable LOD transitions, scan conversion, job/task architecture, and compiled graphs. |
 | [Docs/Architecture/LANGUAGE_AND_CONCURRENCY_DECISIONS.md](Architecture/LANGUAGE_AND_CONCURRENCY_DECISIONS.md) | Decision contract | C++ core, C# host, visual graphs, Slang direction, ECS, and jobs. |
+| [Docs/Architecture/PHYSICS_ARCHITECTURE_AND_RESEARCH.md](Architecture/PHYSICS_ARCHITECTURE_AND_RESEARCH.md) | Accepted planning contract | Physics authority, fixed stepping, backend bake-off, collision cooking, determinism levels, solver research tiers, GPU synchronization, fallbacks, and qualification. |
 | [Docs/Architecture/KTX2_BASIS_TEXTURE_IMPORT_PLAN.md](Architecture/KTX2_BASIS_TEXTURE_IMPORT_PLAN.md) | Accepted import contract | KTX2/Basis roles, cooking, streaming, libktx boundary, and validation. |
 | [Docs/Architecture/MISSING_RESEARCH_AUDIT_2026.md](Architecture/MISSING_RESEARCH_AUDIT_2026.md) | Research addendum | Optional accelerators, future GPU execution, geometry compression, and standards. |
 | [Docs/Architecture/RESEARCH_DECISIONS.md](Architecture/RESEARCH_DECISIONS.md) | Research rationale | Broad renderer/physics discoveries and prototype questions. |

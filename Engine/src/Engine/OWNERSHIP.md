@@ -31,3 +31,9 @@ Forbidden:
 | `Automation` | Deterministic workflow contracts through public engine/editor APIs. | Hidden direct mutation of private subsystem state. |
 
 Dependency direction is toward public contracts: editor/client code calls Engine; Renderer consumes Scene extraction and Assets outputs; Renderer uses RenderGraph and RHI; RenderGraph uses RHI descriptions/contracts; RHI must not call upward into Renderer or Scene.
+
+## Planned Phase 11 Module
+
+`Engine/src/Engine/Physics` does not exist yet. When Phase 11 begins, it will own the backend-neutral fixed-step world, generation-safe physics handles, staged commands, immutable results/events, collision/query contracts, backend capabilities, state hashes/snapshots, and debug/metric publication.
+
+Physics may consume `Core`, `Jobs`, diagnostics contracts, cooked `Assets` artifacts, and backend-neutral RHI services for optional GPU deformation. It must not depend on `Editor`, `Renderer`, `RenderGraph` policy, or mutable Scene entity storage. Scene exchanges stable IDs and staged command/result snapshots; Renderer consumes finalized transforms and explicitly synchronized visual-deformation resources. The full contract is [../../../Docs/Architecture/PHYSICS_ARCHITECTURE_AND_RESEARCH.md](../../../Docs/Architecture/PHYSICS_ARCHITECTURE_AND_RESEARCH.md).

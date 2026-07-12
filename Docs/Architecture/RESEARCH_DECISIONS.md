@@ -1,6 +1,6 @@
 # Research Discoveries And Decisions
 
-Date: 2026-07-06
+Date: 2026-07-13
 Scope: rendering, materials, geometry, texture representation, antialiasing, ray interpolation, and physics direction for a new non-temporal engine.
 
 ## Executive Decisions
@@ -284,8 +284,11 @@ Cons:
 
 ## Physics Decision
 
+**Historical research rationale:** the authoritative current planning and evaluation contract is [PHYSICS_ARCHITECTURE_AND_RESEARCH.md](PHYSICS_ARCHITECTURE_AND_RESEARCH.md). The solver names below are research candidates, not an accepted runtime stack or implementation order.
+
 Sources:
 
+- [MiNNIE mixed-FEM research](https://www.tiantianliu.cn/papers/ruan24minnie/ruan24minnie.pdf)
 - [Incremental Potential Contact](https://ipc-sim.github.io/)
 - [IPC GitHub](https://github.com/ipc-sim/IPC)
 - [Affine Body Dynamics](https://arxiv.org/abs/2201.10022)
@@ -295,23 +298,26 @@ Sources:
 - [StiffGIPC, 2024](https://arxiv.org/abs/2411.06224)
 - [Hardware-Accelerated Ray Tracing for Collision Detection](https://arxiv.org/html/2409.09918v1)
 - [Rethinking Collision Detection on GPU Ray Tracing Architecture, 2026](https://arxiv.org/html/2604.23520v1)
+- [Box3D announcement](https://box2d.org/posts/2026/06/announcing-box3d/)
+- [Jolt Physics](https://github.com/jrouwe/JoltPhysics)
 
 Decision:
 
-Physics should be a visible quality feature, not an afterthought. Spend the extra millisecond on contact quality where the player can see it.
+Physics should be a visible quality feature, not an afterthought. Spend a measured extra budget on contact quality where the player can see it and the full frame remains within target.
 
-Recommended stack:
+Research candidate hierarchy:
 
-- ABD for stiff/rigid-like bodies and contact-heavy hero objects.
-- GPU Projective Dynamics plus IPC-style barriers for cloth, shells, and selected soft bodies.
-- Full IPC only for constrained hero cases, offline tools, or lower-frequency simulation islands until performance is proven.
+- A qualified conventional CPU backend remains authoritative for gameplay rigid bodies, characters, events, and queries; architecture-fit candidate Box3D and maturity-control candidate Jolt are the first planned bake-off, not selected dependencies.
+- ABD is evaluated for stiff/contact-heavy hero objects, not used for ordinary rigid bodies by default.
+- GPU Projective Dynamics plus qualified barrier contact is evaluated for cloth, shells, and selected visual soft bodies.
+- Mixed FEM and full IPC-family methods remain constrained hero, reference, offline, or lower-frequency candidates until performance and portability are proven.
 - SDF/shallow neural SDF bodies for character-cloth-hair collisions.
 - RT hardware for ray-style collision queries and high-count geometry queries when it benchmarks well.
-- CPU gameplay physics remains authoritative where determinism and latency matter.
+- CPU gameplay physics remains authoritative by default; GPU deformation has an explicit portable fallback and no implicit same-tick gameplay readback.
 
 RT cores:
 
-They can accelerate BVH traversal and ray-style tests, and newer papers show real collision-detection use cases. They do not solve constraint systems or contact response by themselves. The solver still needs compute/CPU work.
+They can accelerate BVH traversal and narrowly represented ray-style tests, and newer papers show real collision-detection use cases. They do not solve constraint systems or contact response by themselves, and the current evidence does not establish a general IPC CCD replacement. The solver still needs compute/CPU work and renderer contention must be measured.
 
 ## Hair Decision
 

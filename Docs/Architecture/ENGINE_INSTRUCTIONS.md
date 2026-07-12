@@ -1,7 +1,7 @@
 # Engine Instructions
 
 Status: Draft v0.1
-Date: 2026-07-06
+Date: 2026-07-13
 
 Low-level implementation details live in [LOW_LEVEL_ARCHITECTURE.md](LOW_LEVEL_ARCHITECTURE.md).
 Renderer implementation contracts live in [RENDERER_IMPLEMENTATION_CONTRACTS.md](RENDERER_IMPLEMENTATION_CONTRACTS.md).
@@ -16,6 +16,7 @@ The 2026 missing-research audit and optional accelerator policy live in [MISSING
 Fox Engine lessons and architecture coherence audit live in [ARCHITECTURE_COHERENCE_AUDIT.md](ARCHITECTURE_COHERENCE_AUDIT.md).
 LOD transition and native multithreading decisions live in [LOD_TRANSITIONS_AND_MULTITHREADING_DECISIONS.md](LOD_TRANSITIONS_AND_MULTITHREADING_DECISIONS.md).
 Language, scripting, visual graph, shader, and DOTS-like concurrency decisions live in [LANGUAGE_AND_CONCURRENCY_DECISIONS.md](LANGUAGE_AND_CONCURRENCY_DECISIONS.md).
+Physics authority, fixed stepping, backend evaluation, solver research, GPU synchronization, and fallback rules live in [PHYSICS_ARCHITECTURE_AND_RESEARCH.md](PHYSICS_ARCHITECTURE_AND_RESEARCH.md).
 Engine-base evaluations live in [HAZEL_ENGINE_EVALUATION.md](HAZEL_ENGINE_EVALUATION.md).
 Project skeleton/style guidance lives in [HAZEL_INSPIRED_SKELETON.md](HAZEL_INSPIRED_SKELETON.md).
 
@@ -249,17 +250,17 @@ Do not replace the entire texture and mesh system with a "complex number" repres
 
 ## Physics Strategy
 
-The engine should spend about 1 ms more than typical modern engines if it buys visibly better physical behavior. Bad collision and clipping are visual bugs, not just simulation details.
+The engine may spend a measured extra budget where better contact is visibly valuable, but no fixed “extra millisecond” or paper timing is assumed. Bad collision and clipping are visual bugs; gameplay authority, determinism, fallbacks, and frame pacing remain correctness requirements.
 
-Default physics layers:
+The accepted hierarchy is:
 
-- Gameplay-critical rigid/stiff bodies: ABD or a similar affine-body formulation where feasible.
-- General rigid bodies: robust island solver with continuous collision detection for fast movers.
-- Cloth and soft bodies: GPU Projective Dynamics plus IPC-style barrier contact for hero/contact-critical assets.
-- Hair and secondary motion: guide simulation with robust body collision, strand/mesh rendering, and selective self-contact approximations.
-- Characters: SDF or shallow neural SDF collision bodies for cloth/hair/body interaction.
+- a qualified CPU rigid-body backend owns fixed-step gameplay authority, characters, contacts/events, and queries;
+- ordinary cloth, hair guides, and soft bodies use a portable bounded-cost solver or proxy fallback;
+- GPU PD+barrier, IPC-family, ABD, and mixed-FEM paths are candidates for selected visual hero/offline islands only after engine-owned measurements;
+- gameplay interaction with a GPU deformable uses an authoritative CPU proxy unless a later two-way authority contract is accepted;
+- SDF/proxy collision is evaluated for character-cloth-hair interaction with a coarse portable fallback.
 
-RT cores can help with ray and visibility-style collision queries, scene queries, and some high-count collision detection problems. They are not a general replacement for the physics solver. Async compute and copy/DMA engines should be used for scheduling, streaming, and overlap, but not treated as free compute.
+RT cores may help narrowly defined collision queries if measured. They do not solve constraint/contact response. Consumer graphics APIs expose queues and priority/synchronization controls, not fixed SM/RT-core partitions; async compute and copy/DMA are measured scheduling tools, not free compute. See [PHYSICS_ARCHITECTURE_AND_RESEARCH.md](PHYSICS_ARCHITECTURE_AND_RESEARCH.md) for the fact-checked evidence and mandatory planning contract.
 
 ## Quality Gates
 

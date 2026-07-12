@@ -37,6 +37,7 @@ For a broad architecture audit, read every document listed in `Docs/README.md`. 
 | `Engine/src/Engine/Scene` | Entity/component authoring facade, scene data, serialization, cameras, and future runtime extraction. No editor panels or backend-native GPU types. |
 | `Engine/src/Engine/Assets` | Asset identity, import, metadata, cooked artifacts, dependency tracking, reimport, and streaming inputs. It does not render. |
 | `Engine/src/Engine/Jobs` | Worker scheduling and task dependencies. It does not own renderer, scene, asset, or editor policy. |
+| `Engine/src/Engine/Physics` (planned; absent until Phase 11) | Backend-neutral fixed-step physics world, handles, commands/results, collision/query contracts, state capabilities, and diagnostics publication. It must not own Scene entities, asset importing, editor UI, renderer passes, or native graphics types. |
 | `Engine/src/Engine/Platform` | GLFW/headless and future OS services hidden behind engine interfaces. |
 | `Engine/src/Engine/UI` | Engine/editor tool UI integration such as ImGui. Native graphics access is limited to documented UI/presentation bridges. |
 | `Engine/src/Engine/Diagnostics` | Crash reporting, profiling contracts, logs, captures, and diagnostic data surfaces. |
@@ -90,6 +91,14 @@ More detailed engine/editor/sandbox boundaries live in their nearest `OWNERSHIP.
 - Backend selection and fallback happen before native device creation. A strict request fails clearly when unavailable; an ordinary portable launch may select a documented fallback. Never report one backend while running another.
 - Preserve multi-device and multi-vendor behavior: enumerate adapters, select by required capabilities rather than vendor identity, distinguish supported from enabled features, avoid unconditional optional extensions, and record fallbacks and qualification coverage accurately.
 - The renderer capability and fallback contract lives in [Docs/Architecture/RENDERER_CAPABILITY_CONTRACT.md](Docs/Architecture/RENDERER_CAPABILITY_CONTRACT.md). The macOS/MoltenVK decision and measured limitations live in [Docs/Architecture/MACOS_RENDERER_BACKEND_DECISION.md](Docs/Architecture/MACOS_RENDERER_BACKEND_DECISION.md).
+
+## Physics Authority And Research
+
+- The accepted planning contract is [Docs/Architecture/PHYSICS_ARCHITECTURE_AND_RESEARCH.md](Docs/Architecture/PHYSICS_ARCHITECTURE_AND_RESEARCH.md). Read it before physics, character collision, cloth/hair simulation, GPU deformation, determinism, rollback, or collision-asset work.
+- No physics backend is selected or admitted yet. Implement the backend-neutral contract and conformance harness before choosing a library; the initial planned bake-off is architecture-fit candidate Box3D versus maturity-control candidate Jolt under identical engine-owned tests. Do not dismiss Box3D because it is new, and do not ignore its explicitly documented alpha/maturity risk.
+- CPU fixed-step physics is gameplay authority by default. Optional GPU deformables are visual/secondary and publish through explicit RHI synchronization; they do not silently drive gameplay bodies, hit tests, events, replication, saves, AI, or navigation.
+- FEM, PD+barrier, IPC-family methods, and ABD are measured hero/offline candidates, not interchangeable whole-engine backends or universal zero-penetration/performance promises. Preserve portable fallbacks and report algorithm, tolerance, backend, hardware, and failure scope.
+- Consumer DX12/Vulkan queues do not guarantee dedicated SM/RT-core shares or free overlap. DMA moves data but does not solve physics. Treat CUDA, L2 policy controls, and RT-assisted collision as optional capability-gated research paths, never the multi-device baseline.
 
 ## Documentation Maintenance
 
