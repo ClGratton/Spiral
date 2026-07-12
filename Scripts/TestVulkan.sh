@@ -58,6 +58,7 @@ if [[ "$SYSTEM_DIR" == "macosx" ]]; then
     export DYLD_LIBRARY_PATH="$VULKAN_LOADER_PREFIX/lib:$MOLTENVK_PREFIX/lib${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
     export VK_DRIVER_FILES="$MOLTENVK_PREFIX/etc/vulkan/icd.d/MoltenVK_icd.json"
     export MVK_CONFIG_USE_METAL_ARGUMENT_BUFFERS=0
+    export MVK_CONFIG_USE_MTLHEAP=0
     if [[ ! -f "$VK_DRIVER_FILES" ]]; then
         echo "MoltenVK ICD manifest was not found: $VK_DRIVER_FILES" >&2
         exit 1
