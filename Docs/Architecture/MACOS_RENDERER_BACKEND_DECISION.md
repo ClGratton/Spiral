@@ -89,7 +89,13 @@ The strict [hosted macOS 15 Intel run](https://github.com/ClGratton/Spiral/actio
 | Supported | `constantAlphaColorBlendFactors`, `events`, `imageViewFormatReinterpretation`, `imageViewFormatSwizzle`, `multisampleArrayImage`, `mutableComparisonSamplers`, `separateStencilMaskRef`, `triangleFans`, `vertexAttributeAccessBeyondStride` |
 | Unsupported | `imageView2DOn3DImage`, `pointPolygons`, `samplerMipLodBias`, `shaderSampleRateInterpolationFunctions`, `tessellationIsolines`, `tessellationPointMode` |
 
-**Hosted CI conclusion: PASS.** The matrix-producing run completed successfully, including NVRHI device creation, native ImGui presentation, swapchain recreation, and a successful post-resize present. The documentation-only follow-up was also verified by the completed, successful [final-head CI run](https://github.com/ClGratton/Spiral/actions/runs/29209189654). This directly corrects the preliminary risk list: events, image-view swizzle, separate stencil mask/reference, and triangle fans are supported on the measured device. That result is specific to the hosted device and its CI configuration; physical Intel and Apple Silicon devices still require their own query.
+**Matrix-producing CI conclusion: PASS.** The matrix-producing run completed successfully, including NVRHI device creation, native ImGui presentation, swapchain recreation, and a successful post-resize present. The documentation-only follow-up was also verified by the completed, successful [final-head CI run](https://github.com/ClGratton/Spiral/actions/runs/29209189654). This directly corrects the preliminary risk list: events, image-view swizzle, separate stencil mask/reference, and triangle fans are supported on the measured device. That result is specific to the hosted device and its CI configuration; physical Intel and Apple Silicon devices still require their own query.
+
+### Subsequent Hosted-Smoke Reliability Finding
+
+The later documentation-only [CI run 29209877228](https://github.com/ClGratton/Spiral/actions/runs/29209877228) and its failed-job retry both queried the same feature matrix, created the NVRHI device, initialized presentation, and recreated the swapchain through generation 4. Both then failed because the four-frame smoke deadline expired before a successful post-resize present completed.
+
+No engine source changed between the earlier passing head and this documentation-only commit, so this is evidence of a repeatability/timing weakness in the smoke contract rather than evidence that the portability-feature query changed. The roadmap keeps the narrow functional presentation proof checked because completed runs demonstrated it, and adds a separate unchecked item to make the hosted resize/post-resize-present smoke reliable across repeated runs. Current head CI is not fully green until that follow-up is fixed and verified.
 
 Impact attribution for the unsupported fields:
 
@@ -111,6 +117,8 @@ The portability-subset struct is not a complete production capability audit. Pha
 ## Phase 3 Roadmap Completion Call
 
 The checked Phase 3 item is deliberately narrow: **experimental x86_64 macOS editor presentation through MoltenVK and NVRHI Vulkan, including swapchain recreation and successful post-resize present on hosted macOS 15 Intel CI**. It should remain checked because the strict smoke proves the same resize/post-resize presentation gate required by the Linux Vulkan presentation items, and both cited CI runs finished successfully.
+
+The check records demonstrated functional coverage, not repeatability of the current four-frame deadline. The adjacent unchecked hosted-smoke reliability item prevents future agents from treating the latest failing runs as invisible.
 
 This does not check off a generic production macOS renderer. Native Apple Silicon generation/presentation and production scene resources, commands, shaders, representative captures, packaging, profiling, and physical-device qualification remain explicit unchecked work in `PLAN.md`.
 
@@ -146,6 +154,7 @@ Phase 7 must therefore keep meshlet/cluster data independent of mesh-shader avai
 7. [ ] Choose and verify a self-contained macOS runtime packaging model on a clean end-user Mac.
 8. [x] Record the hosted Apple Paravirtual portability-subset result and cross-check the Phase 4, Phase 6, and Phase 7 plans.
 9. [ ] Repeat the capability record on physical Intel and Apple Silicon qualification devices.
+10. [ ] Make hosted resize/post-resize-present verification reliable across repeated CI runs without weakening the requirement for an actual later present.
 
 ## Primary References
 
