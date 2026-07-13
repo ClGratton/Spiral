@@ -14,7 +14,6 @@
 #include "Engine/Assets/MaterialAsset.h"
 #include "Engine/Assets/AssetRegistry.h"
 #include "Engine/Assets/AssetWatcher.h"
-#include "Engine/Automation/Workflow.h"
 #include "Engine/Diagnostics/CrashHandler.h"
 #include "Engine/Events/ApplicationEvent.h"
 #include "Engine/Events/Event.h"

@@ -34,6 +34,17 @@ For a broad architecture audit, read every document listed in `Docs/README.md`. 
 - When a supplied source changes project direction, write the mechanism and its provenance into the authoritative architecture contract and put implementation/verification work in `PLAN.md`. Do not leave the only recoverable version in chat or reduce it to a generic summary future agents can misread.
 - Before handoff, compare the edited contract element-by-element with the supplied source. If a named mode, ordering constraint, default, or warning was intentionally rejected, record that rejection and why instead of silently omitting it.
 
+## Intent-First Review, Contract Challenges, And Minimality
+
+- Begin review with the architecture, mechanism, invariants, failure behavior, and user-visible evidence. Prefer a concise implementation explanation plus targeted questions over an indiscriminate code dump. This reallocates attention; it does not prohibit source inspection.
+- Inspect source directly when risk warrants it or evidence and explanation disagree. Synchronization/lifetimes, unsafe/native boundaries, serialization/migration, security/permissions, persistent data loss, and performance-critical allocation or scheduling require proportionate implementation review.
+- Accepted contracts remain authoritative but are challengeable by evidence. Pause the affected slice, record the contradiction and reproducible evidence, identify the affected invariant, propose the smallest coherent contract change with alternatives/migration/verification impact, obtain the required authority, update the authoritative document, then resume. Never silently route around a contract.
+- Prefer the smallest mechanism satisfying a concrete current requirement. New abstractions, modules, extension points, or dependencies must name a current consumer, the simpler alternative considered, the behavioral/verification boundary they create, and how they can be removed or replaced. Do not add generic infrastructure for hypothetical consumers or duplicate an existing authority.
+- Expose concise plans, progress, mechanism decisions, tool actions, and evidence so the user can interrupt, correct, and resume work. Do not equate explainability with disclosure of private chain-of-thought.
+- Architecture-changing commit messages must explain what changed and why, motivating evidence/source, important rejected alternatives, compatibility/deferred work, and verification.
+- A durable handoff must leave the objective, accepted decisions, actual current behavior, evidence, limitations/blockers, working-tree state, and next ordered work recoverable from repository files. After compaction or a new chat, reread the mandatory documents and task-relevant contract rather than trusting a summary.
+- The complete repository-agent and future product-agent decision lives in [Docs/Architecture/AI_AUTOMATION_ARCHITECTURE.md](Docs/Architecture/AI_AUTOMATION_ARCHITECTURE.md).
+
 ## Workspace Scope Map
 
 | Path | Scope |
@@ -51,7 +62,7 @@ For a broad architecture audit, read every document listed in `Docs/README.md`. 
 | `Engine/src/Engine/Platform` | GLFW/headless and future OS services hidden behind engine interfaces. |
 | `Engine/src/Engine/UI` | Engine/editor tool UI integration such as ImGui. Native graphics access is limited to documented UI/presentation bridges. |
 | `Engine/src/Engine/Diagnostics` | Crash reporting, profiling contracts, logs, captures, and diagnostic data surfaces. |
-| `Engine/src/Engine/Automation` | Deterministic workflow contracts and future agent/editor automation through normal engine APIs. |
+| `Engine/src/Engine/Automation` (planned; absent until Phase 13 has a real workflow consumer) | Future model-neutral action, transaction, receipt, and deterministic workflow contracts. It must not own editor/model orchestration, domain commands, hidden project mutation, or provider-specific policy. |
 | `Editor` | Panels, inspectors, viewports, authoring workflows, settings UI, and editor orchestration. It is a client of Engine. |
 | `Sandbox` | Public engine API proving ground; no editor-private access. |
 | `Tests` | Deterministic contract and integration tests. Tests may consume public/test-facing APIs but must not become production behavior. |
@@ -116,6 +127,14 @@ More detailed engine/editor/sandbox boundaries live in their nearest `OWNERSHIP.
 - The accepted planning contract is [Docs/Architecture/TERRAIN_ARCHITECTURE_AND_RESEARCH.md](Docs/Architecture/TERRAIN_ARCHITECTURE_AND_RESEARCH.md). Read it before terrain generation, infinite-world streaming, terrain LOD, terrain collision, terrain editing, hydrology/erosion, or learned terrain work.
 - Terrain sources are project-selectable and produce canonical versioned artifacts. Do not make procedural generation, Terrain Diffusion, a heightfield, or an infinite world mandatory for every game.
 - Terrain Diffusion is an evaluation candidate for optional offline or asynchronous macro generation. Do not admit PyTorch, CUDA, its models, or a service dependency without the documented bake-off and a `Docs/DEPENDENCIES.md` update.
+
+## AI And Automation Authority
+
+- The accepted planning contract is [Docs/Architecture/AI_AUTOMATION_ARCHITECTURE.md](Docs/Architecture/AI_AUTOMATION_ARCHITECTURE.md). Read it before repository-agent workflow changes, product AI/agent work, guided workflow infrastructure, tool/action schemas, permissions, approval UI, transactions, provenance, or automation verification.
+- Repository development agents and the future in-product game-making agent are separate systems. Product AI receives no repository-agent filesystem or source-edit authority.
+- AI is an optional planning and tool-selection layer over deterministic public commands. Equivalent supported workflows must remain usable without a model/provider.
+- Do not recreate an Automation module or generic workflow types before the first real Phase 13 vertical workflow proves a stable shared boundary. A provider adapter comes after deterministic commands, permissions, rollback, validation, and receipts.
+- Treat claims that frontier models make no local mistakes or that source should never be inspected as research claims, not project facts. Allocate attention to ideas and QA first while preserving risk-proportionate implementation review.
 
 ## Documentation Maintenance
 

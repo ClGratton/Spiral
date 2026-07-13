@@ -134,6 +134,19 @@ A backend claim requires that backend's smoke or a stronger representative scene
 
 Future frame-pacing/profiler completion requires a deterministic marker trace that carries one frame ID through engine `FrameStart`, input/simulation, render submission, `Present` begin/end, GPU completion, and display feedback where available. Tests must prove that the primary in-game frametime series is consecutive engine-start cadence, that intentional pacing wait and CPU active work are separate, and that injected inter-frame and pre-`Present` delays appear at their actual control points. A flat limiter/Afterburner/RTSS hook-local graph, average FPS, or present cadence alone is not completion evidence. When display feedback is unavailable, diagnostics must report it unavailable rather than substituting `Present` cadence.
 
+## Future AI And Automation Verification
+
+The accepted [AI and automation contract](Architecture/AI_AUTOMATION_ARCHITECTURE.md) is planning, not runtime evidence. Phase 13 tests must carry stable workflow/run/action IDs through preview, permission/precondition checks, apply, validation, commit or complete rollback, undo, and provenance publication. Focused coverage must prove:
+
+- the deterministic non-AI workflow and AI-selected path use the same command semantics and produce the same user-visible result;
+- unauthorized, stale, malformed, unknown-version, and unsupported actions are rejected before mutation, while destructive, external, and sensitive actions stop at the specified approval boundary until explicitly approved;
+- injected partial failures, cancellation, retry, and idempotency produce the documented state without orphaned changes;
+- receipts are versioned, complete, tied to editor history, and redact credentials, secrets, and private prompt data;
+- validation exercises the edited project through its real public APIs and workflow; an agent report, plausible explanation, log marker, or mocked mutation is not acceptance evidence;
+- headless and editor paths agree wherever both are claimed.
+
+Model/provider evaluation is separate from deterministic workflow qualification. Use versioned scenarios and repeated trials to report model/version, plan and tool-selection accuracy, clarification behavior, unsafe-action rate, latency/cost, and final deterministic-tool outcomes. A model score cannot upgrade an unverified tool or workflow.
+
 ## Editor And Asset Workflows
 
 Prefer the focused existing smoke that owns the behavior. Current headless flags include:

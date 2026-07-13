@@ -41,6 +41,7 @@ Technical documents are indexed in recommended reading order by [Architecture/RE
 | --- | --- | --- |
 | [Docs/Architecture/README.md](Architecture/README.md) | Architecture index | Recommended reading order and link into the technical decision set. |
 | [Docs/Architecture/ENGINE_INSTRUCTIONS.md](Architecture/ENGINE_INSTRUCTIONS.md) | Vision contract | Renderer/product north star, hard rules, pass layout, quality gates, and profiling goals. |
+| [Docs/Architecture/AI_AUTOMATION_ARCHITECTURE.md](Architecture/AI_AUTOMATION_ARCHITECTURE.md) | Accepted planning contract | Repository-agent operating principles and the future product automation boundary, including steering, permissions, transactions, validation, provenance, minimality, and verification. |
 | [Docs/Architecture/ARCHITECTURE_COHERENCE_AUDIT.md](Architecture/ARCHITECTURE_COHERENCE_AUDIT.md) | Living audit | Cross-document conflicts, missing prerequisites, and intentional open design work. |
 | [Docs/Architecture/LOW_LEVEL_ARCHITECTURE.md](Architecture/LOW_LEVEL_ARCHITECTURE.md) | Design contract | Renderer shape, buffers, textures, geometry, descriptors, and pass graph. |
 | [Docs/Architecture/RENDERER_IMPLEMENTATION_CONTRACTS.md](Architecture/RENDERER_IMPLEMENTATION_CONTRACTS.md) | Required contract | Exact visibility, culling, streaming, AA, lighting, and runtime implementation rules. |

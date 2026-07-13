@@ -280,6 +280,14 @@ The earlier physics direction was incomplete and over-prescriptive: it named ABD
 
 The cross-phase order is also explicit: Phase 10 publishes locomotion/root-motion intent and deformation attachments; Phase 11 resolves collision and owns simulation; Phase 14 consumes the determinism/state capability already designed in Phase 11 when selecting networking and rollback policy.
 
+## AI And Automation Architecture Audit
+
+The earlier direction was product-aligned but incomplete. It correctly required AI to use normal APIs and named explainability, undo, and validation, while `PLAN.md` admitted that Phase 13 lacked an accepted detailed design. However, the public `WorkflowDefinition`/`WorkflowStep` scaffold had no consumer, executor, stable identity, transaction, permission, provenance, failure state, or focused test. It exposed an implementation guess as engine API before a real workflow established the boundary.
+
+[AI_AUTOMATION_ARCHITECTURE.md](AI_AUTOMATION_ARCHITECTURE.md) resolves the gap and explicitly separates repository development agents from the future in-product game-making agent. The accepted choice is human-owned durable intent plus live-steerable optional AI planning over deterministic permission-scoped public commands, atomic transactions/undo, validation, and provenance. Phase 13 starts with a real non-AI vertical workflow; shared action/receipt infrastructure is extracted only from a proven consumer, and provider integration follows the deterministic boundary.
+
+The research audit adopts Salvatore Sanfilippo's current emphasis on ideas, targeted mechanism explanations, QA, scenarios, and live steering. It does not promote the video's claims that frontier models make no local mistakes or that code should never be read into project facts. Risk-proportionate source inspection remains required for synchronization/lifetimes, unsafe/native boundaries, serialization/migration, security/permissions, persistent data, and performance-critical mechanisms. The unused workflow scaffold was removed under the actual-consumer minimality rule; all Phase 13 runtime behavior remains unchecked.
+
 ## Implementation Guardrails
 
 Before writing renderer code:

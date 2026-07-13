@@ -30,9 +30,11 @@ Forbidden:
 | `Platform` | OS/window/headless implementations behind engine interfaces. | Renderer feature policy or editor workflows. |
 | `UI` | Engine tool-UI integration and documented native presentation bridges. | Scene rendering through native API escape hatches. |
 | `Diagnostics` | Crash reports, profiling contracts, logs, captures, and diagnostic data. | Owning the systems it observes. |
-| `Automation` | Deterministic workflow contracts through public engine/editor APIs. | Hidden direct mutation of private subsystem state. |
+| `Automation` (planned; absent until Phase 13 has a real workflow consumer) | Future model-neutral action, transaction, receipt, and deterministic headless workflow contracts extracted from proven consumers. | Editor/model orchestration, domain commands, hidden project mutation, or provider-specific policy. |
 
 Dependency direction is toward public contracts: editor/client code calls Engine; Renderer consumes Scene extraction and Assets outputs; Renderer uses RenderGraph and RHI; RenderGraph uses RHI descriptions/contracts; RHI must not call upward into Renderer or Scene.
+
+Editor owns future workflow UX, tool registration, model/provider adapters, planning/orchestration, preview/approval, cancellation, and history presentation. Domain modules own their commands, preconditions, validators, and results. The accepted split is [../../../Docs/Architecture/AI_AUTOMATION_ARCHITECTURE.md](../../../Docs/Architecture/AI_AUTOMATION_ARCHITECTURE.md).
 
 ## Planned Phase 7 Module
 

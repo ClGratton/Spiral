@@ -2,6 +2,10 @@
 
 Spiral is a game engine focused on sharp motion, measured materials, transparent performance, and automation. Its baseline image-quality path does not require temporal antialiasing or temporal upscaling.
 
+## AI And Automation Direction
+
+Spiral keeps project intent human-owned and durable, uses optional AI for live-steerable planning and explanation, and executes changes only through deterministic permission-scoped public tools. Changes are previewable, transactional and undoable, validated, and provenance-recorded; equivalent guided workflows remain available without AI. The accepted boundary is [Docs/Architecture/AI_AUTOMATION_ARCHITECTURE.md](Docs/Architecture/AI_AUTOMATION_ARCHITECTURE.md).
+
 ## Build
 
 Windows PowerShell:

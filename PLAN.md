@@ -36,7 +36,7 @@ Already present:
 - Engine-owned entry point and client `CreateApplication` hook.
 - Layer stack and event dispatch.
 - Basic logging, assertions, timestep, headless smoke-test path.
-- NVRHI renderer boundary, RHI, scene, asset, automation, and job system modules.
+- NVRHI renderer boundary plus RHI, scene, asset, and job-system modules.
 - Architecture documents organized under `Docs/Architecture`.
 - Dependency/license ledger and pinned NVRHI fetch script.
 - Vendored NVRHI common, validation, and MSVC-gated D3D12 backend sources linked through Premake.
@@ -84,6 +84,7 @@ Immediate gap:
 - The editor can create an isolated project and starter scene from a name/location modal, and hierarchy controls create or delete entities with undo/redo coverage.
 - The physics architecture is now a documented planning contract: CPU-authoritative fixed-step gameplay physics, an engine-owned backend boundary and bake-off, versioned collision cooking, explicit determinism levels, optional one-way GPU visual deformation, and measured FEM/PD/IPC/ABD hero research. No physics backend or runtime module is implemented or admitted yet.
 - The terrain architecture is now a documented planning contract: project-selectable bounded, streamed, unbounded, and hybrid profiles; deterministic spatial sources; canonical versioned tile artifacts; separate generation/residency/render/collision authority; and a measured Terrain Diffusion evaluation. No terrain module, generator, model, or runtime dependency is implemented or admitted yet.
+- The AI/automation architecture is now an accepted planning contract: human-owned durable intent, live-steerable planning, deterministic permission-scoped public tools, transactions/undo, validation, provenance, AI-optional parity, evidence-driven contract challenges, and actual-consumer minimality. No in-product AI runtime, provider adapter, generic workflow executor, action schema, or Automation module is implemented; the unused public `WorkflowDefinition`/`WorkflowStep` scaffold was removed rather than treated as a foundation.
 - Renderer capability state now has separate advertised, enabled, implemented, and exercised stages. D3D12 and Vulkan enumerate real devices before creation, query the versioned Phase 3 Bootstrap profile's API, queue/presentation, synchronization, texture-limit, RGBA8, and D32 requirements, and select through the shared deterministic evaluator. Reports retain every candidate evaluation, stable DXGI LUID/Vulkan UUID, rejection, queue/preference fallback, selected formats, and conservative feature lifecycle state. Exact adapter name or stable-ID preference and strict no-fallback launch are supported; unused D3D12 direct-indexing/enhanced-barrier requests and Vulkan buffer-device-address enablement remain off. The editor Profiler presents the active report through a renderer-owned read-only snapshot, including profile, adapter identity, Bootstrap qualification, queues, formats, feature lifecycle states, selected fallbacks, retained candidate rejection reasons, and versioned consumer groups. `Phase3FrameTimingV1` prefers GPU timestamps but currently selects and exercises portable CPU steady-clock timing because both native timestamp-query paths remain unimplemented; headed D3D12 and Vulkan smokes prove the group at Presentation without upgrading the device beyond Bootstrap. Hosted CI run `29245709930` for scene-snapshot implementation commit `4d16bb8` started no Code Style, Windows, Ubuntu, or macOS job steps; dependency-submission run `29245709977` also started no steps. GitHub reported failed account payments or an Actions spending-limit increase requirement, so these runs provide no hosted evidence. Future consumer groups, dedicated Vulkan queue enablement, physical-device breadth, and Scene/Production qualification remain pending beside their actual consumers.
 - The headed presentation prototype does not deliberately discard completed engine frames, but it still hard-codes synchronized backend behavior: D3D12 uses a waitable swapchain with maximum latency one and `Present(1, 0)`, Vulkan uses FIFO, and the dormant OpenGL path requests swap interval one. There is no serializable project pacing policy or runtime game-setting override yet. These bootstrap choices are not the accepted competitive/default product policy.
 
@@ -93,7 +94,7 @@ Phases are outcome gates, not equal-size sprints. Phase 3 is intentionally large
 
 Phases 4 through 9 are feature layers and must name both their algorithms and the infrastructure they consume. Their technical traceability lives in [Docs/Architecture/TECHNICAL_ROADMAP_COVERAGE.md](Docs/Architecture/TECHNICAL_ROADMAP_COVERAGE.md).
 
-Later non-renderer phases are product outcome summaries where the project has not yet accepted a detailed subsystem design. Phase 7 terrain has an accepted planning contract in [Docs/Architecture/TERRAIN_ARCHITECTURE_AND_RESEARCH.md](Docs/Architecture/TERRAIN_ARCHITECTURE_AND_RESEARCH.md), and Phase 11 physics has an accepted planning contract in [Docs/Architecture/PHYSICS_ARCHITECTURE_AND_RESEARCH.md](Docs/Architecture/PHYSICS_ARCHITECTURE_AND_RESEARCH.md), with dependency-ordered checklist coverage below. Before implementing Phase 10 animation, Phase 13 automation beyond the terrain workflow contract, Phase 14 game systems/networking, or Phase 16 packaging beyond terrain provenance/cooking requirements, add or update the task-relevant architecture contract and expand that phase's prerequisites, data ownership, fallback/error behavior, and focused verification. This design gate is prose, not a checkable substitute for runtime behavior.
+Later non-renderer phases are product outcome summaries where some subsystem designs remain open. Phase 7 terrain, Phase 11 physics, and Phase 13 AI/automation have accepted planning contracts in [Docs/Architecture/TERRAIN_ARCHITECTURE_AND_RESEARCH.md](Docs/Architecture/TERRAIN_ARCHITECTURE_AND_RESEARCH.md), [Docs/Architecture/PHYSICS_ARCHITECTURE_AND_RESEARCH.md](Docs/Architecture/PHYSICS_ARCHITECTURE_AND_RESEARCH.md), and [Docs/Architecture/AI_AUTOMATION_ARCHITECTURE.md](Docs/Architecture/AI_AUTOMATION_ARCHITECTURE.md), with dependency-ordered checklist coverage below. Before implementing Phase 10 animation, Phase 14 game systems/networking, or Phase 16 packaging beyond terrain provenance/cooking requirements, add or update the task-relevant architecture contract and expand that phase's prerequisites, data ownership, fallback/error behavior, and focused verification. An accepted planning contract is not a checkable substitute for runtime behavior.
 
 ## Phase 0: Buildable Spine
 
@@ -527,7 +528,12 @@ Goal: turn advanced engine systems into approachable workflows.
 
 Required:
 
-- [ ] Guided project-template wizard extending Phase 2's basic project creation with game-type choices, explainable generated systems, validation, and reversible changes.
+- [ ] First deterministic non-AI vertical slice: extend Phase 2's project creator into a guided project-template workflow with game-type choices, an editable intent/plan preview, public editor commands, atomic undoable application, validation, and a provenance receipt.
+- [ ] Extract only the stable model-neutral action, transaction, receipt, and deterministic headless-runner contracts proven by that workflow or a second concrete consumer; do not recreate a generic workflow scaffold in advance.
+- [ ] Permission and approval policy that rejects unauthorized, stale, malformed, or unknown-version actions and blocks destructive, external, or sensitive actions until explicitly approved at the correct boundary.
+- [ ] Failure recovery, cancellation, retry/idempotency, complete rollback, and history-linked provenance with secret redaction.
+- [ ] Live workflow progress, targeted mechanism explanations, interrupt/correct/resume, and complete durable handoff state without exposing private model reasoning.
+- [ ] Provider-neutral AI planning/selection adapter over the same registered deterministic tools, with versioned scenario evaluation and no loss of the non-AI workflow.
 - [ ] First playable workflow.
 - [ ] Visual style workflow.
 - [ ] Asset import workflow.
@@ -537,14 +543,14 @@ Required:
 - [ ] Motion pack workflow.
 - [ ] Performance workflow.
 - [ ] Packaging workflow.
-- [ ] AI-agent tool bridge with explainable actions.
-- [ ] Undoable generated changes.
-- [ ] Validation checklist per workflow.
+- [ ] Every workflow's typed tool bridge has explainable previews/actions/results, undoable generated changes, validation, and provenance; no provider bypasses the shared command path.
+- [ ] Validation and conformance matrix per workflow, including AI/non-AI semantic parity, permission rejection, injected rollback, retry/idempotency, provenance redaction, and exact user-visible outcomes.
 
 Exit criteria:
 
 - A beginner can create a playable prototype without manually discovering every system.
 - Experts can inspect and override all automation.
+- Model/provider unavailability never blocks a supported guided workflow, and committed changes remain attributable, validated, and undoable.
 
 ## Phase 14: Audio, UI, Save, Networking, And Game Systems
 

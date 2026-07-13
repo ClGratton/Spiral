@@ -704,7 +704,7 @@ This list is historical skeleton rationale. Use `PLAN.md`, not this list, to cho
 10. Asset registry stub.
 11. C#/.NET host and `ScriptCore`.
 12. Source-generated bindings and C# component lifecycle.
-13. Automation workflow stub.
+13. Automation workflow stub (historical proposal, rejected: the unused public stub was removed; Phase 13 now starts from a concrete deterministic workflow under `AI_AUTOMATION_ARCHITECTURE.md`).
 14. Graph compiler stub.
 15. Render architecture prototype from `LOW_LEVEL_ARCHITECTURE.md`.
 

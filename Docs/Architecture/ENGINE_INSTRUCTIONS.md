@@ -58,6 +58,8 @@ The editor should expose expert control without forcing every user to become a r
 
 AI assistance is a first-class workflow layer, not a replacement for deterministic tools. The project should develop a custom game-making agent with engine-specific instructions, tools, validators, and workflows. It should help users plan games, set up scenes, wire gameplay, tune materials, build animation graphs, optimize performance, and fix errors. The same guided workflows must still work without AI, so the engine remains teachable, debuggable, and trustworthy.
 
+The implementation boundary, permission/transaction/provenance lifecycle, repository-agent rules, and verification requirements live in [AI_AUTOMATION_ARCHITECTURE.md](AI_AUTOMATION_ARCHITECTURE.md). No generic workflow or agent runtime should be scaffolded before its first concrete guided-workflow consumer.
+
 The onboarding funnel should feel like:
 
 ```text

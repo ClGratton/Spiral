@@ -80,14 +80,14 @@ Phases 4–9 are smaller because they layer algorithms onto that foundation, but
 
 ## Later-Phase Granularity
 
-The current technical document set is renderer-heavy. Phase 7 terrain is backed by [TERRAIN_ARCHITECTURE_AND_RESEARCH.md](TERRAIN_ARCHITECTURE_AND_RESEARCH.md), Phase 11 physics is backed by its accepted contract, and Phase 12 is backed by the accepted language/concurrency contract. Phases 10, 13 outside the terrain workflow, 14, and 16 outside terrain cooking/provenance still summarize domains whose detailed ownership/data/fallback designs are not accepted yet. Their brevity is not permission to implement from headings alone.
+The current technical document set is renderer-heavy. Phase 7 terrain is backed by [TERRAIN_ARCHITECTURE_AND_RESEARCH.md](TERRAIN_ARCHITECTURE_AND_RESEARCH.md), Phase 11 physics is backed by its accepted contract, Phase 12 by the accepted language/concurrency contract, and Phase 13 by [AI_AUTOMATION_ARCHITECTURE.md](AI_AUTOMATION_ARCHITECTURE.md). Phases 10, 14, and 16 outside terrain cooking/provenance still summarize domains whose detailed ownership/data/fallback designs are not accepted yet. Their brevity is not permission to implement from headings alone.
 
 Before entering those phases:
 
 - Animation needs pose/skeleton/clip formats, compression, graph evaluation, root motion, task scheduling, skinning/morph publication, retarget, and motion-matching contracts.
 - Physics now has an accepted planning contract in [PHYSICS_ARCHITECTURE_AND_RESEARCH.md](PHYSICS_ARCHITECTURE_AND_RESEARCH.md) and dependency-ordered Phase 11A-11D coverage for backend boundaries, fixed-step authority, determinism/state capabilities, task-graph publication, collision cooking/queries, CPU/GPU synchronization, hero-solver research, fallbacks, and qualification.
 - Terrain now has an accepted planning contract in [TERRAIN_ARCHITECTURE_AND_RESEARCH.md](TERRAIN_ARCHITECTURE_AND_RESEARCH.md) and dependency-ordered Phase 7/13/15/16 coverage for project profiles, source queries, canonical artifacts, spatial LOD, streaming, collision readiness, edits/provenance, workflows, diagnostics, shipping cook policy, and the optional Terrain Diffusion bake-off.
-- Automation needs tool permissions, provenance, undo/transaction boundaries, validation, and failure recovery.
+- Automation has an accepted intent-first, AI-optional planning contract covering ownership, public typed tools, actual-consumer minimality, permissions, transaction/undo boundaries, validation, provenance, failure recovery, steering, and risk-based review. Runtime work remains unchecked and begins with one deterministic non-AI vertical workflow before generic types or a provider adapter.
 - Audio/UI/save/navigation/networking need separate domain contracts; Phase 14 is a product grouping, not one implementation slice.
 - Packaging needs target profiles, cooked package/manifest/versioning, runtime dependency bundling, signing/notarization, clean-machine verification, update/migration, and rollback policy.
 
