@@ -26,6 +26,14 @@ For a broad architecture audit, read every document listed in `Docs/README.md`. 
 - A user instruction can change project direction. If that change is intended to persist, update the repository documents that future agents will read; do not leave the decision only in chat.
 - If two authoritative documents conflict and the intended resolution cannot be established from code, tests, roadmap order, or an accepted ADR, stop and flag the decision instead of silently choosing one.
 
+## Research Fidelity And Mechanism Preservation
+
+- Treat user-supplied chats, transcripts, screenshots, diagrams, and external critiques as source material. Before compressing them into a decision, extract the named mechanisms, operation order, timing/control point, defaults, alternatives, trade-offs, caveats, and unresolved claims.
+- Do not replace a specific mechanism with a broader label when that loses the reason it was supplied. For example, an RTSS-ASYNC-inspired inter-frame wait, a submission gate, Front Edge Sync immediately before `Present`, and Reflex-style latency control are distinct hypotheses; “frame pacing” is not an adequate substitute for documenting their different control points.
+- Separate four evidence levels in durable docs: the source's claim, the agent's inference, the accepted project decision, and behavior verified in this repository. Community posts and assistant chats may motivate a bake-off, but they are not implementation facts until confirmed by primary documentation, code inspection, or engine-owned measurement.
+- When a supplied source changes project direction, write the mechanism and its provenance into the authoritative architecture contract and put implementation/verification work in `PLAN.md`. Do not leave the only recoverable version in chat or reduce it to a generic summary future agents can misread.
+- Before handoff, compare the edited contract element-by-element with the supplied source. If a named mode, ordering constraint, default, or warning was intentionally rejected, record that rejection and why instead of silently omitting it.
+
 ## Workspace Scope Map
 
 | Path | Scope |

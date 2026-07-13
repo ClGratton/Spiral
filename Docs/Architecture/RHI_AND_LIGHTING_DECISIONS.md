@@ -457,6 +457,29 @@ Presentation belongs to the platform swapchain layer, outside NVRHI. The engine 
 - Presentation sync/VRR/tearing, frame-delivery mode (preserve FIFO versus an explicitly selected latest-ready/replacement policy), maximum frames in flight, portable or vendor latency mode, and fixed simulation cadence remain independent settings. Any mode allowed to replace or drop a queued presentation must say so explicitly.
 - Disabling `Smooth Frametime` does not disable swapchain acquire, per-image fence, resource-lifetime, or queue-completion waits required for correctness. Those waits are not smoothing.
 
+### Smooth Frametime Mechanism And Research Provenance
+
+The design input was a user-supplied Gemini discussion containing a community explanation of RTSS `ASYNC`, Front Edge Sync (FES), a maintainable frame cap, VRR, VSync, driver low-latency modes, and NVIDIA Reflex. The named modes and their timing points are preserved here because collapsing them into generic “frame pacing” loses the proposed mechanism. The explanation is research input, not proof of RTSS internals; implementation must use engine-owned clocks, markers, source inspection where available, and display/latency measurements.
+
+The accepted product shape is:
+
+- `Responsive` remains the default competitive profile. It adds no artificial cadence wait. Portable low-queue-depth control and optional Reflex/Anti-Lag-class integrations are measured independently.
+- `Smooth Frametime` is an optional engine-owned analogue of the reported RTSS `ASYNC` goal: trade some peak throughput and latency for evenly spaced CPU-frame starts and GPU work delivery under a maintainable cap.
+- A smoothness-oriented test profile combines the ASYNC-style pacer with GPU headroom, VRR, and an explicitly selected VSync/boundary policy. A cap several FPS below the VRR ceiling is a starting test condition, not a universal constant or hidden default.
+
+The primary engine candidate is an **inter-frame boundary wait**:
+
+1. Complete and submit the current frame, call `Present`, and record the actual timing markers.
+2. Compute the next target CPU-frame start from a monotonic phase accumulator; do not derive it by repeatedly adding sleep duration to “now.”
+3. After the prior frame's submission/`Present` path and before polling/sampling input or simulating the next frame, use a coarse sleep plus an optional short measured high-resolution wait to reach the target boundary.
+4. Start the next frame from fresh input, simulate, render, submit, and present normally. If late, begin immediately and advance/reset the phase without catch-up bursts or sacrificial rendered frames.
+
+The supplied explanation also describes RTSS `ASYNC` as holding CPU-produced work and releasing it to the GPU at the target boundary. Because that is a different control point from an after-`Present` inter-frame wait, preserve it as a separately instrumented **submission-gate candidate** rather than silently claiming the two are identical. Compare both placements for CPU/GPU overlap, queue depth, cadence, displayed smoothness, and input latency before accepting one.
+
+FES is a third and distinct candidate: it delays immediately before the current `Present` to target the display's front edge. The supplied research warns that this placement can make telemetry sampled near `Present` look flat without eliminating visible engine stutter. It is not the normal `Smooth Frametime` path; retain it only as a measured experiment, especially for frame-generation timing, and require display-stage evidence rather than a flat application frametime graph.
+
+“Frames lost to a cap” means intentionally not starting extra work above the selected cadence, not rendering completed frames and throwing them away. Rendered, submitted, presented, replaced, and displayed frames remain separately counted.
+
 ### Backend Mechanisms
 
 Windows D3D12:
@@ -475,7 +498,7 @@ Current implementation audit (2026-07-13): no current backend contains an explic
 
 VRR and vendor latency technologies are profile inputs, not correctness mechanisms. Respect the user's VRR and driver settings, but do not claim that VRR repairs missed frame budgets. NVIDIA Reflex may become an optional Windows/NVIDIA latency integration after the portable pacing and instrumentation path exists; it is not a substitute for that path.
 
-RTSS, MSI Afterburner, and Special K may be useful external test conditions. The engine must not require them or reproduce their implementation details. Claims such as a fixed one-frame cost, display-level timing, or frame-generation benefit require measurements on the target hardware and presentation path before they affect an engine default.
+RTSS `ASYNC`, RTSS FES, MSI Afterburner, and Special K may be useful external reference conditions. The engine must not require them or claim undocumented implementation equivalence. Claims such as a fixed one-frame cost, display-level timing, or frame-generation benefit require measurements on the target hardware and presentation path before they affect an engine default.
 
 ## Open Questions
 
