@@ -32,6 +32,12 @@ namespace Engine
             float ViewProjection[16];
         };
 
+        struct ConstantBufferAllocation
+        {
+            Scope<RHI::Buffer> Buffer;
+            std::byte* Mapped = nullptr;
+        };
+
         constexpr std::array<ViewportVertex, 24> kPrototypeMeshVertices = {
             ViewportVertex{{ -0.75f, -0.75f, -0.75f }, { 0.22f, 0.68f, 1.00f }},
             ViewportVertex{{ -0.75f,  0.75f, -0.75f }, { 0.22f, 0.68f, 1.00f }},
@@ -96,13 +102,18 @@ namespace Engine
 
         void Shutdown()
         {
-            if (m_ConstantBuffer && m_ConstantBufferMapped)
+            for (std::vector<ConstantBufferAllocation>& frameAllocations : m_FrameConstantBuffers)
             {
-                m_ConstantBuffer->Unmap();
-                m_ConstantBufferMapped = nullptr;
+                for (ConstantBufferAllocation& allocation : frameAllocations)
+                {
+                    if (allocation.Buffer && allocation.Mapped)
+                        allocation.Buffer->Unmap();
+                    allocation.Mapped = nullptr;
+                    allocation.Buffer.reset();
+                }
             }
 
-            m_ConstantBuffer.reset();
+            m_FrameConstantBuffers.clear();
             m_IndexBuffer.reset();
             m_VertexBuffer.reset();
             m_Pipeline.reset();
@@ -122,12 +133,13 @@ namespace Engine
             D3D12_CPU_DESCRIPTOR_HANDLE depthDsv,
             u32 width,
             u32 height,
+            u32 frameSlot,
             const ClearColor& clearColor)
         {
             if (!commandList || !colorTexture || !depthTexture || width == 0 || height == 0)
                 return false;
 
-            ScopedD3D12Marker marker(commandList, "Viewport Prototype Mesh Pass");
+            ScopedD3D12Marker marker(commandList, "Viewport Scene Snapshot Pass");
 
             if (colorState != D3D12_RESOURCE_STATE_RENDER_TARGET)
             {
@@ -141,31 +153,62 @@ namespace Engine
             commandList->ClearRenderTargetView(colorRtv, clear, 0, nullptr);
             commandList->ClearDepthStencilView(depthDsv, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
 
-            if (m_Pipeline && m_ConstantBuffer && m_VertexBuffer && m_IndexBuffer)
+            SceneRasterFrame rasterFrame;
+            const std::shared_ptr<const SceneRenderSnapshot> snapshot = Renderer::GetSceneRenderSnapshot();
+            if (snapshot)
+                rasterFrame = PrepareSceneRasterFrame(*snapshot);
+
+            bool renderSucceeded = true;
+            if (m_Pipeline
+                && m_VertexBuffer
+                && m_IndexBuffer
+                && rasterFrame.HasValidView
+                && !rasterFrame.Instances.empty())
             {
                 PollShaderHotReload();
-                UpdateConstants(width, height);
-
-                Scope<RHI::CommandList> rhiCommandList = RHI::WrapNVRHID3D12CommandList(
-                    RHI::QueueType::Graphics,
-                    commandList,
-                    "Editor Viewport Prototype Mesh Command Bridge");
-                if (!rhiCommandList)
-                    return false;
-
-                rhiCommandList->SetGraphicsPipeline(*m_Pipeline);
-                rhiCommandList->SetGraphicsConstantBuffer(0, *m_ConstantBuffer);
-                rhiCommandList->SetViewport({ 0.0f, 0.0f, static_cast<float>(width), static_cast<float>(height), 0.0f, 1.0f });
-                rhiCommandList->SetScissorRect({ 0, 0, static_cast<int>(width), static_cast<int>(height) });
-                rhiCommandList->SetVertexBuffer(0, *m_VertexBuffer);
-                rhiCommandList->SetIndexBuffer(*m_IndexBuffer, RHI::IndexFormat::Uint16);
-                rhiCommandList->DrawIndexed(m_IndexCount, 1, 0, 0, 0);
+                if (!EnsureConstantBuffers(frameSlot, rasterFrame.Instances.size()))
+                {
+                    renderSucceeded = false;
+                }
+                else
+                {
+                    Scope<RHI::CommandList> rhiCommandList = RHI::WrapNVRHID3D12CommandList(
+                        RHI::QueueType::Graphics,
+                        commandList,
+                        "Editor Viewport Scene Snapshot Command Bridge");
+                    if (!rhiCommandList)
+                    {
+                        renderSucceeded = false;
+                    }
+                    else
+                    {
+                        rhiCommandList->SetGraphicsPipeline(*m_Pipeline);
+                        rhiCommandList->SetViewport({ 0.0f, 0.0f, static_cast<float>(width), static_cast<float>(height), 0.0f, 1.0f });
+                        rhiCommandList->SetScissorRect({ 0, 0, static_cast<int>(width), static_cast<int>(height) });
+                        rhiCommandList->SetVertexBuffer(0, *m_VertexBuffer);
+                        rhiCommandList->SetIndexBuffer(*m_IndexBuffer, RHI::IndexFormat::Uint16);
+                        std::vector<ConstantBufferAllocation>& constantBuffers = m_FrameConstantBuffers[frameSlot];
+                        for (size_t index = 0; index < rasterFrame.Instances.size(); ++index)
+                        {
+                            ViewportConstants constants {};
+                            std::memcpy(
+                                constants.ViewProjection,
+                                rasterFrame.Instances[index].ModelViewProjection.Values,
+                                sizeof(constants.ViewProjection));
+                            std::memcpy(constantBuffers[index].Mapped, &constants, sizeof(constants));
+                            rhiCommandList->SetGraphicsConstantBuffer(0, *constantBuffers[index].Buffer);
+                            rhiCommandList->DrawIndexed(m_IndexCount, 1, 0, 0, 0);
+                            ++rasterFrame.IssuedDrawCount;
+                        }
+                    }
+                }
             }
 
             D3D12_RESOURCE_BARRIER toShaderResource = TransitionBarrier(colorTexture, colorState, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
             commandList->ResourceBarrier(1, &toShaderResource);
             colorState = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
-            return true;
+            Renderer::PublishSceneRasterFrame(std::move(rasterFrame));
+            return renderSucceeded;
         }
 
         bool CreatePipeline()
@@ -289,39 +332,34 @@ namespace Engine
 
             m_IndexCount = static_cast<u32>(kPrototypeMeshIndices.size());
 
-            RHI::BufferDescription constantBufferDesc;
-            constantBufferDesc.DebugName = "Editor Viewport Constants";
-            constantBufferDesc.SizeBytes = kViewportConstantBufferSize;
-            constantBufferDesc.StrideBytes = kViewportConstantBufferSize;
-            constantBufferDesc.Usage = RHI::BufferUsage::Constant;
-            constantBufferDesc.CpuAccess = RHI::BufferCpuAccess::Write;
-            if (!CreateRhiBuffer(constantBufferDesc, m_ConstantBuffer))
-                return false;
-
-            m_ConstantBufferMapped = static_cast<std::byte*>(m_ConstantBuffer->Map());
-            if (!m_ConstantBufferMapped)
-                return false;
-
             return true;
         }
 
-        void UpdateConstants(u32 width, u32 height)
+        bool EnsureConstantBuffers(u32 frameSlot, size_t requiredCount)
         {
-            if (!m_ConstantBufferMapped || width == 0 || height == 0)
-                return;
+            if (frameSlot >= m_FrameConstantBuffers.size())
+                m_FrameConstantBuffers.resize(static_cast<size_t>(frameSlot) + 1);
 
-            const float framePhase = static_cast<float>(m_FrameCounter++);
-            const float yaw = 0.72f + framePhase * 0.006f;
-            const float pitch = -0.34f;
-            const CameraView& cameraView = Renderer::GetCameraView();
-            const Math::Mat4 rotation = Math::Multiply(Math::RotationY(yaw), Math::RotationX(pitch));
-            const Math::Mat4 translation = Math::Translation(Math::CameraRelative({}, cameraView.TranslationOrigin));
-            const Math::Mat4 model = Math::Multiply(rotation, translation);
-            const Math::Mat4 viewProjection = Math::Multiply(model, cameraView.ViewProjection);
+            std::vector<ConstantBufferAllocation>& allocations = m_FrameConstantBuffers[frameSlot];
+            while (allocations.size() < requiredCount)
+            {
+                RHI::BufferDescription description;
+                description.DebugName = "Editor Viewport Scene Instance Constants";
+                description.SizeBytes = kViewportConstantBufferSize;
+                description.StrideBytes = kViewportConstantBufferSize;
+                description.Usage = RHI::BufferUsage::Constant;
+                description.CpuAccess = RHI::BufferCpuAccess::Write;
 
-            ViewportConstants constants {};
-            std::memcpy(constants.ViewProjection, viewProjection.Values, sizeof(constants.ViewProjection));
-            std::memcpy(m_ConstantBufferMapped, &constants, sizeof(constants));
+                ConstantBufferAllocation allocation;
+                if (!CreateRhiBuffer(description, allocation.Buffer))
+                    return false;
+                allocation.Mapped = static_cast<std::byte*>(allocation.Buffer->Map());
+                if (!allocation.Mapped)
+                    return false;
+                allocations.push_back(std::move(allocation));
+            }
+
+            return true;
         }
 
         void PollShaderHotReload()
@@ -343,11 +381,9 @@ namespace Engine
         Scope<RHI::Shader> m_PixelShader;
         Scope<RHI::Buffer> m_VertexBuffer;
         Scope<RHI::Buffer> m_IndexBuffer;
-        Scope<RHI::Buffer> m_ConstantBuffer;
+        std::vector<std::vector<ConstantBufferAllocation>> m_FrameConstantBuffers;
         ShaderSourceFile m_ShaderSource;
-        std::byte* m_ConstantBufferMapped = nullptr;
         u32 m_IndexCount = 0;
-        u64 m_FrameCounter = 0;
         bool m_ShaderReloadLogged = false;
     };
 
@@ -386,9 +422,20 @@ namespace Engine
         D3D12_CPU_DESCRIPTOR_HANDLE depthDsv,
         u32 width,
         u32 height,
+        u32 frameSlot,
         const ClearColor& clearColor)
     {
-        return m_Impl && m_Impl->Render(commandList, colorTexture, colorState, colorRtv, depthTexture, depthDsv, width, height, clearColor);
+        return m_Impl && m_Impl->Render(
+            commandList,
+            colorTexture,
+            colorState,
+            colorRtv,
+            depthTexture,
+            depthDsv,
+            width,
+            height,
+            frameSlot,
+            clearColor);
     }
 #endif
 }

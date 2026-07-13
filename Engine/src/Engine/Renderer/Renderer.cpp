@@ -21,10 +21,10 @@ namespace Engine
         RHI::DeviceCapabilities s_DeviceCapabilities;
         ClearColor s_ClearColor;
         RenderViewportRect s_ViewportRect;
-        CameraView s_CameraView;
         RendererBuildInfo s_BuildInfo;
         RendererFrameTiming s_FrameTiming;
         std::atomic<std::shared_ptr<const SceneRenderSnapshot>> s_SceneRenderSnapshot;
+        std::atomic<std::shared_ptr<const SceneRasterFrame>> s_SceneRasterFrame;
         Scope<RenderBackend> s_Backend;
         std::vector<RendererBackendOption> s_BackendOptions;
         Clock::time_point s_RendererFrameStart;
@@ -322,8 +322,6 @@ namespace Engine
         if (!s_Backend)
             s_ActiveBackend = RendererBackend::Headless;
         RebuildBackendOptions();
-        s_CameraView = EditorCamera().GetCameraView();
-
         s_Initialized = true;
         Log::Info("Renderer initialized with backend: ", s_Backend ? s_Backend->GetName() : "Headless");
 
@@ -335,6 +333,7 @@ namespace Engine
     void Renderer::Shutdown()
     {
         s_SceneRenderSnapshot.store({}, std::memory_order_release);
+        s_SceneRasterFrame.store({}, std::memory_order_release);
         if (!s_Initialized)
             return;
 
@@ -539,17 +538,15 @@ namespace Engine
         return s_SceneRenderSnapshot.load(std::memory_order_acquire);
     }
 
-    void Renderer::SetCameraView(const CameraView& cameraView)
+    void Renderer::PublishSceneRasterFrame(SceneRasterFrame frame)
     {
-        if (cameraView.Valid)
-            s_CameraView = cameraView;
+        std::shared_ptr<const SceneRasterFrame> published =
+            std::make_shared<const SceneRasterFrame>(std::move(frame));
+        s_SceneRasterFrame.store(std::move(published), std::memory_order_release);
     }
 
-    const CameraView& Renderer::GetCameraView()
+    std::shared_ptr<const SceneRasterFrame> Renderer::GetLastSceneRasterFrame()
     {
-        if (!s_CameraView.Valid)
-            s_CameraView = EditorCamera().GetCameraView();
-
-        return s_CameraView;
+        return s_SceneRasterFrame.load(std::memory_order_acquire);
     }
 }

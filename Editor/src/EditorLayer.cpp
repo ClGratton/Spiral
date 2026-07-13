@@ -313,6 +313,10 @@ void EditorLayer::OnAttach()
     m_SceneAuthoringSmokeRequested = Engine::Application::Get().GetSpecification().CommandLineArgs.HasFlag("--scene-authoring-smoke");
     m_SceneRenderSnapshotSmokeRequested =
         Engine::Application::Get().GetSpecification().CommandLineArgs.HasFlag("--scene-render-snapshot-smoke");
+    m_SceneOriginRasterSmokeRequested =
+        Engine::Application::Get().GetSpecification().CommandLineArgs.HasFlag("--scene-origin-raster-smoke");
+    if (m_SceneOriginRasterSmokeRequested)
+        ConfigureSceneOriginRasterSmoke();
     if (m_AssetWatchSmokeRequested)
     {
         WriteTextFile(m_AssetWatchSmokePath, "asset watch smoke baseline\n");
@@ -356,10 +360,13 @@ void EditorLayer::OnUpdate(Engine::Timestep timestep)
     RunMaterialAssetSmoke();
     RunUndoRedoSmoke();
     RunSceneAuthoringSmoke();
+    AdvanceSceneOriginRasterSmoke();
     HandleAssetWatchEvents();
 
     Engine::Renderer::PublishSceneRenderSnapshot(
-        m_ActiveScene.ExtractRenderSnapshot(Engine::Application::Get().GetFrameIndex()));
+        m_ActiveScene.ExtractRenderSnapshot(
+            Engine::Application::Get().GetFrameIndex(),
+            m_EditorCamera.GetCameraView()));
     RunSceneRenderSnapshotSmoke();
 
     if (m_FrameCounter == 1)
@@ -403,6 +410,8 @@ void EditorLayer::OnUiRender()
             : std::string("Viewport capture failed: ") + m_CaptureViewportPath);
     }
 
+    CaptureSceneOriginRasterSmoke();
+
     if (m_ShowDemoWindow)
         ImGui::ShowDemoWindow(&m_ShowDemoWindow);
 }
@@ -415,6 +424,113 @@ void EditorLayer::OnEvent(Engine::Event& event)
         return;
 
     Engine::Log::Trace("Editor received event: ", event.ToString());
+}
+
+void EditorLayer::ConfigureSceneOriginRasterSmoke()
+{
+    if (Engine::Renderer::GetActiveBackend() != Engine::RendererBackend::NVRHID3D12)
+        throw std::runtime_error("Scene origin raster smoke requires the active NVRHI D3D12 backend");
+
+    constexpr double base = 1000000000000.0;
+    m_ActiveScene = Engine::Scene("Scene Origin Raster Smoke");
+    m_SceneOriginRasterMeshEntity = m_ActiveScene.CreateEntity("Scene Origin Raster Mesh");
+    Engine::MeshRendererComponent meshRenderer;
+    meshRenderer.MeshAsset = 42;
+    meshRenderer.MaterialAsset = 84;
+    m_ActiveScene.AddMeshRendererComponent(m_SceneOriginRasterMeshEntity, meshRenderer);
+    m_ActiveScene.TryGetTransform(m_SceneOriginRasterMeshEntity)->Position = { base, 0.0, 0.0 };
+
+    Engine::TransformComponent cameraTransform;
+    cameraTransform.Position = { base, 0.0, -3.35 };
+    m_ActiveScene.SetMainCameraTransform(cameraTransform);
+    m_SelectedEntity = m_SceneOriginRasterMeshEntity;
+    SyncEditorCameraStateFromMainCamera();
+}
+
+void EditorLayer::AdvanceSceneOriginRasterSmoke()
+{
+    if (!m_SceneOriginRasterSmokeRequested || m_SceneOriginRasterSmokeCompleted)
+        return;
+
+    constexpr double base = 1000000000000.0;
+    Engine::TransformComponent* meshTransform = m_ActiveScene.TryGetTransform(m_SceneOriginRasterMeshEntity);
+    if (!meshTransform)
+        throw std::runtime_error("Scene origin raster smoke lost its mesh entity");
+
+    if (m_FrameCounter == 3)
+    {
+        meshTransform->Position = { base, 0.0, 0.0 };
+        m_CameraPosition = { base, 0.0, -3.35 };
+    }
+    else if (m_FrameCounter == 4)
+    {
+        meshTransform->Position = { base + 1.0, 0.0, 0.0 };
+        m_CameraPosition = { base, 0.0, -3.35 };
+    }
+    else if (m_FrameCounter == 5)
+    {
+        meshTransform->Position = { base + 1.0, 0.0, 0.0 };
+        m_CameraPosition = { base + 1.0, 0.0, -3.35 };
+    }
+    else
+    {
+        return;
+    }
+
+    ApplyEditorCameraStateToScene();
+    m_EditorCamera.SetPosition(m_ActiveScene.GetMainCameraTransform().Position);
+}
+
+void EditorLayer::CaptureSceneOriginRasterSmoke()
+{
+    if (!m_SceneOriginRasterSmokeRequested
+        || m_SceneOriginRasterSmokeCompleted
+        || m_FrameCounter < 3
+        || m_FrameCounter > 5)
+    {
+        return;
+    }
+
+    const size_t caseIndex = static_cast<size_t>(m_FrameCounter - 3);
+    if (!Engine::Renderer::CaptureViewportToFile(m_SceneOriginRasterCapturePaths[caseIndex]))
+        throw std::runtime_error("Scene origin raster smoke could not capture case " + std::to_string(caseIndex));
+
+    const std::shared_ptr<const Engine::SceneRasterFrame> rasterFrame = Engine::Renderer::GetLastSceneRasterFrame();
+    if (!rasterFrame
+        || !rasterFrame->HasValidView
+        || rasterFrame->SnapshotFrameIndex != Engine::Application::Get().GetFrameIndex()
+        || rasterFrame->Instances.size() != 1
+        || rasterFrame->IssuedDrawCount != 1
+        || rasterFrame->Instances[0].SourceEntity != m_SceneOriginRasterMeshEntity.Id)
+    {
+        throw std::runtime_error("Scene origin raster smoke did not draw the current immutable snapshot epoch");
+    }
+
+    const double expectedOriginX = 1000000000000.0 + (m_FrameCounter == 5 ? 1.0 : 0.0);
+    const float expectedRelativeX = m_FrameCounter == 4 ? 1.0f : 0.0f;
+    const Engine::SceneRasterInstance& instance = rasterFrame->Instances[0];
+    if (rasterFrame->TranslationOrigin.X != expectedOriginX
+        || instance.TranslationOrigin.X != expectedOriginX
+        || instance.CameraRelativePosition.X != expectedRelativeX)
+    {
+        throw std::runtime_error("Scene origin raster smoke observed mixed view and mesh epochs");
+    }
+
+    const char caseName = static_cast<char>('A' + caseIndex);
+    Engine::Log::Info(
+        "D3D12 scene origin raster case ", caseName,
+        ": frame=", rasterFrame->SnapshotFrameIndex,
+        ", entity=", instance.SourceEntity,
+        ", draws=", rasterFrame->IssuedDrawCount,
+        ", worldX=", instance.WorldPosition.X,
+        ", originX=", rasterFrame->TranslationOrigin.X,
+        ", relativeX=", instance.CameraRelativePosition.X);
+
+    if (m_FrameCounter == 5)
+    {
+        m_SceneOriginRasterSmokeCompleted = true;
+        Engine::Log::Info("D3D12 scene origin raster smoke passed");
+    }
 }
 
 void EditorLayer::DrawDockspace()
@@ -924,7 +1040,6 @@ void EditorLayer::SyncEditorCameraStateFromMainCamera()
     m_EditorCamera.SetPosition(cameraTransform.Position);
     m_EditorCamera.SetRotationDegrees(cameraTransform.RotationDegrees);
     m_EditorCamera.SetProjection(camera.Projection);
-    Engine::Renderer::SetCameraView(m_EditorCamera.GetCameraView());
     Engine::Renderer::SetClearColor({ camera.BackgroundColor.X, camera.BackgroundColor.Y, camera.BackgroundColor.Z, 1.0f });
 }
 
@@ -978,7 +1093,6 @@ void EditorLayer::DrawViewportPanel()
     const auto viewportWidth = static_cast<Engine::u32>(size.x);
     const auto viewportHeight = static_cast<Engine::u32>(size.y);
     m_EditorCamera.SetViewportSize(viewportWidth, viewportHeight);
-    Engine::Renderer::SetCameraView(m_EditorCamera.GetCameraView());
 
     const bool hasNativeViewportTexture = Engine::Renderer::PrepareViewportTexture(viewportWidth, viewportHeight);
     const Engine::u64 viewportTextureId = Engine::Renderer::GetViewportTextureId();

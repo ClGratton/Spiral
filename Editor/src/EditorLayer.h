@@ -46,6 +46,9 @@ private:
     void RunUndoRedoSmoke();
     void RunSceneAuthoringSmoke();
     void RunSceneRenderSnapshotSmoke();
+    void ConfigureSceneOriginRasterSmoke();
+    void AdvanceSceneOriginRasterSmoke();
+    void CaptureSceneOriginRasterSmoke();
     bool OnFileDrop(Engine::FileDropEvent& event);
     bool ImportGltfAsset(const std::filesystem::path& sourcePath);
     bool SaveProject();
@@ -87,6 +90,8 @@ private:
     bool m_SceneAuthoringSmokeCompleted = false;
     bool m_SceneRenderSnapshotSmokeRequested = false;
     bool m_SceneRenderSnapshotSmokeCompleted = false;
+    bool m_SceneOriginRasterSmokeRequested = false;
+    bool m_SceneOriginRasterSmokeCompleted = false;
     bool m_ShowNewProjectDialog = false;
     std::string m_CaptureViewportPath = "output/captures/editor-viewport.bmp";
     std::string m_ProjectPath = "output/projects/default.spiralproject";
@@ -95,6 +100,11 @@ private:
     std::string m_AssetWatchSmokePath = "output/assets/watch-smoke.mesh";
     std::string m_GltfImportSmokePath = "output/assets/gltf-smoke/triangle.gltf";
     std::string m_MaterialAssetSmokePath = "output/assets/material-smoke.spiralmat";
+    std::array<std::string, 3> m_SceneOriginRasterCapturePaths = {
+        "output/captures/scene-origin-a.bmp",
+        "output/captures/scene-origin-b.bmp",
+        "output/captures/scene-origin-c.bmp"
+    };
     Engine::AssetRegistry m_AssetRegistry;
     Engine::AssetWatcher m_AssetWatcher;
     Engine::GltfImportResult m_LastGltfImport;
@@ -103,6 +113,7 @@ private:
     Engine::Entity m_PrototypeMeshEntity;
     Engine::Entity m_DirectionalLightEntity;
     Engine::Entity m_PlayerStartEntity;
+    Engine::Entity m_SceneOriginRasterMeshEntity;
     Engine::Entity m_SelectedEntity;
     Engine::EditorCamera m_EditorCamera;
     std::shared_ptr<const Engine::SceneRenderSnapshot> m_FirstSceneRenderSnapshot;

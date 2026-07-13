@@ -37,6 +37,7 @@ namespace Engine
             D3D12_CPU_DESCRIPTOR_HANDLE depthDsv,
             u32 width,
             u32 height,
+            u32 frameSlot,
             const ClearColor& clearColor);
 
     private:

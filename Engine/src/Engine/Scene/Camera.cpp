@@ -1,7 +1,65 @@
 #include "Engine/Scene/Camera.h"
 
+#include <cmath>
+
 namespace Engine
 {
+    namespace
+    {
+        bool IsFinite(const Math::DVec3& value)
+        {
+            return std::isfinite(value.X) && std::isfinite(value.Y) && std::isfinite(value.Z);
+        }
+
+        bool IsFinite(const Math::Vec3& value)
+        {
+            return std::isfinite(value.X) && std::isfinite(value.Y) && std::isfinite(value.Z);
+        }
+    }
+
+    CameraView BuildCameraView(
+        const Math::DVec3& worldPosition,
+        const Math::Vec3& rotationDegrees,
+        const CameraProjection& projection,
+        float aspectRatio,
+        const Math::DVec3& translationOrigin)
+    {
+        CameraView view;
+        if (!IsFinite(worldPosition)
+            || !IsFinite(rotationDegrees)
+            || !IsFinite(translationOrigin)
+            || !std::isfinite(aspectRatio)
+            || !std::isfinite(projection.VerticalFovDegrees)
+            || !std::isfinite(projection.NearClip)
+            || !std::isfinite(projection.FarClip))
+        {
+            return view;
+        }
+
+        const float pitch = Math::DegreesToRadians(rotationDegrees.X);
+        const float yaw = Math::DegreesToRadians(rotationDegrees.Y);
+        const float roll = Math::DegreesToRadians(rotationDegrees.Z);
+        const Math::Mat4 inverseRotation = Math::RotationYawPitchRoll(-yaw, -pitch, -roll);
+        const Math::Vec3 cameraRelative = Math::CameraRelative(worldPosition, translationOrigin);
+        const Math::Mat4 relativeTranslation = Math::Translation({
+            -cameraRelative.X,
+            -cameraRelative.Y,
+            -cameraRelative.Z
+        });
+
+        view.View = Math::Multiply(relativeTranslation, inverseRotation);
+        view.Projection = Math::PerspectiveLH(
+            Math::DegreesToRadians(projection.VerticalFovDegrees),
+            aspectRatio,
+            projection.NearClip,
+            projection.FarClip);
+        view.ViewProjection = Math::Multiply(view.View, view.Projection);
+        view.WorldPosition = worldPosition;
+        view.TranslationOrigin = translationOrigin;
+        view.Valid = true;
+        return view;
+    }
+
     EditorCamera::EditorCamera()
     {
         Recalculate();
@@ -36,20 +94,6 @@ namespace Engine
 
     void EditorCamera::Recalculate()
     {
-        const float pitch = Math::DegreesToRadians(m_RotationDegrees.X);
-        const float yaw = Math::DegreesToRadians(m_RotationDegrees.Y);
-        const float roll = Math::DegreesToRadians(m_RotationDegrees.Z);
-
-        const Math::Mat4 inverseRotation = Math::RotationYawPitchRoll(-yaw, -pitch, -roll);
-
-        m_View.View = inverseRotation;
-        m_View.Projection = Math::PerspectiveLH(
-            Math::DegreesToRadians(m_Projection.VerticalFovDegrees),
-            m_AspectRatio,
-            m_Projection.NearClip,
-            m_Projection.FarClip);
-        m_View.ViewProjection = Math::Multiply(m_View.View, m_View.Projection);
-        m_View.TranslationOrigin = m_Position;
-        m_View.Valid = true;
+        m_View = BuildCameraView(m_Position, m_RotationDegrees, m_Projection, m_AspectRatio, m_Position);
     }
 }

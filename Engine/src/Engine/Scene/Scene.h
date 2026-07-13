@@ -30,7 +30,7 @@ namespace Engine
 
         void OnUpdate(Timestep timestep);
         const std::string& GetName() const { return m_Name; }
-        SceneRenderSnapshot ExtractRenderSnapshot(u64 frameIndex) const;
+        SceneRenderSnapshot ExtractRenderSnapshot(u64 frameIndex, const CameraView& renderView) const;
 
         Entity CreateEntity(std::string name = "Entity");
         bool DestroyEntity(Entity entity);

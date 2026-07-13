@@ -63,7 +63,7 @@ Linux/macOS:
 
 Use the actual generated system/architecture path on the host.
 
-`EngineTests` verifies the large-world coordinate foundation by subtracting an exact double-precision per-view origin before float conversion at trillion-unit coordinates, ensuring the float view matrix contains no absolute-world translation, and round-tripping high-magnitude double positions through the versioned scene format. It also verifies deterministic backend-neutral render extraction, main-camera authority, stable source/entity and asset handles, hidden-mesh omission, copied light/camera/transform values, and retained older immutable epochs after Scene mutation. The Windows D3D12 render smoke verifies only that camera-relative transform remains integrated into the current raster prototype. These checks do not qualify translated-origin snapshot propagation, actual scene-raster consumption, culling, debug, sector/origin transitions, physics, or ray-tracing consumers.
+`EngineTests` verifies the large-world coordinate foundation by subtracting an exact double-precision per-view origin before float conversion at trillion-unit coordinates, ensuring the exact-camera-origin float view contains no absolute-world translation, and round-tripping high-magnitude double positions through the versioned scene format. It also verifies deterministic backend-neutral render extraction, complete view/origin ownership per epoch, main-camera authority, stable source/entity and asset handles, hidden-mesh omission, copied light/camera/transform values, retained older immutable epochs, arbitrary-origin raster invariance, mesh-only motion, camera-plus-mesh origin transition invariance, and invalid-view rejection. These checks do not define a persistent sector/local representation or qualify real mesh/material GPU resources, culling, coordinate debug views, physics, or ray-tracing consumers.
 
 `EngineTests` also verifies worker-local nested-job stealing, submitted/completed/stolen scheduler statistics, stable deterministic dependency order, typed immutable publication, retained task failures, dependent skipping, independent-branch progress, cycle rejection, and frame/task/thread/worker profiler identities. Exercise the real Application frame graph in both execution modes:
 
@@ -81,7 +81,7 @@ Exercise real Editor-to-Renderer scene snapshot publication and retained epoch l
 .\bin\Debug-windows-x86_64\Editor\Editor.exe --headless --scene-render-snapshot-smoke --frame-task-single-thread
 ```
 
-Both commands must publish after mutable layer update, validate counts and authoritative main-camera identity against the active Scene, retain the previous immutable epoch while publishing the next, and print `Scene render snapshot smoke passed`. This is extraction/publication evidence only: the current D3D12 viewport still renders its built-in prototype rather than snapshot mesh instances.
+Both commands must publish after mutable layer update, validate counts and authoritative main-camera identity against the active Scene, retain the previous immutable epoch while publishing the next, and print `Scene render snapshot smoke passed`. This is portable extraction/publication evidence; the D3D12-specific raster behavior is exercised separately below.
 
 ## Renderer Verification
 
@@ -93,7 +93,9 @@ Windows D3D12 viewport behavior and non-blank capture:
 .\Scripts\TestRender.ps1 -Configuration Debug -Action vs2022
 ```
 
-This smoke requires the D3D12 versioned-profile selection marker before accepting the capture. To exercise the strict runtime failure path, launch a missing adapter and require a nonzero exit plus per-candidate strict-preference rejection diagnostics:
+This smoke requires the D3D12 versioned-profile selection marker before accepting the capture. It also launches `--scene-origin-raster-smoke`, waits for a stable editor-viewport projection, and captures cases A/B/C at trillion-unit coordinates. A and C move camera/origin and mesh together and must be byte-identical; B moves only the mesh and must differ, retain comparable foreground area, and move the foreground centroid right. Renderer diagnostics must identify the current snapshot frame/entity/origin/relative position and exactly one issued draw in each case. This qualifies snapshot-driven current prototype-geometry raster only on the selected Windows/MSVC D3D12 device; it does not qualify real mesh/material resources, Vulkan scene raster, persistent sectors, culling, physics, or ray consumers.
+
+To exercise the strict runtime failure path, launch a missing adapter and require a nonzero exit plus per-candidate strict-preference rejection diagnostics:
 
 ```powershell
 .\bin\Debug-windows-x86_64\Editor\Editor.exe --smoke-test "--renderer-adapter=Definitely Missing Spiral Adapter" --renderer-adapter-strict

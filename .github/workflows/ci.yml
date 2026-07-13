@@ -68,7 +68,11 @@ jobs:
         if: always()
         with:
           name: editor-viewport-capture
-          path: output/captures/editor-viewport.bmp
+          path: |
+            output/captures/editor-viewport.bmp
+            output/captures/scene-origin-a.bmp
+            output/captures/scene-origin-b.bmp
+            output/captures/scene-origin-c.bmp
           if-no-files-found: ignore
 
   portable-headless-smoke:

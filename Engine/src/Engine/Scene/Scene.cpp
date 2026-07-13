@@ -109,11 +109,13 @@ namespace Engine
         (void)timestep;
     }
 
-    SceneRenderSnapshot Scene::ExtractRenderSnapshot(u64 frameIndex) const
+    SceneRenderSnapshot Scene::ExtractRenderSnapshot(u64 frameIndex, const CameraView& renderView) const
     {
         SceneRenderSnapshot snapshot;
         snapshot.FrameIndex = frameIndex;
         snapshot.MainCameraEntity = m_MainCameraEntity.Id;
+        if (renderView.Valid)
+            snapshot.Views.push_back({ renderView });
 
         for (const SceneEntity& entity : m_Entities)
         {

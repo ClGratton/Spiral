@@ -2,7 +2,7 @@
 
 #include "Engine/Core/Base.h"
 #include "Engine/RHI/RHICommon.h"
-#include "Engine/Scene/Camera.h"
+#include "Engine/Renderer/SceneRasterPreparation.h"
 #include "Engine/Scene/SceneRenderSnapshot.h"
 
 #include <memory>
@@ -142,8 +142,8 @@ namespace Engine
         static const RendererFrameTiming& GetLastFrameTiming();
         static void PublishSceneRenderSnapshot(SceneRenderSnapshot snapshot);
         static std::shared_ptr<const SceneRenderSnapshot> GetSceneRenderSnapshot();
-        static void SetCameraView(const CameraView& cameraView);
-        static const CameraView& GetCameraView();
+        static void PublishSceneRasterFrame(SceneRasterFrame frame);
+        static std::shared_ptr<const SceneRasterFrame> GetLastSceneRasterFrame();
     };
 
     inline const char* ToString(RendererTimingStatus status)

@@ -17,9 +17,17 @@ namespace Engine
         Math::Mat4 View;
         Math::Mat4 Projection;
         Math::Mat4 ViewProjection;
+        Math::DVec3 WorldPosition;
         Math::DVec3 TranslationOrigin;
         bool Valid = false;
     };
+
+    CameraView BuildCameraView(
+        const Math::DVec3& worldPosition,
+        const Math::Vec3& rotationDegrees,
+        const CameraProjection& projection,
+        float aspectRatio,
+        const Math::DVec3& translationOrigin);
 
     class EditorCamera
     {

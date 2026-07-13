@@ -45,11 +45,11 @@ Already present:
 
 Immediate gap:
 
-- The editor has a GUI shell and a D3D12-backed viewport texture with a native indexed prototype mesh on Windows/MSVC, but it does not render actual scene entities yet.
+- The editor has a GUI shell and a D3D12-backed viewport texture on Windows/MSVC. Each visible Scene mesh snapshot record now issues one draw using the current built-in indexed prototype geometry; real mesh/material GPU resources remain pending.
 - The renderer now owns a native NVRHI D3D12 device, window swapchain, presentation command list, viewport texture, descriptor heaps, and ImGui DX12 path on Windows/MSVC.
 - The viewport prototype mesh uses a disk-backed HLSL shader asset loaded from `Engine/Shaders`, not an embedded shader string.
 - The Windows/MSVC editor can capture the native viewport to `output/captures/editor-viewport.bmp` with `--capture-viewport`.
-- `Scripts/TestRender.ps1` validates the D3D12 viewport capture as a non-blank BMP render smoke test.
+- `Scripts/TestRender.ps1` validates a non-blank D3D12 viewport capture plus three comparative high-magnitude Scene-origin captures: equivalent pre/post-origin epochs must match, while mesh-only movement must change the image in the expected direction.
 - GitHub Actions CI is live for Windows D3D12 render smoke, Linux X11 Vulkan presentation through Mesa lavapipe/Xvfb, and Linux/macOS portable headless smoke builds.
 - D3D12 device creation falls back to WARP when no hardware adapter accepts the minimum feature level, mainly for CI and diagnostics.
 - GMake/MinGW keeps OpenGL2 as its default editor fallback, while `--renderer-vulkan` selects the native Vulkan device/swapchain/ImGui path when a Vulkan 1.3 loader and device are available.
@@ -57,7 +57,7 @@ Immediate gap:
 - Code style is checked by `Scripts/CheckCodeStyle.ps1` / `.sh` and a GitHub Actions style job.
 - Render graph pass/resource declarations compile into registration-order lifetime and abstract barrier data, but the scaffold is unused by the real renderer and has no focused tests; it is current-state inventory, not a completed roadmap behavior.
 - Editor camera and camera component scaffolding provide a shared `CameraView` for renderer code.
-- Scene/entity and editor-camera positions are authoritative doubles, scene format version 3 preserves their precision, and the current D3D12 prototype subtracts the shared per-view translation origin in double before producing float GPU transforms. Scene now extracts deterministic backend-neutral mesh/material/light/camera records and the Editor publishes one renderer-owned immutable epoch after each mutable update; older epochs remain valid. The snapshot does not yet carry the per-view translated origin or drive the actual scene raster, so Inspector transform edits still do not move the prototype draw; culling, debug, sector/origin-transition, and ray-tracing consumers also remain pending.
+- Scene/entity and editor-camera positions are authoritative doubles, and scene format version 3 preserves their precision. Each immutable snapshot epoch carries the complete editor-viewport `CameraView`, including double world position and translated origin. Backend-neutral raster preparation subtracts the snapshot mesh and camera positions against that same origin in double, then the D3D12 viewport issues one built-in prototype-geometry draw per visible mesh record with per-frame/per-draw constants. Inspector transform edits therefore enter the following snapshot and move the current D3D12 draw. Persistent sector/local storage and transition policy, real mesh/material resources, Vulkan scene raster, culling, coordinate debug views, physics, and ray/TLAS/query consumers remain pending.
 - The native job executor now uses worker-local deques with peer stealing and observable worker/statistics identities. `FrameTaskGraph` provides validated dependencies, caller/worker lanes, graph-local completion, typed immutable publication, failure/skip propagation, deterministic caller-thread mode, and profiler events; the Application frame workflow consumes it without a per-frame global idle barrier. Scene snapshot publication runs inside the caller-affine layer-update node after mutable editor work. Workerized engine systems and Profiler lane visualization remain later consumers.
 - Shader source loading and hot-reload detection are centralized through `ShaderLibrary`.
 - GPU timestamp query contracts and renderer timing snapshots are stubbed/no-op; they are current-state inventory, not a completed roadmap behavior, and the D3D12 query heap recording/resolve path remains pending.
@@ -220,7 +220,8 @@ Capability groups are added as dependency-ordered checklist items immediately be
 - [x] Large-world coordinate foundation: authoritative double-precision Scene/editor-camera positions, precision-preserving versioned scene serialization, and camera-relative float translation integrated into the current D3D12 raster prototype, with high-magnitude deterministic tests.
 - [x] CPU frame task graph on the native work-stealing job system with validated declared dependencies, caller/worker lanes, graph-local completion, immutable publication points, failure/skip propagation, deterministic single-thread fallback, profiler hooks, and Application-frame integration.
 - [x] Backend-neutral scene-to-renderer extraction into an immutable per-frame render snapshot with mesh/material/light/camera handles and no editor or backend-native types.
-- [ ] Propagate the per-view translated coordinate origin through the immutable render snapshot and actual scene raster; define and exercise origin/sector transitions before downstream spatial consumers rely on them.
+- [x] Carry one editor-viewport `CameraView` and translated origin in each immutable snapshot epoch and drive the current D3D12 prototype-geometry raster from that epoch's Scene mesh transforms, with high-magnitude origin-transition invariance tests and comparative captures.
+- [ ] Define persistent sector/local world representation and transition policy, including negative coordinates, transition thresholds/hysteresis, cross-sector bounds, and multi-view origins, before propagating it to real scene resources, culling, coordinate debug views, physics, and ray/TLAS/query consumers.
 
 ### Phase 3C: Portable GPU Execution
 

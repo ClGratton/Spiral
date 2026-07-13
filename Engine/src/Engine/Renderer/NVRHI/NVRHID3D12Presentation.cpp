@@ -30,6 +30,7 @@
     #include <fstream>
     #include <limits>
     #include <sstream>
+    #include <stdexcept>
     #include <string>
     #include <vector>
 #endif
@@ -322,7 +323,12 @@ namespace Engine
 
                 {
                     ScopedD3D12Marker viewportMarker(m_CommandList.Get(), "Editor Viewport Texture");
-                    RenderViewportTexture(clearColor);
+                    if (!RenderViewportTexture(clearColor))
+                    {
+                        Log::Error("D3D12 viewport scene pass failed");
+                        m_CommandList->Close();
+                        return;
+                    }
                 }
 
                 {
@@ -368,9 +374,8 @@ namespace Engine
             const u64 fenceValue = ++m_LastFenceValue;
             result = m_GraphicsQueue->Signal(m_Fence.Get(), fenceValue);
             if (FAILED(result))
-                Log::Error("Could not signal D3D12 fence: ", HResultToString(result));
-            else
-                frame.FenceValue = fenceValue;
+                throw std::runtime_error("Could not signal D3D12 fence: " + HResultToString(result));
+            frame.FenceValue = fenceValue;
         }
 
         bool PrepareViewportTexture(u32 width, u32 height)
@@ -510,7 +515,7 @@ namespace Engine
 
                 {
                     ScopedD3D12Marker viewportMarker(m_CommandList.Get(), "Capture Viewport Texture Refresh");
-                    m_ViewportSceneRenderer.Render(
+                    if (!m_ViewportSceneRenderer.Render(
                         m_CommandList.Get(),
                         m_ViewportTextureResource,
                         m_ViewportState,
@@ -519,7 +524,13 @@ namespace Engine
                         GetDsvCpuHandle(),
                         m_ViewportWidth,
                         m_ViewportHeight,
-                        m_LastClearColor);
+                        0,
+                        m_LastClearColor))
+                    {
+                        Log::Error("D3D12 viewport scene pass failed during capture");
+                        m_CommandList->Close();
+                        return false;
+                    }
                 }
 
                 ScopedD3D12Marker copyMarker(m_CommandList.Get(), "Copy Viewport To Readback Buffer");
@@ -878,12 +889,12 @@ namespace Engine
             return true;
         }
 
-        void RenderViewportTexture(const ClearColor& clearColor)
+        bool RenderViewportTexture(const ClearColor& clearColor)
         {
             if (!m_ViewportTextureResource || !m_ViewportDepthTextureResource)
-                return;
+                return true;
 
-            m_ViewportSceneRenderer.Render(
+            return m_ViewportSceneRenderer.Render(
                 m_CommandList.Get(),
                 m_ViewportTextureResource,
                 m_ViewportState,
@@ -892,6 +903,7 @@ namespace Engine
                 GetDsvCpuHandle(),
                 m_ViewportWidth,
                 m_ViewportHeight,
+                m_FrameIndex,
                 clearColor);
         }
 

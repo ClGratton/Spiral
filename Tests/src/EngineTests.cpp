@@ -3,6 +3,7 @@
 #include "Engine/Jobs/JobSystem.h"
 #include "Engine/RHI/Device.h"
 #include "Engine/Renderer/CapabilityDiagnostics.h"
+#include "Engine/Renderer/SceneRasterPreparation.h"
 #include "Engine/Scene/Scene.h"
 
 #include <algorithm>
@@ -32,6 +33,16 @@ namespace
     std::filesystem::path TestFilePath(std::string_view name)
     {
         return std::filesystem::temp_directory_path() / ("spiral-" + std::string(name));
+    }
+
+    bool MatricesNear(const Engine::Math::Mat4& left, const Engine::Math::Mat4& right, float tolerance = 0.001f)
+    {
+        for (size_t index = 0; index < std::size(left.Values); ++index)
+        {
+            if (std::abs(left.Values[index] - right.Values[index]) > tolerance)
+                return false;
+        }
+        return true;
     }
 
     bool TestJobSystemContainsWorkerExceptions()
@@ -414,8 +425,84 @@ namespace
                     && view.TranslationOrigin.Y == translationOrigin.Y
                     && view.TranslationOrigin.Z == translationOrigin.Z,
                 "the camera publishes its exact double-precision translation origin")
+            && Expect(view.WorldPosition.X == translationOrigin.X
+                    && view.WorldPosition.Y == translationOrigin.Y
+                    && view.WorldPosition.Z == translationOrigin.Z,
+                "the camera view retains its double-precision world position")
             && Expect(view.View.Values[12] == 0.0f && view.View.Values[13] == 0.0f && view.View.Values[14] == 0.0f,
                 "the float view matrix does not contain an absolute-world translation");
+    }
+
+    bool TestSceneRasterOriginEpochInvariance()
+    {
+        constexpr double base = 1000000000000.0;
+        Engine::Scene scene("Raster Origin Epochs");
+        const Engine::Entity mesh = scene.CreateEntity("Origin Mesh");
+        Engine::MeshRendererComponent meshRenderer;
+        meshRenderer.MeshAsset = 42;
+        meshRenderer.MaterialAsset = 84;
+        scene.AddMeshRendererComponent(mesh, meshRenderer);
+
+        Engine::CameraProjection projection;
+        const Engine::Math::DVec3 cameraA { base, -base, base - 3.35 };
+        const Engine::Math::DVec3 meshA { base, -base, base };
+        scene.TryGetTransform(mesh)->Position = meshA;
+        const Engine::CameraView viewA = Engine::BuildCameraView(
+            cameraA, {}, projection, 16.0f / 9.0f, cameraA);
+        const std::shared_ptr<const Engine::SceneRenderSnapshot> snapshotA =
+            std::make_shared<const Engine::SceneRenderSnapshot>(scene.ExtractRenderSnapshot(100, viewA));
+        const Engine::SceneRasterFrame rasterA = Engine::PrepareSceneRasterFrame(*snapshotA);
+
+        scene.TryGetTransform(mesh)->Position.X += 1.0;
+        const Engine::SceneRenderSnapshot snapshotB = scene.ExtractRenderSnapshot(101, viewA);
+        const Engine::SceneRasterFrame rasterB = Engine::PrepareSceneRasterFrame(snapshotB);
+
+        const Engine::Math::DVec3 cameraC { cameraA.X + 1.0, cameraA.Y, cameraA.Z };
+        const Engine::CameraView viewC = Engine::BuildCameraView(
+            cameraC, {}, projection, 16.0f / 9.0f, cameraC);
+        const Engine::SceneRenderSnapshot snapshotC = scene.ExtractRenderSnapshot(102, viewC);
+        const Engine::SceneRasterFrame rasterC = Engine::PrepareSceneRasterFrame(snapshotC);
+
+        const Engine::Math::DVec3 alternateOrigin {
+            cameraA.X + 4096.0,
+            cameraA.Y - 2048.0,
+            cameraA.Z + 1024.0
+        };
+        const Engine::CameraView alternateView = Engine::BuildCameraView(
+            cameraA, {}, projection, 16.0f / 9.0f, alternateOrigin);
+        scene.TryGetTransform(mesh)->Position = meshA;
+        const Engine::SceneRasterFrame alternateRaster = Engine::PrepareSceneRasterFrame(
+            scene.ExtractRenderSnapshot(103, alternateView));
+
+        const Engine::SceneRasterFrame invalidRaster = Engine::PrepareSceneRasterFrame(
+            scene.ExtractRenderSnapshot(104, {}));
+
+        const bool epochDataValid = rasterA.HasValidView
+            && rasterA.SnapshotFrameIndex == 100
+            && rasterA.Instances.size() == 1
+            && rasterA.Instances[0].SourceEntity == mesh.Id
+            && rasterA.Instances[0].CameraRelativePosition.X == 0.0f
+            && rasterB.Instances.size() == 1
+            && rasterB.Instances[0].CameraRelativePosition.X == 1.0f
+            && rasterC.Instances.size() == 1
+            && rasterC.Instances[0].CameraRelativePosition.X == 0.0f;
+        const bool retainedEpochValid = snapshotA->FrameIndex == 100
+            && snapshotA->Views.size() == 1
+            && snapshotA->Views[0].Camera.TranslationOrigin.X == cameraA.X
+            && snapshotA->Meshes[0].Transform.WorldPosition.X == meshA.X;
+        const bool equivalentViewsValid = alternateRaster.Instances.size() == 1
+            && MatricesNear(rasterA.Instances[0].ModelViewProjection,
+                alternateRaster.Instances[0].ModelViewProjection);
+
+        return Expect(epochDataValid, "each raster frame uses one snapshot's view, origin, and mesh transforms")
+            && Expect(!MatricesNear(rasterA.Instances[0].ModelViewProjection, rasterB.Instances[0].ModelViewProjection),
+                "moving only the mesh changes its raster transform")
+            && Expect(MatricesNear(rasterA.Instances[0].ModelViewProjection, rasterC.Instances[0].ModelViewProjection),
+                "moving camera and mesh together across an origin transition preserves the raster transform")
+            && Expect(retainedEpochValid, "a newer origin epoch does not mutate a retained snapshot")
+            && Expect(equivalentViewsValid, "an arbitrary translated origin preserves the same camera-relative raster result")
+            && Expect(!invalidRaster.HasValidView && invalidRaster.Instances.empty(),
+                "a snapshot without a valid view cannot produce raster instances");
     }
 
     bool TestSceneRenderSnapshotExtractionAndRetainedEpochs()
@@ -464,16 +551,22 @@ namespace
         lightComponent.CastsShadows = false;
         scene.AddLightComponent(lightEntity, lightComponent);
 
+        Engine::EditorCamera renderCamera;
+        renderCamera.SetPosition({ 1000.25, -22.5, 9.75 });
         const std::shared_ptr<const Engine::SceneRenderSnapshot> first =
-            std::make_shared<const Engine::SceneRenderSnapshot>(scene.ExtractRenderSnapshot(41));
+            std::make_shared<const Engine::SceneRenderSnapshot>(
+                scene.ExtractRenderSnapshot(41, renderCamera.GetCameraView()));
 
         scene.TryGetTransform(visibleMesh)->Position.X = -1.0;
         scene.DestroyEntity(lightEntity);
         const std::shared_ptr<const Engine::SceneRenderSnapshot> second =
-            std::make_shared<const Engine::SceneRenderSnapshot>(scene.ExtractRenderSnapshot(42));
+            std::make_shared<const Engine::SceneRenderSnapshot>(
+                scene.ExtractRenderSnapshot(42, renderCamera.GetCameraView()));
 
         const bool cameraAuthorityValid = first
             && first->MainCameraEntity == mainCamera.Id
+            && first->Views.size() == 1
+            && first->Views[0].Camera.WorldPosition.X == 1000.25
             && first->Cameras.size() == 2
             && first->Cameras[0].SourceEntity == mainCamera.Id
             && first->Cameras[0].Main
@@ -847,6 +940,7 @@ int main()
         { "Frame task graph rejects invalid dependencies", TestFrameTaskGraphRejectsInvalidDependencies },
         { "Scene round trip", TestSceneRoundTrip },
         { "Camera-relative large-world transform", TestCameraRelativeLargeWorldTransform },
+        { "Scene raster origin epoch invariance", TestSceneRasterOriginEpochInvariance },
         { "Scene render snapshot extraction and retained epochs", TestSceneRenderSnapshotExtractionAndRetainedEpochs },
         { "Scene rejects truncated components", TestSceneRejectsTruncatedComponent },
         { "Scene loads version-one camera", TestSceneLoadsVersionOneCamera },

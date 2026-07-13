@@ -33,7 +33,7 @@ This follows established editor ownership models: [Unity's Camera Inspector](htt
 
 ## Follow-up
 
-- Add viewport selection and transform gizmos when scene entities replace the prototype render path.
+- Add viewport selection and transform gizmos when real scene geometry and picking replace the current snapshot-driven prototype geometry.
 - Add component removal and duplication with the same undo contract.
 - Add asset-specific Inspector views and Inspector locking when asset editing expands.
 - Persist named workspace layouts after the editor settings format exists.

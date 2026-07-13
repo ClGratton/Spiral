@@ -49,6 +49,11 @@ namespace Engine
         bool Main = false;
     };
 
+    struct SceneRenderView
+    {
+        CameraView Camera;
+    };
+
     struct SceneRenderSnapshot
     {
         u64 FrameIndex = 0;
@@ -56,5 +61,6 @@ namespace Engine
         std::vector<SceneRenderMesh> Meshes;
         std::vector<SceneRenderLight> Lights;
         std::vector<SceneRenderCamera> Cameras;
+        std::vector<SceneRenderView> Views;
     };
 }
