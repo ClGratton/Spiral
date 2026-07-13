@@ -26,4 +26,29 @@ namespace Engine
         }
         return diagnostics;
     }
+
+    RHI::CapabilityGroupState BuildFrameTimingCapabilityGroup(
+        const RHI::DeviceCapabilities& capabilities)
+    {
+        RHI::CapabilityGroupState group;
+        group.Group = RHI::CapabilityGroupId::Phase3FrameTimingV1;
+        group.ProfileName = "Phase 3 Frame Timing V1";
+        group.PreferredPath = RHI::CapabilityPath::GpuTimestamps;
+
+        const RHI::CapabilityState& timestamps = capabilities.GetFeature(RHI::DeviceFeature::Timestamps);
+        if (timestamps.IsUsable())
+        {
+            group.SelectedPath = RHI::CapabilityPath::GpuTimestamps;
+            group.Implemented = true;
+            return group;
+        }
+
+        group.SelectedPath = RHI::CapabilityPath::CpuSteadyClock;
+        group.Implemented = true;
+        group.UnsupportedReasons.emplace_back(timestamps.Detail.empty()
+            ? "GPU timestamps are not usable on the active device profile"
+            : timestamps.Detail);
+        group.Fallbacks.emplace_back("GPU timestamps are unavailable; selected portable CPU steady-clock timing");
+        return group;
+    }
 }

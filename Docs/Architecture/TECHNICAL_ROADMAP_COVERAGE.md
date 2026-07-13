@@ -28,7 +28,7 @@ Phases 4–9 are smaller because they layer algorithms onto that foundation, but
 
 | Required foundation | Must exist before | Roadmap location |
 | --- | --- | --- |
-| Adapter capability/qualification states and fallbacks | Portable resources, descriptors, AA, visibility, meshlets, volumes, RT | Phase 3A |
+| Adapter capability/qualification states, versioned consumer groups, and fallbacks | Portable frame timing, resources, descriptors, AA, visibility, meshlets, volumes, RT | Phase 3A establishes the lifecycle and `Phase3FrameTimingV1`; later groups are immediately before their Phase 3-9 consumers. |
 | Camera-relative/large-world coordinate contract | Scene snapshot, culling, raster, debug, RT transforms | Phase 3B |
 | CPU frame task graph and immutable publication | Render extraction, parallel preparation, animation/physics integration | Phase 3B |
 | Backend-neutral render snapshot | Any scene renderer or render graph pass | Phase 3B |
@@ -62,6 +62,7 @@ Phases 4–9 are smaller because they layer algorithms onto that foundation, but
 | Sparse ray residuals | Capability-gated RHI RT, object-class BLAS/TLAS policy, classifier, shadow/reflection/AO/GI residuals, same-frame reconstruction, discontinuity densification, special routing, fallback/debug | Phase 9 after raster/probe/screen-space bases exist. Unsupported RT retains functional raster/probe rendering. |
 | Color pipeline | Scene-referred linear HDR, calibrated exposure, neutral baseline tone map, grading after tone map, then GT/AgX/ACES/PBR Neutral comparison | Phase 3E establishes order; Phase 5 selects/calibrates profiles. |
 | Profiling and captures | Early timing/capture labels and deterministic modes, followed by complete CPU/GPU/memory/residency/overdraw/ray/shadow tooling and golden scenes | Phase 3 foundations, phase-local debug views, full product tooling in Phase 15. |
+| Optional enhanced paths | Versioned consumer groups prefer usable enhanced paths but retain implemented portable fallbacks, independent exercise state, and evidence-scoped qualification; `Phase3FrameTimingV1` currently selects CPU steady-clock timing while native GPU timestamp recording/resolve remains pending | Phase 3A foundation, then consumer-local Phase 3-9 groups. Optional does not mean unreported, untested, or required for correctness. |
 | Presentation evidence | Separate simulation/app-present/GPU/display signals, waitable/timing capability paths, and external PresentMon/platform-equivalent validation | Phase 3C instrumentation and Phase 15 full validation. |
 | Optional GPU accelerators | Upscalers/denoisers, Work Graphs/device-generated commands, SER, Cooperative Vector, neural/vendor paths, DGF/CLAS | Phase 7 geometry evaluations and Phase 16 optional integrations; every path retains ordinary portable execution/content fallback. |
 | Backend evolution | NVRHI remains backend 1 behind `Engine::RHI`; NRI/custom backend 2 is evaluated only after render-graph conformance tests exist | Phase 16 evaluation, not an early renderer rewrite. |

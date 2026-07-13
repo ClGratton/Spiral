@@ -324,6 +324,77 @@ namespace
                 "editor diagnostics preserve rejected-candidate reasons");
     }
 
+    bool TestFrameTimingCapabilityGroupSelectsUsableGpuTimestamps()
+    {
+        using namespace Engine;
+        using namespace Engine::RHI;
+
+        DeviceCapabilities capabilities;
+        capabilities.GetFeature(DeviceFeature::Timestamps) = MakeCapabilityState(
+            true, true, true, true, "timestamp query path is exercised");
+
+        CapabilityGroupState group = BuildFrameTimingCapabilityGroup(capabilities);
+        return Expect(group.Group == CapabilityGroupId::Phase3FrameTimingV1,
+                   "frame timing uses a stable versioned capability group")
+            && Expect(group.PreferredPath == CapabilityPath::GpuTimestamps
+                    && group.SelectedPath == CapabilityPath::GpuTimestamps,
+                "usable GPU timestamps select the preferred timing path")
+            && Expect(group.Implemented && !group.Exercised && group.Fallbacks.empty(),
+                "consumer exercise remains distinct from feature exercise")
+            && Expect(group.IsValid() && group.IsUsable(), "the selected GPU timing group is valid and usable");
+    }
+
+    bool TestFrameTimingCapabilityGroupSelectsPortableCpuFallback()
+    {
+        using namespace Engine;
+        using namespace Engine::RHI;
+
+        DeviceCapabilities capabilities;
+        capabilities.GetFeature(DeviceFeature::Timestamps) = MakeCapabilityState(
+            true, false, false, false, "advertised but the query path is not implemented");
+
+        CapabilityGroupState group = BuildFrameTimingCapabilityGroup(capabilities);
+        const bool selectedFallback = group.PreferredPath == CapabilityPath::GpuTimestamps
+            && group.SelectedPath == CapabilityPath::CpuSteadyClock
+            && group.Implemented && !group.Exercised;
+        const bool retainedReasons = group.Fallbacks.size() == 1
+            && group.UnsupportedReasons.size() == 1
+            && group.UnsupportedReasons[0] == "advertised but the query path is not implemented";
+
+        group.Exercised = true;
+        group.Qualification = QualificationLevel::Presentation;
+        capabilities.CapabilityGroups.push_back(group);
+        const CapabilityGroupState* published = capabilities.GetCapabilityGroup(CapabilityGroupId::Phase3FrameTimingV1);
+        return Expect(selectedFallback, "unusable GPU timestamps select the portable CPU timing path")
+            && Expect(retainedReasons, "the fallback retains the unavailable GPU path reason")
+            && Expect(published && published->IsValid() && published->Exercised,
+                "the exercised group is published through bounds-safe device diagnostics")
+            && Expect(!capabilities.GetCapabilityGroup(CapabilityGroupId::Count),
+                "unknown capability groups do not escape the report bounds");
+    }
+
+    bool TestFrameTimingCapabilityGroupRejectsInvalidTimestampLifecycle()
+    {
+        using namespace Engine;
+        using namespace Engine::RHI;
+
+        DeviceCapabilities capabilities;
+        CapabilityState& timestamps = capabilities.GetFeature(DeviceFeature::Timestamps);
+        timestamps.Advertised = false;
+        timestamps.Enabled = true;
+        timestamps.Implemented = true;
+        timestamps.Exercised = true;
+        timestamps.Detail = "invalid synthetic lifecycle";
+
+        const CapabilityGroupState group = BuildFrameTimingCapabilityGroup(capabilities);
+        return Expect(!timestamps.IsValid(), "the synthetic timestamp lifecycle is invalid")
+            && Expect(group.SelectedPath == CapabilityPath::CpuSteadyClock,
+                "an invalid timestamp lifecycle cannot select GPU timing")
+            && Expect(group.UnsupportedReasons.size() == 1
+                    && group.UnsupportedReasons[0] == "invalid synthetic lifecycle",
+                "invalid optional-path diagnostics survive fallback selection");
+    }
+
 }
 
 int main()
@@ -343,7 +414,10 @@ int main()
         { "Capability selection rejects API limits and synchronization", TestCapabilitySelectionRejectsApiLimitsAndSynchronization },
         { "Capability selection honors strict preference", TestCapabilitySelectionHonorsStrictPreference },
         { "Capability diagnostics helpers are deterministic and bounds safe", TestCapabilityDiagnosticsHelpersAreDeterministicAndBoundsSafe },
-        { "Editor capability reason diagnostics preserve fallbacks and rejections", TestEditorCapabilityReasonDiagnosticsPreserveFallbacksAndRejections }
+        { "Editor capability reason diagnostics preserve fallbacks and rejections", TestEditorCapabilityReasonDiagnosticsPreserveFallbacksAndRejections },
+        { "Frame timing capability group selects usable GPU timestamps", TestFrameTimingCapabilityGroupSelectsUsableGpuTimestamps },
+        { "Frame timing capability group selects portable CPU fallback", TestFrameTimingCapabilityGroupSelectsPortableCpuFallback },
+        { "Frame timing capability group rejects invalid timestamp lifecycle", TestFrameTimingCapabilityGroupRejectsInvalidTimestampLifecycle }
     };
 
     size_t failures = 0;

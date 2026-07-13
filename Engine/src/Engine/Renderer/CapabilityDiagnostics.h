@@ -26,4 +26,6 @@ namespace Engine
 
     RendererCapabilityReasonDiagnostics BuildRendererCapabilityReasonDiagnostics(
         const RHI::DeviceCapabilities& capabilities);
+    RHI::CapabilityGroupState BuildFrameTimingCapabilityGroup(
+        const RHI::DeviceCapabilities& capabilities);
 }

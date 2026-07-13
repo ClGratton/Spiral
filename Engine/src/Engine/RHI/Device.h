@@ -23,6 +23,7 @@ namespace Engine::RHI
         QueueCapabilities Queues;
         QualificationLevel Qualification = QualificationLevel::None;
         std::array<CapabilityState, static_cast<size_t>(DeviceFeature::Count)> Features;
+        std::vector<CapabilityGroupState> CapabilityGroups;
         std::vector<FormatCapability> Formats;
         std::vector<std::string> Fallbacks;
         std::vector<AdapterCandidate> AdapterCandidates;
@@ -36,6 +37,26 @@ namespace Engine::RHI
         CapabilityState& GetFeature(DeviceFeature feature)
         {
             return Features[static_cast<size_t>(feature)];
+        }
+
+        const CapabilityGroupState* GetCapabilityGroup(CapabilityGroupId group) const
+        {
+            for (const CapabilityGroupState& state : CapabilityGroups)
+            {
+                if (state.Group == group)
+                    return &state;
+            }
+            return nullptr;
+        }
+
+        CapabilityGroupState* GetCapabilityGroup(CapabilityGroupId group)
+        {
+            for (CapabilityGroupState& state : CapabilityGroups)
+            {
+                if (state.Group == group)
+                    return &state;
+            }
+            return nullptr;
         }
 
         const AdapterCandidate* GetSelectedAdapter() const

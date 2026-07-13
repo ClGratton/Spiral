@@ -82,7 +82,7 @@ Immediate gap:
 - The editor can create an isolated project and starter scene from a name/location modal, and hierarchy controls create or delete entities with undo/redo coverage.
 - The physics architecture is now a documented planning contract: CPU-authoritative fixed-step gameplay physics, an engine-owned backend boundary and bake-off, versioned collision cooking, explicit determinism levels, optional one-way GPU visual deformation, and measured FEM/PD/IPC/ABD hero research. No physics backend or runtime module is implemented or admitted yet.
 - The terrain architecture is now a documented planning contract: project-selectable bounded, streamed, unbounded, and hybrid profiles; deterministic spatial sources; canonical versioned tile artifacts; separate generation/residency/render/collision authority; and a measured Terrain Diffusion evaluation. No terrain module, generator, model, or runtime dependency is implemented or admitted yet.
-- Renderer capability state now has separate advertised, enabled, implemented, and exercised stages. D3D12 and Vulkan enumerate real devices before creation, query the versioned Phase 3 Bootstrap profile's API, queue/presentation, synchronization, texture-limit, RGBA8, and D32 requirements, and select through the shared deterministic evaluator. Reports retain every candidate evaluation, stable DXGI LUID/Vulkan UUID, rejection, queue/preference fallback, selected formats, and conservative feature lifecycle state. Exact adapter name or stable-ID preference and strict no-fallback launch are supported; unused D3D12 direct-indexing/enhanced-barrier requests and Vulkan buffer-device-address enablement remain off. The editor Profiler presents the active report through a renderer-owned read-only snapshot, including profile, adapter identity, Bootstrap qualification, queues, formats, feature lifecycle states, selected fallbacks, and retained candidate rejection reasons. D3D12 and Vulkan headed smokes require the editor diagnostics path to render without upgrading Bootstrap evidence to Scene or Production. Hosted CI run `29213466381` passed the preceding Windows D3D12, Ubuntu Vulkan, and Intel macOS/MoltenVK builds, tests, and native presentation smokes with versioned-profile selection markers; current-head hosted evidence for the editor diagnostics addition remains pending. Later consumer-specific groups, dedicated Vulkan queue enablement, functional fallback exercise, physical-device breadth, and Scene/Production qualification remain pending.
+- Renderer capability state now has separate advertised, enabled, implemented, and exercised stages. D3D12 and Vulkan enumerate real devices before creation, query the versioned Phase 3 Bootstrap profile's API, queue/presentation, synchronization, texture-limit, RGBA8, and D32 requirements, and select through the shared deterministic evaluator. Reports retain every candidate evaluation, stable DXGI LUID/Vulkan UUID, rejection, queue/preference fallback, selected formats, and conservative feature lifecycle state. Exact adapter name or stable-ID preference and strict no-fallback launch are supported; unused D3D12 direct-indexing/enhanced-barrier requests and Vulkan buffer-device-address enablement remain off. The editor Profiler presents the active report through a renderer-owned read-only snapshot, including profile, adapter identity, Bootstrap qualification, queues, formats, feature lifecycle states, selected fallbacks, retained candidate rejection reasons, and versioned consumer groups. `Phase3FrameTimingV1` prefers GPU timestamps but currently selects and exercises portable CPU steady-clock timing because both native timestamp-query paths remain unimplemented; headed D3D12 and Vulkan smokes prove the group at Presentation without upgrading the device beyond Bootstrap. Future consumer groups, dedicated Vulkan queue enablement, physical-device breadth, and Scene/Production qualification remain pending beside their actual consumers.
 
 ## Phase Sizing And Design Gates
 
@@ -203,7 +203,10 @@ Required:
 - [x] Current D3D12 and Vulkan devices publish conservative Bootstrap capability reports with selected adapter identity, queue mapping, qualification, optional-feature lifecycle state, and fallback diagnostics; D3D12 and Vulkan smokes require the report markers without claiming Scene qualification.
 - [x] Drive D3D12 and Vulkan adapter selection from versioned capability profiles before device creation: query required format usages/limits/queues per candidate, retain every rejection and selected fallback, honor adapter preference/strict failure, and gate optional device features rather than enabling them speculatively.
 - [x] Expose the active D3D12/Vulkan Bootstrap capability report in editor diagnostics, including selected profile, adapter identity, qualification level, queue and format decisions, feature lifecycle states, selected fallbacks, and retained rejected-candidate reasons, with focused headed editor-workflow verification.
-- [ ] Add consumer-specific Phase 3-9 capability groups as their implementations arrive, exercise every functional fallback, and record backend/device qualification coverage without conflating Bootstrap, Presentation, Scene, or Production evidence.
+- [x] Versioned `Phase3FrameTimingV1` consumer group prefers usable GPU timestamps, otherwise selects portable CPU steady-clock timing with explicit reasons; deterministic tests cover selection/lifecycle and headed D3D12/Vulkan smokes exercise the CPU fallback at group-specific Presentation while the device report remains Bootstrap.
+
+Capability groups are added as dependency-ordered checklist items immediately before their real consumers. Each group must expose explicit unavailable/fallback status and must exercise its selected path, functional fallback, and named backend/device coverage before the corresponding qualification claim.
+
 - [ ] Native Apple Silicon project generation, build, and MoltenVK editor-presentation verification.
 
 ### Phase 3B: Frame And RHI Infrastructure
@@ -221,6 +224,7 @@ Required:
 - [ ] Vulkan `Engine::RHI::Device` resources and command submission for the scene viewport, using the wrapped `nvrhi::DeviceHandle`; keep raw Vulkan confined to bootstrap, WSI/presentation, and ImGui.
 - [ ] Frame/render graph construction: pass registration with declared resource reads/writes, automatic resource lifetime tracking, dependency resolution and pass ordering, and barrier/queue-transition insertion derived from the graph.
 - [ ] Frame/render graph execution and real-workflow integration: bind imported/physical resources, invoke pass callbacks, record RHI barriers and commands, submit queue dependencies, retire frame contexts by GPU completion, and drive a representative multi-pass scene viewport.
+- [ ] Phase 3 transient-resource capability group for placement/aliasing/barriers with a correct committed/pooled non-aliased fallback and GPU-retired reuse, defined and exercised before transient allocation is integrated.
 - [ ] Transient resource allocation and reuse from render-graph lifetimes.
 - [ ] Multithreaded render preparation and command recording driven by the CPU task graph and compiled render graph, with deterministic single-thread validation mode.
 - [ ] Presentation pacing and measurement: DXGI waitable swapchain profiles, capability-gated Vulkan present timing, and separate app/present/display telemetry.
@@ -230,6 +234,7 @@ Required:
 
 ### Phase 3D: Scene Resources And Asset Inputs
 
+- [ ] Full Phase 3 Scene capability group for actual scene formats/usages, queue/synchronization, shared shader targets/reflection, descriptors/samplers, and timing paths, with functional fallbacks and Scene evidence on every backend/device class claimed.
 - [ ] Scene mesh/index/constant/structured-buffer integration beyond the prototype draw, populated from the render snapshot through `Engine::RHI`.
 - [ ] Texture upload, samplers, mip generation.
 - [ ] KTX2/Basis texture import and deterministic target cooking: versioned `TextureAsset` metadata, validated libktx boundary, `DesktopBC`/`Astc`/`RGBAFallback` artifacts, color-space/role rules, and headless fixtures.
@@ -265,6 +270,7 @@ Goal: establish the engine's motion-clarity promise before advanced ray features
 
 Required:
 
+- [ ] Phase 4 image-quality capability group for sample counts, multisampled attachment/storage behavior, alpha-to-coverage, sample-rate interpolation, anisotropy, sampler LOD behavior, and resolve formats, with every selected fallback exercised before its consumer claim.
 - [ ] Pass-level MSAA or analytic/fractional coverage strategy with declared pixel/sample-frequency behavior and resolves that preserve material IDs, normals, roughness, lighting, AO, and edge coverage.
 - [ ] Alpha-to-coverage path for masked materials.
 - [ ] SMAA/CMAA-style spatial cleanup.
@@ -309,6 +315,7 @@ Goal: move opaque rendering to the intended architecture.
 
 Required:
 
+- [ ] Phase 6 visibility/material capability group for `R32_UINT`, attribute reconstruction alternatives, descriptor/material-table limits, subgroup and indirect execution, and compact G-buffer formats, with explicit unsupported/fallback paths.
 - [ ] Visibility buffer pass with `R32_UINT` ID.
 - [ ] `drawClusterId:25 | localTriangleId:7` decode.
 - [ ] `DrawClusterBuffer` and material table.
@@ -333,6 +340,7 @@ Goal: automate high-detail geometry and project-shaped terrain without inheritin
 
 Required:
 
+- [ ] Phase 7 virtual-geometry capability group for indirect draw count or bounded fallback, optional buffer device address, vertex limits, subgroup/culling support, and optional mesh shaders with indexed-indirect fallback.
 - [ ] Meshlet/cluster builder.
 - [ ] Vertex/index optimization and quantization.
 - [ ] Projected-area/quad-utilization topology scoring.
@@ -368,6 +376,7 @@ Goal: create a stable indirect-lighting backbone for static and dynamic objects.
 
 Required:
 
+- [ ] Phase 8 probe/volume capability group for 3D images, required view compatibility or alternate layout, HDR/compressed formats, and sampling/storage limits.
 - [ ] Production daylight controller and sky/sun/atmosphere model extending the calibrated Phase 3 lighting/color foundation.
 - [ ] Adaptive probe volume.
 - [ ] Unified `IndirectLightingSample`.
@@ -394,6 +403,7 @@ Goal: implement the signature renderer idea: stable raster base plus sparse curr
 
 Required:
 
+- [ ] Phase 9 ray-residual capability group for acceleration structures, ray pipelines/queries, shader-table requirements, update/compaction, queue/build limits, and exercised raster/probe fallback.
 - [ ] `Engine::RHI` ray-tracing capability and resource contracts: acceleration structures, build/update/compaction, ray pipeline/shader-table binding, synchronization, diagnostics, and stable raster/probe fallback when unavailable.
 - [ ] BLAS/TLAS object-class update policy.
 - [ ] Ray-budget classifier.

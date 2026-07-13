@@ -33,6 +33,20 @@ namespace Engine::RHI
         Production
     };
 
+    enum class CapabilityGroupId : u32
+    {
+        Phase3FrameTimingV1,
+        Count
+    };
+
+    enum class CapabilityPath : u32
+    {
+        None,
+        CpuSteadyClock,
+        GpuTimestamps,
+        Count
+    };
+
     enum class AdapterType : u32
     {
         Unknown,
@@ -73,6 +87,22 @@ namespace Engine::RHI
         std::string Detail;
 
         bool IsUsable() const { return Advertised && Enabled && Implemented; }
+        bool IsValid() const;
+    };
+
+    struct CapabilityGroupState
+    {
+        CapabilityGroupId Group = CapabilityGroupId::Count;
+        std::string ProfileName;
+        CapabilityPath PreferredPath = CapabilityPath::None;
+        CapabilityPath SelectedPath = CapabilityPath::None;
+        bool Implemented = false;
+        bool Exercised = false;
+        QualificationLevel Qualification = QualificationLevel::None;
+        std::vector<std::string> Fallbacks;
+        std::vector<std::string> UnsupportedReasons;
+
+        bool IsUsable() const { return SelectedPath != CapabilityPath::None && Implemented; }
         bool IsValid() const;
     };
 
@@ -163,6 +193,8 @@ namespace Engine::RHI
         std::string_view preferredAdapter = {},
         bool requirePreferredAdapter = false);
     const char* ToString(DeviceFeature feature);
+    const char* ToString(CapabilityGroupId group);
+    const char* ToString(CapabilityPath path);
     const char* ToString(QualificationLevel level);
     const char* ToString(AdapterType type);
     std::string FormatUsagesToString(FormatUsage usages);

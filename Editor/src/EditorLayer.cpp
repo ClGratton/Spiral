@@ -62,6 +62,10 @@ namespace
             error = "selected adapter identity does not match the published device identity";
         else if (capabilities.Formats.empty())
             error = "selected capability report has no queried formats";
+        else if (!capabilities.GetCapabilityGroup(Engine::RHI::CapabilityGroupId::Phase3FrameTimingV1))
+            error = "Phase 3 frame-timing capability group is missing";
+        else if (!capabilities.GetCapabilityGroup(Engine::RHI::CapabilityGroupId::Phase3FrameTimingV1)->IsValid())
+            error = "Phase 3 frame-timing capability group has an invalid lifecycle";
         else
             return true;
 
@@ -1154,6 +1158,48 @@ void EditorLayer::DrawProfilerPanel()
                 ImGui::TreePop();
             }
 
+            if (ImGui::TreeNode("Consumer capability groups"))
+            {
+                if (ImGui::BeginTable("CapabilityGroups", 7, ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_RowBg))
+                {
+                    ImGui::TableSetupColumn("Group");
+                    ImGui::TableSetupColumn("Profile");
+                    ImGui::TableSetupColumn("Preferred");
+                    ImGui::TableSetupColumn("Selected");
+                    ImGui::TableSetupColumn("Implemented");
+                    ImGui::TableSetupColumn("Exercised");
+                    ImGui::TableSetupColumn("Qualification");
+                    ImGui::TableHeadersRow();
+                    for (const Engine::RHI::CapabilityGroupState& group : capabilities->CapabilityGroups)
+                    {
+                        ImGui::TableNextRow();
+                        ImGui::TableSetColumnIndex(0);
+                        ImGui::TextUnformatted(Engine::RHI::ToString(group.Group));
+                        ImGui::TableSetColumnIndex(1);
+                        ImGui::TextUnformatted(group.ProfileName.c_str());
+                        ImGui::TableSetColumnIndex(2);
+                        ImGui::TextUnformatted(Engine::RHI::ToString(group.PreferredPath));
+                        ImGui::TableSetColumnIndex(3);
+                        ImGui::TextUnformatted(Engine::RHI::ToString(group.SelectedPath));
+                        ImGui::TableSetColumnIndex(4);
+                        ImGui::TextUnformatted(group.Implemented ? "yes" : "no");
+                        ImGui::TableSetColumnIndex(5);
+                        ImGui::TextUnformatted(group.Exercised ? "yes" : "no");
+                        ImGui::TableSetColumnIndex(6);
+                        ImGui::TextUnformatted(Engine::RHI::ToString(group.Qualification));
+                    }
+                    ImGui::EndTable();
+                }
+                for (const Engine::RHI::CapabilityGroupState& group : capabilities->CapabilityGroups)
+                {
+                    for (const std::string& fallback : group.Fallbacks)
+                        ImGui::BulletText("%s fallback: %s", Engine::RHI::ToString(group.Group), fallback.c_str());
+                    for (const std::string& reason : group.UnsupportedReasons)
+                        ImGui::BulletText("%s unavailable path: %s", Engine::RHI::ToString(group.Group), reason.c_str());
+                }
+                ImGui::TreePop();
+            }
+
             if (ImGui::TreeNode("Queried formats"))
             {
                 for (const Engine::RHI::FormatCapability& format : capabilities->Formats)
@@ -1202,14 +1248,31 @@ void EditorLayer::DrawProfilerPanel()
 
             if (m_RendererCapabilitySmokeRequested && !m_RendererCapabilitySmokeComplete)
             {
-                Engine::Log::Info(
-                    "Editor renderer capability diagnostics rendered: profile=", capabilities->ProfileName,
-                    ", adapter=", capabilities->Identity.Name,
-                    ", qualification=", Engine::RHI::ToString(capabilities->Qualification),
-                    ", formats=", capabilities->Formats.size(),
-                    ", features=", static_cast<Engine::u32>(Engine::RHI::DeviceFeature::Count),
-                    ", candidates=", reasonDiagnostics.AdapterCandidates.size());
-                m_RendererCapabilitySmokeComplete = true;
+                const Engine::RHI::CapabilityGroupState* timingGroup = capabilities->GetCapabilityGroup(
+                    Engine::RHI::CapabilityGroupId::Phase3FrameTimingV1);
+                if (timingGroup && timingGroup->Exercised
+                    && timingGroup->Qualification >= Engine::RHI::QualificationLevel::Presentation)
+                {
+                    Engine::Log::Info(
+                        "Editor renderer capability diagnostics rendered: profile=", capabilities->ProfileName,
+                        ", adapter=", capabilities->Identity.Name,
+                        ", qualification=", Engine::RHI::ToString(capabilities->Qualification),
+                        ", formats=", capabilities->Formats.size(),
+                        ", features=", static_cast<Engine::u32>(Engine::RHI::DeviceFeature::Count),
+                        ", groups=", capabilities->CapabilityGroups.size(),
+                        ", candidates=", reasonDiagnostics.AdapterCandidates.size());
+                    Engine::Log::Info(
+                        "Editor renderer capability group exercised: group=", Engine::RHI::ToString(timingGroup->Group),
+                        ", profile=", timingGroup->ProfileName,
+                        ", preferredPath=", Engine::RHI::ToString(timingGroup->PreferredPath),
+                        ", selectedPath=", Engine::RHI::ToString(timingGroup->SelectedPath),
+                        ", implemented=", timingGroup->Implemented ? "yes" : "no",
+                        ", exercised=", timingGroup->Exercised ? "yes" : "no",
+                        ", qualification=", Engine::RHI::ToString(timingGroup->Qualification),
+                        ", deviceQualification=", Engine::RHI::ToString(capabilities->Qualification),
+                        ", adapter=", capabilities->Identity.Name);
+                    m_RendererCapabilitySmokeComplete = true;
+                }
             }
         }
     }

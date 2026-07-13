@@ -51,6 +51,22 @@ namespace Engine::RHI
             && (!Exercised || (Advertised && Enabled && Implemented));
     }
 
+    bool CapabilityGroupState::IsValid() const
+    {
+        if (Group == CapabilityGroupId::Count || ProfileName.empty()
+            || PreferredPath == CapabilityPath::None || PreferredPath == CapabilityPath::Count
+            || SelectedPath == CapabilityPath::Count)
+            return false;
+
+        if (SelectedPath == CapabilityPath::None)
+            return !Implemented && !Exercised && Qualification == QualificationLevel::None;
+
+        if (!Implemented || (Exercised && Qualification == QualificationLevel::None))
+            return false;
+
+        return Qualification == QualificationLevel::None || Exercised;
+    }
+
     CapabilityState MakeCapabilityState(bool advertised, bool enabled, bool implemented, bool exercised, std::string detail)
     {
         CapabilityState result;
@@ -151,6 +167,28 @@ namespace Engine::RHI
             case DeviceFeature::TimelineSynchronization: return "Timeline Synchronization";
             case DeviceFeature::BufferDeviceAddress: return "Buffer Device Address";
             case DeviceFeature::Count: break;
+        }
+        return "Unknown";
+    }
+
+    const char* ToString(CapabilityGroupId group)
+    {
+        switch (group)
+        {
+            case CapabilityGroupId::Phase3FrameTimingV1: return "Phase3FrameTimingV1";
+            case CapabilityGroupId::Count: break;
+        }
+        return "Unknown";
+    }
+
+    const char* ToString(CapabilityPath path)
+    {
+        switch (path)
+        {
+            case CapabilityPath::None: return "None";
+            case CapabilityPath::CpuSteadyClock: return "CpuSteadyClock";
+            case CapabilityPath::GpuTimestamps: return "GpuTimestamps";
+            case CapabilityPath::Count: break;
         }
         return "Unknown";
     }

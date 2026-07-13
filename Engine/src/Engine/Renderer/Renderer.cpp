@@ -3,6 +3,7 @@
 #include "Engine/Core/Application.h"
 #include "Engine/Core/Log.h"
 #include "Engine/RHI/NVRHI/NVRHIAdapter.h"
+#include "Engine/Renderer/CapabilityDiagnostics.h"
 #include "Engine/Renderer/NVRHI/NVRHIRenderBackend.h"
 #include "Engine/Renderer/RenderBackend.h"
 
@@ -127,11 +128,31 @@ namespace Engine
 
         RendererTimingStatus GetBackendGpuTimingStatus()
         {
-            const NVRHIRenderBackend* backend = dynamic_cast<const NVRHIRenderBackend*>(s_Backend.get());
-            const RHI::DeviceCapabilities* capabilities = backend ? backend->GetDeviceCapabilities() : nullptr;
-            return capabilities && capabilities->GetFeature(RHI::DeviceFeature::Timestamps).Implemented
+            return s_HasDeviceCapabilities
+                && s_DeviceCapabilities.GetFeature(RHI::DeviceFeature::Timestamps).IsUsable()
                 ? RendererTimingStatus::Pending
                 : RendererTimingStatus::Unavailable;
+        }
+
+        void RefreshFrameTimingCapabilityGroup()
+        {
+            RHI::CapabilityGroupState* group = s_DeviceCapabilities.GetCapabilityGroup(
+                RHI::CapabilityGroupId::Phase3FrameTimingV1);
+            if (!group || !group->Implemented || s_FrameTiming.Passes.empty())
+                return;
+
+            const bool selectedPathProducedTiming =
+                (group->SelectedPath == RHI::CapabilityPath::CpuSteadyClock && s_FrameTiming.CpuMilliseconds >= 0.0)
+                || (group->SelectedPath == RHI::CapabilityPath::GpuTimestamps
+                    && s_FrameTiming.GpuStatus == RendererTimingStatus::Ready);
+            if (!selectedPathProducedTiming)
+                return;
+
+            group->Exercised = true;
+            if (s_FrameTiming.Presentation.PresentSucceeded)
+                group->Qualification = RHI::QualificationLevel::Presentation;
+            else if (group->Qualification < RHI::QualificationLevel::Bootstrap)
+                group->Qualification = RHI::QualificationLevel::Bootstrap;
         }
 
         void BeginTimingFrame()
@@ -166,6 +187,7 @@ namespace Engine
             const NVRHIRenderBackend* backend = dynamic_cast<const NVRHIRenderBackend*>(s_Backend.get());
             if (const RendererPresentationTiming* timing = backend ? backend->GetPresentationTiming() : nullptr)
                 s_FrameTiming.Presentation = *timing;
+            RefreshFrameTimingCapabilityGroup();
         }
 
         void RebuildBackendOptions()
@@ -278,10 +300,19 @@ namespace Engine
                 if (const RHI::DeviceCapabilities* capabilities = backendPtr->GetDeviceCapabilities())
                 {
                     s_DeviceCapabilities = *capabilities;
+                    s_DeviceCapabilities.CapabilityGroups.push_back(
+                        BuildFrameTimingCapabilityGroup(s_DeviceCapabilities));
                     s_HasDeviceCapabilities = true;
                     s_Capabilities.HasNativeRayTracing = capabilities->GetFeature(RHI::DeviceFeature::RayTracing).IsUsable();
                     s_Capabilities.HasWorkGraphs = capabilities->GetFeature(RHI::DeviceFeature::WorkGraphs).IsUsable();
                     s_Capabilities.HasNeuralAccelerators = capabilities->GetFeature(RHI::DeviceFeature::NeuralShaders).IsUsable();
+                    const RHI::CapabilityGroupState& timingGroup = s_DeviceCapabilities.CapabilityGroups.back();
+                    Log::Info("Renderer capability group: group=", RHI::ToString(timingGroup.Group),
+                        ", profile=", timingGroup.ProfileName,
+                        ", preferredPath=", RHI::ToString(timingGroup.PreferredPath),
+                        ", selectedPath=", RHI::ToString(timingGroup.SelectedPath),
+                        ", implemented=", timingGroup.Implemented ? "yes" : "no",
+                        ", exercised=", timingGroup.Exercised ? "yes" : "no");
                 }
             }
         }

@@ -27,7 +27,9 @@ Before native device creation, D3D12 and Vulkan now enumerate all visible adapte
 
 The selected devices publish conservative Bootstrap reports with adapter identity, queue mapping, queried formats, feature lifecycle state, qualification, and fallback diagnostics. D3D12 no longer reports timestamps as implemented while query recording/resolve is a stub. D3D12 heap-direct indexing and enhanced barriers are disabled because the Bootstrap profile has no implemented consumer. Vulkan records buffer-device-address advertisement separately and leaves it disabled for the same reason. Optional ray, mesh, work-graph, and neural paths are not presented as usable renderer features merely because NVRHI advertises support.
 
-The active Bootstrap report is copied into a renderer-owned read-only snapshot and presented in the editor Profiler. The diagnostics keep profile, adapter identity, qualification, queue/format decisions, feature lifecycle stages, selected fallbacks, and every retained candidate rejection visible without leaking native or NVRHI types into the editor. This is not full completion of this contract: dedicated Vulkan compute/copy families are detected but the Bootstrap profile deliberately aliases work to the unified graphics/present queue, while consumer-specific Scene/Phase 4-9 groups, functional fallback exercise, and physical-device qualification remain pending. D3D12 presentation support is necessarily finalized by real HWND swapchain creation after device selection; the pre-device profile can prove a direct queue but DXGI has no Vulkan-style per-surface physical-device query.
+The active Bootstrap report is copied into a renderer-owned read-only snapshot and presented in the editor Profiler. The diagnostics keep profile, adapter identity, qualification, queue/format decisions, feature lifecycle stages, selected fallbacks, every retained candidate rejection, and versioned consumer groups visible without leaking native or NVRHI types into the editor. D3D12 presentation support is necessarily finalized by real HWND swapchain creation after device selection; the pre-device profile can prove a direct queue but DXGI has no Vulkan-style per-surface physical-device query.
+
+The first consumer group is `Phase3FrameTimingV1`. It prefers GPU timestamp queries only when their advertised/enabled/implemented lifecycle is usable. Current D3D12 and Vulkan timestamp recording/resolve paths are unimplemented, so the group selects the portable CPU steady-clock timing already integrated into the frame and pass workflow, retains the native timestamp detail as its unavailable-path reason, and publishes the fallback. Headed presentation smokes mark that selected path exercised and qualify the group at Presentation independently from the device's Bootstrap level. This does not complete GPU timing, Scene qualification, later consumer groups, dedicated Vulkan queue enablement, physical-device breadth, or Production qualification.
 
 ## Adapter Selection
 
@@ -47,10 +49,11 @@ Use `--renderer-adapter=<exact name or stable ID>` (or the split-value form) to 
 
 ## Required Capability Groups
 
-The capability report grows with roadmap phases. Before a consumer is implemented, its required group must exist in `Engine::RHI` and have a deterministic fallback or an explicit unsupported result.
+The capability report grows with roadmap phases. Before a consumer is implemented, its required group must exist in `Engine::RHI` and have a deterministic fallback or an explicit unsupported result. Open-ended “all future groups” checkboxes are not completion gates: each versioned group belongs immediately before its real roadmap consumer and carries its own implemented, exercised, and qualification state.
 
 | Consumer | Capability group |
 | --- | --- |
+| Phase 3 frame timing | Prefer usable GPU timestamps; portable CPU steady-clock frame/pass timing is the functional fallback. Group qualification remains separate from device qualification. |
 | Phase 3 scene renderer | Resource formats/usages, sampled/storage/attachment support, queue submission/synchronization, shader target/reflection compatibility, descriptors/samplers, timestamps when timing is claimed. |
 | Phase 3 transient resources | Heap placement/aliasing and alias barriers when available, plus a correct non-aliased committed/pooled fallback and GPU-retired reuse. |
 | Phase 4 image quality | Sample counts, multisampled attachment/storage behavior, alpha-to-coverage, sample-rate interpolation where used, anisotropy, sampler LOD behavior, resolve formats. |
