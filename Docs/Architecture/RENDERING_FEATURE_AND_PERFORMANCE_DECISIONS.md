@@ -292,6 +292,8 @@ Compare `Responsive`, the engine's RTSS-ASYNC-inspired inter-frame wait, the sep
 
 Instrumentation must identify the pacing control point: inter-frame wait after prior submission/`Present`, gate before GPU submission, or FES-style delay immediately before the current `Present`. Record requested and actual wake/release times, sleep and high-resolution-wait duration, overshoot, CPU/GPU queue depth, GPU utilization/headroom, and the frame ID observed at every simulation/render/submit/present/display marker. This prevents a limiter hook from making its own frametime graph look stable while display cadence or input latency remains poor.
 
+The in-game frametime plot uses consecutive engine `FrameStart` markers as its primary cadence series, not consecutive samples taken at `Present` or at the active limiter hook. Plot CPU active work and intentional pacing wait separately, then correlate present and actual display intervals by frame ID. Preserve raw spikes and deadline misses in the history; summaries supplement the trace but never replace it. An external Afterburner/RTSS graph is a reference capture only and cannot validate the engine graph or displayed smoothness by itself.
+
 Required debug views:
 
 - Overdraw.

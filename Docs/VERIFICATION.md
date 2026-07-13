@@ -108,6 +108,8 @@ The D3D12 and Vulkan scripts also launch with `--renderer-capability-smoke`. The
 
 A backend claim requires that backend's smoke or a stronger representative scene/capture test. A presentation smoke does not qualify scene-resource rendering. A WARP/lavapipe/llvmpipe/Apple-Paravirtual result must be labeled as that device class and must not be generalized to physical production hardware.
 
+Future frame-pacing/profiler completion requires a deterministic marker trace that carries one frame ID through engine `FrameStart`, input/simulation, render submission, `Present` begin/end, GPU completion, and display feedback where available. Tests must prove that the primary in-game frametime series is consecutive engine-start cadence, that intentional pacing wait and CPU active work are separate, and that injected inter-frame and pre-`Present` delays appear at their actual control points. A flat limiter/Afterburner/RTSS hook-local graph, average FPS, or present cadence alone is not completion evidence. When display feedback is unavailable, diagnostics must report it unavailable rather than substituting `Present` cadence.
+
 ## Editor And Asset Workflows
 
 Prefer the focused existing smoke that owns the behavior. Current headless flags include:

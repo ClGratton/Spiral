@@ -480,6 +480,22 @@ FES is a third and distinct candidate: it delays immediately before the current 
 
 “Frames lost to a cap” means intentionally not starting extra work above the selected cadence, not rendering completed frames and throwing them away. Rendered, submitted, presented, replaced, and displayed frames remain separately counted.
 
+### In-Game Frametime Capture Contract
+
+The in-game profiler owns its timestamps. It must not derive “frametime” solely from calls observed at the limiter or `Present` hook, as an Afterburner/RTSS-style overlay can sample beside the injected delay and display an artificially flat graph. One monotonic frame ID must follow the same work through all available stages.
+
+The default profiler view reports separate series rather than one ambiguous number:
+
+- **Game-frame interval:** `FrameStart[N] - FrameStart[N-1]`, captured at the engine's authoritative start boundary. This includes the inter-frame pacing wait and exposes the cadence actually delivered to input/simulation.
+- **CPU active work:** from input/simulation start through render-submission completion, excluding the intentional pacer wait.
+- **Intentional pacing wait:** requested target, actual wake/release time, sleep/spin duration, and overshoot. It must remain visible rather than being absorbed into a misleadingly short CPU-work value.
+- **Present call cost and present cadence:** `Present` begin-to-end duration and the interval between matching present markers, reported separately.
+- **GPU work and completion:** per-frame calibrated GPU begin/end/completion where supported, correlated to the same frame ID.
+- **Display cadence:** actual displayed-time intervals from platform feedback or PresentMon-equivalent evidence. If unavailable, show `unavailable`; never rename present cadence as display cadence.
+- **Input latency markers:** input sample to simulation, submit, present, and display where measurable. Do not infer click-to-photon latency from CPU timestamps alone.
+
+The graph must retain spikes and missed deadlines. Aggregation may add p50/p95/p99 and 1%/0.1% lows, but it must not average away individual long frames or rescale each mode so that different pacing policies appear equally stable. External overlay data remains a comparison condition, not the in-game source of truth.
+
 ### Backend Mechanisms
 
 Windows D3D12:
