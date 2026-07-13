@@ -25,6 +25,7 @@ Forbidden:
 | `Scene` | Entities/components, authoring facade, serialization, cameras, and backend-neutral immutable render extraction. | Editor panels or backend-native GPU objects. |
 | `Assets` | Asset identity, import, cooked metadata, dependencies, reimport, and streaming inputs. | Rendering or editor widget policy. |
 | `Jobs` | Worker scheduling and task dependencies. | Subsystem-specific business logic. |
+| `Math` | Backend-neutral numeric types, transforms, and canonical world-grid conversion, normalization, composition, and bounded sector queries. | Scene serialization authority, per-view origin state, terrain/physics partition ownership, or renderer policy. |
 | `Terrain` (planned Phase 7) | Terrain topology/profile and source contracts, tile identity/artifacts, generation scheduling, caches, edits, provenance, and diagnostic publication. | Renderer passes, physics-world authority, Scene entities, editor UI, or native GPU types. |
 | `Platform` | OS/window/headless implementations behind engine interfaces. | Renderer feature policy or editor workflows. |
 | `UI` | Engine tool-UI integration and documented native presentation bridges. | Scene rendering through native API escape hatches. |

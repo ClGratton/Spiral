@@ -23,6 +23,7 @@
 #include "Engine/Jobs/JobSystem.h"
 #include "Engine/Jobs/FrameTaskGraph.h"
 #include "Engine/Math/Math.h"
+#include "Engine/Math/WorldGrid.h"
 #include "Engine/RenderGraph/RenderGraph.h"
 #include "Engine/Renderer/Renderer.h"
 #include "Engine/Renderer/SceneRasterPreparation.h"

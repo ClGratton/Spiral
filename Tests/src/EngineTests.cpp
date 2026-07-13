@@ -1,6 +1,7 @@
 #include "Engine/Core/Log.h"
 #include "Engine/Jobs/FrameTaskGraph.h"
 #include "Engine/Jobs/JobSystem.h"
+#include "Engine/Math/WorldGrid.h"
 #include "Engine/RHI/Device.h"
 #include "Engine/Renderer/CapabilityDiagnostics.h"
 #include "Engine/Renderer/SceneRasterPreparation.h"
@@ -431,6 +432,138 @@ namespace
                 "the camera view retains its double-precision world position")
             && Expect(view.View.Values[12] == 0.0f && view.View.Values[13] == 0.0f && view.View.Values[14] == 0.0f,
                 "the float view matrix does not contain an absolute-world translation");
+    }
+
+    bool TestWorldGridCanonicalizationAndBounds()
+    {
+        using namespace Engine::Math;
+
+        const WorldGridPolicy policy;
+        const double extent = policy.SectorExtent;
+        const double halfExtent = extent * 0.5;
+        const double belowZero = std::nextafter(0.0, -1.0);
+        const double belowNegativeBoundary = std::nextafter(-halfExtent, -extent);
+        const double belowPositiveBoundary = std::nextafter(halfExtent, 0.0);
+        const struct
+        {
+            double World;
+            Engine::i64 Sector;
+            double Local;
+        } cases[] = {
+            { -extent, -1, 0.0 },
+            { belowNegativeBoundary, -1, halfExtent - std::abs(belowNegativeBoundary + halfExtent) },
+            { -halfExtent, 0, -halfExtent },
+            { -0.25, 0, -0.25 },
+            { belowZero, 0, belowZero },
+            { 0.0, 0, 0.0 },
+            { 0.25, 0, 0.25 },
+            { belowPositiveBoundary, 0, belowPositiveBoundary },
+            { halfExtent, 1, -halfExtent },
+            { extent, 1, 0.0 },
+            { 1000000000000.25, 244140625, 0.25 }
+        };
+
+        bool canonicalCases = true;
+        for (const auto& testCase : cases)
+        {
+            SectorLocalPosition decomposed;
+            DVec3 recomposed;
+            const bool decomposedValid = TryDecomposeWorldPosition({ testCase.World, 0.0, 0.0 }, policy, decomposed);
+            const bool caseValid = decomposedValid
+                && decomposed.Sector.X == testCase.Sector
+                && decomposed.Local.X == testCase.Local
+                && IsCanonical(decomposed, policy)
+                && TryComposeApproximateWorldPosition(decomposed, policy, recomposed)
+                && recomposed.X == testCase.World;
+            if (!caseValid)
+            {
+                std::cerr << "  World grid case failed: world=" << testCase.World
+                          << ", expected sector=" << testCase.Sector
+                          << ", actual sector=" << decomposed.Sector.X
+                          << ", expected local=" << testCase.Local
+                          << ", actual local=" << decomposed.Local.X << '\n';
+            }
+            canonicalCases = canonicalCases && caseValid;
+        }
+
+        SectorLocalPosition noncanonical;
+        noncanonical.Sector = { -2, 3, 0 };
+        noncanonical.Local = { extent * 2.0 + 0.5, -0.25, extent };
+        SectorLocalPosition normalized;
+        const bool normalizedValid = TryNormalizeSectorLocal(noncanonical, policy, normalized)
+            && normalized.Sector == SectorIndex { 0, 3, 1 }
+            && normalized.Local.X == 0.5
+            && normalized.Local.Y == -0.25
+            && normalized.Local.Z == 0.0
+            && IsCanonical(normalized, policy);
+
+        WorldGridPolicy customPolicy;
+        customPolicy.SectorExtent = 3.0;
+        customPolicy.OriginHysteresis = 0.25;
+        SectorLocalPosition customDecomposed;
+        DVec3 customRecomposed;
+        const bool customExtentValid = TryDecomposeWorldPosition({ 10.0, -10.0, 0.0 }, customPolicy, customDecomposed)
+            && customDecomposed.Sector == SectorIndex { 3, -3, 0 }
+            && customDecomposed.Local.X == 1.0
+            && customDecomposed.Local.Y == -1.0
+            && TryComposeApproximateWorldPosition(customDecomposed, customPolicy, customRecomposed)
+            && customRecomposed.X == 10.0
+            && customRecomposed.Y == -10.0;
+
+        const SectorRange crossing = GetOverlappingSectorRange(
+            { -halfExtent - 1.0, -halfExtent - 1.0, -halfExtent },
+            { halfExtent, halfExtent, halfExtent },
+            policy,
+            32);
+        const bool crossingValid = crossing.Status == SectorRangeStatus::Finite
+            && crossing.Min == SectorIndex { -1, -1, 0 }
+            && crossing.Max == SectorIndex { 0, 0, 0 }
+            && crossing.SectorCount == 4;
+        const SectorRange exactBoundary = GetOverlappingSectorRange(
+            { -halfExtent, -halfExtent, -halfExtent },
+            { halfExtent, halfExtent, halfExtent },
+            policy,
+            8);
+        const SectorRange oversized = GetOverlappingSectorRange(
+            { -extent * 4.0, -extent * 4.0, -extent * 4.0 },
+            { extent * 4.0, extent * 4.0, extent * 4.0 },
+            policy,
+            64);
+        const SectorRange empty = GetOverlappingSectorRange(
+            { 1.0, 0.0, 0.0 },
+            { 1.0, 2.0, 3.0 },
+            policy,
+            8);
+
+        WorldGridPolicy invalidPolicy = policy;
+        invalidPolicy.SectorExtent = 0.0;
+        WorldGridPolicy invalidOriginMode = policy;
+        invalidOriginMode.OriginMode = static_cast<WorldOriginMode>(99);
+        SectorLocalPosition rejected;
+        const bool invalidInputsRejected = !TryDecomposeWorldPosition({ 0.0, 0.0, 0.0 }, invalidPolicy, rejected)
+            && !TryDecomposeWorldPosition({ 0.0, 0.0, 0.0 }, invalidOriginMode, rejected)
+            && !TryDecomposeWorldPosition({ std::numeric_limits<double>::infinity(), 0.0, 0.0 }, policy, rejected);
+        SectorLocalPosition overflowing;
+        overflowing.Sector.X = std::numeric_limits<Engine::i64>::max();
+        overflowing.Local.X = extent;
+        const bool overflowRejected = !TryNormalizeSectorLocal(overflowing, policy, rejected)
+            && !TryDecomposeWorldPosition({ std::numeric_limits<double>::max(), 0.0, 0.0 }, policy, rejected);
+
+        return Expect(canonicalCases, "signed world coordinates decompose into one canonical centered half-open sector/local form")
+            && Expect(normalizedValid, "noncanonical local coordinates carry across signed sectors deterministically")
+            && Expect(customExtentValid, "valid project-specific non-power-of-two sector extents remain canonical")
+            && Expect(crossingValid, "cross-sector bounds cover negative and positive sectors")
+            && Expect(exactBoundary.Status == SectorRangeStatus::Finite
+                    && exactBoundary.Min == SectorIndex {}
+                    && exactBoundary.Max == SectorIndex {}
+                    && exactBoundary.SectorCount == 1,
+                "max-exclusive bounds do not include a sector touched only at the exact boundary")
+            && Expect(oversized.Status == SectorRangeStatus::Oversized && oversized.SectorCount == 0,
+                "oversized bounds are classified without unbounded sector enumeration")
+            && Expect(empty.Status == SectorRangeStatus::Empty,
+                "degenerate max-exclusive bounds are reported as empty")
+            && Expect(invalidInputsRejected, "invalid grid policies and non-finite positions are rejected")
+            && Expect(overflowRejected, "sector carries and absolute decomposition reject signed-sector overflow");
     }
 
     bool TestSceneRasterOriginEpochInvariance()
@@ -940,6 +1073,7 @@ int main()
         { "Frame task graph rejects invalid dependencies", TestFrameTaskGraphRejectsInvalidDependencies },
         { "Scene round trip", TestSceneRoundTrip },
         { "Camera-relative large-world transform", TestCameraRelativeLargeWorldTransform },
+        { "World grid canonicalization and bounds", TestWorldGridCanonicalizationAndBounds },
         { "Scene raster origin epoch invariance", TestSceneRasterOriginEpochInvariance },
         { "Scene render snapshot extraction and retained epochs", TestSceneRenderSnapshotExtractionAndRetainedEpochs },
         { "Scene rejects truncated components", TestSceneRejectsTruncatedComponent },

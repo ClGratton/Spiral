@@ -221,9 +221,25 @@ Support large scenes from the start.
 
 CPU/world rules:
 
-- Store authoritative world transforms in double precision or sector/local-origin coordinates.
+- Store authoritative world transforms in double precision or the canonical sector/local form defined below. Do not keep both as independently mutable authorities.
 - Physics may use local simulation islands or origin rebasing.
 - Asset geometry remains object-local and quantized by meshlet/cluster bounds.
+
+Accepted persistent-coordinate contract:
+
+- `WorldGridPolicy` version 1 defines a default sector extent of 4096 engine units, signed 64-bit sector indices on each axis, and double-precision local coordinates. The eventual project/world setting may select a different valid extent, but one policy is immutable for a loaded world and its value/version must be serialized before sector/local transforms become persistent.
+- Canonical local coordinates occupy the centered half-open interval `[-extent / 2, extent / 2)`. Centering preserves symmetric local precision around a sector origin. A nonnegative `[0, extent)` interval was rejected because representable negative values immediately below zero can round to `extent` during decomposition and lose a unique canonical form.
+- Decomposition and normalization use remainder-based carries, including exact and negative boundaries. Positive half-extent is represented in the next sector at negative half-extent local; negative half-extent remains in the current sector. Carries and conversions reject non-finite values and signed-sector overflow.
+- Composing sector/local values into one absolute `DVec3` is explicitly approximate and exists only for compatibility or diagnostics. Persistent state and relative calculations must retain sector identity; they must not round-trip through an absolute double once sector magnitude exceeds its exact precision.
+- World bounds are min-inclusive and max-exclusive. A maximum lying exactly on a sector boundary does not add the adjacent sector. Range queries return inclusive minimum/maximum sector identities and must accept an explicit enumeration budget; oversized bounds are classified without attempting unbounded enumeration.
+- A sector is persistent spatial identity, not a terrain tile, streaming page, physics island, or renderer translation origin. Those systems may map their own partitions onto sectors, but none owns or silently changes the world grid.
+
+Accepted per-view origin policy:
+
+- Exact-camera translation remains the default and preserves the current low-jitter camera-relative behavior. Sector-snapped origins are an optional project setting, not a mandatory cost imposed on every game.
+- Policy version 1 reserves a 256-unit hysteresis band for the optional sector-snapped mode. A future tracker retains its current sector on an axis until the camera crosses `extent / 2 + hysteresis` from that origin; crossing selects the sector containing the camera directly, including multi-sector teleports rather than stepping one sector per frame.
+- Origin state belongs to a stable view identifier, never a vector position or the Scene. Multiple editor, game, reflection, shadow, or capture views keep independent state and publish complete immutable view/origin epochs.
+- Changing the origin mode, grid policy, or discontinuously relocating a view invalidates temporal history that depends on translated coordinates. It does not rewrite persistent world transforms.
 
 GPU/render rules:
 
@@ -240,11 +256,13 @@ Current implementation state:
 
 - `TransformComponent` and `EditorCamera` positions use authoritative double-precision coordinates.
 - Scene format version 3 writes double positions with round-trip precision while retaining version 1/2 loading.
+- Backend-neutral `WorldGrid` primitives implement policy validation, canonical signed decomposition, normalization, approximate absolute-double composition, and budgeted cross-sector range classification. They derive sector/local values from the current absolute doubles; they are not yet Scene authority or serialized state.
 - `CameraView` publishes the double-precision camera world position and one double-precision translation origin. `BuildCameraView` supports an explicit origin; `EditorCamera` currently chooses its exact world position, producing a rotation-only float view matrix. Camera and mesh subtraction against an arbitrary shared origin happens in double before conversion to float.
 - Each immutable render-snapshot epoch carries the complete editor-viewport `CameraView`. A consumer acquires one snapshot pointer and must not combine its view/origin with mesh records from another epoch. Publishing a new origin is an atomic epoch replacement; retained older epochs are not incrementally rebased or mutated.
 - Backend-neutral `PrepareSceneRasterFrame` derives camera-relative model and model-view-projection matrices from one snapshot. The current D3D12 viewport consumes that result and issues one built-in prototype-geometry draw per visible snapshot mesh. Constants use distinct allocations per draw and per fenced presentation frame slot so later instance updates cannot overwrite commands still in flight.
 - Deterministic tests exercise translation, arbitrary-origin invariance, retained epochs, mesh-only motion, camera-plus-mesh origin transitions, and serialization at trillion-unit coordinates. The D3D12 smoke captures the same relative scene before and after an origin change and a distinct intermediate mesh-only movement.
-- Persistent sector/local representation and its transition policy, real mesh/material GPU resources, Vulkan scene raster, culling, coordinate error views, physics islands, and ray/TLAS/query consumers remain future work. No sector IDs, cell size, threshold, or hysteresis policy is implied by the current per-view origin epochs.
+- Scene format version 4 will make canonical sector/local transforms and the world-grid policy authoritative while loading version 1-3 absolute-double positions through deterministic conversion. It must not retain a second independently writable absolute position.
+- Persistent Scene integration, the stable-ID stateful origin tracker, sector-snapped runtime behavior, multi-view publication tests, snapshot/raster propagation, real mesh/material GPU resources, Vulkan scene raster, culling, coordinate error views, physics islands, and ray/TLAS/query consumers remain future work. Declaring `SectorSnapped` and its policy data does not claim those behaviors are implemented.
 
 ## 8. Spatial Antialiasing Contract
 
