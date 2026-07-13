@@ -69,6 +69,7 @@ Only `PLAN.md` controls implementation order. Any “first implementation order,
 | --- | --- |
 | [Engine/src/Engine/OWNERSHIP.md](../Engine/src/Engine/OWNERSHIP.md) | Engine module responsibilities and dependency direction. |
 | [Engine/src/Engine/Core/OWNERSHIP.md](../Engine/src/Engine/Core/OWNERSHIP.md) | Stricter Core boundary. |
+| [Engine/src/Engine/Jobs/OWNERSHIP.md](../Engine/src/Engine/Jobs/OWNERSHIP.md) | CPU worker, frame-task dependency, publication, and scheduling boundary. |
 | [Editor/OWNERSHIP.md](../Editor/OWNERSHIP.md) | Editor-as-client boundary. |
 | [Sandbox/OWNERSHIP.md](../Sandbox/OWNERSHIP.md) | Public API proving-ground boundary. |
 

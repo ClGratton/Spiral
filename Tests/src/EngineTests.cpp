@@ -1,10 +1,13 @@
 #include "Engine/Core/Log.h"
+#include "Engine/Jobs/FrameTaskGraph.h"
 #include "Engine/Jobs/JobSystem.h"
 #include "Engine/RHI/Device.h"
 #include "Engine/Renderer/CapabilityDiagnostics.h"
 #include "Engine/Scene/Scene.h"
 
+#include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <filesystem>
 #include <fstream>
@@ -12,6 +15,7 @@
 #include <iostream>
 #include <stdexcept>
 #include <string_view>
+#include <thread>
 #include <vector>
 
 namespace
@@ -52,6 +56,299 @@ namespace
         bool fallbackRan = false;
         jobs.Submit([&]() { fallbackRan = !jobs.IsRunning(); }, "inline fallback test");
         return Expect(fallbackRan, "inline fallback work can query the job system without deadlocking");
+    }
+
+    bool TestJobSystemStealsNestedWorkerJobs()
+    {
+        Engine::JobSystem& jobs = Engine::JobSystem::Get();
+        jobs.Shutdown();
+        jobs.Initialize(2);
+
+        constexpr int childCount = 32;
+        std::atomic<int> completedChildren = 0;
+        std::atomic<bool> timedOut = false;
+        jobs.Submit([&]()
+        {
+            for (int index = 0; index < childCount; ++index)
+            {
+                jobs.Submit([&]() { ++completedChildren; }, "stealable child");
+            }
+
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+            while (completedChildren.load() != childCount && std::chrono::steady_clock::now() < deadline)
+                std::this_thread::yield();
+            timedOut = completedChildren.load() != childCount;
+        }, "nested producer");
+        jobs.WaitIdle();
+
+        const Engine::JobSystemStatistics statistics = jobs.GetStatistics();
+        jobs.Shutdown();
+        return Expect(!timedOut, "another worker steals nested jobs while their producer is occupied")
+            && Expect(completedChildren == childCount, "all stolen nested jobs complete")
+            && Expect(statistics.StolenJobs > 0, "work stealing is observable in job-system statistics")
+            && Expect(statistics.SubmittedJobs == statistics.CompletedJobs, "submitted and completed job counts agree");
+    }
+
+    bool TestWorkerWaitAndNestedGraphAreSafe()
+    {
+        Engine::JobSystem& jobs = Engine::JobSystem::Get();
+        jobs.Shutdown();
+        jobs.Initialize(1);
+
+        std::atomic<bool> waitRejected = false;
+        std::atomic<bool> shutdownRejected = false;
+        std::atomic<bool> nestedGraphCompleted = false;
+        jobs.Submit([&]()
+        {
+            try
+            {
+                jobs.WaitIdle();
+            }
+            catch (const std::logic_error&)
+            {
+                waitRejected = true;
+            }
+            try
+            {
+                jobs.Shutdown();
+            }
+            catch (const std::logic_error&)
+            {
+                shutdownRejected = true;
+            }
+
+            Engine::FrameTaskGraph nestedGraph;
+            Engine::FrameTaskDescription nestedTask;
+            nestedTask.Name = "Nested";
+            nestedTask.Execute = [&]() { nestedGraphCompleted = true; };
+            nestedGraph.AddTask(std::move(nestedTask));
+            const Engine::FrameTaskGraphResult nestedResult = nestedGraph.Execute(jobs);
+            if (!nestedResult.Succeeded())
+                nestedGraphCompleted = false;
+        }, "worker wait and nested graph");
+        jobs.WaitIdle();
+        jobs.Shutdown();
+
+        return Expect(waitRejected, "worker-side global WaitIdle fails clearly instead of deadlocking")
+            && Expect(shutdownRejected, "worker-side shutdown fails clearly instead of joining itself")
+            && Expect(nestedGraphCompleted, "a nested graph falls back to execution on its current worker");
+    }
+
+    bool TestFrameTaskGraphPublishesDeterministically()
+    {
+        Engine::JobSystem& jobs = Engine::JobSystem::Get();
+        jobs.Shutdown();
+        jobs.Initialize(2);
+
+        Engine::FramePublication<std::vector<int>> publication;
+        Engine::FrameTaskGraph graph;
+        std::vector<int> executionOrder;
+        std::vector<Engine::FrameTaskProfileEvent> profileEvents;
+        const std::thread::id callerThread = std::this_thread::get_id();
+
+        Engine::FrameTaskDescription producer;
+        producer.Name = "Producer";
+        producer.Execute = [&]()
+        {
+            executionOrder.push_back(1);
+            publication.Stage({ 4, 8, 15, 16, 23, 42 });
+        };
+        producer.Publication = publication.GetState();
+        const Engine::FrameTaskId producerId = graph.AddTask(std::move(producer));
+
+        Engine::FrameTaskDescription consumer;
+        consumer.Name = "Consumer";
+        consumer.Dependencies = { producerId };
+        consumer.Execute = [&]()
+        {
+            const std::shared_ptr<const std::vector<int>> values = publication.Read();
+            if (!values || values->size() != 6 || values->back() != 42)
+                throw std::runtime_error("consumer did not receive the immutable publication");
+            executionOrder.push_back(2);
+        };
+        graph.AddTask(std::move(consumer));
+
+        Engine::FrameTaskExecutionOptions options;
+        options.Mode = Engine::FrameTaskExecutionMode::DeterministicSingleThread;
+        options.FrameIndex = 77;
+        options.ProfileHook = [&](const Engine::FrameTaskProfileEvent& event) { profileEvents.push_back(event); };
+        const Engine::FrameTaskGraphResult result = graph.Execute(jobs, options);
+        jobs.Shutdown();
+
+        const bool profileEventsValid = profileEvents.size() == 4
+            && std::all_of(profileEvents.begin(), profileEvents.end(), [&](const Engine::FrameTaskProfileEvent& event)
+            {
+                return event.FrameIndex == 77
+                    && event.Thread == callerThread
+                    && event.WorkerIndex == Engine::kInvalidJobWorkerIndex;
+            });
+        return Expect(result.Succeeded(), "the deterministic frame task graph succeeds")
+            && Expect(executionOrder == std::vector<int>({ 1, 2 }), "deterministic mode follows stable dependency order")
+            && Expect(profileEventsValid, "begin/end profile events retain frame and caller-thread identity");
+    }
+
+    bool TestFrameTaskGraphPropagatesFailure()
+    {
+        Engine::JobSystem& jobs = Engine::JobSystem::Get();
+        jobs.Shutdown();
+        jobs.Initialize(2);
+
+        Engine::FramePublication<int> failedPublication;
+        Engine::FrameTaskGraph graph;
+        bool dependentRan = false;
+        bool independentRan = false;
+
+        Engine::FrameTaskDescription failing;
+        failing.Name = "Failing producer";
+        failing.Execute = [&]()
+        {
+            failedPublication.Stage(9);
+            throw std::runtime_error("expected graph failure");
+        };
+        failing.Publication = failedPublication.GetState();
+        const Engine::FrameTaskId failingId = graph.AddTask(std::move(failing));
+
+        Engine::FrameTaskDescription dependent;
+        dependent.Name = "Dependent";
+        dependent.Dependencies = { failingId };
+        dependent.Execute = [&]() { dependentRan = true; };
+        const Engine::FrameTaskId dependentId = graph.AddTask(std::move(dependent));
+
+        Engine::FrameTaskDescription independent;
+        independent.Name = "Independent";
+        independent.Execute = [&]() { independentRan = true; };
+        const Engine::FrameTaskId independentId = graph.AddTask(std::move(independent));
+
+        const Engine::FrameTaskGraphResult result = graph.Execute(jobs);
+        jobs.Shutdown();
+        return Expect(!result.Succeeded(), "a task failure fails the graph result")
+            && Expect(result.TaskStatuses[failingId] == Engine::FrameTaskStatus::Failed, "the throwing task retains failed status")
+            && Expect(result.TaskErrors[failingId] == "expected graph failure", "the throwing task retains its diagnostic")
+            && Expect(result.TaskStatuses[dependentId] == Engine::FrameTaskStatus::Skipped && !dependentRan,
+                "a failed dependency skips its dependent")
+            && Expect(result.TaskStatuses[independentId] == Engine::FrameTaskStatus::Succeeded && independentRan,
+                "an independent branch still completes")
+            && Expect(!failedPublication.Read(), "failed work never reaches its publication callback");
+    }
+
+    bool TestFrameTaskGraphSchedulesFanInAndFanOut()
+    {
+        Engine::JobSystem& jobs = Engine::JobSystem::Get();
+        jobs.Shutdown();
+        jobs.Initialize(2);
+
+        Engine::FrameTaskGraph graph;
+        std::atomic<bool> firstRootComplete = false;
+        std::atomic<bool> secondRootComplete = false;
+        std::atomic<bool> branchComplete = false;
+        bool joined = false;
+        std::vector<Engine::FrameTaskProfileEvent> profileEvents;
+
+        Engine::FrameTaskDescription firstRoot;
+        firstRoot.Name = "First root";
+        firstRoot.Execute = [&]() { firstRootComplete = true; };
+        const Engine::FrameTaskId firstRootId = graph.AddTask(std::move(firstRoot));
+
+        Engine::FrameTaskDescription secondRoot;
+        secondRoot.Name = "Second root";
+        secondRoot.Execute = [&]() { secondRootComplete = true; };
+        const Engine::FrameTaskId secondRootId = graph.AddTask(std::move(secondRoot));
+
+        Engine::FrameTaskDescription branch;
+        branch.Name = "Branch";
+        branch.Dependencies = { firstRootId };
+        branch.Execute = [&]()
+        {
+            if (!firstRootComplete)
+                throw std::runtime_error("branch ran before its root");
+            branchComplete = true;
+        };
+        const Engine::FrameTaskId branchId = graph.AddTask(std::move(branch));
+
+        Engine::FrameTaskDescription join;
+        join.Name = "Join";
+        join.Dependencies = { branchId, secondRootId };
+        join.Execute = [&]()
+        {
+            if (!branchComplete || !secondRootComplete)
+                throw std::runtime_error("join ran before all dependencies");
+            joined = true;
+        };
+        graph.AddTask(std::move(join));
+
+        Engine::FrameTaskExecutionOptions options;
+        options.ProfileHook = [&](const Engine::FrameTaskProfileEvent& event) { profileEvents.push_back(event); };
+        const Engine::FrameTaskGraphResult result = graph.Execute(jobs, options);
+        jobs.Shutdown();
+
+        const bool workerIdentityObserved = std::any_of(profileEvents.begin(), profileEvents.end(), [](const Engine::FrameTaskProfileEvent& event)
+        {
+            return event.Phase == Engine::FrameTaskProfilePhase::End
+                && event.WorkerIndex != Engine::kInvalidJobWorkerIndex;
+        });
+        return Expect(result.Succeeded() && joined, "fan-out branches join only after all declared dependencies")
+            && Expect(workerIdentityObserved, "parallel task profile events identify their worker");
+    }
+
+    bool TestFrameTaskGraphRejectsCycles()
+    {
+        Engine::FrameTaskGraph graph;
+        Engine::FrameTaskDescription first;
+        first.Name = "First";
+        first.Execute = []() {};
+        first.Dependencies = { 1 };
+        graph.AddTask(std::move(first));
+
+        Engine::FrameTaskDescription second;
+        second.Name = "Second";
+        second.Execute = []() {};
+        second.Dependencies = { 0 };
+        graph.AddTask(std::move(second));
+
+        Engine::FrameTaskExecutionOptions options;
+        options.Mode = Engine::FrameTaskExecutionMode::DeterministicSingleThread;
+        const Engine::FrameTaskGraphResult result = graph.Execute(Engine::JobSystem::Get(), options);
+        return Expect(!result.Succeeded(), "a cyclic frame task graph is rejected")
+            && Expect(result.GraphError == "frame task graph contains a dependency cycle", "cycle rejection is deterministic");
+    }
+
+    bool TestFrameTaskGraphRejectsInvalidDependencies()
+    {
+        Engine::FrameTaskExecutionOptions options;
+        options.Mode = Engine::FrameTaskExecutionMode::DeterministicSingleThread;
+
+        Engine::FrameTaskGraph invalidGraph;
+        Engine::FrameTaskDescription invalid;
+        invalid.Name = "Invalid";
+        invalid.Execute = []() {};
+        invalid.Dependencies = { 7 };
+        invalidGraph.AddTask(std::move(invalid));
+        const Engine::FrameTaskGraphResult invalidResult = invalidGraph.Execute(Engine::JobSystem::Get(), options);
+
+        Engine::FrameTaskGraph selfGraph;
+        Engine::FrameTaskDescription self;
+        self.Name = "Self";
+        self.Execute = []() {};
+        self.Dependencies = { 0 };
+        selfGraph.AddTask(std::move(self));
+        const Engine::FrameTaskGraphResult selfResult = selfGraph.Execute(Engine::JobSystem::Get(), options);
+
+        Engine::FrameTaskGraph duplicateGraph;
+        Engine::FrameTaskDescription root;
+        root.Name = "Root";
+        root.Execute = []() {};
+        duplicateGraph.AddTask(std::move(root));
+        Engine::FrameTaskDescription duplicate;
+        duplicate.Name = "Duplicate";
+        duplicate.Execute = []() {};
+        duplicate.Dependencies = { 0, 0 };
+        duplicateGraph.AddTask(std::move(duplicate));
+        const Engine::FrameTaskGraphResult duplicateResult = duplicateGraph.Execute(Engine::JobSystem::Get(), options);
+
+        return Expect(invalidResult.GraphError == "task 'Invalid' has an invalid dependency", "invalid dependency rejection is stable")
+            && Expect(selfResult.GraphError == "task 'Self' depends on itself", "self-dependency rejection is stable")
+            && Expect(duplicateResult.GraphError == "task 'Duplicate' declares a duplicate dependency",
+                "duplicate dependency rejection is stable");
     }
 
     bool TestSceneRoundTrip()
@@ -443,6 +740,13 @@ int main()
     const std::vector<std::pair<std::string_view, TestFunction>> tests = {
         { "JobSystem contains worker exceptions", TestJobSystemContainsWorkerExceptions },
         { "JobSystem inline fallback is reentrant", TestJobSystemInlineFallbackIsReentrant },
+        { "JobSystem steals nested worker jobs", TestJobSystemStealsNestedWorkerJobs },
+        { "Worker wait and nested graph are safe", TestWorkerWaitAndNestedGraphAreSafe },
+        { "Frame task graph publishes deterministically", TestFrameTaskGraphPublishesDeterministically },
+        { "Frame task graph propagates failure", TestFrameTaskGraphPropagatesFailure },
+        { "Frame task graph schedules fan-in and fan-out", TestFrameTaskGraphSchedulesFanInAndFanOut },
+        { "Frame task graph rejects cycles", TestFrameTaskGraphRejectsCycles },
+        { "Frame task graph rejects invalid dependencies", TestFrameTaskGraphRejectsInvalidDependencies },
         { "Scene round trip", TestSceneRoundTrip },
         { "Camera-relative large-world transform", TestCameraRelativeLargeWorldTransform },
         { "Scene rejects truncated components", TestSceneRejectsTruncatedComponent },

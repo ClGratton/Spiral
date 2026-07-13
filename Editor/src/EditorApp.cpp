@@ -31,6 +31,7 @@ Engine::Application* Engine::CreateApplication(ApplicationCommandLineArgs args)
         || args.HasFlag("--material-asset-smoke")
         || args.HasFlag("--project-save-smoke")
         || args.HasFlag("--undo-redo-smoke")
+        || args.HasFlag("--frame-task-graph-smoke")
         || args.HasFlag("--scene-authoring-smoke");
     specification.MaxFrames = args.HasFlag("--vulkan-render-smoke") ? 60 : (extendedSmoke ? 4 : (args.HasFlag("--smoke-test") ? 2 : 0));
 

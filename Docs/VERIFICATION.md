@@ -65,6 +65,15 @@ Use the actual generated system/architecture path on the host.
 
 `EngineTests` verifies the large-world coordinate foundation by subtracting an exact double-precision per-view origin before float conversion at trillion-unit coordinates, ensuring the float view matrix contains no absolute-world translation, and round-tripping high-magnitude double positions through the versioned scene format. The Windows D3D12 render smoke then verifies that the camera-relative transform remains integrated into the current raster prototype. These checks do not qualify future scene extraction, culling, debug, sector/origin transitions, physics, or ray-tracing consumers.
 
+`EngineTests` also verifies worker-local nested-job stealing, submitted/completed/stolen scheduler statistics, stable deterministic dependency order, typed immutable publication, retained task failures, dependent skipping, independent-branch progress, cycle rejection, and frame/task/thread/worker profiler identities. Exercise the real Application frame graph in both execution modes:
+
+```powershell
+.\bin\Debug-windows-x86_64\Editor\Editor.exe --headless --frame-task-graph-smoke
+.\bin\Debug-windows-x86_64\Editor\Editor.exe --headless --frame-task-graph-smoke --frame-task-single-thread
+```
+
+Both commands must publish the frame input, complete every caller-affine layer task, emit one terminal profile event per task, and print the matching `CPU frame task graph smoke passed` marker. These tests do not prove future workerized simulation, visibility/render preparation, immutable Scene extraction, command recording, priorities/cancellation, or Profiler-panel lane visualization.
+
 ## Renderer Verification
 
 `EngineTests` includes GPU-independent renderer-capability policy coverage. It proves lifecycle invariants, deterministic candidate ranking, retained rejection reasons, required format-usage validation, compatible queue fallbacks, strict selection by stable adapter ID, and `Phase3FrameTimingV1` selection of usable GPU timestamps versus the CPU steady-clock fallback. These tests do not prove a physical adapter or backend runtime path.

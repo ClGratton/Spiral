@@ -1,7 +1,7 @@
 #include "Engine/Core/Application.h"
 
 #include "Engine/Core/Log.h"
-#include "Engine/Jobs/JobSystem.h"
+#include "Engine/Jobs/FrameTaskGraph.h"
 #include "Engine/Renderer/Renderer.h"
 #include "Engine/UI/ImGuiLayer.h"
 
@@ -11,6 +11,28 @@
 
 namespace Engine
 {
+    namespace
+    {
+        struct ApplicationFrameInput
+        {
+            u64 FrameIndex = 0;
+            Timestep Delta;
+        };
+
+        std::string DescribeFrameTaskFailure(const FrameTaskGraphResult& result)
+        {
+            if (!result.GraphError.empty())
+                return result.GraphError;
+
+            for (size_t index = 0; index < result.TaskStatuses.size(); ++index)
+            {
+                if (result.TaskStatuses[index] == FrameTaskStatus::Failed)
+                    return result.TaskErrors[index];
+            }
+            return "a dependency did not succeed";
+        }
+    }
+
     Application* Application::s_Instance = nullptr;
 
     const char* ApplicationCommandLineArgs::operator[](int index) const
@@ -101,11 +123,68 @@ namespace Engine
             {
                 Renderer::BeginFrame();
 
-                for (auto& layer : m_LayerStack)
-                    layer->OnUpdate(timestep);
+                FramePublication<ApplicationFrameInput> frameInput;
+                FrameTaskGraph frameTasks;
 
-                for (auto& layer : m_LayerStack)
-                    layer->OnRender();
+                FrameTaskDescription publishInput;
+                publishInput.Name = "Frame.PublishInput";
+                publishInput.Lane = FrameTaskLane::CallingThread;
+                publishInput.Execute = [&]() { frameInput.Stage({ m_FrameIndex, timestep }); };
+                publishInput.Publication = frameInput.GetState();
+                const FrameTaskId publishInputTask = frameTasks.AddTask(std::move(publishInput));
+
+                FrameTaskDescription updateLayers;
+                updateLayers.Name = "Frame.UpdateLayers";
+                updateLayers.Lane = FrameTaskLane::CallingThread;
+                updateLayers.Dependencies = { publishInputTask };
+                updateLayers.Execute = [&]()
+                {
+                    const std::shared_ptr<const ApplicationFrameInput> input = frameInput.Read();
+                    if (!input)
+                        throw std::logic_error("frame input was not published");
+                    for (auto& layer : m_LayerStack)
+                        layer->OnUpdate(input->Delta);
+                };
+                const FrameTaskId updateTask = frameTasks.AddTask(std::move(updateLayers));
+
+                FrameTaskDescription renderLayers;
+                renderLayers.Name = "Frame.RenderLayers";
+                renderLayers.Lane = FrameTaskLane::CallingThread;
+                renderLayers.Dependencies = { updateTask };
+                renderLayers.Execute = [&]()
+                {
+                    for (auto& layer : m_LayerStack)
+                        layer->OnRender();
+                };
+                frameTasks.AddTask(std::move(renderLayers));
+
+                size_t completedProfileEvents = 0;
+                FrameTaskExecutionOptions taskOptions;
+                taskOptions.FrameIndex = m_FrameIndex;
+                taskOptions.Mode = m_Specification.CommandLineArgs.HasFlag("--frame-task-single-thread")
+                    ? FrameTaskExecutionMode::DeterministicSingleThread
+                    : FrameTaskExecutionMode::Parallel;
+                if (m_Specification.CommandLineArgs.HasFlag("--frame-task-graph-smoke"))
+                {
+                    taskOptions.ProfileHook = [&](const FrameTaskProfileEvent& event)
+                    {
+                        if (event.Phase == FrameTaskProfilePhase::End)
+                            ++completedProfileEvents;
+                    };
+                }
+
+                const FrameTaskGraphResult taskResult = frameTasks.Execute(JobSystem::Get(), taskOptions);
+                if (!taskResult.Succeeded())
+                    throw std::runtime_error("CPU frame task graph failed: " + DescribeFrameTaskFailure(taskResult));
+                if (m_Specification.CommandLineArgs.HasFlag("--frame-task-graph-smoke") && m_FrameIndex == 0)
+                {
+                    const std::shared_ptr<const ApplicationFrameInput> publishedInput = frameInput.Read();
+                    if (!publishedInput || publishedInput->FrameIndex != m_FrameIndex || completedProfileEvents != frameTasks.GetTaskCount())
+                        throw std::runtime_error("CPU frame task graph smoke did not publish or profile every task");
+                    Log::Info("CPU frame task graph smoke passed: frame=", m_FrameIndex,
+                        ", tasks=", frameTasks.GetTaskCount(),
+                        ", mode=", taskOptions.Mode == FrameTaskExecutionMode::DeterministicSingleThread ? "single-thread" : "parallel");
+                }
 
                 Renderer::EndFrame();
             }
@@ -120,7 +199,6 @@ namespace Engine
                 m_ImGuiLayer->End();
 
             m_Window->OnUpdate();
-            JobSystem::Get().WaitIdle();
 
             if (m_Specification.CommandLineArgs.HasFlag("--vulkan-render-smoke") && m_FrameIndex == 0)
             {

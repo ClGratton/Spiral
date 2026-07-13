@@ -58,6 +58,7 @@ Immediate gap:
 - Render graph pass/resource declarations compile into registration-order lifetime and abstract barrier data, but the scaffold is unused by the real renderer and has no focused tests; it is current-state inventory, not a completed roadmap behavior.
 - Editor camera and camera component scaffolding provide a shared `CameraView` for renderer code.
 - Scene/entity and editor-camera positions are authoritative doubles, scene format version 3 preserves their precision, and the current D3D12 prototype subtracts the shared per-view translation origin in double before producing float GPU transforms. The immutable render snapshot, scene raster, culling, debug, sector/origin-transition, and ray-tracing consumers are not implemented yet.
+- The native job executor now uses worker-local deques with peer stealing and observable worker/statistics identities. `FrameTaskGraph` provides validated dependencies, caller/worker lanes, graph-local completion, typed immutable publication, failure/skip propagation, deterministic caller-thread mode, and profiler events; the Application frame workflow consumes it without a per-frame global idle barrier. Workerized engine systems and Profiler lane visualization remain later consumers.
 - Shader source loading and hot-reload detection are centralized through `ShaderLibrary`.
 - GPU timestamp query contracts and renderer timing snapshots are stubbed/no-op; they are current-state inventory, not a completed roadmap behavior, and the D3D12 query heap recording/resolve path remains pending.
 - The first D3D12 viewport pass has resource debug names and capture markers for frame, viewport, ImGui, and capture readback scopes.
@@ -217,9 +218,9 @@ Capability groups are added as dependency-ordered checklist items immediately be
 - [x] RHI command-list allocation, validated recording lifecycle, and synchronous queue submission.
 - [x] GPU buffer resource-upload path with copy-queue synchronization and synchronous fence ownership.
 - [x] Large-world coordinate foundation: authoritative double-precision Scene/editor-camera positions, precision-preserving versioned scene serialization, and camera-relative float translation integrated into the current D3D12 raster prototype, with high-magnitude deterministic tests.
-- [ ] Extend one per-view translated coordinate frame through the immutable render snapshot, scene raster, culling, debug drawing, origin/sector transitions, and future ray generation/TLAS/query/hit reconstruction; expose absolute-vs-translated error diagnostics.
-- [ ] CPU frame task graph on the native job system with declared dependencies, immutable publication points, failure propagation, deterministic single-thread fallback, and profiler hooks.
+- [x] CPU frame task graph on the native work-stealing job system with validated declared dependencies, caller/worker lanes, graph-local completion, immutable publication points, failure/skip propagation, deterministic single-thread fallback, profiler hooks, and Application-frame integration.
 - [ ] Backend-neutral scene-to-renderer extraction into an immutable per-frame render snapshot with mesh/material/light/camera handles and no editor or backend-native types.
+- [ ] Propagate the per-view translated coordinate origin through the immutable render snapshot and actual scene raster; define and exercise origin/sector transitions before downstream spatial consumers rely on them.
 
 ### Phase 3C: Portable GPU Execution
 
@@ -327,11 +328,11 @@ Required:
 - [ ] Material resolve worklists sized for worst case.
 - [ ] Compact G-buffer outputs.
 - [ ] Selected occluder prepass: depth/coverage/visibility only.
-- [ ] Two-pass HZB culling.
+- [ ] Two-pass HZB culling in the same per-view translated coordinate frame as scene rasterization.
 - [ ] Coverage-aware carve-outs for foliage/hair/masked materials.
 - [ ] Clustered Forward+ special/transparent pass reusing the Phase 3 light grid and Phase 5 material model for glass, eyes, hair, particles/VFX, and other visibility-buffer exclusions.
 - [ ] Texture and geometry residency feedback emitted by visibility/material resolve for the Phase 7 streamers.
-- [ ] Debug views: visibility ID, material ID, overdraw, quad waste.
+- [ ] Debug views: visibility ID, material ID, overdraw, quad waste, and absolute-vs-translated coordinate error.
 
 Exit criteria:
 
@@ -410,6 +411,7 @@ Required:
 - [ ] Phase 9 ray-residual capability group for acceleration structures, ray pipelines/queries, shader-table requirements, update/compaction, queue/build limits, and exercised raster/probe fallback.
 - [ ] `Engine::RHI` ray-tracing capability and resource contracts: acceleration structures, build/update/compaction, ray pipeline/shader-table binding, synchronization, diagnostics, and stable raster/probe fallback when unavailable.
 - [ ] BLAS/TLAS object-class update policy.
+- [ ] One per-view translated coordinate frame shared by ray generation, TLAS instance transforms, ray queries, and hit reconstruction.
 - [ ] Ray-budget classifier.
 - [ ] Receiver-aware shadow caster culling, per-material/object culling modes, proxy shadows, conservative exclusions, and reason/cost diagnostics.
 - [ ] BRDF-aware current-frame stochastic SSR candidate pass with hierarchical traversal, spatial resolve, confidence, and explicit miss classification.

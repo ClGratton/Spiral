@@ -13,13 +13,13 @@ int main(int argc, char** argv)
 {
     Engine::Log::Init();
     Engine::CrashHandler::Install();
-    Engine::JobSystem::Get().Initialize();
 
     int exitCode = 0;
     Engine::Application* application = nullptr;
 
     try
     {
+        Engine::JobSystem::Get().Initialize();
         application = Engine::CreateApplication({ argc, argv });
         Engine::CrashHandler::SetApplicationName(application->GetSpecification().Name);
         application->Run();
@@ -39,8 +39,8 @@ int main(int argc, char** argv)
         exitCode = 1;
     }
 
-    delete application;
     Engine::JobSystem::Get().Shutdown();
+    delete application;
     Engine::Log::Shutdown();
     return exitCode;
 }

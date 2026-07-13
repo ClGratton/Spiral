@@ -57,6 +57,12 @@ jobs:
         shell: pwsh
         run: .\bin\Debug-windows-x86_64\Editor\Editor.exe --headless --scene-authoring-smoke
 
+      - name: Run CPU frame task graph smokes
+        shell: pwsh
+        run: |
+          .\bin\Debug-windows-x86_64\Editor\Editor.exe --headless --frame-task-graph-smoke
+          .\bin\Debug-windows-x86_64\Editor\Editor.exe --headless --frame-task-graph-smoke --frame-task-single-thread
+
       - name: Upload viewport capture
         uses: actions/upload-artifact@v7
         if: always()
@@ -188,6 +194,16 @@ jobs:
             ./bin/Debug-linux-x86_64-gmake/Editor/Editor --headless --scene-authoring-smoke
           else
             ./bin/Debug-macosx-x86_64-gmake/Editor/Editor --headless --scene-authoring-smoke
+          fi
+
+      - name: Run CPU frame task graph smokes
+        run: |
+          if [[ "${{ runner.os }}" == "Linux" ]]; then
+            ./bin/Debug-linux-x86_64-gmake/Editor/Editor --headless --frame-task-graph-smoke
+            ./bin/Debug-linux-x86_64-gmake/Editor/Editor --headless --frame-task-graph-smoke --frame-task-single-thread
+          else
+            ./bin/Debug-macosx-x86_64-gmake/Editor/Editor --headless --frame-task-graph-smoke
+            ./bin/Debug-macosx-x86_64-gmake/Editor/Editor --headless --frame-task-graph-smoke --frame-task-single-thread
           fi
 
       - name: Run sandbox headless smoke

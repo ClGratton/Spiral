@@ -340,6 +340,17 @@ Forbidden baseline behavior:
 
 Visual graphs and guided workflows may exist, but hot runtime graphs must compile or lower to native code/IR with source maps and profiling.
 
+Current implementation state:
+
+- `JobSystem` uses an external FIFO injection queue plus worker-local deques. Workers consume their own newest work and steal the oldest work from peers; stable worker indices and submitted/completed/stolen counts are available to diagnostics.
+- `FrameTaskGraph` validates explicit dependencies, duplicate/self/invalid edges, and cycles before execution. Independent tasks at one dependency level can use worker lanes while window, UI, renderer, and other thread-affine work remains on the calling thread.
+- A failed execute or graph-owned publication commit is retained in the graph result, staged output is aborted, transitive dependents are skipped, and independent branches continue. Graph execution waits only for its own worker tasks rather than calling global `JobSystem::WaitIdle`.
+- `FramePublication<T>` stages mutable producer output and exposes only `shared_ptr<const T>` after the graph commits the producer successfully. A publication has one validated producer.
+- Deterministic single-thread mode executes a stable registration-ordered topological traversal on the caller even when workers are live. A graph invoked recursively from a worker uses the same nonblocking deterministic path rather than waiting on its own executor. Begin/end profiler events include frame/task identity, terminal status, thread identity, worker index, and duration.
+- `Application::Run` now publishes immutable frame input and executes layer update/render as caller-affine dependency nodes. The old unconditional per-frame global idle barrier is removed; shutdown still drains unrelated asynchronous work before layer destruction. Headless smoke coverage exercises both normal and deterministic modes.
+
+Remaining consumers include worker-thread simulation/animation/physics/visibility/render preparation, immutable Scene render extraction, multithreaded command recording, queue/occupancy/stall visualization in the Profiler panel, priorities/cancellation, and longer-lived graph reuse. Their absence must not be presented as completion of those later roadmap items.
+
 ## 12. Unified Indirect Lighting Contract
 
 Static and dynamic objects must not live in separate indirect-lighting worlds.

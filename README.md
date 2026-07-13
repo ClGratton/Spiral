@@ -114,6 +114,13 @@ To save and reload-validate the current sample scene in headless mode:
 
 The scene is written to `output/scenes/sample.spiral`.
 
+To validate the Application CPU frame task graph, immutable frame-input publication, and profiler-event path in normal and deterministic single-thread modes:
+
+```powershell
+.\bin\Debug-windows-x86_64\Editor\Editor.exe --headless --frame-task-graph-smoke
+.\bin\Debug-windows-x86_64\Editor\Editor.exe --headless --frame-task-graph-smoke --frame-task-single-thread
+```
+
 To parse, validate, register, and cook a self-contained glTF triangle import smoke:
 
 ```powershell
