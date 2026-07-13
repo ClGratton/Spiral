@@ -136,11 +136,13 @@ Future frame-pacing/profiler completion requires a deterministic marker trace th
 
 ## Future AI And Automation Verification
 
-The accepted [AI and automation contract](Architecture/AI_AUTOMATION_ARCHITECTURE.md) is planning, not runtime evidence. Phase 13 tests must carry stable workflow/run/action IDs through preview, permission/precondition checks, apply, validation, commit or complete rollback, undo, and provenance publication. Focused coverage must prove:
+The accepted [AI and automation contract](Architecture/AI_AUTOMATION_ARCHITECTURE.md) is planning, not runtime evidence. Phase 13 tests must carry stable workflow/run/action IDs through preview, permission/precondition checks, apply, validation, the declared commit/rollback/compensation/external-result outcome, undo where supported, and provenance publication. Focused coverage must prove:
 
 - the deterministic non-AI workflow and AI-selected path use the same command semantics and produce the same user-visible result;
 - unauthorized, stale, malformed, unknown-version, and unsupported actions are rejected before mutation, while destructive, external, and sensitive actions stop at the specified approval boundary until explicitly approved;
-- injected partial failures, cancellation, retry, and idempotency produce the documented state without orphaned changes;
+- injected transactional failures completely roll back staged project-local changes, while cancellation, retry, and idempotency produce the documented state without orphaned project-local mutations;
+- compensatable actions expose and test their explicit compensating action, record compensation success/failure/pending state, and never label the original external effect as rolled back;
+- irreversible actions require just-in-time approval immediately before execution and record successful, failed, or indeterminate external outcomes without claiming reversibility;
 - receipts are versioned, complete, tied to editor history, and redact credentials, secrets, and private prompt data;
 - validation exercises the edited project through its real public APIs and workflow; an agent report, plausible explanation, log marker, or mocked mutation is not acceptance evidence;
 - headless and editor paths agree wherever both are claimed.

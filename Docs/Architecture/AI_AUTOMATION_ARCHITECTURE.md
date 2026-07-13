@@ -11,9 +11,9 @@ Spiral uses an intent-first, live-steerable automation model:
 human-owned intent and constraints
   -> editable plan and preview
   -> deterministic permission-scoped tools through public APIs
-  -> atomic apply
+  -> execute under declared effect and recovery semantics
   -> validation and user-visible result
-  -> commit receipt or rollback
+  -> receipt recording commit, rollback, compensation state, or external result
   -> durable project and roadmap state
 ```
 
@@ -119,19 +119,29 @@ intent brief
   -> proposed plan
   -> typed action preview
   -> permission and precondition check
-  -> transactional apply through public command APIs
+  -> execution through public command APIs under declared effect semantics
   -> domain validation plus workflow acceptance checks
-  -> commit and provenance receipt
-     or complete rollback with retained failure diagnostics
+  -> provenance receipt recording the result and available recovery
 ```
 
-Actions have stable workflow/run/action identities, typed inputs and outputs, schema/tool versions, preconditions, deterministic validation, cancellation semantics, and explicit terminal status. Retrying must be idempotent or use a recorded idempotency key. Stale preconditions, unsupported schemas, unauthorized actions, and partial failures fail clearly; they never become best-effort hidden mutations.
+Actions have stable workflow/run/action identities, typed inputs and outputs, schema/tool versions, preconditions, deterministic validation, cancellation semantics, declared effect semantics, and explicit terminal status. Retrying must be idempotent or use a recorded idempotency key. Stale preconditions, unsupported schemas, and unauthorized actions fail before execution. Partial failures remain explicit in action state and receipts; they never become unreported or unattributed effects.
+
+### Effect and recovery semantics
+
+Every mutating action declares exactly one class before approval or execution:
+
+- **Transactional:** Spiral controls the affected state. The action commits atomically or completely rolls back its staged changes, retaining failure diagnostics.
+- **Compensatable:** Complete rollback cannot be guaranteed, normally because an external system has accepted an effect. The action declares an explicit compensating action, its limits, and whether compensation succeeded, failed, or remains pending. Compensation is a new recorded action, not a claim that the original effect never occurred.
+- **Irreversible:** No reliable rollback or compensation exists. The action requires explicit just-in-time approval immediately before execution and records the external identity/result or the best available confirmation of an indeterminate outcome.
+
+A workflow may contain different classes, but it must not describe the whole workflow as atomic once a compensatable or irreversible action can execute. Transactional project-local preparation should occur before an external effect where safe; no receipt may imply that Spiral reversed an effect it does not control.
 
 ### Permission policy
 
 - Read-only inspection and local preview may run without per-action approval when project policy permits.
-- Reversible project-local mutations run inside a bounded transaction and obey the project's approval policy.
-- Destructive, irreversible, security-sensitive, credential-bearing, external-service, publishing, purchase, permission, or deployment actions require explicit approval at the action boundary.
+- Reversible project-local mutations run as transactional actions inside a bounded transaction and obey the project's approval policy.
+- Compensatable actions require approval at their effect boundary and preview the compensating action and its limitations.
+- Destructive, irreversible, security-sensitive, credential-bearing, external-service, publishing, purchase, permission, or deployment actions require explicit just-in-time approval immediately before execution. External does not automatically mean irreversible, but the action must declare which recovery class actually applies.
 
 Approval is scoped to the exact action and data destination. It is not a blanket grant to the model or workflow.
 
@@ -173,11 +183,13 @@ Accepted. It preserves human product vision and live steering while keeping muta
 
 ## Verification Contract For Future Phase 13 Work
 
-No runtime behavior is checked complete by this document. Future focused tests must carry workflow/run/action IDs through preview, apply, validate, commit/rollback, undo, and receipt publication, and must prove:
+No runtime behavior is checked complete by this document. Future focused tests must carry workflow/run/action IDs through preview, apply, validate, the declared commit/rollback/compensation/external-result outcome, undo where supported, and receipt publication, and must prove:
 
 - deterministic non-AI and AI-selected paths produce the same command semantics and user-visible result;
 - unauthorized, stale, malformed, unknown-version, and unsupported actions are rejected before mutation;
-- injected partial failures roll back every staged change and retain diagnostics;
+- injected transactional failures roll back every staged change and retain diagnostics;
+- compensatable failures publish and exercise the declared compensation path without misreporting the original effect as rolled back;
+- irreversible actions cannot execute without just-in-time approval and record successful, failed, or indeterminate external outcomes honestly;
 - cancellation and retry/idempotency behavior is deterministic;
 - provenance is complete, versioned, tied to history, and redacts secrets;
 - approval gates occur at the correct risk boundary;

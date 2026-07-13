@@ -531,7 +531,7 @@ Required:
 - [ ] First deterministic non-AI vertical slice: extend Phase 2's project creator into a guided project-template workflow with game-type choices, an editable intent/plan preview, public editor commands, atomic undoable application, validation, and a provenance receipt.
 - [ ] Extract only the stable model-neutral action, transaction, receipt, and deterministic headless-runner contracts proven by that workflow or a second concrete consumer; do not recreate a generic workflow scaffold in advance.
 - [ ] Permission and approval policy that rejects unauthorized, stale, malformed, or unknown-version actions and blocks destructive, external, or sensitive actions until explicitly approved at the correct boundary.
-- [ ] Failure recovery, cancellation, retry/idempotency, complete rollback, and history-linked provenance with secret redaction.
+- [ ] Declared action-effect semantics and recovery: atomic commit/complete rollback for transactional actions, explicit recorded compensation for compensatable actions, and just-in-time approval plus external-result recording for irreversible actions; include cancellation, retry/idempotency, and history-linked provenance with secret redaction.
 - [ ] Live workflow progress, targeted mechanism explanations, interrupt/correct/resume, and complete durable handoff state without exposing private model reasoning.
 - [ ] Provider-neutral AI planning/selection adapter over the same registered deterministic tools, with versioned scenario evaluation and no loss of the non-AI workflow.
 - [ ] First playable workflow.
@@ -544,7 +544,7 @@ Required:
 - [ ] Performance workflow.
 - [ ] Packaging workflow.
 - [ ] Every workflow's typed tool bridge has explainable previews/actions/results, undoable generated changes, validation, and provenance; no provider bypasses the shared command path.
-- [ ] Validation and conformance matrix per workflow, including AI/non-AI semantic parity, permission rejection, injected rollback, retry/idempotency, provenance redaction, and exact user-visible outcomes.
+- [ ] Validation and conformance matrix per workflow, including AI/non-AI semantic parity, permission rejection, injected transactional rollback, compensation success/failure, irreversible-action approval and external outcomes, retry/idempotency, provenance redaction, and exact user-visible outcomes.
 
 Exit criteria:
 

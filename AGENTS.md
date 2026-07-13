@@ -133,7 +133,7 @@ More detailed engine/editor/sandbox boundaries live in their nearest `OWNERSHIP.
 - The accepted planning contract is [Docs/Architecture/AI_AUTOMATION_ARCHITECTURE.md](Docs/Architecture/AI_AUTOMATION_ARCHITECTURE.md). Read it before repository-agent workflow changes, product AI/agent work, guided workflow infrastructure, tool/action schemas, permissions, approval UI, transactions, provenance, or automation verification.
 - Repository development agents and the future in-product game-making agent are separate systems. Product AI receives no repository-agent filesystem or source-edit authority.
 - AI is an optional planning and tool-selection layer over deterministic public commands. Equivalent supported workflows must remain usable without a model/provider.
-- Do not recreate an Automation module or generic workflow types before the first real Phase 13 vertical workflow proves a stable shared boundary. A provider adapter comes after deterministic commands, permissions, rollback, validation, and receipts.
+- Do not recreate an Automation module or generic workflow types before the first real Phase 13 vertical workflow proves a stable shared boundary. A provider adapter comes after deterministic commands, permissions, declared transactional/compensatable/irreversible effect semantics, validation, and receipts.
 - Treat claims that frontier models make no local mistakes or that source should never be inspected as research claims, not project facts. Allocate attention to ideas and QA first while preserving risk-proportionate implementation review.
 
 ## Documentation Maintenance

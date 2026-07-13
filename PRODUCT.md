@@ -31,7 +31,7 @@ Precise, capable, and calm. The engine should feel technically serious without b
 4. Claims match behavior: labels, enabled states, roadmap status, and feedback must reflect what the engine actually supports.
 5. Automation validates workflows: editor features receive focused smoke coverage when practical.
 6. Project shape controls world shape: projects may choose bounded authored terrain, large streamed terrain, deterministic unbounded generation, learned-assisted generation, or hybrid geometry without inheriting an unnecessary infinite-world runtime.
-7. AI assists intent, not authority: AI planning is optional; deterministic guided workflows remain available, and every mutation is permission-scoped, inspectable, reversible, validated, and attributable.
+7. AI assists intent, not authority: AI planning is optional and deterministic guided workflows remain available. Project-local mutations are permission-scoped, inspectable, transactional and undoable, validated, and attributable; external effects declare compensation or irreversibility, require the corresponding approval, and record their actual outcome.
 
 ## Accessibility & Inclusion
 

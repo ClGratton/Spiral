@@ -4,7 +4,7 @@ Spiral is a game engine focused on sharp motion, measured materials, transparent
 
 ## AI And Automation Direction
 
-Spiral keeps project intent human-owned and durable, uses optional AI for live-steerable planning and explanation, and executes changes only through deterministic permission-scoped public tools. Changes are previewable, transactional and undoable, validated, and provenance-recorded; equivalent guided workflows remain available without AI. The accepted boundary is [Docs/Architecture/AI_AUTOMATION_ARCHITECTURE.md](Docs/Architecture/AI_AUTOMATION_ARCHITECTURE.md).
+Spiral keeps project intent human-owned and durable, uses optional AI for live-steerable planning and explanation, and executes changes only through deterministic permission-scoped public tools. Project-local mutations are previewable, transactional and undoable, validated, and provenance-recorded. External effects must declare compensation or irreversibility, use the corresponding approval boundary, and record their actual result. Equivalent guided workflows remain available without AI. The accepted boundary is [Docs/Architecture/AI_AUTOMATION_ARCHITECTURE.md](Docs/Architecture/AI_AUTOMATION_ARCHITECTURE.md).
 
 ## Build
 
