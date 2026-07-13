@@ -258,7 +258,9 @@ Required external tool support:
 Required engine instrumentation:
 
 - CPU frame time, GPU frame time, and present time.
+- Configured and effective frame-pacing policy (`Responsive` or opt-in `Smooth Frametime`), target cadence/range, limiter or wait source, intentional pacing delay, deadline misses, and runtime/project override source.
 - Per-frame simulation-start, render-submit, `Present` begin/end, GPU-complete, and display-timing markers where the platform exposes them. Keep application, present, and display cadence separate.
+- Rendered, presented, displayed, replaced, and dropped frame counts/rates. A frame that never reaches the display must not disappear inside an aggregate FPS or frametime value.
 - Swapchain mode, buffer count, configured queue depth, waitable-swapchain availability/use, and VRR/tearing policy.
 - When frame generation is active, rendered-frame, generated-frame, present, and display rates, plus latency, reported separately.
 - Per-pass GPU timestamps.
@@ -285,6 +287,8 @@ Use PresentMon on Windows performance runs to compare `MsBetweenPresents`, `MsBe
 Click-to-photon claims require an appropriate input/display measurement path. Engine timestamps and presentation telemetry are necessary for diagnosis, but do not by themselves measure peripheral or panel response latency.
 
 Evaluate external pacing tools, driver settings, VRR modes, and frame-generation modes as named test conditions. Do not promote one configuration to a default based on an overlay alone or assume a fixed latency cost across APIs and hardware.
+
+Compare `Responsive` and `Smooth Frametime` as separate named engine conditions across uncapped/high-cap competitive workloads, fixed-refresh synchronized presentation, and VRR where supported. Report p50/p95/p99 frame and latency measurements plus 1%/0.1% lows. `Smooth Frametime` succeeds only when its cadence improvement and throughput/latency cost are both visible; intentionally reduced throughput is never evidence for making it the engine default. Keep VSync/VRR/tearing, present replacement/drop policy, maximum frames in flight, fixed simulation cadence, and vendor latency modes as independent axes in the test matrix.
 
 Required debug views:
 

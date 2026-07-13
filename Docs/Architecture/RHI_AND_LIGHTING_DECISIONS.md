@@ -447,17 +447,31 @@ Automation:
 
 Presentation belongs to the platform swapchain layer, outside NVRHI. The engine must treat simulation cadence, CPU `Present` cadence, GPU completion, and display cadence as separate signals. No single overlay metric is sufficient evidence of smoothness or input latency.
 
-Windows D3D12 baseline:
+### User And Project Policy
+
+`Smooth Frametime` is an opt-in frame-pacing setting, not the engine default and not a synonym for VSync, VRR, low-latency queue control, or fixed-step simulation.
+
+- The engine default is `Responsive`. It adds no engine-side cadence-smoothing cap or delay and does not deliberately discard an already-produced render result to manufacture a smoother metric. This is the competitive/esports-safe baseline; a project or player may still choose an explicit high cap, synchronization mode, or tearing policy.
+- `Smooth Frametime` may target the display cadence or a project-defined rate/range and may deliberately reduce peak render throughput to improve cadence. It paces at frame start before input sampling and simulation, never by sleeping after rendering or immediately before `Present`. Missing a target is reported; the engine should not render work merely to throw it away.
+- Project Settings store the serializable default. A developer can expose the same contract in shipped game settings, where the runtime/player value overrides the platform/project default, which overrides engine-default `Responsive`.
+- Presentation sync/VRR/tearing, frame-delivery mode (preserve FIFO versus an explicitly selected latest-ready/replacement policy), maximum frames in flight, portable or vendor latency mode, and fixed simulation cadence remain independent settings. Any mode allowed to replace or drop a queued presentation must say so explicitly.
+- Disabling `Smooth Frametime` does not disable swapchain acquire, per-image fence, resource-lifetime, or queue-completion waits required for correctness. Those waits are not smoothing.
+
+### Backend Mechanisms
+
+Windows D3D12:
 
 - Use a flip-model swapchain with `DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT` when the window/presentation mode supports it.
 - Wait on the frame-latency object before input sampling, simulation, and rendering, then present the freshly rendered result immediately. Do not make a generic sleep immediately before `Present` the engine pacing policy.
-- Expose a profiled queue-depth profile. Start at a maximum frame latency of one; allow two only when measurements show that the extra CPU/GPU overlap is needed to meet the target cadence.
+- Expose queue depth as a profiled policy input. Maximum frame latency one is the initial low-latency candidate; allow two when measurements show that added CPU/GPU overlap is needed. Queue depth is not `Smooth Frametime` and must not be changed implicitly by that toggle.
 
-Vulkan baseline:
+Vulkan:
 
-- Keep normal FIFO presentation and engine-side timing as the portable fallback.
+- Keep FIFO presentation and engine-side timing as the portable preserve-order fallback. Latest-ready/mailbox replacement and immediate/tearing behavior are separately named frame-delivery policies, never hidden smoothing behavior.
 - When the selected device and surface expose `VK_EXT_present_timing`, opt in behind a capability check, collect presentation feedback, and use its timing controls only through the swapchain policy. Never make this extension mandatory for portability.
 - Do not design around the older `VK_GOOGLE_display_timing` path; it remains a possible compatibility experiment, not the preferred cross-vendor contract.
+
+Current implementation audit (2026-07-13): no current backend contains an explicit engine frame-skip/discard policy. D3D12 nevertheless hard-codes the waitable swapchain, maximum latency one, and synchronized `Present(1, 0)`; Vulkan hard-codes FIFO; the dormant OpenGL path requests swap interval one. The project/runtime settings contract above is absent, so these are bootstrap implementation choices rather than a completed default-policy implementation. The corresponding `PLAN.md` items remain unchecked.
 
 VRR and vendor latency technologies are profile inputs, not correctness mechanisms. Respect the user's VRR and driver settings, but do not claim that VRR repairs missed frame budgets. NVIDIA Reflex may become an optional Windows/NVIDIA latency integration after the portable pacing and instrumentation path exists; it is not a substitute for that path.
 
@@ -491,7 +505,10 @@ RTSS, MSI Afterburner, and Special K may be useful external test conditions. The
 - Microsoft DXGI waitable swap chains: https://learn.microsoft.com/en-us/windows/uwp/gaming/reduce-latency-with-dxgi-1-3-swap-chains
 - Khronos `VK_EXT_present_timing`: https://docs.vulkan.org/refpages/latest/refpages/source/VK_EXT_present_timing.html
 - Khronos present-timing proposal: https://docs.vulkan.org/features/latest/features/proposals/VK_EXT_present_timing.html
+- Khronos Vulkan present modes: https://docs.vulkan.org/refpages/latest/refpages/source/VkPresentModeKHR.html
+- Unreal Engine Smooth Frame Rate project setting: https://dev.epicgames.com/documentation/unreal-engine/smooth-frame-rate?application_version=4.27
 - NVIDIA Reflex: https://developer.nvidia.com/performance-rendering-tools/reflex
+- NVIDIA low-latency esports aiming study: https://research.nvidia.com/index.php/publication/2021-05_case-study-first-person-aiming-low-latency-esports
 - Sandia SPA summary: https://pvpmc.sandia.gov/modeling-guide/1-weather-design-inputs/sun-position/solar-position-algorithm-spa/
 - Precomputed Radiance Transfer: https://cseweb.ucsd.edu/~ravir/6998/papers/p527-sloan.pdf
 - Deferred Radiance Transfer Volumes, Far Cry 3: https://www.gdcvault.com/play/1015326/Deferred-Radiance-Transfer-Volumes-Global
