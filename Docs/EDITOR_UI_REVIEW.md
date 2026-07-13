@@ -19,7 +19,7 @@ These engines differ visually, but their information architecture agrees. Spiral
 
 - Scene Hierarchy above Content Browser on the left.
 - Viewport remains the central work surface.
-- Inspector on the right contains only the selected entity's name, transform, and attached components. Camera projection and background color appear only when a camera entity is selected.
+- Inspector on the right contains only the selected entity's name, effective transform controls, and attached components. Camera-bearing entities expose Position and Rotation but omit Transform Scale because scale has no camera-view effect; entities without a Camera component retain Scale. Camera projection and background color appear only when a camera entity is selected.
 - Renderer backend selection lives in the top-bar Settings menu rather than a dock.
 - Console and Profiler share the bottom diagnostics region.
 - The Profiler owns renderer capability diagnostics: active profile, adapter identity, explicit qualification level, queue/format decisions, advertised/enabled/implemented/exercised feature states, fallbacks, and accepted/rejected adapter candidates remain separate from global backend selection.

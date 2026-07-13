@@ -775,7 +775,8 @@ void EditorLayer::DrawInspectorPanel()
     bool transformChanged = false;
     transformChanged |= DrawDVec3Control("Position", selectedEntity->Transform.Position, 0.1f);
     transformChanged |= DrawVec3Control("Rotation", selectedEntity->Transform.RotationDegrees, 0.5f);
-    transformChanged |= DrawVec3Control("Scale", selectedEntity->Transform.Scale, 0.05f, 0.01f, 100.0f);
+    if (!selectedEntity->Camera)
+        transformChanged |= DrawVec3Control("Scale", selectedEntity->Transform.Scale, 0.05f, 0.01f, 100.0f);
     if (transformChanged && selectedEntity->EntityHandle == m_ActiveScene.GetMainCameraEntity())
     {
         m_ActiveScene.SetMainCameraTransform(selectedEntity->Transform);

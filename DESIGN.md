@@ -40,6 +40,7 @@ Use the editor's single default sans/monospace-compatible UI font at a compact, 
 
 - Inspector content follows the selected entity or asset.
 - Camera projection and background color live on the selected camera in the Inspector. The top-bar Settings menu is limited to global renderer backend selection.
+- Camera-bearing entities omit the ineffective Transform Scale control; camera zoom uses Field of View or the applicable projection setting. The Inspector does not reset stored scale because an entity may also carry a component for which scale is meaningful.
 - Unsupported backends are visibly disabled and explain why.
 - Destructive hierarchy actions are contextual, undoable, and protect the primary camera.
 - New projects reject path collisions instead of silently overwriting existing manifests.
