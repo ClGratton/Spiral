@@ -22,7 +22,7 @@ Forbidden:
 | `RHI` | Backend-neutral GPU contracts and backend adapters. | Scene/material policy or editor UI. |
 | `RenderGraph` | Pass/resource dependency, lifetime, state, scheduling, and transient-resource policy. | Scene traversal or backend presentation. |
 | `Renderer` | High-level render passes, presentation bridges, shaders, scene rendering, and render diagnostics. | Gameplay entity ownership or asset import. |
-| `Scene` | Entities/components, authoring facade, serialization, cameras, and render extraction inputs. | Editor panels or backend-native GPU objects. |
+| `Scene` | Entities/components, authoring facade, serialization, cameras, and backend-neutral immutable render extraction. | Editor panels or backend-native GPU objects. |
 | `Assets` | Asset identity, import, cooked metadata, dependencies, reimport, and streaming inputs. | Rendering or editor widget policy. |
 | `Jobs` | Worker scheduling and task dependencies. | Subsystem-specific business logic. |
 | `Terrain` (planned Phase 7) | Terrain topology/profile and source contracts, tile identity/artifacts, generation scheduling, caches, edits, provenance, and diagnostic publication. | Renderer passes, physics-world authority, Scene entities, editor UI, or native GPU types. |

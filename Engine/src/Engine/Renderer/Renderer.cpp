@@ -7,6 +7,7 @@
 #include "Engine/Renderer/NVRHI/NVRHIRenderBackend.h"
 #include "Engine/Renderer/RenderBackend.h"
 
+#include <atomic>
 #include <chrono>
 #include <stdexcept>
 
@@ -23,6 +24,7 @@ namespace Engine
         CameraView s_CameraView;
         RendererBuildInfo s_BuildInfo;
         RendererFrameTiming s_FrameTiming;
+        std::atomic<std::shared_ptr<const SceneRenderSnapshot>> s_SceneRenderSnapshot;
         Scope<RenderBackend> s_Backend;
         std::vector<RendererBackendOption> s_BackendOptions;
         Clock::time_point s_RendererFrameStart;
@@ -332,6 +334,7 @@ namespace Engine
 
     void Renderer::Shutdown()
     {
+        s_SceneRenderSnapshot.store({}, std::memory_order_release);
         if (!s_Initialized)
             return;
 
@@ -522,6 +525,18 @@ namespace Engine
     const RendererFrameTiming& Renderer::GetLastFrameTiming()
     {
         return s_FrameTiming;
+    }
+
+    void Renderer::PublishSceneRenderSnapshot(SceneRenderSnapshot snapshot)
+    {
+        std::shared_ptr<const SceneRenderSnapshot> published =
+            std::make_shared<const SceneRenderSnapshot>(std::move(snapshot));
+        s_SceneRenderSnapshot.store(std::move(published), std::memory_order_release);
+    }
+
+    std::shared_ptr<const SceneRenderSnapshot> Renderer::GetSceneRenderSnapshot()
+    {
+        return s_SceneRenderSnapshot.load(std::memory_order_acquire);
     }
 
     void Renderer::SetCameraView(const CameraView& cameraView)

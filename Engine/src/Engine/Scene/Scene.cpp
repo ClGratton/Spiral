@@ -109,6 +109,60 @@ namespace Engine
         (void)timestep;
     }
 
+    SceneRenderSnapshot Scene::ExtractRenderSnapshot(u64 frameIndex) const
+    {
+        SceneRenderSnapshot snapshot;
+        snapshot.FrameIndex = frameIndex;
+        snapshot.MainCameraEntity = m_MainCameraEntity.Id;
+
+        for (const SceneEntity& entity : m_Entities)
+        {
+            SceneRenderTransform transform;
+            transform.WorldPosition = entity.Transform.Position;
+            transform.RotationDegrees = entity.Transform.RotationDegrees;
+            transform.Scale = entity.Transform.Scale;
+
+            if (entity.MeshRenderer && entity.MeshRenderer->Visible)
+            {
+                SceneRenderMesh mesh;
+                mesh.SourceEntity = entity.EntityHandle.Id;
+                mesh.Transform = transform;
+                mesh.MeshAsset = entity.MeshRenderer->MeshAsset;
+                mesh.MaterialAsset = entity.MeshRenderer->MaterialAsset;
+                mesh.CastsShadows = entity.MeshRenderer->CastsShadows;
+                snapshot.Meshes.push_back(mesh);
+            }
+
+            if (entity.Light)
+            {
+                SceneRenderLight light;
+                light.SourceEntity = entity.EntityHandle.Id;
+                light.Transform = transform;
+                light.Type = entity.Light->Type;
+                light.Color = entity.Light->Color;
+                light.Intensity = entity.Light->Intensity;
+                light.Range = entity.Light->Range;
+                light.InnerConeDegrees = entity.Light->InnerConeDegrees;
+                light.OuterConeDegrees = entity.Light->OuterConeDegrees;
+                light.CastsShadows = entity.Light->CastsShadows;
+                snapshot.Lights.push_back(light);
+            }
+
+            if (entity.Camera)
+            {
+                SceneRenderCamera camera;
+                camera.SourceEntity = entity.EntityHandle.Id;
+                camera.Transform = transform;
+                camera.Projection = entity.Camera->Projection;
+                camera.BackgroundColor = entity.Camera->BackgroundColor;
+                camera.Main = entity.EntityHandle == m_MainCameraEntity;
+                snapshot.Cameras.push_back(camera);
+            }
+        }
+
+        return snapshot;
+    }
+
     Entity Scene::CreateEntity(std::string name)
     {
         return CreateEntityWithId(m_NextEntityId++, std::move(name));

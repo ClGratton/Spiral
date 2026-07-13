@@ -311,6 +311,8 @@ void EditorLayer::OnAttach()
     m_ProjectSaveSmokeRequested = Engine::Application::Get().GetSpecification().CommandLineArgs.HasFlag("--project-save-smoke");
     m_UndoRedoSmokeRequested = Engine::Application::Get().GetSpecification().CommandLineArgs.HasFlag("--undo-redo-smoke");
     m_SceneAuthoringSmokeRequested = Engine::Application::Get().GetSpecification().CommandLineArgs.HasFlag("--scene-authoring-smoke");
+    m_SceneRenderSnapshotSmokeRequested =
+        Engine::Application::Get().GetSpecification().CommandLineArgs.HasFlag("--scene-render-snapshot-smoke");
     if (m_AssetWatchSmokeRequested)
     {
         WriteTextFile(m_AssetWatchSmokePath, "asset watch smoke baseline\n");
@@ -355,6 +357,10 @@ void EditorLayer::OnUpdate(Engine::Timestep timestep)
     RunUndoRedoSmoke();
     RunSceneAuthoringSmoke();
     HandleAssetWatchEvents();
+
+    Engine::Renderer::PublishSceneRenderSnapshot(
+        m_ActiveScene.ExtractRenderSnapshot(Engine::Application::Get().GetFrameIndex()));
+    RunSceneRenderSnapshotSmoke();
 
     if (m_FrameCounter == 1)
     {
@@ -1637,6 +1643,67 @@ void EditorLayer::RunSceneAuthoringSmoke()
 
     m_SceneAuthoringSmokeCompleted = true;
     Engine::Log::Info("Scene authoring smoke passed");
+}
+
+void EditorLayer::RunSceneRenderSnapshotSmoke()
+{
+    if (!m_SceneRenderSnapshotSmokeRequested || m_SceneRenderSnapshotSmokeCompleted)
+        return;
+
+    const std::shared_ptr<const Engine::SceneRenderSnapshot> snapshot =
+        Engine::Renderer::GetSceneRenderSnapshot();
+    if (!snapshot || snapshot->FrameIndex != Engine::Application::Get().GetFrameIndex())
+        throw std::runtime_error("Scene render snapshot smoke did not publish the current frame");
+
+    size_t expectedMeshes = 0;
+    size_t expectedLights = 0;
+    size_t expectedCameras = 0;
+    for (const Engine::SceneEntity& entity : m_ActiveScene.GetEntities())
+    {
+        if (entity.MeshRenderer && entity.MeshRenderer->Visible)
+            ++expectedMeshes;
+        if (entity.Light)
+            ++expectedLights;
+        if (entity.Camera)
+            ++expectedCameras;
+    }
+
+    const Engine::Entity mainCamera = m_ActiveScene.GetMainCameraEntity();
+    const bool hasMainCameraRecord = std::any_of(
+        snapshot->Cameras.begin(),
+        snapshot->Cameras.end(),
+        [mainCamera](const Engine::SceneRenderCamera& camera)
+        {
+            return camera.SourceEntity == mainCamera.Id && camera.Main;
+        });
+    if (snapshot->MainCameraEntity != mainCamera.Id
+        || snapshot->Meshes.size() != expectedMeshes
+        || snapshot->Lights.size() != expectedLights
+        || snapshot->Cameras.size() != expectedCameras
+        || !hasMainCameraRecord)
+    {
+        throw std::runtime_error("Scene render snapshot smoke did not match the active Scene extraction");
+    }
+
+    if (!m_FirstSceneRenderSnapshot)
+    {
+        m_FirstSceneRenderSnapshot = snapshot;
+        return;
+    }
+
+    if (snapshot == m_FirstSceneRenderSnapshot
+        || m_FirstSceneRenderSnapshot->FrameIndex >= snapshot->FrameIndex)
+    {
+        throw std::runtime_error("Scene render snapshot smoke did not retain an immutable older epoch");
+    }
+
+    Engine::Log::Info(
+        "Scene render snapshot smoke passed: frame=", snapshot->FrameIndex,
+        ", previousFrame=", m_FirstSceneRenderSnapshot->FrameIndex,
+        ", meshes=", snapshot->Meshes.size(),
+        ", lights=", snapshot->Lights.size(),
+        ", cameras=", snapshot->Cameras.size());
+    m_SceneRenderSnapshotSmokeCompleted = true;
 }
 
 bool EditorLayer::ImportGltfAsset(const std::filesystem::path& sourcePath)

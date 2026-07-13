@@ -63,7 +63,7 @@ This pass read every workspace-authored Markdown file and compared the roadmap c
 | Render-graph execution/integration | Dependency/lifetime compilation alone cannot bind resources, execute callbacks, record barriers/commands, submit queues, retire frames, or drive the scene viewport. |
 | Renderer capability/qualification system | Platform names and advertised extensions cannot safely choose formats, features, queues, shader paths, or fallbacks across vendors/devices. |
 | Portable scene-shader path | Vulkan scene rendering cannot follow from a D3D12-only compiler; shared DXIL/SPIR-V outputs, reflection/layout validation, conventions, caching, and diagnostics are prerequisites. |
-| Scene render snapshot | The renderer needs immutable backend-neutral camera/mesh/material/light input rather than editor state or backend-native types. |
+| Scene render snapshot (implemented 2026-07-13) | The renderer needs immutable backend-neutral camera/mesh/material/light input rather than editor state or backend-native types. |
 | Descriptor/bindless model | Material, draw-cluster, texture, and structured-buffer tables require capacity, update, retirement, error-resource, writable-resource, and bounded-fallback rules. |
 | Virtual-geometry page format and streamer | Phase 7's streaming exit criterion requires deterministic cooked pages, dependency metadata, feedback, upload, eviction, GPU retirement, and coarse fallbacks. |
 | Baked-lighting base data/bake path | Time-keyed lighting cannot exist before a versioned single-time probe/lightmap artifact and preview/final bake or validated import path. |

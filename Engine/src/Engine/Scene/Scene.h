@@ -3,6 +3,7 @@
 #include "Engine/Core/Timestep.h"
 #include "Engine/Scene/Components.h"
 #include "Engine/Scene/Entity.h"
+#include "Engine/Scene/SceneRenderSnapshot.h"
 
 #include <filesystem>
 #include <optional>
@@ -29,6 +30,7 @@ namespace Engine
 
         void OnUpdate(Timestep timestep);
         const std::string& GetName() const { return m_Name; }
+        SceneRenderSnapshot ExtractRenderSnapshot(u64 frameIndex) const;
 
         Entity CreateEntity(std::string name = "Entity");
         bool DestroyEntity(Entity entity);

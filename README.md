@@ -121,6 +121,15 @@ To validate the Application CPU frame task graph, immutable frame-input publicat
 .\bin\Debug-windows-x86_64\Editor\Editor.exe --headless --frame-task-graph-smoke --frame-task-single-thread
 ```
 
+To validate backend-neutral Scene extraction and immutable Editor-to-Renderer snapshot publication in both frame-task modes:
+
+```powershell
+.\bin\Debug-windows-x86_64\Editor\Editor.exe --headless --scene-render-snapshot-smoke
+.\bin\Debug-windows-x86_64\Editor\Editor.exe --headless --scene-render-snapshot-smoke --frame-task-single-thread
+```
+
+This validates data extraction and epoch lifetime only; the D3D12 viewport still uses the prototype draw until the following origin/raster integration work.
+
 To parse, validate, register, and cook a self-contained glTF triangle import smoke:
 
 ```powershell

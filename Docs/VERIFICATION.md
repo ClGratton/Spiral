@@ -63,7 +63,7 @@ Linux/macOS:
 
 Use the actual generated system/architecture path on the host.
 
-`EngineTests` verifies the large-world coordinate foundation by subtracting an exact double-precision per-view origin before float conversion at trillion-unit coordinates, ensuring the float view matrix contains no absolute-world translation, and round-tripping high-magnitude double positions through the versioned scene format. The Windows D3D12 render smoke then verifies that the camera-relative transform remains integrated into the current raster prototype. These checks do not qualify future scene extraction, culling, debug, sector/origin transitions, physics, or ray-tracing consumers.
+`EngineTests` verifies the large-world coordinate foundation by subtracting an exact double-precision per-view origin before float conversion at trillion-unit coordinates, ensuring the float view matrix contains no absolute-world translation, and round-tripping high-magnitude double positions through the versioned scene format. It also verifies deterministic backend-neutral render extraction, main-camera authority, stable source/entity and asset handles, hidden-mesh omission, copied light/camera/transform values, and retained older immutable epochs after Scene mutation. The Windows D3D12 render smoke verifies only that camera-relative transform remains integrated into the current raster prototype. These checks do not qualify translated-origin snapshot propagation, actual scene-raster consumption, culling, debug, sector/origin transitions, physics, or ray-tracing consumers.
 
 `EngineTests` also verifies worker-local nested-job stealing, submitted/completed/stolen scheduler statistics, stable deterministic dependency order, typed immutable publication, retained task failures, dependent skipping, independent-branch progress, cycle rejection, and frame/task/thread/worker profiler identities. Exercise the real Application frame graph in both execution modes:
 
@@ -72,7 +72,16 @@ Use the actual generated system/architecture path on the host.
 .\bin\Debug-windows-x86_64\Editor\Editor.exe --headless --frame-task-graph-smoke --frame-task-single-thread
 ```
 
-Both commands must publish the frame input, complete every caller-affine layer task, emit one terminal profile event per task, and print the matching `CPU frame task graph smoke passed` marker. These tests do not prove future workerized simulation, visibility/render preparation, immutable Scene extraction, command recording, priorities/cancellation, or Profiler-panel lane visualization.
+Both commands must publish the frame input, complete every caller-affine layer task, emit one terminal profile event per task, and print the matching `CPU frame task graph smoke passed` marker. These tests do not prove future workerized simulation, visibility/render preparation, translated-origin/raster snapshot consumption, command recording, priorities/cancellation, or Profiler-panel lane visualization.
+
+Exercise real Editor-to-Renderer scene snapshot publication and retained epoch lifetime in both frame-task modes:
+
+```powershell
+.\bin\Debug-windows-x86_64\Editor\Editor.exe --headless --scene-render-snapshot-smoke
+.\bin\Debug-windows-x86_64\Editor\Editor.exe --headless --scene-render-snapshot-smoke --frame-task-single-thread
+```
+
+Both commands must publish after mutable layer update, validate counts and authoritative main-camera identity against the active Scene, retain the previous immutable epoch while publishing the next, and print `Scene render snapshot smoke passed`. This is extraction/publication evidence only: the current D3D12 viewport still renders its built-in prototype rather than snapshot mesh instances.
 
 ## Renderer Verification
 

@@ -48,6 +48,7 @@ namespace Engine
 
         Window& GetWindow() { return *m_Window; }
         const ApplicationSpecification& GetSpecification() const { return m_Specification; }
+        u64 GetFrameIndex() const { return m_FrameIndex; }
 
         static Application& Get();
 

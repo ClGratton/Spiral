@@ -4,6 +4,7 @@
 
 #include <array>
 #include <filesystem>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -44,6 +45,7 @@ private:
     void RunMaterialAssetSmoke();
     void RunUndoRedoSmoke();
     void RunSceneAuthoringSmoke();
+    void RunSceneRenderSnapshotSmoke();
     bool OnFileDrop(Engine::FileDropEvent& event);
     bool ImportGltfAsset(const std::filesystem::path& sourcePath);
     bool SaveProject();
@@ -83,6 +85,8 @@ private:
     bool m_UndoRedoSmokeCompleted = false;
     bool m_SceneAuthoringSmokeRequested = false;
     bool m_SceneAuthoringSmokeCompleted = false;
+    bool m_SceneRenderSnapshotSmokeRequested = false;
+    bool m_SceneRenderSnapshotSmokeCompleted = false;
     bool m_ShowNewProjectDialog = false;
     std::string m_CaptureViewportPath = "output/captures/editor-viewport.bmp";
     std::string m_ProjectPath = "output/projects/default.spiralproject";
@@ -101,6 +105,7 @@ private:
     Engine::Entity m_PlayerStartEntity;
     Engine::Entity m_SelectedEntity;
     Engine::EditorCamera m_EditorCamera;
+    std::shared_ptr<const Engine::SceneRenderSnapshot> m_FirstSceneRenderSnapshot;
     std::array<double, 3> m_CameraPosition = { 0.0, 0.0, -3.35 };
     std::array<float, 3> m_CameraRotation = { 0.0f, 0.0f, 0.0f };
     float m_CameraFovDegrees = 60.0f;

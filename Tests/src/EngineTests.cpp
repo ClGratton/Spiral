@@ -418,6 +418,104 @@ namespace
                 "the float view matrix does not contain an absolute-world translation");
     }
 
+    bool TestSceneRenderSnapshotExtractionAndRetainedEpochs()
+    {
+        Engine::Scene scene("Render Snapshot");
+        const Engine::Entity mainCamera = scene.GetMainCameraEntity();
+        Engine::TransformComponent* mainCameraTransform = scene.TryGetTransform(mainCamera);
+        mainCameraTransform->Position = { 1000.25, -22.5, 9.75 };
+
+        const Engine::Entity secondaryCamera = scene.CreateEntity("Secondary Camera");
+        Engine::CameraComponent secondaryCameraComponent;
+        secondaryCameraComponent.Primary = true;
+        secondaryCameraComponent.Projection.VerticalFovDegrees = 72.0f;
+        scene.AddCameraComponent(secondaryCamera, secondaryCameraComponent);
+
+        const Engine::Entity invalidVisibleMesh = scene.CreateEntity("Invalid Visible Mesh");
+        Engine::MeshRendererComponent invalidMeshComponent;
+        invalidMeshComponent.CastsShadows = false;
+        scene.AddMeshRendererComponent(invalidVisibleMesh, invalidMeshComponent);
+
+        const Engine::Entity hiddenMesh = scene.CreateEntity("Hidden Mesh");
+        Engine::MeshRendererComponent hiddenMeshComponent;
+        hiddenMeshComponent.MeshAsset = 11;
+        hiddenMeshComponent.MaterialAsset = 12;
+        hiddenMeshComponent.Visible = false;
+        scene.AddMeshRendererComponent(hiddenMesh, hiddenMeshComponent);
+
+        const Engine::Entity visibleMesh = scene.CreateEntity("Visible Mesh");
+        Engine::TransformComponent* visibleTransform = scene.TryGetTransform(visibleMesh);
+        visibleTransform->Position = { 1234567890123.5, 4.0, -8.0 };
+        visibleTransform->RotationDegrees = { 10.0f, 20.0f, 30.0f };
+        visibleTransform->Scale = { 2.0f, 3.0f, 4.0f };
+        Engine::MeshRendererComponent visibleMeshComponent;
+        visibleMeshComponent.MeshAsset = 42;
+        visibleMeshComponent.MaterialAsset = 84;
+        scene.AddMeshRendererComponent(visibleMesh, visibleMeshComponent);
+
+        const Engine::Entity lightEntity = scene.CreateEntity("Light");
+        Engine::LightComponent lightComponent;
+        lightComponent.Type = Engine::LightType::Spot;
+        lightComponent.Color = { 0.2f, 0.4f, 0.8f };
+        lightComponent.Intensity = 7.5f;
+        lightComponent.Range = 125.0f;
+        lightComponent.InnerConeDegrees = 15.0f;
+        lightComponent.OuterConeDegrees = 35.0f;
+        lightComponent.CastsShadows = false;
+        scene.AddLightComponent(lightEntity, lightComponent);
+
+        const std::shared_ptr<const Engine::SceneRenderSnapshot> first =
+            std::make_shared<const Engine::SceneRenderSnapshot>(scene.ExtractRenderSnapshot(41));
+
+        scene.TryGetTransform(visibleMesh)->Position.X = -1.0;
+        scene.DestroyEntity(lightEntity);
+        const std::shared_ptr<const Engine::SceneRenderSnapshot> second =
+            std::make_shared<const Engine::SceneRenderSnapshot>(scene.ExtractRenderSnapshot(42));
+
+        const bool cameraAuthorityValid = first
+            && first->MainCameraEntity == mainCamera.Id
+            && first->Cameras.size() == 2
+            && first->Cameras[0].SourceEntity == mainCamera.Id
+            && first->Cameras[0].Main
+            && first->Cameras[0].Transform.WorldPosition.X == 1000.25
+            && first->Cameras[1].SourceEntity == secondaryCamera.Id
+            && !first->Cameras[1].Main
+            && first->Cameras[1].Projection.VerticalFovDegrees == 72.0f;
+        const bool meshExtractionValid = first
+            && first->Meshes.size() == 2
+            && first->Meshes[0].SourceEntity == invalidVisibleMesh.Id
+            && first->Meshes[0].MeshAsset == Engine::kInvalidAssetHandle
+            && !first->Meshes[0].CastsShadows
+            && first->Meshes[1].SourceEntity == visibleMesh.Id
+            && first->Meshes[1].MeshAsset == 42
+            && first->Meshes[1].MaterialAsset == 84
+            && first->Meshes[1].Transform.WorldPosition.X == 1234567890123.5
+            && first->Meshes[1].Transform.RotationDegrees.Y == 20.0f
+            && first->Meshes[1].Transform.Scale.Z == 4.0f;
+        const bool lightExtractionValid = first
+            && first->Lights.size() == 1
+            && first->Lights[0].SourceEntity == lightEntity.Id
+            && first->Lights[0].Type == Engine::LightType::Spot
+            && first->Lights[0].Color.Z == 0.8f
+            && first->Lights[0].Intensity == 7.5f
+            && first->Lights[0].Range == 125.0f
+            && first->Lights[0].InnerConeDegrees == 15.0f
+            && first->Lights[0].OuterConeDegrees == 35.0f
+            && !first->Lights[0].CastsShadows;
+        const bool publicationValid = second
+            && second != first
+            && first->FrameIndex == 41
+            && second->FrameIndex == 42
+            && first->Meshes[1].Transform.WorldPosition.X == 1234567890123.5
+            && second->Meshes[1].Transform.WorldPosition.X == -1.0
+            && first->Lights.size() == 1
+            && second->Lights.empty();
+        return Expect(cameraAuthorityValid, "the snapshot copies deterministic camera records and authoritative main-camera identity")
+            && Expect(meshExtractionValid, "visible meshes retain stable entity and asset handles while hidden meshes are omitted")
+            && Expect(lightExtractionValid, "the snapshot copies backend-neutral light state")
+            && Expect(publicationValid, "extracting a new frame retains an immutable older snapshot epoch");
+    }
+
     bool TestSceneRejectsTruncatedComponent()
     {
         const std::filesystem::path path = TestFilePath("scene-truncated.spiral");
@@ -749,6 +847,7 @@ int main()
         { "Frame task graph rejects invalid dependencies", TestFrameTaskGraphRejectsInvalidDependencies },
         { "Scene round trip", TestSceneRoundTrip },
         { "Camera-relative large-world transform", TestCameraRelativeLargeWorldTransform },
+        { "Scene render snapshot extraction and retained epochs", TestSceneRenderSnapshotExtractionAndRetainedEpochs },
         { "Scene rejects truncated components", TestSceneRejectsTruncatedComponent },
         { "Scene loads version-one camera", TestSceneLoadsVersionOneCamera },
         { "Scene rejects duplicate entities", TestSceneRejectsDuplicateEntities },

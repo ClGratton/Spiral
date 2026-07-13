@@ -32,4 +32,5 @@
 #include "Engine/Scene/Components.h"
 #include "Engine/Scene/Entity.h"
 #include "Engine/Scene/Scene.h"
+#include "Engine/Scene/SceneRenderSnapshot.h"
 #include "Engine/UI/ImGuiLayer.h"

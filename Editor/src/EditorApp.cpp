@@ -32,7 +32,8 @@ Engine::Application* Engine::CreateApplication(ApplicationCommandLineArgs args)
         || args.HasFlag("--project-save-smoke")
         || args.HasFlag("--undo-redo-smoke")
         || args.HasFlag("--frame-task-graph-smoke")
-        || args.HasFlag("--scene-authoring-smoke");
+        || args.HasFlag("--scene-authoring-smoke")
+        || args.HasFlag("--scene-render-snapshot-smoke");
     specification.MaxFrames = args.HasFlag("--vulkan-render-smoke") ? 60 : (extendedSmoke ? 4 : (args.HasFlag("--smoke-test") ? 2 : 0));
 
     return new EditorApplication(specification);

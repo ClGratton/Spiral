@@ -3,7 +3,9 @@
 #include "Engine/Core/Base.h"
 #include "Engine/RHI/RHICommon.h"
 #include "Engine/Scene/Camera.h"
+#include "Engine/Scene/SceneRenderSnapshot.h"
 
+#include <memory>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -138,6 +140,8 @@ namespace Engine
         static const RHI::DeviceCapabilities* GetDeviceCapabilities();
         static const RendererBuildInfo& GetBuildInfo();
         static const RendererFrameTiming& GetLastFrameTiming();
+        static void PublishSceneRenderSnapshot(SceneRenderSnapshot snapshot);
+        static std::shared_ptr<const SceneRenderSnapshot> GetSceneRenderSnapshot();
         static void SetCameraView(const CameraView& cameraView);
         static const CameraView& GetCameraView();
     };
