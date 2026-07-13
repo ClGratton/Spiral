@@ -37,6 +37,7 @@ For a broad architecture audit, read every document listed in `Docs/README.md`. 
 | `Engine/src/Engine/Scene` | Entity/component authoring facade, scene data, serialization, cameras, and future runtime extraction. No editor panels or backend-native GPU types. |
 | `Engine/src/Engine/Assets` | Asset identity, import, metadata, cooked artifacts, dependency tracking, reimport, and streaming inputs. It does not render. |
 | `Engine/src/Engine/Jobs` | Worker scheduling and task dependencies. It does not own renderer, scene, asset, or editor policy. |
+| `Engine/src/Engine/Terrain` (planned; absent until Phase 7) | Project-selectable terrain topology and source contracts, canonical tile identity/artifacts, generation scheduling, caches, edit layers, provenance, and diagnostics publication. It must not own renderer passes, the physics world, Scene entities, editor UI, or native graphics types. |
 | `Engine/src/Engine/Physics` (planned; absent until Phase 11) | Backend-neutral fixed-step physics world, handles, commands/results, collision/query contracts, state capabilities, and diagnostics publication. It must not own Scene entities, asset importing, editor UI, renderer passes, or native graphics types. |
 | `Engine/src/Engine/Platform` | GLFW/headless and future OS services hidden behind engine interfaces. |
 | `Engine/src/Engine/UI` | Engine/editor tool UI integration such as ImGui. Native graphics access is limited to documented UI/presentation bridges. |
@@ -99,6 +100,12 @@ More detailed engine/editor/sandbox boundaries live in their nearest `OWNERSHIP.
 - CPU fixed-step physics is gameplay authority by default. Optional GPU deformables are visual/secondary and publish through explicit RHI synchronization; they do not silently drive gameplay bodies, hit tests, events, replication, saves, AI, or navigation.
 - FEM, PD+barrier, IPC-family methods, and ABD are measured hero/offline candidates, not interchangeable whole-engine backends or universal zero-penetration/performance promises. Preserve portable fallbacks and report algorithm, tolerance, backend, hardware, and failure scope.
 - Consumer DX12/Vulkan queues do not guarantee dedicated SM/RT-core shares or free overlap. DMA moves data but does not solve physics. Treat CUDA, L2 policy controls, and RT-assisted collision as optional capability-gated research paths, never the multi-device baseline.
+
+## Terrain Authority And Research
+
+- The accepted planning contract is [Docs/Architecture/TERRAIN_ARCHITECTURE_AND_RESEARCH.md](Docs/Architecture/TERRAIN_ARCHITECTURE_AND_RESEARCH.md). Read it before terrain generation, infinite-world streaming, terrain LOD, terrain collision, terrain editing, hydrology/erosion, or learned terrain work.
+- Terrain sources are project-selectable and produce canonical versioned artifacts. Do not make procedural generation, Terrain Diffusion, a heightfield, or an infinite world mandatory for every game.
+- Terrain Diffusion is an evaluation candidate for optional offline or asynchronous macro generation. Do not admit PyTorch, CUDA, its models, or a service dependency without the documented bake-off and a `Docs/DEPENDENCIES.md` update.
 
 ## Documentation Maintenance
 

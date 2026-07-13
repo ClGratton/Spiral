@@ -172,6 +172,7 @@ Start with:
 - [Docs/Architecture/RENDERER_CAPABILITY_CONTRACT.md](Docs/Architecture/RENDERER_CAPABILITY_CONTRACT.md)
 - [Docs/Architecture/TECHNICAL_ROADMAP_COVERAGE.md](Docs/Architecture/TECHNICAL_ROADMAP_COVERAGE.md)
 - [Docs/Architecture/MACOS_RENDERER_BACKEND_DECISION.md](Docs/Architecture/MACOS_RENDERER_BACKEND_DECISION.md)
+- [Docs/Architecture/TERRAIN_ARCHITECTURE_AND_RESEARCH.md](Docs/Architecture/TERRAIN_ARCHITECTURE_AND_RESEARCH.md)
 
 ## Run Existing Executables
 

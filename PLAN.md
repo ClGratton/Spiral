@@ -81,6 +81,7 @@ Immediate gap:
 - A portable `EngineTests` executable covers deterministic engine contracts that are too narrow for editor smoke tests, including job-system failure handling and strict scene deserialization.
 - The editor can create an isolated project and starter scene from a name/location modal, and hierarchy controls create or delete entities with undo/redo coverage.
 - The physics architecture is now a documented planning contract: CPU-authoritative fixed-step gameplay physics, an engine-owned backend boundary and bake-off, versioned collision cooking, explicit determinism levels, optional one-way GPU visual deformation, and measured FEM/PD/IPC/ABD hero research. No physics backend or runtime module is implemented or admitted yet.
+- The terrain architecture is now a documented planning contract: project-selectable bounded, streamed, unbounded, and hybrid profiles; deterministic spatial sources; canonical versioned tile artifacts; separate generation/residency/render/collision authority; and a measured Terrain Diffusion evaluation. No terrain module, generator, model, or runtime dependency is implemented or admitted yet.
 - Renderer capability state now has separate advertised, enabled, implemented, and exercised stages. D3D12 and Vulkan enumerate real devices before creation, query the versioned Phase 3 Bootstrap profile's API, queue/presentation, synchronization, texture-limit, RGBA8, and D32 requirements, and select through the shared deterministic evaluator. Reports retain every candidate evaluation, stable DXGI LUID/Vulkan UUID, rejection, queue/preference fallback, selected formats, and conservative feature lifecycle state. Exact adapter name or stable-ID preference and strict no-fallback launch are supported; unused D3D12 direct-indexing/enhanced-barrier requests and Vulkan buffer-device-address enablement remain off. The editor Profiler presents the active report through a renderer-owned read-only snapshot, including profile, adapter identity, Bootstrap qualification, queues, formats, feature lifecycle states, selected fallbacks, and retained candidate rejection reasons. D3D12 and Vulkan headed smokes require the editor diagnostics path to render without upgrading Bootstrap evidence to Scene or Production. Hosted CI run `29213466381` passed the preceding Windows D3D12, Ubuntu Vulkan, and Intel macOS/MoltenVK builds, tests, and native presentation smokes with versioned-profile selection markers; current-head hosted evidence for the editor diagnostics addition remains pending. Later consumer-specific groups, dedicated Vulkan queue enablement, functional fallback exercise, physical-device breadth, and Scene/Production qualification remain pending.
 
 ## Phase Sizing And Design Gates
@@ -89,7 +90,7 @@ Phases are outcome gates, not equal-size sprints. Phase 3 is intentionally large
 
 Phases 4 through 9 are feature layers and must name both their algorithms and the infrastructure they consume. Their technical traceability lives in [Docs/Architecture/TECHNICAL_ROADMAP_COVERAGE.md](Docs/Architecture/TECHNICAL_ROADMAP_COVERAGE.md).
 
-Later non-renderer phases are product outcome summaries where the project has not yet accepted a detailed subsystem design. Phase 11 physics now has an accepted planning contract in [Docs/Architecture/PHYSICS_ARCHITECTURE_AND_RESEARCH.md](Docs/Architecture/PHYSICS_ARCHITECTURE_AND_RESEARCH.md) and the expanded checklist below. Before implementing Phase 10 animation, Phase 13 automation, Phase 14 game systems/networking, or Phase 16 packaging, add or update the task-relevant architecture contract and expand that phase's prerequisites, data ownership, fallback/error behavior, and focused verification. This design gate is prose, not a checkable substitute for runtime behavior.
+Later non-renderer phases are product outcome summaries where the project has not yet accepted a detailed subsystem design. Phase 7 terrain has an accepted planning contract in [Docs/Architecture/TERRAIN_ARCHITECTURE_AND_RESEARCH.md](Docs/Architecture/TERRAIN_ARCHITECTURE_AND_RESEARCH.md), and Phase 11 physics has an accepted planning contract in [Docs/Architecture/PHYSICS_ARCHITECTURE_AND_RESEARCH.md](Docs/Architecture/PHYSICS_ARCHITECTURE_AND_RESEARCH.md), with dependency-ordered checklist coverage below. Before implementing Phase 10 animation, Phase 13 automation beyond the terrain workflow contract, Phase 14 game systems/networking, or Phase 16 packaging beyond terrain provenance/cooking requirements, add or update the task-relevant architecture contract and expand that phase's prerequisites, data ownership, fallback/error behavior, and focused verification. This design gate is prose, not a checkable substitute for runtime behavior.
 
 ## Phase 0: Buildable Spine
 
@@ -326,9 +327,9 @@ Exit criteria:
 - Opaque material evaluation happens once per visible pixel/sample.
 - Visibility and material IDs are distinct and debuggable.
 
-## Phase 7: Virtual Geometry And Asset Cooking
+## Phase 7: Virtual Geometry, Terrain, And Asset Cooking
 
-Goal: automate high-detail geometry without inheriting subpixel instability.
+Goal: automate high-detail geometry and project-shaped terrain without inheriting subpixel instability or unbounded runtime work.
 
 Required:
 
@@ -340,6 +341,14 @@ Required:
 - [ ] Coarse resident fallback pages.
 - [ ] Asynchronous mesh-page residency system with feedback, upload, eviction, GPU-safe retirement, and nearest-resident fallback; render threads never block on storage/decompression.
 - [ ] Virtual-texture page generation and runtime residency: mip tails, visibility/material feedback, async transcode/decompression/upload, GPU-safe page-table updates, eviction, and neutral fallbacks.
+- [ ] Project-selectable terrain topology/profile and deterministic source-query contract covering bounded authored, large finite streamed, deterministic unbounded, and hybrid terrain without imposing one generator on every game.
+- [ ] Versioned canonical terrain tile artifacts with signed coordinates, bounds/geometric error, shared-border/halo rules, requested world/material/gameplay channels, collision inputs, source/model/edit/cook provenance, dependencies, and semantic/cooked hashes.
+- [ ] Imported/authorable finite heightfield baseline plus deterministic procedural-source conformance for seed stability, negative coordinates, traversal-order independence, shared edges, cancellation, cache eviction, and regeneration.
+- [ ] Portable tiled-quadtree heightfield rendering with geometric-error selection, crack-free continuous LOD, immutable publication, and resident parent/coarse fallback; geometry clipmaps remain a measured optional candidate for very large regular heightfields.
+- [ ] Terrain world-partition and residency scheduler with prioritized render/collision/navigation/gameplay radii, cancellable jobs, bounded CPU/GPU/disk caches, teleports, upload/retirement, and explicit failure fallbacks that never block the render thread.
+- [ ] Hybrid terrain routing for caves, overhangs, cliffs, and project-selected voxel/SDF regions through the general mesh/virtual-geometry streamer, with explicit render/collision/material authority at representation boundaries.
+- [ ] Terrain layer/cook pipeline for macro shape, regional hydrology/erosion, local detail, authored constraints and sparse edits, material/biome masks, roads/rivers/water, and downstream vegetation/navigation inputs with deterministic provenance.
+- [ ] Terrain Diffusion evaluation at a pinned revision as an optional offline or asynchronous macro terrain/climate source, compared with imported and deterministic procedural baselines for seams, determinism, quality, latency, memory, renderer contention, portability, failure behavior, reproducibility, and license/data risk; record keep/defer/reject before admitting any model or Python/PyTorch/CUDA runtime boundary.
 - [ ] Portable runtime GPU culling and LOD selection through compute plus indirect indexed draws, with mesh shaders only as a capability-gated fast path.
 - [ ] GPU-driven instancing and selective static assembly/material consolidation that preserves occlusion bounds, streaming cells, lighting zones, LOD independence, and material quality.
 - [ ] Stable ordered/complementary LOD transitions.
@@ -351,6 +360,7 @@ Exit criteria:
 
 - Dense scanned meshes stream and render with stable LODs.
 - Importer prevents pathological subpixel/skinny-triangle workloads by default.
+- Representative bounded and unbounded terrain profiles stream with stable crack-free LOD, bounded residency, authoritative collision readiness, deterministic regeneration, and measured failure fallbacks; hybrid terrain proves a cave or overhang without misrepresenting it as a heightfield.
 
 ## Phase 8: Probe Lighting, Lightmaps, And Daylight
 
@@ -500,6 +510,7 @@ Required:
 - [ ] First playable workflow.
 - [ ] Visual style workflow.
 - [ ] Asset import workflow.
+- [ ] Terrain/world workflow for profile and source selection, bounded/unbounded preview, generation provenance, affected-region regeneration, non-destructive local edits, gameplay constraints, validation, and expert overrides.
 - [ ] USD/OpenAssetIO editor/studio pipeline evaluation for asset resolution, variants, and DCC workflows; shipping runtime data remains engine-cooked.
 - [ ] Lighting bake/probe workflow.
 - [ ] Motion pack workflow.
@@ -545,6 +556,7 @@ Required:
 - [ ] GPU pass timing.
 - [ ] Memory profiler.
 - [ ] Asset size and texture residency views.
+- [ ] Terrain diagnostics for source/provenance, generation queues and latency, CPU/GPU/disk tile residency, cache hit/eviction, LOD/geometric error, seams, fallback state, and render/collision/navigation readiness.
 - [ ] Overdraw and quad-waste views.
 - [ ] Draw/dispatch/material-bin counters.
 - [ ] Presentation telemetry validation with engine markers plus PresentMon or platform-equivalent evidence that distinguishes app, present, GPU-complete, and display cadence.
@@ -568,7 +580,7 @@ Required:
 
 - [ ] Packaged Player build and clean-machine launch verification on Windows, Linux, and macOS; Phase 0 editor/sandbox CI is foundation evidence only.
 - [ ] Platform abstraction audit.
-- [ ] Asset cooker and package format.
+- [ ] Asset cooker and package format, including project-selected terrain source/model provenance, canonical terrain tiles, sparse edits or materialized shipping tiles, compatibility versions, and deterministic regeneration policy.
 - [ ] Runtime player executable.
 - [ ] Project templates.
 - [ ] Installer/export pipeline.

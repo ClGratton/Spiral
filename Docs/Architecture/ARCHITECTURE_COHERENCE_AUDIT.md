@@ -30,6 +30,21 @@ C++ engine core
 
 No major system is currently fighting another major system once the state/barrier authority and fallback contracts below are observed.
 
+## 2026-07-13 Terrain Architecture Pass
+
+The terrain research pass found that the existing large-world, asset, LOD, residency, physics, and editor roadmap pieces were necessary but did not define who owns terrain sources, canonical data, generation, or persistent edits. [TERRAIN_ARCHITECTURE_AND_RESEARCH.md](TERRAIN_ARCHITECTURE_AND_RESEARCH.md) now supplies that accepted planning contract, and `PLAN.md` carries its dependency-ordered implementation and verification work.
+
+The coherence decisions are:
+
+- Projects select bounded authored, large finite streamed, deterministic unbounded, hybrid, or later planetary profiles rather than inheriting a universal infinite-world system.
+- A terrain source is separate from world partition: it answers deterministic versioned spatial queries, while the runtime owns scheduling, cache budgets, residency, publication, and failure fallbacks.
+- `Engine::Terrain` owns source/artifact/generation/edit/provenance contracts; Assets cooks, Jobs executes, Renderer renders immutable payloads, Physics consumes collision payloads, Scene references instances, and Editor owns workflows.
+- The portable regular-heightfield path is tiled-quadtree spatial LOD with crack-free transitions. Geometry clipmaps are a measured candidate for very large regular heightfields, and caves/overhangs use hybrid mesh/voxel/SDF representations rather than false heightfield claims.
+- CPU collision and gameplay data remain authoritative. Render-only or learned detail cannot silently drive navigation, saves, replication, or gameplay queries.
+- Terrain Diffusion is retained as an optional offline/asynchronous macro terrain and climate candidate. Its 30/90 m native data, Python/PyTorch/CUDA-oriented implementation, individual-model ONNX export, and repository claims require an engine workload bake-off; no dependency or model has been admitted.
+
+This pass adds documentation and unchecked roadmap work only. No terrain module, generator, renderer path, collision path, model, or dependency is implemented by it.
+
 ## 2026-07-12 Integrity Pass
 
 This pass read every workspace-authored Markdown file and compared the roadmap claims with current source/test call sites.

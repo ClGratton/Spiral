@@ -30,6 +30,7 @@ Precise, capable, and calm. The engine should feel technically serious without b
 3. Progressive depth: common authoring controls stay immediate; renderer and project configuration live in dedicated settings surfaces.
 4. Claims match behavior: labels, enabled states, roadmap status, and feedback must reflect what the engine actually supports.
 5. Automation validates workflows: editor features receive focused smoke coverage when practical.
+6. Project shape controls world shape: projects may choose bounded authored terrain, large streamed terrain, deterministic unbounded generation, learned-assisted generation, or hybrid geometry without inheriting an unnecessary infinite-world runtime.
 
 ## Accessibility & Inclusion
 

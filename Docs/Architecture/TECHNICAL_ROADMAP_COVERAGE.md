@@ -5,7 +5,7 @@
 
 ## Purpose
 
-This document proves that the renderer roadmap covers the accepted technical architecture in dependency order. It maps the BRDF, hybrid render path, frame-stability research, geometry/texture pipeline, lighting/GI, reflection/shadow stack, ray residuals, multithreading, and profiling requirements into `PLAN.md`.
+This document proves that the renderer and terrain roadmap covers the accepted technical architecture in dependency order. It maps the BRDF, hybrid render path, frame-stability research, geometry/texture/terrain pipeline, lighting/GI, reflection/shadow stack, ray residuals, multithreading, and profiling requirements into `PLAN.md`.
 
 `PLAN.md` remains the only execution-order authority. When a technical contract changes, update this matrix and the consuming roadmap items together.
 
@@ -38,8 +38,9 @@ Phases 4–9 are smaller because they layer algorithms onto that foundation, but
 | Descriptor/bindless model with bounded fallback | Material tables, visibility resolve, streamed textures/geometry | Phase 3D |
 | Scene-referred HDR, exposure, photometric units, neutral tone map | PBR lighting, Callisto calibration, daylight and GI | Phase 3E |
 | Conventional clustered/PBR/shadow/sky renderer | Frame-stability validation and later visibility/ray corrections | Phase 3E |
+| Large-world coordinates, CPU task graph, immutable publication, and asset provenance | Terrain source queries, tile generation, streaming, render/collision readiness, and regeneration | Phase 7 terrain foundation |
 
-## Accepted Renderer Feature Coverage
+## Accepted Technical Feature Coverage
 
 | Architecture contract | Planned behavior | Phase and dependency notes |
 | --- | --- | --- |
@@ -49,6 +50,7 @@ Phases 4–9 are smaller because they layer algorithms onto that foundation, but
 | Visibility buffer | `R32_UINT` ID, exact 25/7 decode, `DrawClusterBuffer`, visible attribute/barycentric fallback reconstruction, explicit gradients, worst-case worklists, compact G-buffer, selected prepass, two-pass HZB | Phase 6, after portable shaders, descriptors, render graph, frame stability, and material model. |
 | Coverage carve-outs | Foliage/hair/masked coverage path plus Forward+ glass/eyes/hair/particles | Phase 4 establishes coverage; Phase 6 integrates visibility exclusions with the shared light grid/material model. |
 | Virtual geometry | Meshlet build, optimized/quantized topology, cluster/page format, coarse fallback, async residency, compute/indirect baseline, stable transitions, asset-class policies, optional DGF/CLAS | Phase 7. Mesh shaders remain optional; MoltenVK uses compute plus indirect indexed draws. |
+| Project-shaped terrain | Selectable bounded/streamed/unbounded/hybrid profiles, deterministic source queries, versioned canonical tiles and provenance, finite authored baseline, quadtree heightfield LOD, bounded asynchronous residency, collision readiness, hybrid geometry routing, authored constraints/edits, and Terrain Diffusion keep/defer/reject evaluation | Phase 7 after Phase 3B large-world/task/snapshot foundations and the Phase 7 page/residency primitives. Phase 13 adds the authoring workflow, Phase 15 diagnostics, and Phase 16 shipping cook/provenance. No learned or infinite-world path is mandatory. |
 | Instancing and merging | GPU-driven instancing plus selective static assembly/material consolidation without destroying culling, streaming, lighting-zone, LOD, or material-quality boundaries | Phase 7 asset/runtime optimization after portable indirect execution exists. |
 | Texture pipeline | KTX2/Basis validation and target cook, role/color rules, upload/mips, then virtual-texture pages, mip tails, feedback, async residency/eviction/fallback | Phase 3D basic import/cook; Phase 7 virtual streaming after Phase 6 emits feedback. |
 | Asset interchange | glTF foundation, KTX2/Basis textures, OpenPBR/MaterialX materials, USD/OpenAssetIO editor/studio resolution and variants, engine-cooked shipping data | Phase 2 foundation, Phase 3D textures, Phase 5 materials, Phase 13 studio/editor workflow, Phase 16 shipping cooker. |
@@ -68,6 +70,7 @@ Phases 4–9 are smaller because they layer algorithms onto that foundation, but
 
 - The CPU frame task graph is distinct from the GPU render graph; both are Phase 3 foundations.
 - Large-world/camera-relative coordinates are established before scene buffers and RT transforms, not retrofitted in Phase 9.
+- Terrain generation remains a source contract distinct from world partition and residency; finite, unbounded, and learned sources publish the same canonical versioned artifacts and cannot bypass renderer, collision, persistence, or provenance contracts.
 - Photometric units and the HDR/exposure order precede material calibration; they are not delayed until probe lighting.
 - Basic texture import/cooking precedes mip and material validation; virtual-texture streaming follows visibility feedback but precedes dense streamed-asset exit criteria.
 - Visible attribute/gradient reconstruction is part of the visibility renderer itself, not an unspecified shader detail.
@@ -76,12 +79,13 @@ Phases 4–9 are smaller because they layer algorithms onto that foundation, but
 
 ## Later-Phase Granularity
 
-The current technical document set is renderer-heavy. Phase 12 is backed by the accepted language/concurrency contract, but Phases 10, 11, 13, 14, and 16 still summarize domains whose detailed ownership/data/fallback designs are not accepted yet. Their brevity is not permission to implement from headings alone.
+The current technical document set is renderer-heavy. Phase 7 terrain is backed by [TERRAIN_ARCHITECTURE_AND_RESEARCH.md](TERRAIN_ARCHITECTURE_AND_RESEARCH.md), Phase 11 physics is backed by its accepted contract, and Phase 12 is backed by the accepted language/concurrency contract. Phases 10, 13 outside the terrain workflow, 14, and 16 outside terrain cooking/provenance still summarize domains whose detailed ownership/data/fallback designs are not accepted yet. Their brevity is not permission to implement from headings alone.
 
 Before entering those phases:
 
 - Animation needs pose/skeleton/clip formats, compression, graph evaluation, root motion, task scheduling, skinning/morph publication, retarget, and motion-matching contracts.
 - Physics now has an accepted planning contract in [PHYSICS_ARCHITECTURE_AND_RESEARCH.md](PHYSICS_ARCHITECTURE_AND_RESEARCH.md) and dependency-ordered Phase 11A-11D coverage for backend boundaries, fixed-step authority, determinism/state capabilities, task-graph publication, collision cooking/queries, CPU/GPU synchronization, hero-solver research, fallbacks, and qualification.
+- Terrain now has an accepted planning contract in [TERRAIN_ARCHITECTURE_AND_RESEARCH.md](TERRAIN_ARCHITECTURE_AND_RESEARCH.md) and dependency-ordered Phase 7/13/15/16 coverage for project profiles, source queries, canonical artifacts, spatial LOD, streaming, collision readiness, edits/provenance, workflows, diagnostics, shipping cook policy, and the optional Terrain Diffusion bake-off.
 - Automation needs tool permissions, provenance, undo/transaction boundaries, validation, and failure recovery.
 - Audio/UI/save/navigation/networking need separate domain contracts; Phase 14 is a product grouping, not one implementation slice.
 - Packaging needs target profiles, cooked package/manifest/versioning, runtime dependency bundling, signing/notarization, clean-machine verification, update/migration, and rollback policy.
