@@ -1,6 +1,7 @@
 #include "Engine/Core/Log.h"
 #include "Engine/Jobs/JobSystem.h"
-#include "Engine/RHI/Capability.h"
+#include "Engine/RHI/Device.h"
+#include "Engine/Renderer/CapabilityDiagnostics.h"
 #include "Engine/Scene/Scene.h"
 
 #include <atomic>
@@ -268,6 +269,61 @@ namespace
             && Expect(!missing.HasSelection(), "strict preference fails when the requested adapter is unavailable");
     }
 
+    bool TestCapabilityDiagnosticsHelpersAreDeterministicAndBoundsSafe()
+    {
+        using namespace Engine::RHI;
+
+        DeviceCapabilities capabilities;
+        capabilities.AdapterCandidates.push_back(MakeCapabilityCandidate("Selected Adapter", AdapterType::Discrete, 100));
+        capabilities.AdapterCandidates[0].Identity.StableId = "adapter-selected";
+        capabilities.AdapterSelection.SelectedIndex = 0;
+        capabilities.AdapterSelection.Evaluations.push_back({ 0, true, 100, {}, {} });
+
+        const std::string usages = FormatUsagesToString(
+            FormatUsage::Sampled | FormatUsage::ColorAttachment | FormatUsage::CopySource);
+        const bool validSelection = capabilities.GetSelectedAdapter()
+            && capabilities.GetSelectedAdapter()->Identity.StableId == "adapter-selected"
+            && capabilities.GetSelectedAdapterEvaluation()
+            && capabilities.GetSelectedAdapterEvaluation()->Accepted;
+
+        capabilities.AdapterSelection.SelectedIndex = 3;
+        capabilities.AdapterSelection.Evaluations.push_back({ 3, true, 100, {}, {} });
+        return Expect(validSelection, "diagnostics helpers resolve a valid selected candidate and evaluation")
+            && Expect(usages == "sampled, color attachment, copy source",
+                "format usage diagnostics use a deterministic readable order")
+            && Expect(FormatUsagesToString(FormatUsage::None) == "none", "empty format usages are explicit")
+            && Expect(!capabilities.GetSelectedAdapter() && !capabilities.GetSelectedAdapterEvaluation(),
+                "malformed selected indices do not escape the capability report bounds");
+    }
+
+    bool TestEditorCapabilityReasonDiagnosticsPreserveFallbacksAndRejections()
+    {
+        using namespace Engine;
+        using namespace Engine::RHI;
+
+        DeviceCapabilities capabilities;
+        capabilities.Fallbacks.emplace_back("preferred adapter was unavailable; selected fallback adapter");
+        capabilities.AdapterCandidates.push_back(MakeCapabilityCandidate("Selected Adapter", AdapterType::Integrated, 10));
+        capabilities.AdapterCandidates.push_back(MakeCapabilityCandidate("Rejected Adapter", AdapterType::Discrete, 100));
+        capabilities.AdapterSelection.SelectedIndex = 0;
+        capabilities.AdapterSelection.Evaluations.push_back({ 0, true, 10, {}, { "compute work aliases the graphics queue" } });
+        capabilities.AdapterSelection.Evaluations.push_back({ 1, false, 100, { "presentation support is unavailable" }, {} });
+
+        const RendererCapabilityReasonDiagnostics diagnostics = BuildRendererCapabilityReasonDiagnostics(capabilities);
+        return Expect(diagnostics.SelectedFallbacks.size() == 1
+                && diagnostics.SelectedFallbacks[0] == "preferred adapter was unavailable; selected fallback adapter",
+                "editor diagnostics preserve the selected-device fallback reason")
+            && Expect(diagnostics.AdapterCandidates.size() == 2
+                && diagnostics.AdapterCandidates[0].Selected
+                && diagnostics.AdapterCandidates[0].Fallbacks.size() == 1
+                && diagnostics.AdapterCandidates[0].Fallbacks[0] == "compute work aliases the graphics queue",
+                "editor diagnostics preserve the selected candidate and its queue fallback")
+            && Expect(!diagnostics.AdapterCandidates[1].Accepted
+                && diagnostics.AdapterCandidates[1].RejectionReasons.size() == 1
+                && diagnostics.AdapterCandidates[1].RejectionReasons[0] == "presentation support is unavailable",
+                "editor diagnostics preserve rejected-candidate reasons");
+    }
+
 }
 
 int main()
@@ -285,7 +341,9 @@ int main()
         { "Capability selection retains fallbacks and rejections", TestCapabilitySelectionRetainsFallbacksAndRejections },
         { "Capability selection validates format usage and stable ranking", TestCapabilitySelectionValidatesFormatUsageAndStableRanking },
         { "Capability selection rejects API limits and synchronization", TestCapabilitySelectionRejectsApiLimitsAndSynchronization },
-        { "Capability selection honors strict preference", TestCapabilitySelectionHonorsStrictPreference }
+        { "Capability selection honors strict preference", TestCapabilitySelectionHonorsStrictPreference },
+        { "Capability diagnostics helpers are deterministic and bounds safe", TestCapabilityDiagnosticsHelpersAreDeterministicAndBoundsSafe },
+        { "Editor capability reason diagnostics preserve fallbacks and rejections", TestEditorCapabilityReasonDiagnosticsPreserveFallbacksAndRejections }
     };
 
     size_t failures = 0;

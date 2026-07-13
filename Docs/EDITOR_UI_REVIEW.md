@@ -1,6 +1,6 @@
 # Editor UI Review
 
-Date: 2026-07-12
+Date: 2026-07-13
 
 ## Finding
 
@@ -22,6 +22,7 @@ These engines differ visually, but their information architecture agrees. Spiral
 - Inspector on the right contains only the selected entity's name, transform, and attached components. Camera projection and background color appear only when a camera entity is selected.
 - Renderer backend selection lives in the top-bar Settings menu rather than a dock.
 - Console and Profiler share the bottom diagnostics region.
+- The Profiler owns renderer capability diagnostics: active profile, adapter identity, explicit qualification level, queue/format decisions, advertised/enabled/implemented/exercised feature states, fallbacks, and accepted/rejected adapter candidates remain separate from global backend selection.
 - Hierarchy filtering, create/delete actions, editable entity names, and Add Component are available where users expect them.
 
 ## Ownership Rule

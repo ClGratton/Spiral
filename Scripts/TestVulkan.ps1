@@ -17,7 +17,7 @@ if (!(Test-Path $Executable)) {
     throw "Vulkan smoke executable was not found: $Executable"
 }
 
-$Output = & $Executable --vulkan-render-smoke 2>&1 | Tee-Object -Variable VulkanLog
+$Output = & $Executable --vulkan-render-smoke --renderer-capability-smoke 2>&1 | Tee-Object -Variable VulkanLog
 if ($LASTEXITCODE -ne 0) {
     throw "Vulkan render smoke failed with exit code $LASTEXITCODE."
 }
@@ -28,6 +28,7 @@ $RequiredMarkers = @(
     "Vulkan capability profile: Phase 3 Vulkan Bootstrap Presentation V1, qualification=Bootstrap",
     "Vulkan capability state: Timeline Synchronization advertised=yes, enabled=yes, implemented=yes",
     "Vulkan capability state: Buffer Device Address advertised=",
+    "Editor renderer capability diagnostics ready: profile=Phase 3 Vulkan Bootstrap Presentation V1, qualification=Bootstrap",
     "Renderer initialized with backend: NVRHI Vulkan",
     "Vulkan swapchain and ImGui presentation initialized",
     "Vulkan render smoke requested window resize",
@@ -40,6 +41,10 @@ foreach ($Marker in $RequiredMarkers) {
     if (!$JoinedLog.Contains($Marker)) {
         throw "Vulkan render smoke did not emit required marker: $Marker"
     }
+}
+$DiagnosticsPattern = "Editor renderer capability diagnostics rendered: profile=Phase 3 Vulkan Bootstrap Presentation V1, adapter=.+, qualification=Bootstrap, formats=[1-9][0-9]*, features=7, candidates=[1-9][0-9]*"
+if ($JoinedLog -notmatch $DiagnosticsPattern) {
+    throw "Vulkan render smoke did not emit a complete editor capability diagnostics marker."
 }
 
 Write-Host "Vulkan render smoke passed: $Configuration ($Action)"

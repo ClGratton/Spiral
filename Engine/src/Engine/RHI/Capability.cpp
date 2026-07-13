@@ -182,4 +182,23 @@ namespace Engine::RHI
         }
         return "Unknown";
     }
+
+    std::string FormatUsagesToString(FormatUsage usages)
+    {
+        std::string result;
+        const auto append = [&result](const char* name)
+        {
+            if (!result.empty())
+                result += ", ";
+            result += name;
+        };
+
+        if (HasAllFormatUsages(usages, FormatUsage::Sampled)) append("sampled");
+        if (HasAllFormatUsages(usages, FormatUsage::Storage)) append("storage");
+        if (HasAllFormatUsages(usages, FormatUsage::ColorAttachment)) append("color attachment");
+        if (HasAllFormatUsages(usages, FormatUsage::DepthStencil)) append("depth/stencil");
+        if (HasAllFormatUsages(usages, FormatUsage::CopySource)) append("copy source");
+        if (HasAllFormatUsages(usages, FormatUsage::CopyDestination)) append("copy destination");
+        return result.empty() ? "none" : result;
+    }
 }

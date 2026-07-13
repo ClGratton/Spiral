@@ -69,6 +69,8 @@ private:
     bool m_ResetDockLayout = true;
     bool m_CaptureViewportRequested = false;
     bool m_CaptureViewportComplete = false;
+    bool m_RendererCapabilitySmokeRequested = false;
+    bool m_RendererCapabilitySmokeComplete = false;
     bool m_SaveSceneSmokeRequested = false;
     bool m_AssetWatchSmokeRequested = false;
     bool m_AssetWatchSmokeTouched = false;

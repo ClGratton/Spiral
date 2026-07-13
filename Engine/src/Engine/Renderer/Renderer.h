@@ -10,6 +10,11 @@
 
 struct ImDrawData;
 
+namespace Engine::RHI
+{
+    struct DeviceCapabilities;
+}
+
 namespace Engine
 {
     struct ClearColor
@@ -130,6 +135,7 @@ namespace Engine
         static const std::vector<RendererBackendOption>& GetBackendOptions();
         static bool RequestBackend(RendererBackend backend);
         static const RendererCapabilities& GetCapabilities();
+        static const RHI::DeviceCapabilities* GetDeviceCapabilities();
         static const RendererBuildInfo& GetBuildInfo();
         static const RendererFrameTiming& GetLastFrameTiming();
         static void SetCameraView(const CameraView& cameraView);

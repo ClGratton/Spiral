@@ -43,6 +43,31 @@ namespace
         return "Directional";
     }
 
+    bool ValidateCapabilityDiagnostics(const Engine::RHI::DeviceCapabilities& capabilities, std::string& error)
+    {
+        if (capabilities.ProfileName.empty())
+            error = "selected capability profile name is empty";
+        else if (capabilities.Identity.Name.empty())
+            error = "selected adapter name is empty";
+        else if (!capabilities.AdapterSelection.HasSelection())
+            error = "adapter selection has no selected candidate";
+        else if (!capabilities.GetSelectedAdapter())
+            error = "selected adapter index is outside the candidate list";
+        else if (capabilities.AdapterSelection.Evaluations.size() != capabilities.AdapterCandidates.size())
+            error = "candidate evaluation count does not match the candidate list";
+        else if (!capabilities.GetSelectedAdapterEvaluation() || !capabilities.GetSelectedAdapterEvaluation()->Accepted)
+            error = "selected adapter evaluation is not accepted";
+        else if (capabilities.GetSelectedAdapter()->Identity.Name != capabilities.Identity.Name
+            || capabilities.GetSelectedAdapter()->Identity.StableId != capabilities.Identity.StableId)
+            error = "selected adapter identity does not match the published device identity";
+        else if (capabilities.Formats.empty())
+            error = "selected capability report has no queried formats";
+        else
+            return true;
+
+        return false;
+    }
+
     bool DrawVec3Control(const char* label, Engine::Math::Vec3& value, float speed, float min = 0.0f, float max = 0.0f)
     {
         float values[3] = { value.X, value.Y, value.Z };
@@ -235,6 +260,32 @@ void EditorLayer::OnAttach()
     m_ConsoleLines.emplace_back("Editor booted");
     m_ConsoleLines.emplace_back("GLFW window backend active");
     m_ConsoleLines.emplace_back(std::string("Renderer backend: ") + Engine::Renderer::GetActiveBackendName());
+    const Engine::ApplicationCommandLineArgs& args = Engine::Application::Get().GetSpecification().CommandLineArgs;
+    m_RendererCapabilitySmokeRequested = args.HasFlag("--renderer-capability-smoke");
+    const Engine::RHI::DeviceCapabilities* deviceCapabilities = Engine::Renderer::GetDeviceCapabilities();
+    if (deviceCapabilities)
+    {
+        std::string diagnosticsError;
+        if (!ValidateCapabilityDiagnostics(*deviceCapabilities, diagnosticsError))
+        {
+            Engine::Log::Error("Editor renderer capability diagnostics invalid: ", diagnosticsError);
+            if (m_RendererCapabilitySmokeRequested)
+                throw std::runtime_error("Renderer capability diagnostics smoke failed: " + diagnosticsError);
+        }
+        else
+        {
+            Engine::Log::Info(
+                "Editor renderer capability diagnostics ready: profile=", deviceCapabilities->ProfileName,
+                ", qualification=", Engine::RHI::ToString(deviceCapabilities->Qualification),
+                ", adapter=", deviceCapabilities->Identity.Name,
+                ", candidates=", deviceCapabilities->AdapterCandidates.size(),
+                ", fallbacks=", deviceCapabilities->Fallbacks.size());
+        }
+    }
+    else if (m_RendererCapabilitySmokeRequested)
+    {
+        throw std::runtime_error("Renderer capability diagnostics smoke requires a native renderer device");
+    }
     if (!std::filesystem::exists(m_ProjectPath) || !LoadProject())
         EnsureDefaultSceneEntities();
     SyncEditorCameraStateFromMainCamera();
@@ -965,6 +1016,8 @@ void EditorLayer::DrawConsolePanel()
 
 void EditorLayer::DrawProfilerPanel()
 {
+    if (m_RendererCapabilitySmokeRequested && !m_RendererCapabilitySmokeComplete)
+        ImGui::SetNextWindowFocus();
     ImGui::Begin("Profiler");
     const Engine::RendererFrameTiming& timing = Engine::Renderer::GetLastFrameTiming();
 
@@ -1015,6 +1068,150 @@ void EditorLayer::DrawProfilerPanel()
         }
 
         ImGui::EndTable();
+    }
+
+    ImGui::Separator();
+    if (m_RendererCapabilitySmokeRequested && !m_RendererCapabilitySmokeComplete)
+        ImGui::SetNextItemOpen(true, ImGuiCond_Always);
+    if (ImGui::CollapsingHeader("Renderer Capabilities", ImGuiTreeNodeFlags_DefaultOpen))
+    {
+        const Engine::RHI::DeviceCapabilities* capabilities = Engine::Renderer::GetDeviceCapabilities();
+        if (!capabilities)
+        {
+            ImGui::TextDisabled("No native renderer capability report is available");
+        }
+        else
+        {
+            const Engine::RendererCapabilityReasonDiagnostics reasonDiagnostics =
+                Engine::BuildRendererCapabilityReasonDiagnostics(*capabilities);
+            ImGui::Text("Profile: %s", capabilities->ProfileName.c_str());
+            ImGui::Text("Qualification: %s", Engine::RHI::ToString(capabilities->Qualification));
+            ImGui::Text("Backend: %s", Engine::RHI::ToString(capabilities->ActiveBackend));
+            ImGui::Text("Adapter: %s", capabilities->Identity.Name.c_str());
+            ImGui::Text("Type: %s", Engine::RHI::ToString(capabilities->Identity.Type));
+            if (!capabilities->Identity.StableId.empty())
+                ImGui::TextWrapped("Stable ID: %s", capabilities->Identity.StableId.c_str());
+            if (!capabilities->Identity.DriverVersion.empty())
+                ImGui::Text("Driver/runtime: %s", capabilities->Identity.DriverVersion.c_str());
+            ImGui::Text("Vendor/device: %04X:%04X", capabilities->Identity.VendorId, capabilities->Identity.DeviceId);
+            ImGui::Text("Dedicated video memory: %.1f MiB",
+                static_cast<double>(capabilities->Identity.DedicatedVideoMemoryBytes) / (1024.0 * 1024.0));
+
+            if (ImGui::BeginTable("CapabilityQueues", 3, ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_RowBg))
+            {
+                ImGui::TableSetupColumn("Queue");
+                ImGui::TableSetupColumn("Available");
+                ImGui::TableSetupColumn("Dedicated");
+                ImGui::TableHeadersRow();
+                const auto drawQueue = [](const char* name, bool available, const char* dedicated)
+                {
+                    ImGui::TableNextRow();
+                    ImGui::TableSetColumnIndex(0);
+                    ImGui::TextUnformatted(name);
+                    ImGui::TableSetColumnIndex(1);
+                    ImGui::TextUnformatted(available ? "yes" : "no");
+                    ImGui::TableSetColumnIndex(2);
+                    ImGui::TextUnformatted(dedicated);
+                };
+                drawQueue("Graphics", capabilities->Queues.Graphics, "n/a");
+                drawQueue("Compute", capabilities->Queues.Compute, capabilities->Queues.DedicatedCompute ? "yes" : "no");
+                drawQueue("Copy", capabilities->Queues.Copy, capabilities->Queues.DedicatedCopy ? "yes" : "no");
+                drawQueue("Present", capabilities->Queues.Present, "n/a");
+                ImGui::EndTable();
+            }
+
+            if (ImGui::TreeNode("Feature lifecycle"))
+            {
+                if (ImGui::BeginTable("CapabilityFeatures", 6, ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_RowBg))
+                {
+                    ImGui::TableSetupColumn("Feature");
+                    ImGui::TableSetupColumn("Advertised");
+                    ImGui::TableSetupColumn("Enabled");
+                    ImGui::TableSetupColumn("Implemented");
+                    ImGui::TableSetupColumn("Exercised");
+                    ImGui::TableSetupColumn("Detail");
+                    ImGui::TableHeadersRow();
+                    for (Engine::u32 index = 0; index < static_cast<Engine::u32>(Engine::RHI::DeviceFeature::Count); ++index)
+                    {
+                        const auto feature = static_cast<Engine::RHI::DeviceFeature>(index);
+                        const Engine::RHI::CapabilityState& state = capabilities->GetFeature(feature);
+                        ImGui::TableNextRow();
+                        ImGui::TableSetColumnIndex(0);
+                        ImGui::TextUnformatted(Engine::RHI::ToString(feature));
+                        ImGui::TableSetColumnIndex(1);
+                        ImGui::TextUnformatted(state.Advertised ? "yes" : "no");
+                        ImGui::TableSetColumnIndex(2);
+                        ImGui::TextUnformatted(state.Enabled ? "yes" : "no");
+                        ImGui::TableSetColumnIndex(3);
+                        ImGui::TextUnformatted(state.Implemented ? "yes" : "no");
+                        ImGui::TableSetColumnIndex(4);
+                        ImGui::TextUnformatted(state.Exercised ? "yes" : "no");
+                        ImGui::TableSetColumnIndex(5);
+                        ImGui::TextWrapped("%s", state.Detail.c_str());
+                    }
+                    ImGui::EndTable();
+                }
+                ImGui::TreePop();
+            }
+
+            if (ImGui::TreeNode("Queried formats"))
+            {
+                for (const Engine::RHI::FormatCapability& format : capabilities->Formats)
+                {
+                    const std::string usages = Engine::RHI::FormatUsagesToString(format.Usages);
+                    ImGui::BulletText("%s: %s; sample mask 0x%X",
+                        Engine::RHI::ToString(format.Value), usages.c_str(), format.SampleCountMask);
+                }
+                ImGui::TreePop();
+            }
+
+            if (ImGui::TreeNode("Fallbacks", "Fallbacks (%zu)", reasonDiagnostics.SelectedFallbacks.size()))
+            {
+                if (reasonDiagnostics.SelectedFallbacks.empty())
+                    ImGui::TextDisabled("No selected-device fallbacks recorded");
+                for (const std::string& fallback : reasonDiagnostics.SelectedFallbacks)
+                    ImGui::BulletText("%s", fallback.c_str());
+                ImGui::TreePop();
+            }
+
+            if (ImGui::TreeNode("Adapter candidates", "Adapter candidates (%zu)", reasonDiagnostics.AdapterCandidates.size()))
+            {
+                for (const Engine::RendererAdapterCandidateDiagnostics& candidateDiagnostics : reasonDiagnostics.AdapterCandidates)
+                {
+                    const Engine::RHI::AdapterCandidate& candidate = capabilities->AdapterCandidates[candidateDiagnostics.CandidateIndex];
+                    ImGui::PushID(static_cast<int>(candidateDiagnostics.CandidateIndex));
+                    const bool open = ImGui::TreeNode("Candidate", "%s - %s%s",
+                        candidateDiagnostics.Name.c_str(),
+                        candidateDiagnostics.Accepted ? "accepted" : "rejected",
+                        candidateDiagnostics.Selected ? ", selected" : "");
+                    if (open)
+                    {
+                        if (!candidate.Identity.StableId.empty())
+                            ImGui::TextWrapped("Stable ID: %s", candidate.Identity.StableId.c_str());
+                        ImGui::Text("API: %u.%u; max 2D texture: %u", candidate.ApiMajor, candidate.ApiMinor, candidate.MaximumTextureDimension2D);
+                        for (const std::string& fallback : candidateDiagnostics.Fallbacks)
+                            ImGui::BulletText("Fallback: %s", fallback.c_str());
+                        for (const std::string& rejection : candidateDiagnostics.RejectionReasons)
+                            ImGui::BulletText("Rejected: %s", rejection.c_str());
+                        ImGui::TreePop();
+                    }
+                    ImGui::PopID();
+                }
+                ImGui::TreePop();
+            }
+
+            if (m_RendererCapabilitySmokeRequested && !m_RendererCapabilitySmokeComplete)
+            {
+                Engine::Log::Info(
+                    "Editor renderer capability diagnostics rendered: profile=", capabilities->ProfileName,
+                    ", adapter=", capabilities->Identity.Name,
+                    ", qualification=", Engine::RHI::ToString(capabilities->Qualification),
+                    ", formats=", capabilities->Formats.size(),
+                    ", features=", static_cast<Engine::u32>(Engine::RHI::DeviceFeature::Count),
+                    ", candidates=", reasonDiagnostics.AdapterCandidates.size());
+                m_RendererCapabilitySmokeComplete = true;
+            }
+        }
     }
 
     ImGui::Separator();

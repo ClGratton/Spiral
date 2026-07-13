@@ -24,6 +24,7 @@
 #include "Engine/Math/Math.h"
 #include "Engine/RenderGraph/RenderGraph.h"
 #include "Engine/Renderer/Renderer.h"
+#include "Engine/Renderer/CapabilityDiagnostics.h"
 #include "Engine/Renderer/ShaderLibrary.h"
 #include "Engine/RHI/RHI.h"
 #include "Engine/Scene/Camera.h"

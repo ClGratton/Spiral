@@ -31,7 +31,7 @@ if (Test-Path $ResolvedCapturePath) {
     Remove-Item -LiteralPath $ResolvedCapturePath
 }
 
-$Output = & $Editor --capture-viewport --smoke-test 2>&1 | Tee-Object -Variable RenderLog
+$Output = & $Editor --capture-viewport --smoke-test --renderer-capability-smoke 2>&1 | Tee-Object -Variable RenderLog
 if ($LASTEXITCODE -ne 0) {
     throw "Editor render smoke run failed with exit code $LASTEXITCODE."
 }
@@ -41,6 +41,7 @@ $RequiredMarkers = @(
     "Selected D3D12 adapter for profile 'Phase 3 D3D12 Bootstrap V1':",
     "D3D12 capability state: Ray Tracing advertised=",
     "D3D12 capability state: Timestamps advertised=yes, enabled=no, implemented=no, exercised=no",
+    "Editor renderer capability diagnostics ready: profile=Phase 3 D3D12 Bootstrap V1, qualification=Bootstrap",
     "Renderer initialized with backend: NVRHI D3D12"
 )
 $JoinedLog = $RenderLog -join "`n"
@@ -48,6 +49,10 @@ foreach ($Marker in $RequiredMarkers) {
     if (!$JoinedLog.Contains($Marker)) {
         throw "D3D12 render smoke did not emit required marker: $Marker"
     }
+}
+$DiagnosticsPattern = "Editor renderer capability diagnostics rendered: profile=Phase 3 D3D12 Bootstrap V1, adapter=.+, qualification=Bootstrap, formats=[1-9][0-9]*, features=7, candidates=[1-9][0-9]*"
+if ($JoinedLog -notmatch $DiagnosticsPattern) {
+    throw "D3D12 render smoke did not emit a complete editor capability diagnostics marker."
 }
 
 if (!(Test-Path $ResolvedCapturePath)) {

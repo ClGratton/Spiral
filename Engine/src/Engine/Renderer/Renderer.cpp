@@ -16,6 +16,7 @@ namespace Engine
         using Clock = std::chrono::steady_clock;
 
         RendererCapabilities s_Capabilities;
+        RHI::DeviceCapabilities s_DeviceCapabilities;
         ClearColor s_ClearColor;
         RenderViewportRect s_ViewportRect;
         CameraView s_CameraView;
@@ -27,6 +28,7 @@ namespace Engine
         u64 s_RendererTimingFrameIndex = 0;
         RendererBackend s_ActiveBackend = RendererBackend::Headless;
         bool s_Initialized = false;
+        bool s_HasDeviceCapabilities = false;
         bool s_RendererFrameTimingActive = false;
 
         bool HasNativeWindow()
@@ -252,6 +254,9 @@ namespace Engine
         if (s_Initialized)
             return;
 
+        s_DeviceCapabilities = {};
+        s_HasDeviceCapabilities = false;
+
         if (HasNativeWindow() && HasNVRHI())
         {
             const ApplicationCommandLineArgs& args = Application::Get().GetSpecification().CommandLineArgs;
@@ -272,6 +277,8 @@ namespace Engine
                 s_ActiveBackend = backendPtr->GetRendererBackend();
                 if (const RHI::DeviceCapabilities* capabilities = backendPtr->GetDeviceCapabilities())
                 {
+                    s_DeviceCapabilities = *capabilities;
+                    s_HasDeviceCapabilities = true;
                     s_Capabilities.HasNativeRayTracing = capabilities->GetFeature(RHI::DeviceFeature::RayTracing).IsUsable();
                     s_Capabilities.HasWorkGraphs = capabilities->GetFeature(RHI::DeviceFeature::WorkGraphs).IsUsable();
                     s_Capabilities.HasNeuralAccelerators = capabilities->GetFeature(RHI::DeviceFeature::NeuralShaders).IsUsable();
@@ -304,6 +311,8 @@ namespace Engine
         }
 
         s_Capabilities = {};
+        s_DeviceCapabilities = {};
+        s_HasDeviceCapabilities = false;
         s_ActiveBackend = RendererBackend::Headless;
         RebuildBackendOptions();
 
@@ -464,6 +473,11 @@ namespace Engine
     const RendererCapabilities& Renderer::GetCapabilities()
     {
         return s_Capabilities;
+    }
+
+    const RHI::DeviceCapabilities* Renderer::GetDeviceCapabilities()
+    {
+        return s_HasDeviceCapabilities ? &s_DeviceCapabilities : nullptr;
     }
 
     const RendererBuildInfo& Renderer::GetBuildInfo()

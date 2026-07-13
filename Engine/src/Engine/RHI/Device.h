@@ -37,6 +37,26 @@ namespace Engine::RHI
         {
             return Features[static_cast<size_t>(feature)];
         }
+
+        const AdapterCandidate* GetSelectedAdapter() const
+        {
+            return AdapterSelection.HasSelection() && AdapterSelection.SelectedIndex < AdapterCandidates.size()
+                ? &AdapterCandidates[AdapterSelection.SelectedIndex]
+                : nullptr;
+        }
+
+        const AdapterEvaluation* GetSelectedAdapterEvaluation() const
+        {
+            if (!AdapterSelection.HasSelection() || AdapterSelection.SelectedIndex >= AdapterCandidates.size())
+                return nullptr;
+
+            for (const AdapterEvaluation& evaluation : AdapterSelection.Evaluations)
+            {
+                if (evaluation.CandidateIndex == AdapterSelection.SelectedIndex)
+                    return &evaluation;
+            }
+            return nullptr;
+        }
     };
 
     class Device

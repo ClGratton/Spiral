@@ -76,6 +76,7 @@ REQUIRED_MARKERS=(
     "Vulkan capability profile: Phase 3 Vulkan Bootstrap Presentation V1, qualification=Bootstrap"
     "Vulkan capability state: Timeline Synchronization advertised=yes, enabled=yes, implemented=yes"
     "Vulkan capability state: Buffer Device Address advertised="
+    "Editor renderer capability diagnostics ready: profile=Phase 3 Vulkan Bootstrap Presentation V1, qualification=Bootstrap"
     "Renderer initialized with backend: NVRHI Vulkan"
     "Vulkan swapchain and ImGui presentation initialized"
     "Vulkan render smoke requested window resize"
@@ -99,7 +100,7 @@ for ((ATTEMPT = 1; ATTEMPT <= ITERATIONS; ++ATTEMPT)); do
 
     echo "Vulkan render smoke attempt $ATTEMPT/$ITERATIONS"
     set +e
-    (cd "$ROOT" && "$EDITOR" --vulkan-render-smoke) 2>&1 | tee "$LOG_FILE"
+    (cd "$ROOT" && "$EDITOR" --vulkan-render-smoke --renderer-capability-smoke) 2>&1 | tee "$LOG_FILE"
     STATUS=${PIPESTATUS[0]}
     set -e
     if [[ $STATUS -ne 0 ]]; then
@@ -119,6 +120,11 @@ for ((ATTEMPT = 1; ATTEMPT <= ITERATIONS; ++ATTEMPT)); do
             exit 1
         fi
     done
+    DIAGNOSTICS_PATTERN='Editor renderer capability diagnostics rendered: profile=Phase 3 Vulkan Bootstrap Presentation V1, adapter=.+, qualification=Bootstrap, formats=[1-9][0-9]*, features=7, candidates=[1-9][0-9]*'
+    if ! grep -Eq "$DIAGNOSTICS_PATTERN" "$LOG_FILE"; then
+        echo "Vulkan render smoke did not emit a complete editor capability diagnostics marker on attempt $ATTEMPT/$ITERATIONS." >&2
+        exit 1
+    fi
 done
 
 echo "Vulkan render smoke passed $ITERATIONS iteration(s): $CONFIGURATION ($ACTION)"

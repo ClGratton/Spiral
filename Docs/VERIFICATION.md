@@ -104,6 +104,8 @@ The Vulkan smoke requests a resize once, then exits successfully only when the c
 
 The D3D12 render smoke also requires the selected Bootstrap capability identity/state markers before accepting its viewport capture. Vulkan smokes require the Bootstrap profile, timeline lifecycle, and buffer-device-address lifecycle markers in addition to NVRHI device creation and presentation. These markers verify that the real startup path published the report; they do not by themselves qualify formats, future optional features, or production hardware.
 
+The D3D12 and Vulkan scripts also launch with `--renderer-capability-smoke`. The editor validates the renderer-owned capability snapshot, executes the Profiler diagnostics drawing path, and emits a required marker containing the exact Bootstrap profile, adapter, qualification, format count, feature count, and candidate count. This proves that live native-backend data reaches the headed editor diagnostics workflow; it does not exercise every reported fallback or upgrade Bootstrap qualification. Inspect the full editor panel visually when changing its layout or interaction rather than treating the viewport-only BMP as a panel screenshot.
+
 A backend claim requires that backend's smoke or a stronger representative scene/capture test. A presentation smoke does not qualify scene-resource rendering. A WARP/lavapipe/llvmpipe/Apple-Paravirtual result must be labeled as that device class and must not be generalized to physical production hardware.
 
 ## Editor And Asset Workflows

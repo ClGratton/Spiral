@@ -165,4 +165,5 @@ namespace Engine::RHI
     const char* ToString(DeviceFeature feature);
     const char* ToString(QualificationLevel level);
     const char* ToString(AdapterType type);
+    std::string FormatUsagesToString(FormatUsage usages);
 }
