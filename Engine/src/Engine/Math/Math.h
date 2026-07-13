@@ -11,6 +11,13 @@ namespace Engine::Math
         float Z = 0.0f;
     };
 
+    struct DVec3
+    {
+        double X = 0.0;
+        double Y = 0.0;
+        double Z = 0.0;
+    };
+
     struct Mat4
     {
         float Values[16] {};
@@ -19,6 +26,7 @@ namespace Engine::Math
     };
 
     float DegreesToRadians(float degrees);
+    Vec3 CameraRelative(const DVec3& worldPosition, const DVec3& translationOrigin);
     Mat4 Multiply(const Mat4& lhs, const Mat4& rhs);
     Mat4 Translation(const Vec3& translation);
     Mat4 Scale(const Vec3& scale);

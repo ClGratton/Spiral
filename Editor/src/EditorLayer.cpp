@@ -82,6 +82,16 @@ namespace
         return true;
     }
 
+    bool DrawDVec3Control(const char* label, Engine::Math::DVec3& value, float speed)
+    {
+        double values[3] = { value.X, value.Y, value.Z };
+        if (!ImGui::DragScalarN(label, ImGuiDataType_Double, values, 3, speed))
+            return false;
+
+        value = { values[0], values[1], values[2] };
+        return true;
+    }
+
     bool DrawAssetHandleControl(
         const char* label,
         Engine::AssetHandle& handle,
@@ -641,7 +651,7 @@ void EditorLayer::DrawInspectorPanel()
     ImGui::TextUnformatted("Transform");
 
     bool transformChanged = false;
-    transformChanged |= DrawVec3Control("Position", selectedEntity->Transform.Position, 0.1f);
+    transformChanged |= DrawDVec3Control("Position", selectedEntity->Transform.Position, 0.1f);
     transformChanged |= DrawVec3Control("Rotation", selectedEntity->Transform.RotationDegrees, 0.5f);
     transformChanged |= DrawVec3Control("Scale", selectedEntity->Transform.Scale, 0.05f, 0.01f, 100.0f);
     if (transformChanged && selectedEntity->EntityHandle == m_ActiveScene.GetMainCameraEntity())
@@ -1572,18 +1582,18 @@ void EditorLayer::RunUndoRedoSmoke()
     if (!transform)
         throw std::runtime_error("Undo/redo smoke could not find the prototype transform");
 
-    const float originalX = transform->Position.X;
+    const double originalX = transform->Position.X;
     const HistoryState before = CaptureHistoryState();
     transform->Position.X = originalX + 2.0f;
     RecordHistory("Undo/redo smoke", before);
 
     const bool undone = Undo();
     const Engine::TransformComponent* restoredTransform = m_ActiveScene.TryGetTransform(m_PrototypeMeshEntity);
-    const bool restored = restoredTransform && std::abs(restoredTransform->Position.X - originalX) < 0.0001f;
+    const bool restored = restoredTransform && std::abs(restoredTransform->Position.X - originalX) < 0.0001;
 
     const bool redone = Redo();
     const Engine::TransformComponent* reappliedTransform = m_ActiveScene.TryGetTransform(m_PrototypeMeshEntity);
-    const bool reapplied = reappliedTransform && std::abs(reappliedTransform->Position.X - (originalX + 2.0f)) < 0.0001f;
+    const bool reapplied = reappliedTransform && std::abs(reappliedTransform->Position.X - (originalX + 2.0)) < 0.0001;
     if (!undone || !restored || !redone || !reapplied)
         throw std::runtime_error("Undo/redo smoke did not restore the prototype transform");
 

@@ -17,7 +17,7 @@ namespace Engine
         Math::Mat4 View;
         Math::Mat4 Projection;
         Math::Mat4 ViewProjection;
-        Math::Vec3 Position;
+        Math::DVec3 TranslationOrigin;
         bool Valid = false;
     };
 
@@ -27,11 +27,11 @@ namespace Engine
         EditorCamera();
 
         void SetViewportSize(u32 width, u32 height);
-        void SetPosition(const Math::Vec3& position);
+        void SetPosition(const Math::DVec3& position);
         void SetRotationDegrees(const Math::Vec3& rotationDegrees);
         void SetProjection(const CameraProjection& projection);
 
-        const Math::Vec3& GetPosition() const { return m_Position; }
+        const Math::DVec3& GetPosition() const { return m_Position; }
         const Math::Vec3& GetRotationDegrees() const { return m_RotationDegrees; }
         const CameraProjection& GetProjection() const { return m_Projection; }
         const CameraView& GetCameraView() const { return m_View; }
@@ -41,7 +41,7 @@ namespace Engine
         void Recalculate();
 
     private:
-        Math::Vec3 m_Position = { 0.0f, 0.0f, -3.35f };
+        Math::DVec3 m_Position = { 0.0, 0.0, -3.35 };
         Math::Vec3 m_RotationDegrees = { 0.0f, 0.0f, 0.0f };
         CameraProjection m_Projection;
         CameraView m_View;

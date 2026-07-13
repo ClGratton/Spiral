@@ -313,8 +313,11 @@ namespace Engine
             const float framePhase = static_cast<float>(m_FrameCounter++);
             const float yaw = 0.72f + framePhase * 0.006f;
             const float pitch = -0.34f;
-            const Math::Mat4 model = Math::Multiply(Math::RotationY(yaw), Math::RotationX(pitch));
-            const Math::Mat4 viewProjection = Math::Multiply(model, Renderer::GetCameraView().ViewProjection);
+            const CameraView& cameraView = Renderer::GetCameraView();
+            const Math::Mat4 rotation = Math::Multiply(Math::RotationY(yaw), Math::RotationX(pitch));
+            const Math::Mat4 translation = Math::Translation(Math::CameraRelative({}, cameraView.TranslationOrigin));
+            const Math::Mat4 model = Math::Multiply(rotation, translation);
+            const Math::Mat4 viewProjection = Math::Multiply(model, cameraView.ViewProjection);
 
             ViewportConstants constants {};
             std::memcpy(constants.ViewProjection, viewProjection.Values, sizeof(constants.ViewProjection));

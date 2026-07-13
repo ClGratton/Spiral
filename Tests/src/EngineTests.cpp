@@ -5,6 +5,7 @@
 #include "Engine/Scene/Scene.h"
 
 #include <atomic>
+#include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <functional>
@@ -61,6 +62,8 @@ namespace
         camera.BackgroundColor = { 0.21f, 0.34f, 0.55f };
         source.SetMainCamera(camera);
         const Engine::Entity cube = source.CreateEntity("Cube");
+        Engine::TransformComponent* cubeTransform = source.TryGetTransform(cube);
+        cubeTransform->Position = { 1000000000000.25, -999999999999.5, 500000000000.125 };
         Engine::MeshRendererComponent mesh;
         mesh.MeshAsset = 42;
         mesh.MaterialAsset = 84;
@@ -73,13 +76,49 @@ namespace
         std::filesystem::remove(path, error);
 
         const Engine::Entity loadedCube = loaded.FindEntityByName("Cube");
+        const Engine::TransformComponent* loadedTransform = loaded.TryGetTransform(loadedCube);
         const Engine::MeshRendererComponent* loadedMesh = loaded.TryGetMeshRendererComponent(loadedCube);
         return Expect(result, "a valid scene saves and loads")
             && Expect(loaded.GetName() == "Round Trip", "the scene name round trips")
             && Expect(loadedMesh && loadedMesh->MeshAsset == 42 && loadedMesh->MaterialAsset == 84, "mesh handles round trip")
+            && Expect(loadedTransform
+                    && loadedTransform->Position.X == cubeTransform->Position.X
+                    && loadedTransform->Position.Y == cubeTransform->Position.Y
+                    && loadedTransform->Position.Z == cubeTransform->Position.Z,
+                "large double-precision positions round trip without loss")
             && Expect(loaded.GetMainCamera().BackgroundColor.X == 0.21f
                 && loaded.GetMainCamera().BackgroundColor.Y == 0.34f
                 && loaded.GetMainCamera().BackgroundColor.Z == 0.55f, "camera background color round trips");
+    }
+
+    bool TestCameraRelativeLargeWorldTransform()
+    {
+        const Engine::Math::DVec3 translationOrigin {
+            1000000000000.25,
+            -999999999999.5,
+            500000000000.125
+        };
+        Engine::TransformComponent transform;
+        transform.Position = {
+            translationOrigin.X + 12.5,
+            translationOrigin.Y - 7.25,
+            translationOrigin.Z + 0.125
+        };
+
+        const Engine::Math::Mat4 translated = transform.GetCameraRelativeTransform(translationOrigin);
+
+        Engine::EditorCamera camera;
+        camera.SetPosition(translationOrigin);
+        const Engine::CameraView& view = camera.GetCameraView();
+        return Expect(std::abs(translated.Values[12] - 12.5f) < 0.001f, "large-world X translation is camera relative")
+            && Expect(std::abs(translated.Values[13] + 7.25f) < 0.001f, "large-world Y translation is camera relative")
+            && Expect(std::abs(translated.Values[14] - 0.125f) < 0.001f, "large-world Z translation is camera relative")
+            && Expect(view.TranslationOrigin.X == translationOrigin.X
+                    && view.TranslationOrigin.Y == translationOrigin.Y
+                    && view.TranslationOrigin.Z == translationOrigin.Z,
+                "the camera publishes its exact double-precision translation origin")
+            && Expect(view.View.Values[12] == 0.0f && view.View.Values[13] == 0.0f && view.View.Values[14] == 0.0f,
+                "the float view matrix does not contain an absolute-world translation");
     }
 
     bool TestSceneRejectsTruncatedComponent()
@@ -405,6 +444,7 @@ int main()
         { "JobSystem contains worker exceptions", TestJobSystemContainsWorkerExceptions },
         { "JobSystem inline fallback is reentrant", TestJobSystemInlineFallbackIsReentrant },
         { "Scene round trip", TestSceneRoundTrip },
+        { "Camera-relative large-world transform", TestCameraRelativeLargeWorldTransform },
         { "Scene rejects truncated components", TestSceneRejectsTruncatedComponent },
         { "Scene loads version-one camera", TestSceneLoadsVersionOneCamera },
         { "Scene rejects duplicate entities", TestSceneRejectsDuplicateEntities },

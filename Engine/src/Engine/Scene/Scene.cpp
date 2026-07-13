@@ -12,7 +12,7 @@ namespace Engine
 {
     namespace
     {
-        constexpr int kSceneFormatVersion = 2;
+        constexpr int kSceneFormatVersion = 3;
 
         void WriteVec3(std::ostream& stream, std::string_view name, const Math::Vec3& value)
         {
@@ -20,6 +20,16 @@ namespace Engine
         }
 
         bool ReadVec3(std::istringstream& stream, Math::Vec3& outValue)
+        {
+            return static_cast<bool>(stream >> outValue.X >> outValue.Y >> outValue.Z);
+        }
+
+        void WriteDVec3(std::ostream& stream, std::string_view name, const Math::DVec3& value)
+        {
+            stream << name << ' ' << value.X << ' ' << value.Y << ' ' << value.Z << '\n';
+        }
+
+        bool ReadDVec3(std::istringstream& stream, Math::DVec3& outValue)
         {
             return static_cast<bool>(stream >> outValue.X >> outValue.Y >> outValue.Z);
         }
@@ -87,7 +97,7 @@ namespace Engine
     Scene::Scene(std::string name)
         : m_Name(std::move(name))
     {
-        m_MainCameraTransform.Position = { 0.0f, 0.0f, -3.35f };
+        m_MainCameraTransform.Position = { 0.0, 0.0, -3.35 };
 
         m_MainCameraEntity = CreateEntity("Main Camera");
         SetMainCameraTransform(m_MainCameraTransform);
@@ -319,7 +329,7 @@ namespace Engine
             return false;
         }
 
-        output << std::setprecision(9);
+        output << std::setprecision(17);
         output << "SpiralScene " << kSceneFormatVersion << '\n';
         output << "Name " << std::quoted(m_Name) << '\n';
         output << '\n';
@@ -331,7 +341,7 @@ namespace Engine
         WriteVec3(output, "BackgroundColor", m_MainCamera.BackgroundColor);
         output << '\n';
         output << "[MainCamera.Transform]\n";
-        WriteVec3(output, "Position", m_MainCameraTransform.Position);
+        WriteDVec3(output, "Position", m_MainCameraTransform.Position);
         WriteVec3(output, "RotationDegrees", m_MainCameraTransform.RotationDegrees);
         WriteVec3(output, "Scale", m_MainCameraTransform.Scale);
         output << '\n';
@@ -479,7 +489,7 @@ namespace Engine
             {
                 bool parsed = false;
                 if (key == "Position")
-                    parsed = ReadVec3(stream, cameraTransform.Position);
+                    parsed = ReadDVec3(stream, cameraTransform.Position);
                 else if (key == "RotationDegrees")
                     parsed = ReadVec3(stream, cameraTransform.RotationDegrees);
                 else if (key == "Scale")

@@ -24,6 +24,15 @@ namespace Engine::Math
         return degrees * (kPi / 180.0f);
     }
 
+    Vec3 CameraRelative(const DVec3& worldPosition, const DVec3& translationOrigin)
+    {
+        return {
+            static_cast<float>(worldPosition.X - translationOrigin.X),
+            static_cast<float>(worldPosition.Y - translationOrigin.Y),
+            static_cast<float>(worldPosition.Z - translationOrigin.Z)
+        };
+    }
+
     Mat4 Multiply(const Mat4& lhs, const Mat4& rhs)
     {
         Mat4 result {};

@@ -236,6 +236,14 @@ GPU/render rules:
 
 This avoids float32 jitter at distance without paying double-precision shader costs everywhere.
 
+Current implementation state:
+
+- `TransformComponent` and `EditorCamera` positions use authoritative double-precision coordinates.
+- Scene format version 3 writes double positions with round-trip precision while retaining version 1/2 loading.
+- `CameraView` publishes one double-precision translation origin and rotation-only float view matrix. Camera-relative subtraction happens in double before conversion to the float translation used by the current D3D12 prototype raster path.
+- Deterministic tests exercise translation and serialization at trillion-unit coordinates.
+- Sector/local representation, origin-transition policy, immutable render-snapshot propagation, actual scene-raster integration, culling, debug error views, physics islands, and ray/TLAS/query consumers remain future work. Until those consumers exist and share the origin, this is a coordinate foundation rather than completion of the full large-world rendering contract.
+
 ## 8. Spatial Antialiasing Contract
 
 The antialiasing stack is layered:

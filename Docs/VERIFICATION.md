@@ -63,6 +63,8 @@ Linux/macOS:
 
 Use the actual generated system/architecture path on the host.
 
+`EngineTests` verifies the large-world coordinate foundation by subtracting an exact double-precision per-view origin before float conversion at trillion-unit coordinates, ensuring the float view matrix contains no absolute-world translation, and round-tripping high-magnitude double positions through the versioned scene format. The Windows D3D12 render smoke then verifies that the camera-relative transform remains integrated into the current raster prototype. These checks do not qualify future scene extraction, culling, debug, sector/origin transitions, physics, or ray-tracing consumers.
+
 ## Renderer Verification
 
 `EngineTests` includes GPU-independent renderer-capability policy coverage. It proves lifecycle invariants, deterministic candidate ranking, retained rejection reasons, required format-usage validation, compatible queue fallbacks, strict selection by stable adapter ID, and `Phase3FrameTimingV1` selection of usable GPU timestamps versus the CPU steady-clock fallback. These tests do not prove a physical adapter or backend runtime path.

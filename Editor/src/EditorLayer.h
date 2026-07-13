@@ -101,7 +101,7 @@ private:
     Engine::Entity m_PlayerStartEntity;
     Engine::Entity m_SelectedEntity;
     Engine::EditorCamera m_EditorCamera;
-    std::array<float, 3> m_CameraPosition = { 0.0f, 0.0f, -3.35f };
+    std::array<double, 3> m_CameraPosition = { 0.0, 0.0, -3.35 };
     std::array<float, 3> m_CameraRotation = { 0.0f, 0.0f, 0.0f };
     float m_CameraFovDegrees = 60.0f;
     float m_CameraNearClip = 0.1f;
@@ -122,7 +122,7 @@ private:
         Engine::AssetRegistry AssetRegistry;
         Engine::MaterialLibrary MaterialLibrary;
         Engine::Entity SelectedEntity;
-        std::array<float, 3> CameraPosition {};
+        std::array<double, 3> CameraPosition {};
         std::array<float, 3> CameraRotation {};
         float CameraFovDegrees = 60.0f;
         float CameraNearClip = 0.1f;

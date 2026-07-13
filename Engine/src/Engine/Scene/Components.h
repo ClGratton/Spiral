@@ -10,11 +10,11 @@ namespace Engine
 {
     struct TransformComponent
     {
-        Math::Vec3 Position = { 0.0f, 0.0f, 0.0f };
+        Math::DVec3 Position = { 0.0, 0.0, 0.0 };
         Math::Vec3 RotationDegrees = { 0.0f, 0.0f, 0.0f };
         Math::Vec3 Scale = { 1.0f, 1.0f, 1.0f };
 
-        Math::Mat4 GetTransformMatrix() const
+        Math::Mat4 GetCameraRelativeTransform(const Math::DVec3& translationOrigin) const
         {
             return Math::Multiply(
                 Math::Multiply(
@@ -23,7 +23,7 @@ namespace Engine
                         Math::DegreesToRadians(RotationDegrees.Y),
                         Math::DegreesToRadians(RotationDegrees.X),
                         Math::DegreesToRadians(RotationDegrees.Z))),
-                Math::Translation(Position));
+                Math::Translation(Math::CameraRelative(Position, translationOrigin)));
         }
     };
 
