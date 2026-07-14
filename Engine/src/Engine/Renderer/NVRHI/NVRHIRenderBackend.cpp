@@ -310,8 +310,14 @@ namespace Engine
         auto makeRequest = [&source](RHI::ShaderStage stage, const char* entry) {
             PortableShaderRequest request;
             request.SourceName = source.ResolvedPath.string(); request.Source = source.Source; request.EntryPoint = entry; request.Stage = stage;
-            request.Targets = { PortableShaderTarget::Dxil, PortableShaderTarget::Spirv }; request.CompilerIdentity = "Slang"; request.CompilerVersion = "2026.13.1";
-            request.CompilerPackageHash = GE_SLANG_PACKAGE_SHA256; request.DownstreamCompilerPackageHash = GE_DXC_PACKAGE_SHA256;
+            #ifdef _WIN32
+            request.Targets = { PortableShaderTarget::Dxil, PortableShaderTarget::Spirv };
+            request.DownstreamCompilerPackageHash = GE_DXC_PACKAGE_SHA256;
+            #else
+            request.Targets = { PortableShaderTarget::Spirv };
+            #endif
+            request.CompilerIdentity = "Slang"; request.CompilerVersion = "2026.13.1";
+            request.CompilerPackageHash = GE_SLANG_PACKAGE_SHA256;
             request.ExpectedLayout = {{ "ViewportConstants", 'b', 0, 0, stage, "ConstantBuffer", "struct{ViewProjection:float32x4x4:row-major@0}", 1, 64, 0, 0 }};
             if (stage == RHI::ShaderStage::Vertex) request.ExpectedVertexInputs = {{ "Position", "POSITION", 0, 0, "float32x3", 12, 1, 3 }, { "Color", "COLOR", 0, 1, "float32x3", 12, 1, 3 }};
             return request;
