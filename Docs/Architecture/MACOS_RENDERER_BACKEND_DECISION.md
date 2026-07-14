@@ -22,7 +22,7 @@ The first completion gate is a strict hosted x86_64 macOS editor presentation sm
 - a window resize creates a later swapchain generation;
 - a present succeeds on that post-resize generation.
 
-Apple Silicon and production scene-renderer conformance remain separate unchecked work. Native Metal remains a future option only if measured MoltenVK capability, correctness, performance, packaging, or tooling gaps justify the cost of another `Engine::RHI` backend.
+Apple Silicon and production scene-renderer conformance remain separate unchecked Phase 3F work, ordered so native Apple Silicon generation, build, and presentation verification precede production macOS scene qualification. Native Metal remains a future option only if measured MoltenVK capability, correctness, performance, packaging, or tooling gaps justify the cost of another `Engine::RHI` backend.
 
 ## Options Considered
 
@@ -78,6 +78,12 @@ Cons:
 - Passing presentation smoke is not evidence of ray tracing, mesh shaders, shared-resource interop, full Vulkan parity, or production macOS scene rendering.
 - A future Metal decision must be based on captured MoltenVK gaps and measured costs.
 
+## Execution Feasibility Gate
+
+Native Apple Silicon qualification requires a completed project-generation, build, and MoltenVK editor-presentation run on a native arm64 macOS environment. The current workspace cannot execute that evidence, and hosted GitHub Actions currently creates jobs but executes zero steps because of the account billing/spending-limit restriction. Cross-platform project generation, source inspection, x86_64 macOS results, cross-compiled artifacts, and zero-step CI jobs do not qualify Apple Silicon behavior.
+
+The native Apple Silicon item is therefore deferred from backend bootstrap to the Phase 3F platform-qualification gate, immediately before production macOS scene qualification. This changes execution order, not scope or completion status: both items remain unchecked, and work resumes only when an executable native arm64 macOS environment is available.
+
 ## Portability-Subset Qualification
 
 The engine queries `VkPhysicalDevicePortabilitySubsetFeaturesKHR` on the selected physical device before logical-device creation and logs every unsupported field. The device result is authoritative because several fields vary with the Metal device and MoltenVK configuration; source defaults alone are not a qualification result. Querying support also does not enable a feature: any later renderer path that uses one of these behaviors must explicitly request the supported feature during device creation.
@@ -126,7 +132,7 @@ The checked Phase 3 item is deliberately narrow: **experimental x86_64 macOS edi
 
 The original check recorded demonstrated functional coverage. The adjacent reliability item is now also checked because generation-aware completion passed three consecutive hosted launches, including a launch with three post-request recreations before the successful current-generation present.
 
-This does not check off a generic production macOS renderer. Native Apple Silicon generation/presentation and production scene resources, commands, shaders, representative captures, packaging, profiling, and physical-device qualification remain explicit unchecked work in `PLAN.md`.
+This does not check off a generic production macOS renderer. Native Apple Silicon generation/build/presentation and production scene resources, commands, shaders, representative captures, packaging, profiling, and physical-device qualification remain explicit unchecked Phase 3F work in `PLAN.md`, with native Apple Silicon evidence required before the broader production macOS qualification.
 
 There is no broader checked “macOS renderer backend decision and implementation” claim in the current roadmap. If wording like that is reintroduced, it must remain unchecked until it states and proves a bounded presentation or production qualification level under the renderer capability contract.
 
@@ -155,7 +161,7 @@ Phase 7 must therefore keep meshlet/cluster data independent of mesh-shader avai
 2. [x] Share the dynamically loaded Vulkan entry point with GLFW.
 3. [x] Add a strict swapchain-generation and post-resize-present smoke contract.
 4. [x] Pass the hosted x86_64 macOS MoltenVK presentation smoke on macOS 15 Intel with MoltenVK 1.4.1 and Vulkan Loader 1.4.350.1.
-5. [ ] Add native Apple Silicon generation, build, and runtime coverage.
+5. [ ] Add native Apple Silicon generation, build, and MoltenVK editor-presentation coverage on a native arm64 macOS environment.
 6. [ ] Qualify scene resources, commands, shaders, and representative captures before declaring production macOS renderer support.
 7. [ ] Choose and verify a self-contained macOS runtime packaging model on a clean end-user Mac.
 8. [x] Record the hosted Apple Paravirtual portability-subset result and cross-check the Phase 4, Phase 6, and Phase 7 plans.

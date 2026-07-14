@@ -63,7 +63,16 @@ Linux/macOS:
 
 Use the actual generated system/architecture path on the host.
 
-`EngineTests` verifies the large-world coordinate foundation by subtracting an exact double-precision per-view origin before float conversion at trillion-unit coordinates, ensuring the exact-camera-origin float view contains no absolute-world translation, and round-tripping high-magnitude double positions through the versioned scene format. It verifies the version-1 world-grid primitives at negative and exact centered boundaries, immediately adjacent representable values, trillion-unit positions, multi-sector carries, checked invalid inputs, min-inclusive/max-exclusive ranges, and bounded oversized classification. It also verifies deterministic backend-neutral render extraction, complete view/origin ownership per epoch, main-camera authority, stable source/entity and asset handles, hidden-mesh omission, copied light/camera/transform values, retained older immutable epochs, arbitrary-origin raster invariance, mesh-only motion, camera-plus-mesh origin transition invariance, and invalid-view rejection. These checks do not prove persistent sector/local Scene storage, stateful hysteresis, independent multi-view origin tracking, or sector/local snapshot/raster propagation, and do not qualify real mesh/material GPU resources, culling, coordinate debug views, physics, or ray-tracing consumers.
+`EngineTests` verifies the large-world coordinate foundation by subtracting an exact double-precision per-view origin before float conversion at trillion-unit coordinates, ensuring the exact-camera-origin float view contains no absolute-world translation. It verifies the version-1 world-grid primitives at negative and exact centered boundaries, immediately adjacent representable values, trillion-unit positions, multi-sector carries, checked invalid inputs, min-inclusive/max-exclusive ranges, and bounded oversized classification. For Scene format 4, it must verify canonical signed-sector/local transform and complete `WorldGridPolicy` persistence (including non-default policy data), absence of serialized `MainCamera.Transform`, legacy v1-v3 absolute-double migration through the default policy with selected-entity camera-transform precedence, rejection of noncanonical/invalid v4 world state, and preservation of the destination Scene after a rejected load. It also verifies deterministic backend-neutral render extraction, complete view/origin ownership per epoch, main-camera authority, stable source/entity and asset handles, hidden-mesh omission, copied light/camera/transform values, retained older immutable epochs, arbitrary-origin raster invariance, mesh-only motion, camera-plus-mesh origin transition invariance, and invalid-view rejection. These checks do not prove stateful hysteresis, independent multi-view origin tracking, or sector/local snapshot/raster propagation, and do not qualify real mesh/material GPU resources, culling, coordinate debug views, physics, or ray-tracing consumers.
+
+For a real editor persistence check, run the existing save/reload smoke and the scene-authoring save/reopen smoke after the focused `EngineTests` case:
+
+```powershell
+.\bin\Debug-windows-x86_64\Editor\Editor.exe --headless --smoke-test --save-scene-smoke
+.\bin\Debug-windows-x86_64\Editor\Editor.exe --headless --scene-authoring-smoke
+```
+
+They are workflow checks for editor save/reload and project save/reopen, respectively; they do not establish sector/local snapshot or raster propagation.
 
 For the entity Inspector, select a camera-bearing entity and confirm Transform exposes Position and Rotation but no Scale row; select an entity without a Camera component and confirm Scale remains editable. Camera zoom/projection remains controlled by Field of View or the applicable projection settings. This visual check is required because compilation and the headless scene smokes cannot prove control visibility.
 
@@ -117,6 +126,8 @@ bash Scripts/TestVulkan.sh Debug gmake
 ```
 
 The Vulkan smokes require the versioned-profile selection marker in addition to device/NVRHI creation and presentation evidence.
+
+Native Apple Silicon project-generation, build, or MoltenVK presentation claims require a completed run on a native arm64 macOS environment. Project generation on another platform, source inspection, x86_64 macOS results, cross-compiled artifacts, and hosted CI jobs that execute zero steps are not native Apple Silicon evidence.
 
 Repeat the same full launch contract when investigating presentation reliability:
 

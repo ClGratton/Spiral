@@ -6,13 +6,14 @@
 #include <fstream>
 #include <iomanip>
 #include <sstream>
+#include <stdexcept>
 #include <string_view>
 
 namespace Engine
 {
     namespace
     {
-        constexpr int kSceneFormatVersion = 3;
+        constexpr int kSceneFormatVersion = 4;
 
         void WriteVec3(std::ostream& stream, std::string_view name, const Math::Vec3& value)
         {
@@ -24,14 +25,36 @@ namespace Engine
             return static_cast<bool>(stream >> outValue.X >> outValue.Y >> outValue.Z);
         }
 
-        void WriteDVec3(std::ostream& stream, std::string_view name, const Math::DVec3& value)
-        {
-            stream << name << ' ' << value.X << ' ' << value.Y << ' ' << value.Z << '\n';
-        }
-
         bool ReadDVec3(std::istringstream& stream, Math::DVec3& outValue)
         {
             return static_cast<bool>(stream >> outValue.X >> outValue.Y >> outValue.Z);
+        }
+
+        const char* ToString(Math::WorldOriginMode mode)
+        {
+            switch (mode)
+            {
+                case Math::WorldOriginMode::ExactCamera: return "ExactCamera";
+                case Math::WorldOriginMode::SectorSnapped: return "SectorSnapped";
+            }
+
+            return "ExactCamera";
+        }
+
+        bool ParseWorldOriginMode(std::string_view value, Math::WorldOriginMode& outMode)
+        {
+            if (value == "ExactCamera")
+            {
+                outMode = Math::WorldOriginMode::ExactCamera;
+                return true;
+            }
+            if (value == "SectorSnapped")
+            {
+                outMode = Math::WorldOriginMode::SectorSnapped;
+                return true;
+            }
+
+            return false;
         }
 
         const char* ToString(LightType type)
@@ -94,13 +117,14 @@ namespace Engine
         }
     }
 
-    Scene::Scene(std::string name)
-        : m_Name(std::move(name))
+    Scene::Scene(std::string name, Math::WorldGridPolicy worldGridPolicy)
+        : m_Name(std::move(name)), m_WorldGridPolicy(worldGridPolicy)
     {
-        m_MainCameraTransform.Position = { 0.0, 0.0, -3.35 };
+        if (!Math::IsWorldGridPolicyValid(m_WorldGridPolicy))
+            throw std::invalid_argument("Scene requires a valid immutable world-grid policy");
 
         m_MainCameraEntity = CreateEntity("Main Camera");
-        SetMainCameraTransform(m_MainCameraTransform);
+        SetEntityWorldPosition(m_MainCameraEntity, { 0.0, 0.0, -3.35 });
         SetMainCamera(m_MainCamera);
     }
 
@@ -120,7 +144,8 @@ namespace Engine
         for (const SceneEntity& entity : m_Entities)
         {
             SceneRenderTransform transform;
-            transform.WorldPosition = entity.Transform.Position;
+            if (!entity.Transform.TryGetApproximateWorldPosition(m_WorldGridPolicy, transform.WorldPosition))
+                continue;
             transform.RotationDegrees = entity.Transform.RotationDegrees;
             transform.Scale = entity.Transform.Scale;
 
@@ -234,6 +259,31 @@ namespace Engine
     {
         const SceneEntity* sceneEntity = FindEntityStorage(entity);
         return sceneEntity ? &sceneEntity->Transform : nullptr;
+    }
+
+    bool Scene::SetEntityWorldPosition(Entity entity, const Math::DVec3& position)
+    {
+        SceneEntity* sceneEntity = FindEntityStorage(entity);
+        return sceneEntity && sceneEntity->Transform.SetWorldPosition(position, m_WorldGridPolicy);
+    }
+
+    bool Scene::SetEntityWorldPositionAxis(Entity entity, u32 axis, double position)
+    {
+        SceneEntity* sceneEntity = FindEntityStorage(entity);
+        return sceneEntity && sceneEntity->Transform.SetWorldPositionAxis(axis, position, m_WorldGridPolicy);
+    }
+
+    bool Scene::SetEntitySectorLocalPosition(Entity entity, const Math::SectorLocalPosition& position)
+    {
+        SceneEntity* sceneEntity = FindEntityStorage(entity);
+        return sceneEntity && sceneEntity->Transform.SetPosition(position, m_WorldGridPolicy);
+    }
+
+    bool Scene::TryGetEntityApproximateWorldPosition(Entity entity, Math::DVec3& outPosition) const
+    {
+        const SceneEntity* sceneEntity = FindEntityStorage(entity);
+        return sceneEntity
+            && sceneEntity->Transform.TryGetApproximateWorldPosition(m_WorldGridPolicy, outPosition);
     }
 
     CameraComponent* Scene::AddCameraComponent(Entity entity, const CameraComponent& camera)
@@ -351,11 +401,21 @@ namespace Engine
         return true;
     }
 
+    const TransformComponent& Scene::GetMainCameraTransform() const
+    {
+        const SceneEntity* sceneEntity = FindEntityStorage(m_MainCameraEntity);
+        static const TransformComponent emptyTransform;
+        return sceneEntity ? sceneEntity->Transform : emptyTransform;
+    }
+
     void Scene::SetMainCameraTransform(const TransformComponent& transform)
     {
-        m_MainCameraTransform = transform;
         if (SceneEntity* sceneEntity = FindEntityStorage(m_MainCameraEntity))
-            sceneEntity->Transform = transform;
+        {
+            TransformComponent normalized = transform;
+            if (normalized.SetPosition(transform.GetPosition(), m_WorldGridPolicy))
+                sceneEntity->Transform = normalized;
+        }
     }
 
     void Scene::SetMainCamera(const CameraComponent& camera)
@@ -367,6 +427,20 @@ namespace Engine
 
     bool Scene::SaveToFile(const std::filesystem::path& path) const
     {
+        if (!Math::IsWorldGridPolicyValid(m_WorldGridPolicy))
+        {
+            Log::Error("Could not save scene with an invalid world-grid policy: ", path.string());
+            return false;
+        }
+        for (const SceneEntity& entity : m_Entities)
+        {
+            if (!Math::IsCanonical(entity.Transform.GetPosition(), m_WorldGridPolicy))
+            {
+                Log::Error("Could not save scene with a noncanonical transform: ", entity.Name);
+                return false;
+            }
+        }
+
         std::error_code error;
         const std::filesystem::path parent = path.parent_path();
         if (!parent.empty())
@@ -389,6 +463,12 @@ namespace Engine
         output << "SpiralScene " << kSceneFormatVersion << '\n';
         output << "Name " << std::quoted(m_Name) << '\n';
         output << '\n';
+        output << "[WorldGrid]\n";
+        output << "Version " << m_WorldGridPolicy.Version << '\n';
+        output << "SectorExtent " << m_WorldGridPolicy.SectorExtent << '\n';
+        output << "OriginHysteresis " << m_WorldGridPolicy.OriginHysteresis << '\n';
+        output << "OriginMode " << ToString(m_WorldGridPolicy.OriginMode) << '\n';
+        output << '\n';
         output << "[MainCamera]\n";
         output << "Primary " << (m_MainCamera.Primary ? "true" : "false") << '\n';
         output << "VerticalFovDegrees " << m_MainCamera.Projection.VerticalFovDegrees << '\n';
@@ -396,20 +476,19 @@ namespace Engine
         output << "FarClip " << m_MainCamera.Projection.FarClip << '\n';
         WriteVec3(output, "BackgroundColor", m_MainCamera.BackgroundColor);
         output << '\n';
-        output << "[MainCamera.Transform]\n";
-        WriteDVec3(output, "Position", m_MainCameraTransform.Position);
-        WriteVec3(output, "RotationDegrees", m_MainCameraTransform.RotationDegrees);
-        WriteVec3(output, "Scale", m_MainCameraTransform.Scale);
-        output << '\n';
         output << "[Entities]\n";
         output << "NextEntityId " << m_NextEntityId << '\n';
         output << "MainCameraEntity " << m_MainCameraEntity.Id << '\n';
         for (const SceneEntity& entity : m_Entities)
         {
+            const Math::SectorLocalPosition& position = entity.Transform.GetPosition();
             output << "Entity " << entity.EntityHandle.Id << ' ' << std::quoted(entity.Name) << '\n';
             output << "Transform " << entity.EntityHandle.Id
-                << ' ' << entity.Transform.Position.X << ' ' << entity.Transform.Position.Y << ' ' << entity.Transform.Position.Z
-                << ' ' << entity.Transform.RotationDegrees.X << ' ' << entity.Transform.RotationDegrees.Y << ' ' << entity.Transform.RotationDegrees.Z
+                << ' ' << position.Sector.X << ' ' << position.Sector.Y << ' ' << position.Sector.Z
+                << ' ' << position.Local.X << ' ' << position.Local.Y << ' ' << position.Local.Z
+                << ' ' << entity.Transform.RotationDegrees.X
+                << ' ' << entity.Transform.RotationDegrees.Y
+                << ' ' << entity.Transform.RotationDegrees.Z
                 << ' ' << entity.Transform.Scale.X << ' ' << entity.Transform.Scale.Y << ' ' << entity.Transform.Scale.Z << '\n';
 
             if (entity.Camera)
@@ -480,11 +559,42 @@ namespace Engine
         EntityId parsedNextEntityId = 1;
         std::string section;
         size_t lineNumber = 1;
+        Math::WorldGridPolicy parsedWorldGridPolicy;
+        bool parsedWorldGridVersion = false;
+        bool parsedSectorExtent = false;
+        bool parsedOriginHysteresis = false;
+        bool parsedOriginMode = false;
+        bool appliedWorldGridPolicy = version < 4;
 
         const auto fail = [&](std::string_view message)
         {
             Log::Error("Could not parse scene file '", path.string(), "' at line ", lineNumber, ": ", message);
             return false;
+        };
+
+        const auto applyWorldGridPolicy = [&]()
+        {
+            if (appliedWorldGridPolicy)
+                return true;
+            if (!parsedWorldGridVersion
+                || !parsedSectorExtent
+                || !parsedOriginHysteresis
+                || !parsedOriginMode
+                || !Math::IsWorldGridPolicyValid(parsedWorldGridPolicy))
+            {
+                return false;
+            }
+
+            Math::DVec3 defaultCameraPosition;
+            if (!scene.TryGetEntityApproximateWorldPosition(scene.m_MainCameraEntity, defaultCameraPosition))
+                return false;
+
+            scene.m_WorldGridPolicy = parsedWorldGridPolicy;
+            if (!scene.SetEntityWorldPosition(scene.m_MainCameraEntity, defaultCameraPosition))
+                return false;
+
+            appliedWorldGridPolicy = true;
+            return true;
         };
 
         while (std::getline(input, line))
@@ -495,7 +605,12 @@ namespace Engine
 
             if (line.front() == '[' && line.back() == ']')
             {
-                section = line.substr(1, line.size() - 2);
+                if (section == "WorldGrid" && !applyWorldGridPolicy())
+                    return fail("invalid or incomplete WorldGrid policy");
+                const std::string nextSection = line.substr(1, line.size() - 2);
+                if (version >= 4 && nextSection != "WorldGrid" && !appliedWorldGridPolicy)
+                    return fail("WorldGrid policy must precede version 4 scene sections");
+                section = nextSection;
                 continue;
             }
 
@@ -509,6 +624,43 @@ namespace Engine
             {
                 if (!(stream >> std::quoted(scene.m_Name)))
                     return fail("invalid scene name");
+            }
+            else if (section == "WorldGrid")
+            {
+                if (version < 4)
+                    return fail("WorldGrid is unsupported before scene format version 4");
+
+                if (key == "Version")
+                {
+                    if (parsedWorldGridVersion || !(stream >> parsedWorldGridPolicy.Version))
+                        return fail("invalid or duplicate WorldGrid.Version value");
+                    parsedWorldGridVersion = true;
+                }
+                else if (key == "SectorExtent")
+                {
+                    if (parsedSectorExtent || !(stream >> parsedWorldGridPolicy.SectorExtent))
+                        return fail("invalid or duplicate WorldGrid.SectorExtent value");
+                    parsedSectorExtent = true;
+                }
+                else if (key == "OriginHysteresis")
+                {
+                    if (parsedOriginHysteresis || !(stream >> parsedWorldGridPolicy.OriginHysteresis))
+                        return fail("invalid or duplicate WorldGrid.OriginHysteresis value");
+                    parsedOriginHysteresis = true;
+                }
+                else if (key == "OriginMode")
+                {
+                    std::string value;
+                    if (parsedOriginMode
+                        || !(stream >> value)
+                        || !ParseWorldOriginMode(value, parsedWorldGridPolicy.OriginMode))
+                    {
+                        return fail("invalid or duplicate WorldGrid.OriginMode value");
+                    }
+                    parsedOriginMode = true;
+                }
+                else
+                    return fail("unknown WorldGrid field");
             }
             else if (section == "MainCamera")
             {
@@ -543,9 +695,16 @@ namespace Engine
             }
             else if (section == "MainCamera.Transform")
             {
+                if (version >= 4)
+                    return fail("MainCamera.Transform is legacy duplicated state in scene format version 4");
+
                 bool parsed = false;
                 if (key == "Position")
-                    parsed = ReadDVec3(stream, cameraTransform.Position);
+                {
+                    Math::DVec3 position;
+                    parsed = ReadDVec3(stream, position)
+                        && cameraTransform.SetWorldPosition(position, scene.m_WorldGridPolicy);
+                }
                 else if (key == "RotationDegrees")
                     parsed = ReadVec3(stream, cameraTransform.RotationDegrees);
                 else if (key == "Scale")
@@ -589,11 +748,33 @@ namespace Engine
                         return fail("invalid Transform entity ID");
 
                     SceneEntity* sceneEntity = scene.FindEntityStorage(entity);
-                    if (!sceneEntity
-                        || !(stream
-                            >> sceneEntity->Transform.Position.X >> sceneEntity->Transform.Position.Y >> sceneEntity->Transform.Position.Z
-                            >> sceneEntity->Transform.RotationDegrees.X >> sceneEntity->Transform.RotationDegrees.Y >> sceneEntity->Transform.RotationDegrees.Z
-                            >> sceneEntity->Transform.Scale.X >> sceneEntity->Transform.Scale.Y >> sceneEntity->Transform.Scale.Z))
+                    bool parsedTransform = sceneEntity != nullptr;
+                    if (parsedTransform && version >= 4)
+                    {
+                        Math::SectorLocalPosition position;
+                        parsedTransform = static_cast<bool>(stream
+                                >> position.Sector.X >> position.Sector.Y >> position.Sector.Z
+                                >> position.Local.X >> position.Local.Y >> position.Local.Z
+                                >> sceneEntity->Transform.RotationDegrees.X
+                                >> sceneEntity->Transform.RotationDegrees.Y
+                                >> sceneEntity->Transform.RotationDegrees.Z
+                                >> sceneEntity->Transform.Scale.X >> sceneEntity->Transform.Scale.Y >> sceneEntity->Transform.Scale.Z)
+                            && Math::IsCanonical(position, scene.m_WorldGridPolicy)
+                            && sceneEntity->Transform.SetPosition(position, scene.m_WorldGridPolicy);
+                    }
+                    else if (parsedTransform)
+                    {
+                        Math::DVec3 position;
+                        parsedTransform = static_cast<bool>(stream
+                                >> position.X >> position.Y >> position.Z
+                                >> sceneEntity->Transform.RotationDegrees.X
+                                >> sceneEntity->Transform.RotationDegrees.Y
+                                >> sceneEntity->Transform.RotationDegrees.Z
+                                >> sceneEntity->Transform.Scale.X >> sceneEntity->Transform.Scale.Y >> sceneEntity->Transform.Scale.Z)
+                            && sceneEntity->Transform.SetWorldPosition(position, scene.m_WorldGridPolicy);
+                    }
+
+                    if (!parsedTransform)
                         return fail("invalid Transform record or unknown entity");
                 }
                 else if (key == "Camera")
@@ -664,6 +845,9 @@ namespace Engine
         if (input.bad())
             return fail("I/O error while reading scene");
 
+        if (!applyWorldGridPolicy())
+            return fail("missing or invalid WorldGrid policy");
+
         if (parsedEntities && !scene.m_Entities.empty())
         {
             scene.m_NextEntityId = std::max(scene.m_NextEntityId, parsedNextEntityId);
@@ -716,7 +900,6 @@ namespace Engine
         if (!sceneEntity || !sceneEntity->Camera)
             return;
 
-        m_MainCameraTransform = sceneEntity->Transform;
         m_MainCamera = *sceneEntity->Camera;
     }
 

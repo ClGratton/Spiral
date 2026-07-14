@@ -15,6 +15,8 @@
 #include <fstream>
 #include <functional>
 #include <iostream>
+#include <iterator>
+#include <limits>
 #include <stdexcept>
 #include <string_view>
 #include <thread>
@@ -371,8 +373,12 @@ namespace
         camera.BackgroundColor = { 0.21f, 0.34f, 0.55f };
         source.SetMainCamera(camera);
         const Engine::Entity cube = source.CreateEntity("Cube");
-        Engine::TransformComponent* cubeTransform = source.TryGetTransform(cube);
-        cubeTransform->Position = { 1000000000000.25, -999999999999.5, 500000000000.125 };
+        const Engine::Math::DVec3 cubePosition {
+            1000000000000.25,
+            -999999999999.5,
+            500000000000.125
+        };
+        source.SetEntityWorldPosition(cube, cubePosition);
         Engine::MeshRendererComponent mesh;
         mesh.MeshAsset = 42;
         mesh.MaterialAsset = 84;
@@ -387,17 +393,191 @@ namespace
         const Engine::Entity loadedCube = loaded.FindEntityByName("Cube");
         const Engine::TransformComponent* loadedTransform = loaded.TryGetTransform(loadedCube);
         const Engine::MeshRendererComponent* loadedMesh = loaded.TryGetMeshRendererComponent(loadedCube);
+        Engine::Math::DVec3 loadedPosition;
         return Expect(result, "a valid scene saves and loads")
             && Expect(loaded.GetName() == "Round Trip", "the scene name round trips")
             && Expect(loadedMesh && loadedMesh->MeshAsset == 42 && loadedMesh->MaterialAsset == 84, "mesh handles round trip")
             && Expect(loadedTransform
-                    && loadedTransform->Position.X == cubeTransform->Position.X
-                    && loadedTransform->Position.Y == cubeTransform->Position.Y
-                    && loadedTransform->Position.Z == cubeTransform->Position.Z,
+                    && loaded.TryGetEntityApproximateWorldPosition(loadedCube, loadedPosition)
+                    && loadedPosition.X == cubePosition.X
+                    && loadedPosition.Y == cubePosition.Y
+                    && loadedPosition.Z == cubePosition.Z,
                 "large double-precision positions round trip without loss")
             && Expect(loaded.GetMainCamera().BackgroundColor.X == 0.21f
                 && loaded.GetMainCamera().BackgroundColor.Y == 0.34f
                 && loaded.GetMainCamera().BackgroundColor.Z == 0.55f, "camera background color round trips");
+    }
+
+    bool TestSceneVersionFourCanonicalPersistence()
+    {
+        using namespace Engine;
+        using namespace Engine::Math;
+
+        WorldGridPolicy policy;
+        policy.SectorExtent = 8192.0;
+        policy.OriginHysteresis = 128.0;
+        policy.OriginMode = WorldOriginMode::SectorSnapped;
+        Scene source("Canonical V4", policy);
+        const Entity entity = source.CreateEntity("Far Entity");
+        SectorLocalPosition expected;
+        expected.Sector = { std::numeric_limits<i64>::max() - 17, -9007199254740993LL, 42 };
+        expected.Local = { -4096.0, 17.25, 4095.5 };
+        const bool assigned = source.SetEntitySectorLocalPosition(entity, expected);
+        const Entity inspectorAxisEntity = source.CreateEntity("Inspector Axis");
+        SectorLocalPosition inspectorAxisPosition;
+        inspectorAxisPosition.Sector = { 7, std::numeric_limits<i64>::min() + 29, -9007199254740993LL };
+        inspectorAxisPosition.Local = { 1.0, -4096.0, 4095.5 };
+        const bool inspectorAssigned = source.SetEntitySectorLocalPosition(inspectorAxisEntity, inspectorAxisPosition);
+        const bool inspectorAxisEdited = source.SetEntityWorldPositionAxis(inspectorAxisEntity, 0, 12.5);
+        const TransformComponent* inspectorTransform = source.TryGetTransform(inspectorAxisEntity);
+
+        const std::filesystem::path path = TestFilePath("scene-version-four.spiral");
+        const bool saved = source.SaveToFile(path);
+        std::ifstream savedFile(path);
+        const std::string contents(
+            (std::istreambuf_iterator<char>(savedFile)),
+            std::istreambuf_iterator<char>());
+        savedFile.close();
+
+        Scene loaded;
+        const bool loadedSuccessfully = Scene::LoadFromFile(path, loaded);
+        const Entity loadedEntity = loaded.FindEntityByName("Far Entity");
+        const TransformComponent* loadedTransform = loaded.TryGetTransform(loadedEntity);
+        std::error_code error;
+        std::filesystem::remove(path, error);
+
+        const WorldGridPolicy& loadedPolicy = loaded.GetWorldGridPolicy();
+        return Expect(assigned && saved && loadedSuccessfully, "canonical sector/local version 4 state saves and loads")
+            && Expect(inspectorAssigned
+                    && inspectorAxisEdited
+                    && inspectorTransform
+                    && inspectorTransform->GetPosition().Local.X == 12.5
+                    && inspectorTransform->GetPosition().Sector.Y == inspectorAxisPosition.Sector.Y
+                    && inspectorTransform->GetPosition().Local.Y == inspectorAxisPosition.Local.Y
+                    && inspectorTransform->GetPosition().Sector.Z == inspectorAxisPosition.Sector.Z
+                    && inspectorTransform->GetPosition().Local.Z == inspectorAxisPosition.Local.Z,
+                "absolute inspector axis edits preserve untouched canonical sector/local axes")
+            && Expect(contents.find("SpiralScene 4") != std::string::npos
+                    && contents.find("[WorldGrid]") != std::string::npos
+                    && contents.find("Version 1") != std::string::npos
+                    && contents.find("SectorExtent 8192") != std::string::npos
+                    && contents.find("OriginHysteresis 128") != std::string::npos
+                    && contents.find("OriginMode SectorSnapped") != std::string::npos,
+                "version 4 writes the explicit immutable world-grid policy")
+            && Expect(contents.find("[MainCamera.Transform]") == std::string::npos,
+                "version 4 does not write a duplicated main-camera transform authority")
+            && Expect(loadedPolicy.Version == policy.Version
+                    && loadedPolicy.SectorExtent == policy.SectorExtent
+                    && loadedPolicy.OriginHysteresis == policy.OriginHysteresis
+                    && loadedPolicy.OriginMode == policy.OriginMode,
+                "the loaded scene retains the serialized world-grid policy")
+            && Expect(loadedTransform
+                    && loadedTransform->GetPosition().Sector == expected.Sector
+                    && loadedTransform->GetPosition().Local.X == expected.Local.X
+                    && loadedTransform->GetPosition().Local.Y == expected.Local.Y
+                    && loadedTransform->GetPosition().Local.Z == expected.Local.Z,
+                "sector identity and canonical locals round trip without absolute-double conversion");
+    }
+
+    bool TestSceneLoadsLegacyAbsoluteTransforms()
+    {
+        using namespace Engine;
+        using namespace Engine::Math;
+
+        bool loadedAll = true;
+        for (int version : { 1, 2, 3 })
+        {
+            const std::filesystem::path path = TestFilePath("scene-version-" + std::to_string(version) + ".spiral");
+            {
+                std::ofstream file(path);
+                file << "SpiralScene " << version << "\nName \"Legacy\"\n\n"
+                     << "[MainCamera]\nPrimary true\nVerticalFovDegrees 60\nNearClip 0.1\nFarClip 100\n";
+                if (version >= 2)
+                    file << "BackgroundColor 0.1 0.2 0.3\n";
+                file << "\n"
+                     << "[MainCamera.Transform]\nPosition 10 20 30\nRotationDegrees 1 2 3\nScale 4 5 6\n\n"
+                     << "[Entities]\nNextEntityId 3\nMainCameraEntity 1\n"
+                     << "Entity 1 \"Main Camera\"\nTransform 1 0 0 -3.35 7 8 9 1 1 1\n"
+                     << "Camera 1 true 60 0.1 100";
+                if (version >= 2)
+                    file << " 0.1 0.2 0.3";
+                file << "\n"
+                     << "Entity 2 \"Legacy Far\"\n"
+                     << "Transform 2 1000000000000.25 -999999999999.5 500000000000.125 0 0 0 1 1 1\n";
+            }
+
+            Scene loaded;
+            const bool result = Scene::LoadFromFile(path, loaded);
+            const Entity entity = loaded.FindEntityByName("Legacy Far");
+            const TransformComponent* transform = loaded.TryGetTransform(entity);
+            Math::DVec3 mainCameraPosition;
+            SectorLocalPosition expected;
+            const bool expectedValid = TryDecomposeWorldPosition(
+                { 1000000000000.25, -999999999999.5, 500000000000.125 },
+                loaded.GetWorldGridPolicy(),
+                expected);
+            loadedAll = loadedAll
+                && result
+                && expectedValid
+                && transform
+                && transform->GetPosition().Sector == expected.Sector
+                && transform->GetPosition().Local.X == expected.Local.X
+                && transform->GetPosition().Local.Y == expected.Local.Y
+                && transform->GetPosition().Local.Z == expected.Local.Z
+                && loaded.TryGetEntityApproximateWorldPosition(loaded.GetMainCameraEntity(), mainCameraPosition)
+                && mainCameraPosition.X == 0.0
+                && mainCameraPosition.Y == 0.0
+                && mainCameraPosition.Z == -3.35
+                && loaded.GetMainCameraTransform().RotationDegrees.X == 7.0f
+                && loaded.GetWorldGridPolicy().SectorExtent == 4096.0;
+
+            std::error_code error;
+            std::filesystem::remove(path, error);
+        }
+
+        return Expect(loadedAll,
+            "scene formats 1-3 migrate absolute doubles using the default grid and retain entity main-camera precedence");
+    }
+
+    bool TestSceneRejectsInvalidVersionFourWorldState()
+    {
+        const std::filesystem::path noncanonicalPath = TestFilePath("scene-v4-noncanonical.spiral");
+        {
+            std::ofstream file(noncanonicalPath);
+            file << "SpiralScene 4\nName \"Invalid\"\n\n"
+                 << "[WorldGrid]\nVersion 1\nSectorExtent 4096\nOriginHysteresis 256\nOriginMode ExactCamera\n\n"
+                 << "[Entities]\nNextEntityId 2\nMainCameraEntity 1\n"
+                 << "Entity 1 \"Main Camera\"\nTransform 1 0 0 0 2048 0 0 0 0 0 1 1 1\n";
+        }
+
+        const std::filesystem::path invalidPolicyPath = TestFilePath("scene-v4-invalid-policy.spiral");
+        {
+            std::ofstream file(invalidPolicyPath);
+            file << "SpiralScene 4\nName \"Invalid\"\n\n"
+                 << "[WorldGrid]\nVersion 1\nSectorExtent 0\nOriginHysteresis 256\nOriginMode ExactCamera\n\n"
+                 << "[Entities]\nNextEntityId 1\nMainCameraEntity 0\n";
+        }
+
+        Engine::Scene loaded("Unchanged Destination");
+        const Engine::Entity preserved = loaded.CreateEntity("Preserved");
+        const bool positioned = loaded.SetEntityWorldPosition(preserved, { 17.0, -23.0, 5.0 });
+        const bool rejectedNoncanonical = !Engine::Scene::LoadFromFile(noncanonicalPath, loaded);
+        const bool rejectedInvalidPolicy = !Engine::Scene::LoadFromFile(invalidPolicyPath, loaded);
+        Engine::Math::DVec3 preservedPosition;
+        const bool destinationPreserved = loaded.GetName() == "Unchanged Destination"
+            && loaded.FindEntityByName("Preserved") == preserved
+            && loaded.TryGetEntityApproximateWorldPosition(preserved, preservedPosition)
+            && preservedPosition.X == 17.0
+            && preservedPosition.Y == -23.0
+            && preservedPosition.Z == 5.0;
+        std::error_code error;
+        std::filesystem::remove(noncanonicalPath, error);
+        std::filesystem::remove(invalidPolicyPath, error);
+
+        return Expect(rejectedNoncanonical, "version 4 rejects noncanonical centered-half-open locals")
+            && Expect(rejectedInvalidPolicy, "version 4 rejects invalid immutable world-grid policies")
+            && Expect(positioned && destinationPreserved,
+                "rejected version 4 records leave the destination scene unchanged");
     }
 
     bool TestCameraRelativeLargeWorldTransform()
@@ -407,14 +587,18 @@ namespace
             -999999999999.5,
             500000000000.125
         };
-        Engine::TransformComponent transform;
-        transform.Position = {
+        Engine::Scene scene("Camera Relative");
+        const Engine::Entity entity = scene.CreateEntity("Transform");
+        scene.SetEntityWorldPosition(entity, {
             translationOrigin.X + 12.5,
             translationOrigin.Y - 7.25,
             translationOrigin.Z + 0.125
-        };
+        });
+        const Engine::TransformComponent* transform = scene.TryGetTransform(entity);
 
-        const Engine::Math::Mat4 translated = transform.GetCameraRelativeTransform(translationOrigin);
+        const Engine::Math::Mat4 translated = transform
+            ? transform->GetCameraRelativeTransform(translationOrigin, scene.GetWorldGridPolicy())
+            : Engine::Math::Mat4::Identity();
 
         Engine::EditorCamera camera;
         camera.SetPosition(translationOrigin);
@@ -579,14 +763,14 @@ namespace
         Engine::CameraProjection projection;
         const Engine::Math::DVec3 cameraA { base, -base, base - 3.35 };
         const Engine::Math::DVec3 meshA { base, -base, base };
-        scene.TryGetTransform(mesh)->Position = meshA;
+        scene.SetEntityWorldPosition(mesh, meshA);
         const Engine::CameraView viewA = Engine::BuildCameraView(
             cameraA, {}, projection, 16.0f / 9.0f, cameraA);
         const std::shared_ptr<const Engine::SceneRenderSnapshot> snapshotA =
             std::make_shared<const Engine::SceneRenderSnapshot>(scene.ExtractRenderSnapshot(100, viewA));
         const Engine::SceneRasterFrame rasterA = Engine::PrepareSceneRasterFrame(*snapshotA);
 
-        scene.TryGetTransform(mesh)->Position.X += 1.0;
+        scene.SetEntityWorldPosition(mesh, { meshA.X + 1.0, meshA.Y, meshA.Z });
         const Engine::SceneRenderSnapshot snapshotB = scene.ExtractRenderSnapshot(101, viewA);
         const Engine::SceneRasterFrame rasterB = Engine::PrepareSceneRasterFrame(snapshotB);
 
@@ -603,7 +787,7 @@ namespace
         };
         const Engine::CameraView alternateView = Engine::BuildCameraView(
             cameraA, {}, projection, 16.0f / 9.0f, alternateOrigin);
-        scene.TryGetTransform(mesh)->Position = meshA;
+        scene.SetEntityWorldPosition(mesh, meshA);
         const Engine::SceneRasterFrame alternateRaster = Engine::PrepareSceneRasterFrame(
             scene.ExtractRenderSnapshot(103, alternateView));
 
@@ -642,8 +826,7 @@ namespace
     {
         Engine::Scene scene("Render Snapshot");
         const Engine::Entity mainCamera = scene.GetMainCameraEntity();
-        Engine::TransformComponent* mainCameraTransform = scene.TryGetTransform(mainCamera);
-        mainCameraTransform->Position = { 1000.25, -22.5, 9.75 };
+        scene.SetEntityWorldPosition(mainCamera, { 1000.25, -22.5, 9.75 });
 
         const Engine::Entity secondaryCamera = scene.CreateEntity("Secondary Camera");
         Engine::CameraComponent secondaryCameraComponent;
@@ -665,7 +848,7 @@ namespace
 
         const Engine::Entity visibleMesh = scene.CreateEntity("Visible Mesh");
         Engine::TransformComponent* visibleTransform = scene.TryGetTransform(visibleMesh);
-        visibleTransform->Position = { 1234567890123.5, 4.0, -8.0 };
+        scene.SetEntityWorldPosition(visibleMesh, { 1234567890123.5, 4.0, -8.0 });
         visibleTransform->RotationDegrees = { 10.0f, 20.0f, 30.0f };
         visibleTransform->Scale = { 2.0f, 3.0f, 4.0f };
         Engine::MeshRendererComponent visibleMeshComponent;
@@ -690,7 +873,7 @@ namespace
             std::make_shared<const Engine::SceneRenderSnapshot>(
                 scene.ExtractRenderSnapshot(41, renderCamera.GetCameraView()));
 
-        scene.TryGetTransform(visibleMesh)->Position.X = -1.0;
+        scene.SetEntityWorldPosition(visibleMesh, { -1.0, 4.0, -8.0 });
         scene.DestroyEntity(lightEntity);
         const std::shared_ptr<const Engine::SceneRenderSnapshot> second =
             std::make_shared<const Engine::SceneRenderSnapshot>(
@@ -1072,6 +1255,9 @@ int main()
         { "Frame task graph rejects cycles", TestFrameTaskGraphRejectsCycles },
         { "Frame task graph rejects invalid dependencies", TestFrameTaskGraphRejectsInvalidDependencies },
         { "Scene round trip", TestSceneRoundTrip },
+        { "Scene version 4 canonical persistence", TestSceneVersionFourCanonicalPersistence },
+        { "Scene loads legacy absolute transforms", TestSceneLoadsLegacyAbsoluteTransforms },
+        { "Scene rejects invalid version 4 world state", TestSceneRejectsInvalidVersionFourWorldState },
         { "Camera-relative large-world transform", TestCameraRelativeLargeWorldTransform },
         { "World grid canonicalization and bounds", TestWorldGridCanonicalizationAndBounds },
         { "Scene raster origin epoch invariance", TestSceneRasterOriginEpochInvariance },

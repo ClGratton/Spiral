@@ -438,11 +438,8 @@ void EditorLayer::ConfigureSceneOriginRasterSmoke()
     meshRenderer.MeshAsset = 42;
     meshRenderer.MaterialAsset = 84;
     m_ActiveScene.AddMeshRendererComponent(m_SceneOriginRasterMeshEntity, meshRenderer);
-    m_ActiveScene.TryGetTransform(m_SceneOriginRasterMeshEntity)->Position = { base, 0.0, 0.0 };
-
-    Engine::TransformComponent cameraTransform;
-    cameraTransform.Position = { base, 0.0, -3.35 };
-    m_ActiveScene.SetMainCameraTransform(cameraTransform);
+    m_ActiveScene.SetEntityWorldPosition(m_SceneOriginRasterMeshEntity, { base, 0.0, 0.0 });
+    m_ActiveScene.SetEntityWorldPosition(m_ActiveScene.GetMainCameraEntity(), { base, 0.0, -3.35 });
     m_SelectedEntity = m_SceneOriginRasterMeshEntity;
     SyncEditorCameraStateFromMainCamera();
 }
@@ -459,17 +456,17 @@ void EditorLayer::AdvanceSceneOriginRasterSmoke()
 
     if (m_FrameCounter == 3)
     {
-        meshTransform->Position = { base, 0.0, 0.0 };
+        m_ActiveScene.SetEntityWorldPosition(m_SceneOriginRasterMeshEntity, { base, 0.0, 0.0 });
         m_CameraPosition = { base, 0.0, -3.35 };
     }
     else if (m_FrameCounter == 4)
     {
-        meshTransform->Position = { base + 1.0, 0.0, 0.0 };
+        m_ActiveScene.SetEntityWorldPosition(m_SceneOriginRasterMeshEntity, { base + 1.0, 0.0, 0.0 });
         m_CameraPosition = { base, 0.0, -3.35 };
     }
     else if (m_FrameCounter == 5)
     {
-        meshTransform->Position = { base + 1.0, 0.0, 0.0 };
+        m_ActiveScene.SetEntityWorldPosition(m_SceneOriginRasterMeshEntity, { base + 1.0, 0.0, 0.0 });
         m_CameraPosition = { base + 1.0, 0.0, -3.35 };
     }
     else
@@ -478,7 +475,9 @@ void EditorLayer::AdvanceSceneOriginRasterSmoke()
     }
 
     ApplyEditorCameraStateToScene();
-    m_EditorCamera.SetPosition(m_ActiveScene.GetMainCameraTransform().Position);
+    Engine::Math::DVec3 cameraPosition;
+    if (m_ActiveScene.TryGetEntityApproximateWorldPosition(m_ActiveScene.GetMainCameraEntity(), cameraPosition))
+        m_EditorCamera.SetPosition(cameraPosition);
 }
 
 void EditorLayer::CaptureSceneOriginRasterSmoke()
@@ -773,15 +772,25 @@ void EditorLayer::DrawInspectorPanel()
     ImGui::TextUnformatted("Transform");
 
     bool transformChanged = false;
-    transformChanged |= DrawDVec3Control("Position", selectedEntity->Transform.Position, 0.1f);
+    Engine::Math::DVec3 worldPosition;
+    if (m_ActiveScene.TryGetEntityApproximateWorldPosition(selectedEntity->EntityHandle, worldPosition))
+    {
+        const Engine::Math::DVec3 displayedPosition = worldPosition;
+        if (DrawDVec3Control("Position", worldPosition, 0.1f))
+        {
+            if (worldPosition.X != displayedPosition.X)
+                transformChanged |= m_ActiveScene.SetEntityWorldPositionAxis(selectedEntity->EntityHandle, 0, worldPosition.X);
+            if (worldPosition.Y != displayedPosition.Y)
+                transformChanged |= m_ActiveScene.SetEntityWorldPositionAxis(selectedEntity->EntityHandle, 1, worldPosition.Y);
+            if (worldPosition.Z != displayedPosition.Z)
+                transformChanged |= m_ActiveScene.SetEntityWorldPositionAxis(selectedEntity->EntityHandle, 2, worldPosition.Z);
+        }
+    }
     transformChanged |= DrawVec3Control("Rotation", selectedEntity->Transform.RotationDegrees, 0.5f);
     if (!selectedEntity->Camera)
         transformChanged |= DrawVec3Control("Scale", selectedEntity->Transform.Scale, 0.05f, 0.01f, 100.0f);
     if (transformChanged && selectedEntity->EntityHandle == m_ActiveScene.GetMainCameraEntity())
-    {
-        m_ActiveScene.SetMainCameraTransform(selectedEntity->Transform);
         SyncEditorCameraStateFromMainCamera();
-    }
     historyStateChanged |= transformChanged;
     ImGui::PopID();
 
@@ -1014,16 +1023,20 @@ bool EditorLayer::DrawMaterialAssetControls(Engine::AssetHandle handle)
 
 void EditorLayer::ApplyEditorCameraStateToScene()
 {
-    Engine::TransformComponent cameraTransform;
-    cameraTransform.Position = { m_CameraPosition[0], m_CameraPosition[1], m_CameraPosition[2] };
-    cameraTransform.RotationDegrees = { m_CameraRotation[0], m_CameraRotation[1], m_CameraRotation[2] };
-    cameraTransform.Scale = { 1.0f, 1.0f, 1.0f };
+    const Engine::Entity mainCameraEntity = m_ActiveScene.GetMainCameraEntity();
+    m_ActiveScene.SetEntityWorldPosition(
+        mainCameraEntity,
+        { m_CameraPosition[0], m_CameraPosition[1], m_CameraPosition[2] });
+    if (Engine::TransformComponent* cameraTransform = m_ActiveScene.TryGetTransform(mainCameraEntity))
+    {
+        cameraTransform->RotationDegrees = { m_CameraRotation[0], m_CameraRotation[1], m_CameraRotation[2] };
+        cameraTransform->Scale = { 1.0f, 1.0f, 1.0f };
+    }
 
     Engine::CameraComponent camera = m_ActiveScene.GetMainCamera();
     camera.Primary = true;
     camera.Projection = { m_CameraFovDegrees, m_CameraNearClip, m_CameraFarClip };
 
-    m_ActiveScene.SetMainCameraTransform(cameraTransform);
     m_ActiveScene.SetMainCamera(camera);
 }
 
@@ -1032,13 +1045,16 @@ void EditorLayer::SyncEditorCameraStateFromMainCamera()
     const Engine::TransformComponent& cameraTransform = m_ActiveScene.GetMainCameraTransform();
     const Engine::CameraComponent& camera = m_ActiveScene.GetMainCamera();
 
-    m_CameraPosition = { cameraTransform.Position.X, cameraTransform.Position.Y, cameraTransform.Position.Z };
+    Engine::Math::DVec3 cameraPosition;
+    if (!m_ActiveScene.TryGetEntityApproximateWorldPosition(m_ActiveScene.GetMainCameraEntity(), cameraPosition))
+        cameraPosition = {};
+    m_CameraPosition = { cameraPosition.X, cameraPosition.Y, cameraPosition.Z };
     m_CameraRotation = { cameraTransform.RotationDegrees.X, cameraTransform.RotationDegrees.Y, cameraTransform.RotationDegrees.Z };
     m_CameraFovDegrees = camera.Projection.VerticalFovDegrees;
     m_CameraNearClip = camera.Projection.NearClip;
     m_CameraFarClip = camera.Projection.FarClip;
 
-    m_EditorCamera.SetPosition(cameraTransform.Position);
+    m_EditorCamera.SetPosition(cameraPosition);
     m_EditorCamera.SetRotationDegrees(cameraTransform.RotationDegrees);
     m_EditorCamera.SetProjection(camera.Projection);
     Engine::Renderer::SetClearColor({ camera.BackgroundColor.X, camera.BackgroundColor.Y, camera.BackgroundColor.Z, 1.0f });
@@ -1703,18 +1719,29 @@ void EditorLayer::RunUndoRedoSmoke()
     if (!transform)
         throw std::runtime_error("Undo/redo smoke could not find the prototype transform");
 
-    const double originalX = transform->Position.X;
+    Engine::Math::DVec3 originalPosition;
+    if (!m_ActiveScene.TryGetEntityApproximateWorldPosition(m_PrototypeMeshEntity, originalPosition))
+        throw std::runtime_error("Undo/redo smoke could not compose the prototype position");
+    const double originalX = originalPosition.X;
     const HistoryState before = CaptureHistoryState();
-    transform->Position.X = originalX + 2.0f;
+    originalPosition.X += 2.0;
+    m_ActiveScene.SetEntityWorldPositionAxis(m_PrototypeMeshEntity, 0, originalPosition.X);
     RecordHistory("Undo/redo smoke", before);
 
     const bool undone = Undo();
     const Engine::TransformComponent* restoredTransform = m_ActiveScene.TryGetTransform(m_PrototypeMeshEntity);
-    const bool restored = restoredTransform && std::abs(restoredTransform->Position.X - originalX) < 0.0001;
+    Engine::Math::DVec3 restoredPosition;
+    const bool restored = restoredTransform
+        && m_ActiveScene.TryGetEntityApproximateWorldPosition(m_PrototypeMeshEntity, restoredPosition)
+        && std::abs(restoredPosition.X - originalX) < 0.0001;
 
     const bool redone = Redo();
     const Engine::TransformComponent* reappliedTransform = m_ActiveScene.TryGetTransform(m_PrototypeMeshEntity);
-    const bool reapplied = reappliedTransform && std::abs(reappliedTransform->Position.X - (originalX + 2.0)) < 0.0001;
+    Engine::Math::DVec3 reappliedPosition;
+    const bool reapplied = reappliedTransform
+        && m_ActiveScene.TryGetEntityApproximateWorldPosition(m_PrototypeMeshEntity, reappliedPosition)
+        && std::abs(reappliedPosition.X - (originalX + 2.0)) < 0.0001
+        && Engine::Math::IsCanonical(reappliedTransform->GetPosition(), m_ActiveScene.GetWorldGridPolicy());
     if (!undone || !restored || !redone || !reapplied)
         throw std::runtime_error("Undo/redo smoke did not restore the prototype transform");
 

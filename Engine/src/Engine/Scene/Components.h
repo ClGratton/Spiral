@@ -1,21 +1,36 @@
 #pragma once
 
 #include "Engine/Assets/AssetHandle.h"
-#include "Engine/Math/Math.h"
+#include "Engine/Math/WorldGrid.h"
 #include "Engine/Scene/Camera.h"
 
 #include <string>
 
 namespace Engine
 {
-    struct TransformComponent
+    class TransformComponent
     {
-        Math::DVec3 Position = { 0.0, 0.0, 0.0 };
+    public:
         Math::Vec3 RotationDegrees = { 0.0f, 0.0f, 0.0f };
         Math::Vec3 Scale = { 1.0f, 1.0f, 1.0f };
 
-        Math::Mat4 GetCameraRelativeTransform(const Math::DVec3& translationOrigin) const
+        const Math::SectorLocalPosition& GetPosition() const { return m_Position; }
+
+        bool TryGetApproximateWorldPosition(
+            const Math::WorldGridPolicy& policy,
+            Math::DVec3& outPosition) const
         {
+            return Math::TryComposeApproximateWorldPosition(m_Position, policy, outPosition);
+        }
+
+        Math::Mat4 GetCameraRelativeTransform(
+            const Math::DVec3& translationOrigin,
+            const Math::WorldGridPolicy& policy) const
+        {
+            Math::DVec3 worldPosition;
+            if (!TryGetApproximateWorldPosition(policy, worldPosition))
+                return Math::Mat4::Identity();
+
             return Math::Multiply(
                 Math::Multiply(
                     Math::Scale(Scale),
@@ -23,8 +38,63 @@ namespace Engine
                         Math::DegreesToRadians(RotationDegrees.Y),
                         Math::DegreesToRadians(RotationDegrees.X),
                         Math::DegreesToRadians(RotationDegrees.Z))),
-                Math::Translation(Math::CameraRelative(Position, translationOrigin)));
+                Math::Translation(Math::CameraRelative(worldPosition, translationOrigin)));
         }
+
+    private:
+        friend class Scene;
+
+        bool SetPosition(const Math::SectorLocalPosition& position, const Math::WorldGridPolicy& policy)
+        {
+            Math::SectorLocalPosition normalized;
+            if (!Math::TryNormalizeSectorLocal(position, policy, normalized))
+                return false;
+
+            m_Position = normalized;
+            return true;
+        }
+
+        bool SetWorldPosition(const Math::DVec3& position, const Math::WorldGridPolicy& policy)
+        {
+            Math::SectorLocalPosition decomposed;
+            if (!Math::TryDecomposeWorldPosition(position, policy, decomposed))
+                return false;
+
+            m_Position = decomposed;
+            return true;
+        }
+
+        bool SetWorldPositionAxis(u32 axis, double position, const Math::WorldGridPolicy& policy)
+        {
+            if (axis >= 3)
+                return false;
+
+            Math::SectorLocalPosition decomposed;
+            if (!Math::TryDecomposeWorldPosition({ position, 0.0, 0.0 }, policy, decomposed))
+                return false;
+
+            switch (axis)
+            {
+                case 0:
+                    m_Position.Sector.X = decomposed.Sector.X;
+                    m_Position.Local.X = decomposed.Local.X;
+                    break;
+                case 1:
+                    m_Position.Sector.Y = decomposed.Sector.X;
+                    m_Position.Local.Y = decomposed.Local.X;
+                    break;
+                case 2:
+                    m_Position.Sector.Z = decomposed.Sector.X;
+                    m_Position.Local.Z = decomposed.Local.X;
+                    break;
+                default:
+                    return false;
+            }
+
+            return true;
+        }
+
+        Math::SectorLocalPosition m_Position;
     };
 
     struct CameraComponent

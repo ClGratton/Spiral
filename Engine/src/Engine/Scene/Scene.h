@@ -26,10 +26,13 @@ namespace Engine
     class Scene
     {
     public:
-        explicit Scene(std::string name = "Untitled Scene");
+        explicit Scene(
+            std::string name = "Untitled Scene",
+            Math::WorldGridPolicy worldGridPolicy = {});
 
         void OnUpdate(Timestep timestep);
         const std::string& GetName() const { return m_Name; }
+        const Math::WorldGridPolicy& GetWorldGridPolicy() const { return m_WorldGridPolicy; }
         SceneRenderSnapshot ExtractRenderSnapshot(u64 frameIndex, const CameraView& renderView) const;
 
         Entity CreateEntity(std::string name = "Entity");
@@ -41,6 +44,10 @@ namespace Engine
         const SceneEntity* TryGetEntity(Entity entity) const;
         TransformComponent* TryGetTransform(Entity entity);
         const TransformComponent* TryGetTransform(Entity entity) const;
+        bool SetEntityWorldPosition(Entity entity, const Math::DVec3& position);
+        bool SetEntityWorldPositionAxis(Entity entity, u32 axis, double position);
+        bool SetEntitySectorLocalPosition(Entity entity, const Math::SectorLocalPosition& position);
+        bool TryGetEntityApproximateWorldPosition(Entity entity, Math::DVec3& outPosition) const;
         CameraComponent* AddCameraComponent(Entity entity, const CameraComponent& camera = {});
         CameraComponent* TryGetCameraComponent(Entity entity);
         const CameraComponent* TryGetCameraComponent(Entity entity) const;
@@ -56,7 +63,7 @@ namespace Engine
 
         Entity GetMainCameraEntity() const { return m_MainCameraEntity; }
         bool SetMainCameraEntity(Entity entity);
-        const TransformComponent& GetMainCameraTransform() const { return m_MainCameraTransform; }
+        const TransformComponent& GetMainCameraTransform() const;
         const CameraComponent& GetMainCamera() const { return m_MainCamera; }
         void SetMainCameraTransform(const TransformComponent& transform);
         void SetMainCamera(const CameraComponent& camera);
@@ -72,10 +79,10 @@ namespace Engine
 
     private:
         std::string m_Name;
+        Math::WorldGridPolicy m_WorldGridPolicy;
         std::vector<SceneEntity> m_Entities;
         EntityId m_NextEntityId = 1;
         Entity m_MainCameraEntity;
-        TransformComponent m_MainCameraTransform;
         CameraComponent m_MainCamera;
     };
 }
