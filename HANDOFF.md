@@ -4,6 +4,12 @@ Updated 2026-07-15. This file is a recovery aid, not roadmap authority; `PLAN.md
 
 ## Current Slice
 
+### Latest: Phase 3C RHI Resource/Device Ownership Validation Prerequisite
+
+The ownership prerequisite is complete and checked in `PLAN.md`. `RHI::Device::OwnsResource` has texture and buffer overloads; D3D12 and Vulkan/NVRHI resource wrappers carry an immutable monotonic owner ID allocated per exact RHI device. Null, different-wrapper/backend, and same-backend different-device values return false without native handle exposure or graph policy. Wrapper lifetime is caller-owned: queries require a live resource and live device, and the monotonic identity never relies on native-pointer reuse.
+
+Local Windows/MSVC Debug evidence passed: `EngineTests` 41/41 (including deterministic owned/null/foreign/same-backend-other-device contract cases), `TestRender.ps1`, and `TestVulkan.ps1`; the headed smokes create real buffer/texture wrappers and require `RHIResourceOwnershipSmokeV1 owned=pass, null=rejected`. They create only one active device, so real same-backend-two-device evidence is unavailable and is not claimed. No graph execution, queue scheduling, transient allocation, or viewport adoption was added. The next ordered item is the frame/render-graph execution core.
+
 ### Latest: Phase 3C Asynchronous Completion And Recording-Reuse Prerequisite
 
 The completion prerequisite is complete and checked in `PLAN.md`. `RHI::Device::Submit` maps accepted work to an opaque monotonic token, `QueryCompletion` is nonblocking, and `WaitForCompletion` has a caller-supplied finite deadline. D3D12 maps tokens to per-queue fence values; Vulkan/NVRHI maps them to NVRHI graphics timeline instances and polls NVRHI's completion counter. The existing `SubmitAndWait` helper calls the new primitives. A submitted owned list retains its own token and rejects `Begin` before retirement; invalid, cross-device, and unissued token identities are rejected.

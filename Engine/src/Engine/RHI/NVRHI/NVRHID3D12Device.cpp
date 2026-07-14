@@ -43,6 +43,7 @@ namespace Engine::RHI
         using Microsoft::WRL::ComPtr;
 
         std::atomic<u64> s_NextCompletionDeviceId { 1 };
+        std::atomic<u64> s_NextResourceOwnerId { 1 };
 
         D3D12_RESOURCE_STATES ConvertResourceState(ResourceState state)
         {
@@ -247,8 +248,8 @@ namespace Engine::RHI
         class NVRHID3D12Buffer final : public Buffer
         {
         public:
-            explicit NVRHID3D12Buffer(BufferDescription description)
-                : m_Description(std::move(description))
+            NVRHID3D12Buffer(BufferDescription description, u64 ownerId)
+                : m_Description(std::move(description)), m_OwnerId(ownerId)
             {
             }
 
@@ -359,6 +360,8 @@ namespace Engine::RHI
                 m_CurrentState = state;
             }
 
+            u64 GetOwnerId() const { return m_OwnerId; }
+
         private:
             D3D12_HEAP_TYPE GetHeapType() const
             {
@@ -384,6 +387,7 @@ namespace Engine::RHI
 
         private:
             BufferDescription m_Description;
+            const u64 m_OwnerId;
             ComPtr<ID3D12Resource> m_Resource;
             void* m_MappedData = nullptr;
             D3D12_RESOURCE_STATES m_CurrentState = D3D12_RESOURCE_STATE_COMMON;
@@ -392,8 +396,8 @@ namespace Engine::RHI
         class NVRHID3D12Texture final : public Texture
         {
         public:
-            explicit NVRHID3D12Texture(TextureDescription description)
-                : m_Description(std::move(description))
+            NVRHID3D12Texture(TextureDescription description, u64 ownerId)
+                : m_Description(std::move(description)), m_OwnerId(ownerId)
             {
             }
 
@@ -491,6 +495,7 @@ namespace Engine::RHI
             D3D12_CPU_DESCRIPTOR_HANDLE GetDepthStencilView() const { return m_DepthStencilView; }
             D3D12_RESOURCE_STATES GetCurrentState() const { return m_CurrentState; }
             void SetCurrentState(D3D12_RESOURCE_STATES state) { m_CurrentState = state; }
+            u64 GetOwnerId() const { return m_OwnerId; }
 
         private:
             bool CreateOutputView(ID3D12Device* device, D3D12_DESCRIPTOR_HEAP_TYPE type)
@@ -522,6 +527,7 @@ namespace Engine::RHI
             }
 
             TextureDescription m_Description;
+            const u64 m_OwnerId;
             ComPtr<ID3D12Resource> m_Resource;
             ComPtr<ID3D12DescriptorHeap> m_RenderTargetDescriptorHeap;
             ComPtr<ID3D12DescriptorHeap> m_DepthStencilDescriptorHeap;
@@ -1192,6 +1198,7 @@ namespace Engine::RHI
             explicit NVRHID3D12Device(DeviceDescription description)
                 : m_Description(std::move(description))
                 , m_CompletionDeviceId(s_NextCompletionDeviceId.fetch_add(1))
+                , m_ResourceOwnerId(s_NextResourceOwnerId.fetch_add(1))
             {
             }
 
@@ -1261,7 +1268,7 @@ namespace Engine::RHI
 
             Scope<Buffer> CreateBuffer(const BufferDescription& description) override
             {
-                Scope<NVRHID3D12Buffer> buffer = CreateScope<NVRHID3D12Buffer>(description);
+                Scope<NVRHID3D12Buffer> buffer = CreateScope<NVRHID3D12Buffer>(description, m_ResourceOwnerId);
                 if (!buffer->Initialize(m_Device.Get()))
                     return nullptr;
 
@@ -1270,11 +1277,23 @@ namespace Engine::RHI
 
             Scope<Texture> CreateTexture(const TextureDescription& description) override
             {
-                Scope<NVRHID3D12Texture> texture = CreateScope<NVRHID3D12Texture>(description);
+                Scope<NVRHID3D12Texture> texture = CreateScope<NVRHID3D12Texture>(description, m_ResourceOwnerId);
                 if (!texture->Initialize(m_Device.Get()))
                     return nullptr;
 
                 return texture;
+            }
+
+            bool OwnsResource(const Buffer* resource) const override
+            {
+                const auto* buffer = dynamic_cast<const NVRHID3D12Buffer*>(resource);
+                return buffer && buffer->GetOwnerId() == m_ResourceOwnerId;
+            }
+
+            bool OwnsResource(const Texture* resource) const override
+            {
+                const auto* texture = dynamic_cast<const NVRHID3D12Texture*>(resource);
+                return texture && texture->GetOwnerId() == m_ResourceOwnerId;
             }
 
             Scope<Shader> CreateShader(const ShaderDescription& description) override
@@ -2038,6 +2057,7 @@ namespace Engine::RHI
             ComPtr<ID3D12CommandQueue> m_CopyQueue;
             std::array<QueueCompletion, 3> m_QueueCompletions;
             u64 m_CompletionDeviceId = 0;
+            const u64 m_ResourceOwnerId;
             u64 m_NextCompletionSubmissionId = 1;
             std::unordered_map<u64, CompletionEntry> m_CompletionEntries;
             nvrhi::DeviceHandle m_NVRHIDevice;

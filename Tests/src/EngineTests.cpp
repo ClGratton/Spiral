@@ -2152,6 +2152,83 @@ float4 main(VertexInput input) : SV_Position
             && Expect(issued.IsValid(), "completion token preserves opaque nonzero device and submission identities");
     }
 
+    class OwnershipTestBuffer final : public Engine::RHI::Buffer
+    {
+    public:
+        explicit OwnershipTestBuffer(Engine::u64 ownerId) : m_OwnerId(ownerId) {}
+        const Engine::RHI::BufferDescription& GetDescription() const override { return m_Description; }
+        void* Map() override { return nullptr; }
+        void Unmap() override {}
+        Engine::u64 OwnerId() const { return m_OwnerId; }
+    private:
+        Engine::RHI::BufferDescription m_Description;
+        Engine::u64 m_OwnerId;
+    };
+
+    class OwnershipTestTexture final : public Engine::RHI::Texture
+    {
+    public:
+        explicit OwnershipTestTexture(Engine::u64 ownerId) : m_OwnerId(ownerId) {}
+        const Engine::RHI::TextureDescription& GetDescription() const override { return m_Description; }
+        Engine::u64 OwnerId() const { return m_OwnerId; }
+    private:
+        Engine::RHI::TextureDescription m_Description;
+        Engine::u64 m_OwnerId;
+    };
+
+    class ForeignOwnershipTestBuffer final : public Engine::RHI::Buffer
+    {
+    public:
+        const Engine::RHI::BufferDescription& GetDescription() const override { return m_Description; }
+        void* Map() override { return nullptr; }
+        void Unmap() override {}
+    private:
+        Engine::RHI::BufferDescription m_Description;
+    };
+
+    class OwnershipTestDevice final : public Engine::RHI::Device
+    {
+    public:
+        explicit OwnershipTestDevice(Engine::u64 ownerId) : m_OwnerId(ownerId) {}
+        const Engine::RHI::DeviceDescription& GetDescription() const override { return m_Description; }
+        const Engine::RHI::DeviceCapabilities& GetCapabilities() const override { return m_Capabilities; }
+        Engine::Scope<Engine::RHI::Buffer> CreateBuffer(const Engine::RHI::BufferDescription&) override { return nullptr; }
+        Engine::Scope<Engine::RHI::Texture> CreateTexture(const Engine::RHI::TextureDescription&) override { return nullptr; }
+        bool OwnsResource(const Engine::RHI::Buffer* resource) const override { const auto* buffer = dynamic_cast<const OwnershipTestBuffer*>(resource); return buffer && buffer->OwnerId() == m_OwnerId; }
+        bool OwnsResource(const Engine::RHI::Texture* resource) const override { const auto* texture = dynamic_cast<const OwnershipTestTexture*>(resource); return texture && texture->OwnerId() == m_OwnerId; }
+        Engine::Scope<Engine::RHI::Shader> CreateShader(const Engine::RHI::ShaderDescription&) override { return nullptr; }
+        Engine::Scope<Engine::RHI::Pipeline> CreatePipeline(const Engine::RHI::PipelineDescription&) override { return nullptr; }
+        Engine::Scope<Engine::RHI::QueryPool> CreateQueryPool(const Engine::RHI::QueryPoolDescription&) override { return nullptr; }
+        Engine::Scope<Engine::RHI::CommandList> CreateCommandList(Engine::RHI::QueueType, std::string_view) override { return nullptr; }
+        bool UploadBuffer(Engine::RHI::Buffer&, const void*, Engine::u64, Engine::u64) override { return false; }
+        bool ReadbackTexture(Engine::RHI::Texture&, Engine::RHI::TextureReadback&) override { return false; }
+        Engine::RHI::CompletionToken Submit(Engine::RHI::CommandList&) override { return {}; }
+        Engine::RHI::CompletionStatus QueryCompletion(const Engine::RHI::CompletionToken&) override { return Engine::RHI::CompletionStatus::Invalid; }
+        bool WaitForCompletion(const Engine::RHI::CompletionToken&, Engine::u32) override { return false; }
+        bool SubmitAndWait(Engine::RHI::CommandList&) override { return false; }
+        void WaitIdle() override {}
+    private:
+        Engine::RHI::DeviceDescription m_Description;
+        Engine::RHI::DeviceCapabilities m_Capabilities;
+        Engine::u64 m_OwnerId;
+    };
+
+    bool TestRhiResourceOwnershipContract()
+    {
+        OwnershipTestDevice first(101), second(202);
+        OwnershipTestBuffer ownBuffer(101), foreignBuffer(202);
+        OwnershipTestTexture ownTexture(101), foreignTexture(202);
+        ForeignOwnershipTestBuffer foreignBackendBuffer;
+        return Expect(first.OwnsResource(&ownBuffer), "a device accepts its own buffer")
+            && Expect(first.OwnsResource(&ownTexture), "a device accepts its own texture")
+            && Expect(!first.OwnsResource(&foreignBuffer), "a same-backend different-device buffer is rejected")
+            && Expect(!first.OwnsResource(&foreignTexture), "a same-backend different-device texture is rejected")
+            && Expect(!first.OwnsResource(&foreignBackendBuffer), "a foreign-backend buffer is rejected")
+            && Expect(!first.OwnsResource(static_cast<const Engine::RHI::Buffer*>(nullptr)), "a null buffer is rejected")
+            && Expect(!first.OwnsResource(static_cast<const Engine::RHI::Texture*>(nullptr)), "a null texture is rejected")
+            && Expect(!second.OwnsResource(&ownBuffer), "ownership is exact-device rather than description-equivalent");
+    }
+
 }
 
 int main()
@@ -2167,6 +2244,7 @@ int main()
         { "Render graph rejects invalid declarations and cycles", TestRenderGraphRejectsInvalidDeclarationsAndCycles },
         { "RHI buffer transition contract rejects incompatible states", TestRhiBufferTransitionContract },
         { "RHI completion token contract rejects unissued identities", TestRhiCompletionTokenContract },
+        { "RHI resource ownership contract rejects null and foreign resources", TestRhiResourceOwnershipContract },
         { "JobSystem contains worker exceptions", TestJobSystemContainsWorkerExceptions },
         { "JobSystem inline fallback is reentrant", TestJobSystemInlineFallbackIsReentrant },
         { "JobSystem steals nested worker jobs", TestJobSystemStealsNestedWorkerJobs },

@@ -38,7 +38,7 @@ foreach ($Path in @($ResolvedCapturePath) + $SceneOriginCapturePaths) {
     }
 }
 
-$Output = & $Editor --capture-viewport --smoke-test --renderer-capability-smoke --scene-origin-raster-smoke --rhi-buffer-transition-smoke --rhi-completion-smoke 2>&1 | Tee-Object -Variable RenderLog
+$Output = & $Editor --capture-viewport --smoke-test --renderer-capability-smoke --scene-origin-raster-smoke --rhi-buffer-transition-smoke --rhi-completion-smoke --rhi-resource-ownership-smoke 2>&1 | Tee-Object -Variable RenderLog
 if ($LASTEXITCODE -ne 0) {
     throw "Editor render smoke run failed with exit code $LASTEXITCODE."
 }
@@ -58,6 +58,7 @@ $RequiredMarkers = @(
     "D3D12 scene origin raster smoke passed",
     "RHIBufferTransitionSmokeV1 backend=D3D12, invalid=rejected, lifecycle=pass, submission=pass, result=pass"
     "RHICompletionSmokeV1 backend=D3D12, tokenValidation=pass, query=nonblocking-"
+    "RHIResourceOwnershipSmokeV1 backend=D3D12, owned=pass, null=rejected, result=pass"
 )
 $JoinedLog = $RenderLog -join "`n"
 foreach ($Marker in $RequiredMarkers) {

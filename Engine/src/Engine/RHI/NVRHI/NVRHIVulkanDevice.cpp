@@ -21,6 +21,7 @@ namespace Engine::RHI
     namespace
     {
         std::atomic<u64> s_NextCompletionDeviceId { 1 };
+        std::atomic<u64> s_NextResourceOwnerId { 1 };
         bool HasBufferUsage(BufferUsage value, BufferUsage flag)
         {
             return (static_cast<u32>(value) & static_cast<u32>(flag)) != 0;
@@ -72,8 +73,8 @@ namespace Engine::RHI
         class VulkanBuffer final : public Buffer
         {
         public:
-            VulkanBuffer(BufferDescription description, nvrhi::BufferHandle buffer)
-                : m_Description(std::move(description)), m_Buffer(std::move(buffer)) {}
+            VulkanBuffer(BufferDescription description, nvrhi::BufferHandle buffer, u64 ownerId)
+                : m_Description(std::move(description)), m_Buffer(std::move(buffer)), m_OwnerId(ownerId) {}
             const BufferDescription& GetDescription() const override { return m_Description; }
             void* Map() override
             {
@@ -97,9 +98,11 @@ namespace Engine::RHI
             nvrhi::IBuffer* Native() const { return m_Buffer; }
             ResourceState GetCurrentState() const { return m_CurrentState; }
             void SetCurrentState(ResourceState state) { m_CurrentState = state; }
+            u64 GetOwnerId() const { return m_OwnerId; }
         private:
             BufferDescription m_Description;
             nvrhi::BufferHandle m_Buffer;
+            const u64 m_OwnerId;
             nvrhi::IDevice* m_Device = nullptr;
             bool m_Mapped = false;
             ResourceState m_CurrentState = ResourceState::Common;
@@ -108,13 +111,15 @@ namespace Engine::RHI
         class VulkanTexture final : public Texture
         {
         public:
-            VulkanTexture(TextureDescription description, nvrhi::TextureHandle texture)
-                : m_Description(std::move(description)), m_Texture(std::move(texture)) {}
+            VulkanTexture(TextureDescription description, nvrhi::TextureHandle texture, u64 ownerId)
+                : m_Description(std::move(description)), m_Texture(std::move(texture)), m_OwnerId(ownerId) {}
             const TextureDescription& GetDescription() const override { return m_Description; }
             nvrhi::ITexture* Native() const { return m_Texture; }
+            u64 GetOwnerId() const { return m_OwnerId; }
         private:
             TextureDescription m_Description;
             nvrhi::TextureHandle m_Texture;
+            const u64 m_OwnerId;
         };
 
         class VulkanShader final : public Shader
@@ -324,7 +329,8 @@ namespace Engine::RHI
                 nvrhi::vulkan::IDevice* completionDevice)
                 : m_Description(std::move(description)), m_Capabilities(std::move(capabilities)), m_Device(device)
                 , m_CompletionDevice(completionDevice)
-                , m_CompletionDeviceId(s_NextCompletionDeviceId.fetch_add(1)) {}
+                , m_CompletionDeviceId(s_NextCompletionDeviceId.fetch_add(1))
+                , m_ResourceOwnerId(s_NextResourceOwnerId.fetch_add(1)) {}
             const DeviceDescription& GetDescription() const override { return m_Description; }
             const DeviceCapabilities& GetCapabilities() const override { return m_Capabilities; }
             Scope<Buffer> CreateBuffer(const BufferDescription& description) override
@@ -341,7 +347,7 @@ namespace Engine::RHI
                 const ResourceState trackedInitialState = (description.InitialState == ResourceState::Common || description.InitialState == ResourceState::Unknown)
                     && HasBufferUsage(description.Usage, BufferUsage::CopyDest)
                     ? ResourceState::CopyDest : description.InitialState;
-                auto result = CreateScope<VulkanBuffer>(description, native);
+                auto result = CreateScope<VulkanBuffer>(description, native, m_ResourceOwnerId);
                 result->SetDevice(m_Device);
                 result->SetCurrentState(trackedInitialState == ResourceState::Unknown ? ResourceState::Common : trackedInitialState);
                 return result;
@@ -364,7 +370,17 @@ namespace Engine::RHI
                                 : nvrhi::ResourceStates::CopySource;
                 nvrhi::TextureDesc d; d.setWidth(description.Extent.Width).setHeight(description.Extent.Height).setMipLevels(1).setArraySize(1).setSampleCount(1).setFormat(format).setDebugName(description.DebugName).enableAutomaticStateTracking(initialState);
                 d.setIsRenderTarget(HasTextureUsage(description.Usage, TextureUsage::RenderTarget) || HasTextureUsage(description.Usage, TextureUsage::DepthStencil)).setIsUAV(HasTextureUsage(description.Usage, TextureUsage::UnorderedAccess)); d.isShaderResource = HasTextureUsage(description.Usage, TextureUsage::ShaderResource);
-                nvrhi::TextureHandle native = m_Device->createTexture(d); return native ? CreateScope<VulkanTexture>(description, native) : nullptr;
+                nvrhi::TextureHandle native = m_Device->createTexture(d); return native ? CreateScope<VulkanTexture>(description, native, m_ResourceOwnerId) : nullptr;
+            }
+            bool OwnsResource(const Buffer* resource) const override
+            {
+                const auto* buffer = dynamic_cast<const VulkanBuffer*>(resource);
+                return buffer && buffer->GetOwnerId() == m_ResourceOwnerId;
+            }
+            bool OwnsResource(const Texture* resource) const override
+            {
+                const auto* texture = dynamic_cast<const VulkanTexture*>(resource);
+                return texture && texture->GetOwnerId() == m_ResourceOwnerId;
             }
             Scope<Shader> CreateShader(const ShaderDescription& description) override
             {
@@ -494,6 +510,7 @@ namespace Engine::RHI
             nvrhi::IDevice* m_Device = nullptr;
             nvrhi::vulkan::IDevice* m_CompletionDevice = nullptr;
             u64 m_CompletionDeviceId = 0;
+            const u64 m_ResourceOwnerId;
             u64 m_NextCompletionSubmissionId = 1;
             std::unordered_map<u64, u64> m_CompletionEntries;
 
