@@ -29,7 +29,9 @@ If only part is complete, rewrite it as two lines. The narrow completed behavior
 
 ## Batched Roadmap Work
 
-Agents may integrate up to three small roadmap slices before a shared build and CI run when doing so avoids repeating an expensive build. A valid batch preserves roadmap order: the first unchecked item is included, every additional slice is immediately eligible, and no selected slice depends on unfinished work inside or before the batch.
+Agents may integrate a small batch before a shared build and CI run when doing so avoids repeating expensive verification, but extra agents are not automatic. Use the orchestration rules in [../AGENTS.md](../AGENTS.md): one Terra Medium owner per coherent vertical slice by default, additional agents only for independent value, explicitly disjoint scopes, and no duplicate orchestrator redo of delegated work.
+
+A valid batch preserves roadmap order: the first unchecked item is included, every additional slice is immediately eligible, and no selected slice depends on unfinished work inside or before the batch.
 
 Batch completion is evaluated per checkbox, not per build. Each slice must have distinct implementation ownership, focused behavior evidence, accurate current-state wording, and platform/backend scope. One passing build cannot check three items by itself. If only part of a batch meets its gate, check only that part and leave precise follow-up wording for the rest.
 
