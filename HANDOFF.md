@@ -4,6 +4,14 @@ Updated 2026-07-15. This file is a recovery aid, not roadmap authority; `PLAN.md
 
 ## Current Slice
 
+### Latest: Phase 3C D3D12 Texture Readback Parity Prerequisite
+
+The D3D12 readback prerequisite is implemented and checked in `PLAN.md`. `RHI::Device::ReadbackTexture` accepts only a live texture created by the exact D3D12 RHI device with a nonzero single-mip/layer/sample RGBA8 extent, `CopySource` usage, and already-finalized `CopySource` state. It rejects foreign/wrong-wrapper, depth, unsupported format, invalid shape, invalid footprint arithmetic, and wrong-state input before recording. The device derives the native copy footprint internally, uses an RHI-owned D3D12 command list and CPU-readback buffer, submits through `CompletionToken`, waits with a finite 5000 ms deadline, leaves the source in `CopySource`, and compacts each aligned native row into initialized CPU bytes (`RowPitchBytes=width*4`). No presentation/swapchain/ImGui capture bridge is called or duplicated.
+
+Focused real-device evidence is `RHITextureReadbackSmokeV1`, now required by `TestRender.ps1`: it clears a 3x2 RGBA8 offscreen color target through RHI, rejects an unfinalized texture and an R8 CopySource texture, then checks exact RGBA clear pixels, `RowPitchBytes=12`, and 24 bytes. `TestVulkan.ps1` is unchanged and remains the Vulkan/NVRHI clear/readback regression. Local Windows x86_64/MSVC Debug evidence passed: direct D3D12 smoke, `EngineTests` 41/41, `TestRender.ps1`, `TestVulkan.ps1`, `CheckCodeStyle.ps1`, `git diff --check`, and the Markdown-link audit. Hosted CI is pending the resulting push. No graph execution, cross-queue scheduling, transient allocation, or viewport adoption is part of this slice.
+
+The next ordered `PLAN.md` item is the frame/render-graph execution core.
+
 ### Latest: Phase 3C RHI Resource/Device Ownership Validation Prerequisite
 
 The ownership prerequisite is complete and checked in `PLAN.md`. `RHI::Device::OwnsResource` has texture and buffer overloads; D3D12 and Vulkan/NVRHI resource wrappers carry an immutable monotonic owner ID allocated per exact RHI device. Null, different-wrapper/backend, and same-backend different-device values return false without native handle exposure or graph policy. Wrapper lifetime is caller-owned: queries require a live resource and live device, and the monotonic identity never relies on native-pointer reuse.

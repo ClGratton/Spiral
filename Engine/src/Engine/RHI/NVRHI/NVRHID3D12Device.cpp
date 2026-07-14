@@ -867,6 +867,11 @@ namespace Engine::RHI
                 return m_CommandList;
             }
 
+            ID3D12GraphicsCommandList* GetNativeGraphicsCommandList() const
+            {
+                return m_CommandList;
+            }
+
             void BeginDebugMarker(std::string_view name) override
             {
                 (void)name;
@@ -1399,10 +1404,110 @@ namespace Engine::RHI
 
             bool ReadbackTexture(Texture& source, TextureReadback& destination) override
             {
-                (void)source;
-                (void)destination;
-                Log::Warn("D3D12 RHI texture readback is not implemented; presentation owns its existing capture path");
-                return false;
+                // Readback is deliberately restricted to the portable offscreen
+                // contract. The caller must have finalized the source state before
+                // this method records its own copy; this prevents a hidden native
+                // transition from changing graph-owned state behind RHI.
+                auto* texture = dynamic_cast<NVRHID3D12Texture*>(&source);
+                const TextureDescription& description = source.GetDescription();
+                if (!texture || !OwnsResource(&source)
+                    || description.TextureFormat != Format::R8G8B8A8Unorm
+                    || !HasTextureUsage(description.Usage, TextureUsage::CopySource)
+                    || HasTextureUsage(description.Usage, TextureUsage::DepthStencil)
+                    || description.Extent.Width == 0 || description.Extent.Height == 0
+                    || description.MipLevels != 1 || description.ArrayLayers != 1 || description.SampleCount != 1
+                    || texture->GetCurrentState() != D3D12_RESOURCE_STATE_COPY_SOURCE
+                    || !texture->GetResource())
+                    return false;
+
+                const D3D12_RESOURCE_DESC sourceDescription = texture->GetResource()->GetDesc();
+                if (sourceDescription.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D
+                    || sourceDescription.Format != DXGI_FORMAT_R8G8B8A8_UNORM
+                    || sourceDescription.MipLevels != 1 || sourceDescription.DepthOrArraySize != 1
+                    || sourceDescription.SampleDesc.Count != 1 || sourceDescription.Width != description.Extent.Width
+                    || sourceDescription.Height != description.Extent.Height)
+                    return false;
+
+                constexpr u64 bytesPerPixel = 4;
+                if (description.Extent.Width > std::numeric_limits<u64>::max() / bytesPerPixel)
+                    return false;
+                const u64 tightRowPitch = static_cast<u64>(description.Extent.Width) * bytesPerPixel;
+                if (tightRowPitch == 0 || tightRowPitch > std::numeric_limits<u32>::max()
+                    || description.Extent.Height > std::numeric_limits<u64>::max() / tightRowPitch)
+                    return false;
+                const u64 tightDataSize = tightRowPitch * static_cast<u64>(description.Extent.Height);
+
+                D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint {};
+                UINT rowCount = 0;
+                UINT64 rowSize = 0;
+                UINT64 readbackSize = 0;
+                m_Device->GetCopyableFootprints(&sourceDescription, 0, 1, 0, &footprint, &rowCount, &rowSize, &readbackSize);
+                if (rowCount != description.Extent.Height || rowSize != tightRowPitch
+                    || footprint.Footprint.RowPitch < tightRowPitch || readbackSize == 0
+                    || footprint.Offset > std::numeric_limits<u64>::max() - tightRowPitch
+                    || description.Extent.Height - 1 > (std::numeric_limits<u64>::max() - footprint.Offset - tightRowPitch)
+                        / footprint.Footprint.RowPitch)
+                    return false;
+                const u64 requiredReadbackBytes = footprint.Offset
+                    + static_cast<u64>(description.Extent.Height - 1) * footprint.Footprint.RowPitch + tightRowPitch;
+                if (requiredReadbackBytes > readbackSize)
+                    return false;
+
+                BufferDescription readbackDescription;
+                readbackDescription.DebugName = description.DebugName + " RHI Readback";
+                readbackDescription.SizeBytes = readbackSize;
+                readbackDescription.Usage = BufferUsage::CopyDest;
+                readbackDescription.CpuAccess = BufferCpuAccess::Read;
+                Scope<Buffer> readbackBuffer = CreateBuffer(readbackDescription);
+                auto* nativeReadbackBuffer = readbackBuffer ? dynamic_cast<NVRHID3D12Buffer*>(readbackBuffer.get()) : nullptr;
+                if (!nativeReadbackBuffer || !nativeReadbackBuffer->GetResource())
+                    return false;
+
+                Scope<CommandList> commandList = CreateCommandList(QueueType::Graphics, readbackDescription.DebugName);
+                auto* nativeCommandList = commandList ? dynamic_cast<NVRHID3D12CommandList*>(commandList.get()) : nullptr;
+                if (!nativeCommandList || !commandList->Begin())
+                    return false;
+
+                D3D12_TEXTURE_COPY_LOCATION destinationLocation {};
+                destinationLocation.pResource = nativeReadbackBuffer->GetResource();
+                destinationLocation.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+                destinationLocation.PlacedFootprint = footprint;
+                D3D12_TEXTURE_COPY_LOCATION sourceLocation {};
+                sourceLocation.pResource = texture->GetResource();
+                sourceLocation.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+                sourceLocation.SubresourceIndex = 0;
+                nativeCommandList->GetNativeGraphicsCommandList()->CopyTextureRegion(&destinationLocation, 0, 0, 0, &sourceLocation, nullptr);
+
+                if (!commandList->End())
+                    return false;
+                const CompletionToken token = Submit(*commandList);
+                if (!token.IsValid() || !WaitForCompletion(token, 5000))
+                    return false;
+
+                void* mapped = readbackBuffer->Map();
+                if (!mapped)
+                    return false;
+                struct ScopedBufferUnmap final
+                {
+                    Buffer* Buffer = nullptr;
+                    ~ScopedBufferUnmap() { if (Buffer) Buffer->Unmap(); }
+                } unmap { readbackBuffer.get() };
+
+                if (tightDataSize > std::numeric_limits<size_t>::max()
+                    || footprint.Footprint.RowPitch > std::numeric_limits<size_t>::max() / description.Extent.Height)
+                    return false;
+                TextureReadback readback;
+                readback.Extent = description.Extent;
+                readback.TextureFormat = description.TextureFormat;
+                readback.RowPitchBytes = static_cast<u32>(tightRowPitch);
+                readback.Data.resize(static_cast<size_t>(tightDataSize));
+                const auto* sourceBytes = static_cast<const u8*>(mapped);
+                for (u32 row = 0; row < description.Extent.Height; ++row)
+                    std::memcpy(readback.Data.data() + static_cast<size_t>(row) * readback.RowPitchBytes,
+                        sourceBytes + static_cast<size_t>(row) * footprint.Footprint.RowPitch,
+                        readback.RowPitchBytes);
+                destination = std::move(readback);
+                return true;
             }
 
             CompletionToken Submit(CommandList& commandList) override

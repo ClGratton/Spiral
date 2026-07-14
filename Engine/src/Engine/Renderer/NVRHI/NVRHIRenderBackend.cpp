@@ -142,6 +142,12 @@ namespace Engine
                 m_Device.reset();
                 return false;
             }
+            if (args.HasFlag("--rhi-texture-readback-smoke") && !RunRHITextureReadbackSmoke(*m_Device, "D3D12"))
+            {
+                Log::Error("D3D12 RHI texture-readback smoke failed");
+                m_Device.reset();
+                return false;
+            }
             return true;
         }
 
@@ -483,6 +489,66 @@ namespace Engine
         Log::Info("RHIResourceOwnershipSmokeV1 backend=", backendName,
             ", owned=", owned ? "pass" : "fail",
             ", null=rejected", nullRejected ? "" : "-failed",
+            ", result=", passed ? "pass" : "fail");
+        return passed;
+    }
+
+    bool NVRHIRenderBackend::RunRHITextureReadbackSmoke(RHI::Device& device, std::string_view backendName)
+    {
+        constexpr u32 width = 3;
+        constexpr u32 height = 2;
+        RHI::TextureDescription colorDescription;
+        colorDescription.DebugName = "RHITextureReadbackSmokeV1 Color";
+        colorDescription.Extent = { width, height };
+        colorDescription.TextureFormat = RHI::Format::R8G8B8A8Unorm;
+        colorDescription.Usage = static_cast<RHI::TextureUsage>(
+            static_cast<u32>(RHI::TextureUsage::RenderTarget) | static_cast<u32>(RHI::TextureUsage::CopySource));
+        Scope<RHI::Texture> color = device.CreateTexture(colorDescription);
+        RHI::TextureReadback rejectedStateResult;
+        const bool rejectedState = color && !device.ReadbackTexture(*color, rejectedStateResult);
+
+        RHI::TextureDescription unsupportedDescription = colorDescription;
+        unsupportedDescription.DebugName = "RHITextureReadbackSmokeV1 Unsupported";
+        unsupportedDescription.TextureFormat = RHI::Format::R8Unorm;
+        unsupportedDescription.InitialState = RHI::ResourceState::CopySource;
+        Scope<RHI::Texture> unsupported = device.CreateTexture(unsupportedDescription);
+        const bool rejectedFormat = unsupported && !device.ReadbackTexture(*unsupported, rejectedStateResult);
+
+        RHI::TextureDescription depthDescription;
+        depthDescription.DebugName = "RHITextureReadbackSmokeV1 Depth";
+        depthDescription.Extent = { width, height };
+        depthDescription.TextureFormat = RHI::Format::D32Float;
+        depthDescription.Usage = RHI::TextureUsage::DepthStencil;
+        Scope<RHI::Texture> depth = device.CreateTexture(depthDescription);
+        Scope<RHI::CommandList> list = color && depth ? device.CreateCommandList(RHI::QueueType::Graphics, "RHITextureReadbackSmokeV1") : nullptr;
+        RHI::ViewportClear clear;
+        clear.Color[0] = 0.25f;
+        clear.Color[1] = 0.5f;
+        clear.Color[2] = 0.75f;
+        clear.Color[3] = 1.0f;
+        clear.ClearDepth = false;
+        const bool draw = list && list->Begin() && list->BindViewportOutputs(*color, depth.get())
+            && list->ClearViewportOutputs(clear)
+            && list->TransitionTexture(*color, RHI::ResourceState::CopySource)
+            && list->End() && device.SubmitAndWait(*list);
+        RHI::TextureReadback readback;
+        const bool readbackOk = draw && device.ReadbackTexture(*color, readback);
+        const std::array<u8, 4> expected { 64u, 128u, 191u, 255u };
+        bool pixelsOk = readbackOk && readback.Extent.Width == width && readback.Extent.Height == height
+            && readback.TextureFormat == RHI::Format::R8G8B8A8Unorm && readback.RowPitchBytes == width * 4
+            && readback.Data.size() == static_cast<size_t>(readback.RowPitchBytes) * height;
+        for (u32 y = 0; pixelsOk && y < height; ++y)
+            for (u32 x = 0; pixelsOk && x < width; ++x)
+                for (u32 channel = 0; channel < expected.size(); ++channel)
+                    if (std::abs(static_cast<int>(readback.Data[static_cast<size_t>(y) * readback.RowPitchBytes + x * 4 + channel]) - expected[channel]) > 1)
+                        pixelsOk = false;
+        const bool passed = rejectedState && rejectedFormat && pixelsOk;
+        Log::Info("RHITextureReadbackSmokeV1 backend=", backendName,
+            ", invalidState=", rejectedState ? "rejected" : "accepted",
+            ", unsupportedFormat=", rejectedFormat ? "rejected" : "accepted",
+            ", submit=", draw ? "pass" : "fail",
+            ", readback=", readbackOk ? "pass" : "fail",
+            ", layout=", pixelsOk ? "tight" : "invalid",
             ", result=", passed ? "pass" : "fail");
         return passed;
     }
