@@ -17,7 +17,7 @@ if (!(Test-Path $Executable)) {
     throw "Vulkan smoke executable was not found: $Executable"
 }
 
-$Output = & $Executable --vulkan-render-smoke --renderer-capability-smoke 2>&1 | Tee-Object -Variable VulkanLog
+$Output = & $Executable --vulkan-render-smoke --renderer-capability-smoke --vulkan-rhi-core-smoke 2>&1 | Tee-Object -Variable VulkanLog
 if ($LASTEXITCODE -ne 0) {
     throw "Vulkan render smoke failed with exit code $LASTEXITCODE."
 }
@@ -35,7 +35,8 @@ $RequiredMarkers = @(
     "Vulkan swapchain and ImGui presentation initialized",
     "Vulkan render smoke requested window resize",
     "Vulkan swapchain recreated after window resize",
-    "Vulkan render smoke verified native ImGui presentation after resize"
+    "Vulkan render smoke verified native ImGui presentation after resize",
+    "VulkanRHICoreV1"
 )
 
 $JoinedLog = $VulkanLog -join "`n"

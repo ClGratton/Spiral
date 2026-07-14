@@ -1312,6 +1312,14 @@ namespace Engine::RHI
                 return SubmitAndWait(*commandList);
             }
 
+            bool ReadbackTexture(Texture& source, TextureReadback& destination) override
+            {
+                (void)source;
+                (void)destination;
+                Log::Warn("D3D12 RHI texture readback is not implemented; presentation owns its existing capture path");
+                return false;
+            }
+
             bool SubmitAndWait(CommandList& commandList) override
             {
                 auto* nativeCommandList = dynamic_cast<NVRHID3D12CommandList*>(&commandList);

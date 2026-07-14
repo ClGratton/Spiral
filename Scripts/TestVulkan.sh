@@ -84,6 +84,7 @@ REQUIRED_MARKERS=(
     "Vulkan render smoke requested window resize"
     "Vulkan swapchain recreated after window resize"
     "Vulkan render smoke verified native ImGui presentation after resize"
+    "VulkanRHICoreV1"
 )
 
 if [[ "$SYSTEM_DIR" == "macosx" ]]; then
@@ -102,7 +103,7 @@ for ((ATTEMPT = 1; ATTEMPT <= ITERATIONS; ++ATTEMPT)); do
 
     echo "Vulkan render smoke attempt $ATTEMPT/$ITERATIONS"
     set +e
-    (cd "$ROOT" && "$EDITOR" --vulkan-render-smoke --renderer-capability-smoke) 2>&1 | tee "$LOG_FILE"
+    (cd "$ROOT" && "$EDITOR" --vulkan-render-smoke --renderer-capability-smoke --vulkan-rhi-core-smoke) 2>&1 | tee "$LOG_FILE"
     STATUS=${PIPESTATUS[0]}
     set -e
     if [[ $STATUS -ne 0 ]]; then

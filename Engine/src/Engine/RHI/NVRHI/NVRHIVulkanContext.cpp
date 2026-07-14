@@ -1,4 +1,5 @@
 #include "Engine/RHI/NVRHI/NVRHIVulkanContext.h"
+#include "Engine/RHI/NVRHI/NVRHIVulkanDevice.h"
 
 #if defined(GE_HAS_NVRHI_VULKAN)
     #define VK_ENABLE_BETA_EXTENSIONS
@@ -291,6 +292,12 @@ namespace Engine::RHI
             m_NativeHandles.GraphicsQueue = m_GraphicsQueue;
             m_NativeHandles.NVRHIDevice = m_NVRHIDevice.Get();
             m_NativeHandles.GraphicsQueueFamily = m_GraphicsQueueFamily;
+            m_RHIDevice = CreateNVRHIVulkanDevice(description, m_Capabilities, m_NVRHIDevice.Get());
+            if (!m_RHIDevice)
+            {
+                Log::Error("Could not create the Engine::RHI wrapper around the NVRHI Vulkan device");
+                return false;
+            }
             m_Initialized = true;
 
             Log::Info("NVRHI Vulkan device created on adapter: ", adapterInfo.AdapterName);
@@ -329,6 +336,7 @@ namespace Engine::RHI
         {
 #if defined(GE_HAS_NVRHI_VULKAN)
             WaitIdle();
+            m_RHIDevice.reset();
             m_NVRHIDevice.Reset();
             m_NativeNVRHIDevice.Reset();
 
@@ -766,6 +774,7 @@ namespace Engine::RHI
         NVRHIVulkanMessageCallback m_MessageCallback;
         nvrhi::vulkan::DeviceHandle m_NativeNVRHIDevice;
         nvrhi::DeviceHandle m_NVRHIDevice;
+        Scope<Device> m_RHIDevice;
 #endif
         NVRHIVulkanNativeHandles m_NativeHandles;
         DeviceCapabilities m_Capabilities;
@@ -813,6 +822,11 @@ namespace Engine::RHI
     const DeviceCapabilities& NVRHIVulkanContext::GetCapabilities() const
     {
         return m_Impl->m_Capabilities;
+    }
+
+    Device* NVRHIVulkanContext::GetRHIDevice() const
+    {
+        return m_Impl->m_RHIDevice.get();
     }
 
     void* NVRHIVulkanContext::GetInstanceProcAddress(const char* name) const

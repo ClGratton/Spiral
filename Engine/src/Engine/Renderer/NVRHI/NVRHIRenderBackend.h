@@ -29,6 +29,7 @@ namespace Engine
         bool PrepareViewportTexture(u32 width, u32 height);
         u64 GetViewportTextureId() const;
         bool CaptureViewportToFile(std::string_view path);
+        bool RunVulkanRHICoreSmoke();
 
         const RHI::NVRHIAdapterInfo& GetAdapterInfo() const { return m_AdapterInfo; }
         RendererBackend GetRendererBackend() const { return m_RendererBackend; }

@@ -3,6 +3,7 @@
 #include "Engine/RHI/RHICommon.h"
 
 #include <string>
+#include <vector>
 
 namespace Engine::RHI
 {
@@ -28,6 +29,16 @@ namespace Engine::RHI
         u32 MipLevels = 1;
         u32 ArrayLayers = 1;
         u32 SampleCount = 1;
+    };
+
+    // A CPU-owned copy of one tightly-addressable texture subresource. Backends may
+    // expose a larger native row pitch; consumers must use RowPitchBytes.
+    struct TextureReadback
+    {
+        Extent2D Extent;
+        Format TextureFormat = Format::Unknown;
+        u32 RowPitchBytes = 0;
+        std::vector<u8> Data;
     };
 
     class Texture

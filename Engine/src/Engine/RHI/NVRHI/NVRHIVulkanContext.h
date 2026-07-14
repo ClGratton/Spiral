@@ -30,6 +30,7 @@ namespace Engine::RHI
         bool IsInitialized() const;
         const NVRHIVulkanNativeHandles& GetNativeHandles() const;
         const DeviceCapabilities& GetCapabilities() const;
+        Device* GetRHIDevice() const;
         void* GetInstanceProcAddress(const char* name) const;
 
     private:

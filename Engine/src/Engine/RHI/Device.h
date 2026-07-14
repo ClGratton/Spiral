@@ -95,6 +95,7 @@ namespace Engine::RHI
         virtual Scope<QueryPool> CreateQueryPool(const QueryPoolDescription& description) = 0;
         virtual Scope<CommandList> CreateCommandList(QueueType queueType, std::string_view debugName) = 0;
         virtual bool UploadBuffer(Buffer& destination, const void* sourceData, u64 sizeBytes, u64 destinationOffset = 0) = 0;
+        virtual bool ReadbackTexture(Texture& source, TextureReadback& destination) = 0;
         virtual bool SubmitAndWait(CommandList& commandList) = 0;
 
         virtual void WaitIdle() = 0;

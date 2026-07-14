@@ -4,6 +4,9 @@
 #include "Engine/Core/Application.h"
 #include "Engine/RHI/NVRHI/NVRHID3D12Device.h"
 
+#include <algorithm>
+#include <cmath>
+
 namespace Engine
 {
     const char* NVRHIRenderBackend::GetName() const
@@ -52,6 +55,13 @@ namespace Engine
             }
 
             m_RendererBackend = RendererBackend::NVRHIVulkan;
+            if (args.HasFlag("--vulkan-rhi-core-smoke") && !RunVulkanRHICoreSmoke())
+            {
+                Log::Error("Vulkan RHI core smoke failed");
+                m_VulkanContext->Shutdown();
+                m_VulkanContext.reset();
+                return false;
+            }
             return true;
         }
 
@@ -198,5 +208,65 @@ namespace Engine
     bool NVRHIRenderBackend::CaptureViewportToFile(std::string_view path)
     {
         return m_D3D12Presentation && m_D3D12Presentation->CaptureViewportToFile(path);
+    }
+
+    bool NVRHIRenderBackend::RunVulkanRHICoreSmoke()
+    {
+        RHI::Device* device = m_VulkanContext ? m_VulkanContext->GetRHIDevice() : nullptr;
+        constexpr u32 width = 16;
+        constexpr u32 height = 12;
+        if (!device)
+            return false;
+
+        RHI::BufferDescription bufferDescription;
+        bufferDescription.DebugName = "VulkanRHICoreV1 Upload";
+        bufferDescription.SizeBytes = sizeof(u32);
+        bufferDescription.Usage = RHI::BufferUsage::CopyDest;
+        Scope<RHI::Buffer> uploadBuffer = device->CreateBuffer(bufferDescription);
+        const u32 uploadValue = 0x564B5248u;
+        const bool bufferUpload = uploadBuffer
+            && device->UploadBuffer(*uploadBuffer, &uploadValue, sizeof(uploadValue));
+        RHI::TextureDescription colorDescription;
+        colorDescription.DebugName = "VulkanRHICoreV1 Color";
+        colorDescription.Extent = { width, height };
+        colorDescription.TextureFormat = RHI::Format::R8G8B8A8Unorm;
+        colorDescription.Usage = static_cast<RHI::TextureUsage>(
+            static_cast<u32>(RHI::TextureUsage::RenderTarget) | static_cast<u32>(RHI::TextureUsage::CopySource));
+        Scope<RHI::Texture> color = device->CreateTexture(colorDescription);
+        RHI::TextureDescription depthDescription;
+        depthDescription.DebugName = "VulkanRHICoreV1 Depth";
+        depthDescription.Extent = { width, height };
+        depthDescription.TextureFormat = RHI::Format::D32Float;
+        depthDescription.Usage = RHI::TextureUsage::DepthStencil;
+        Scope<RHI::Texture> depth = device->CreateTexture(depthDescription);
+        Scope<RHI::CommandList> list = device->CreateCommandList(RHI::QueueType::Graphics, "VulkanRHICoreV1 Clear");
+        RHI::ViewportClear clear;
+        clear.Color[0] = 0.25f;
+        clear.Color[1] = 0.5f;
+        clear.Color[2] = 0.75f;
+        clear.Color[3] = 1.0f;
+        const bool submitted = bufferUpload && color && depth && list && list->Begin()
+            && list->BindViewportOutputs(*color, depth.get())
+            && list->TransitionTexture(*color, RHI::ResourceState::RenderTarget)
+            && list->TransitionTexture(*depth, RHI::ResourceState::DepthWrite)
+            && list->ClearViewportOutputs(clear)
+            && list->TransitionTexture(*color, RHI::ResourceState::CopySource)
+            && list->End() && device->SubmitAndWait(*list);
+        RHI::TextureReadback readback;
+        const bool readbackOk = submitted && device->ReadbackTexture(*color, readback);
+        bool pixelsOk = readbackOk && readback.Extent.Width == width && readback.Extent.Height == height
+            && readback.RowPitchBytes >= width * 4 && readback.Data.size() >= static_cast<size_t>(readback.RowPitchBytes) * height;
+        const u8 expected[] { 64u, 128u, 191u, 255u };
+        for (u32 y = 0; y < height && pixelsOk; ++y)
+            for (u32 x = 0; x < width && pixelsOk; ++x)
+                for (u32 channel = 0; channel < 4; ++channel)
+                    if (std::abs(static_cast<int>(readback.Data[y * readback.RowPitchBytes + x * 4 + channel]) - expected[channel]) > 1)
+                        pixelsOk = false;
+        const RHI::DeviceCapabilities& capabilities = device->GetCapabilities();
+        Log::Info("VulkanRHICoreV1 adapter=", capabilities.Identity.Name,
+            ", deviceClass=", RHI::ToString(capabilities.Identity.Type), ", size=", width, "x", height,
+            ", bufferUpload=", bufferUpload ? "pass" : "fail", ", clear=", submitted ? "pass" : "fail", ", readback=", readbackOk ? "pass" : "fail",
+            ", pixels=", pixelsOk ? "pass" : "fail", ", nvrhiSubmission=", submitted ? "pass" : "fail");
+        return pixelsOk;
     }
 }
