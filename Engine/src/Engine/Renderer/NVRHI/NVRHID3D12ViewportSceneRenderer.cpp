@@ -95,11 +95,10 @@ namespace Engine
 
     struct NVRHID3D12ViewportSceneRenderer::Impl
     {
-        bool Initialize(ID3D12Device* device, RHI::Device* rhiDevice)
+        bool Initialize(RHI::Device* rhiDevice)
         {
-            m_Device = device;
             m_RHIDevice = rhiDevice;
-            if (!m_Device || !m_RHIDevice)
+            if (!m_RHIDevice)
                 return false;
 
             if (!RequestInitialPipeline())
@@ -131,40 +130,31 @@ namespace Engine
             m_ShaderPackages.reset();
             m_IndexCount = 0;
             m_RHIDevice = nullptr;
-            m_Device = nullptr;
         }
 
         bool Render(
-            ID3D12GraphicsCommandList* commandList,
-            ID3D12Resource* colorTexture,
-            D3D12_RESOURCE_STATES& colorState,
-            D3D12_CPU_DESCRIPTOR_HANDLE colorRtv,
-            ID3D12Resource* depthTexture,
-            D3D12_CPU_DESCRIPTOR_HANDLE depthDsv,
+            RHI::CommandList& commandList,
+            RHI::Texture& colorTexture,
+            RHI::Texture& depthTexture,
             u32 width,
             u32 height,
             u32 frameSlot,
             const ClearColor& clearColor)
         {
-            if (!commandList || !colorTexture || !depthTexture || width == 0 || height == 0)
+            if (width == 0 || height == 0)
                 return false;
 
             PollShaderCompilation();
             PollShaderHotReload();
 
-            ScopedD3D12Marker marker(commandList, "Viewport Scene Snapshot Pass");
-
-            if (colorState != D3D12_RESOURCE_STATE_RENDER_TARGET)
-            {
-                D3D12_RESOURCE_BARRIER toRenderTarget = TransitionBarrier(colorTexture, colorState, D3D12_RESOURCE_STATE_RENDER_TARGET);
-                commandList->ResourceBarrier(1, &toRenderTarget);
-                colorState = D3D12_RESOURCE_STATE_RENDER_TARGET;
-            }
-
-            const float clear[4] = { clearColor.R, clearColor.G, clearColor.B, clearColor.A };
-            commandList->OMSetRenderTargets(1, &colorRtv, FALSE, &depthDsv);
-            commandList->ClearRenderTargetView(colorRtv, clear, 0, nullptr);
-            commandList->ClearDepthStencilView(depthDsv, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
+            commandList.BeginDebugMarker("Viewport Scene Snapshot Pass");
+            RHI::ViewportClear clear;
+            clear.Color[0] = clearColor.R;
+            clear.Color[1] = clearColor.G;
+            clear.Color[2] = clearColor.B;
+            clear.Color[3] = clearColor.A;
+            if (!commandList.BindViewportOutputs(colorTexture, &depthTexture) || !commandList.ClearViewportOutputs(clear))
+                return false;
 
             SceneRasterFrame rasterFrame;
             const std::shared_ptr<const SceneRenderSnapshot> snapshot = Renderer::GetSceneRenderSnapshot();
@@ -193,21 +183,12 @@ namespace Engine
                 }
                 else
                 {
-                    Scope<RHI::CommandList> rhiCommandList = RHI::WrapNVRHID3D12CommandList(
-                        RHI::QueueType::Graphics,
-                        commandList,
-                        "Editor Viewport Scene Snapshot Command Bridge");
-                    if (!rhiCommandList)
                     {
-                        renderSucceeded = false;
-                    }
-                    else
-                    {
-                        rhiCommandList->SetGraphicsPipeline(*m_Pipeline);
-                        rhiCommandList->SetViewport({ 0.0f, 0.0f, static_cast<float>(width), static_cast<float>(height), 0.0f, 1.0f });
-                        rhiCommandList->SetScissorRect({ 0, 0, static_cast<int>(width), static_cast<int>(height) });
-                        rhiCommandList->SetVertexBuffer(0, *m_VertexBuffer);
-                        rhiCommandList->SetIndexBuffer(*m_IndexBuffer, RHI::IndexFormat::Uint16);
+                        commandList.SetGraphicsPipeline(*m_Pipeline);
+                        commandList.SetViewport({ 0.0f, 0.0f, static_cast<float>(width), static_cast<float>(height), 0.0f, 1.0f });
+                        commandList.SetScissorRect({ 0, 0, static_cast<int>(width), static_cast<int>(height) });
+                        commandList.SetVertexBuffer(0, *m_VertexBuffer);
+                        commandList.SetIndexBuffer(*m_IndexBuffer, RHI::IndexFormat::Uint16);
                         std::vector<ConstantBufferAllocation>& constantBuffers = m_FrameConstantBuffers[frameSlot];
                         for (size_t index = 0; index < rasterFrame.Instances.size(); ++index)
                         {
@@ -217,17 +198,16 @@ namespace Engine
                                 rasterFrame.Instances[index].ModelViewProjection.Values,
                                 sizeof(constants.ViewProjection));
                             std::memcpy(constantBuffers[index].Mapped, &constants, sizeof(constants));
-                            rhiCommandList->SetGraphicsConstantBuffer(0, *constantBuffers[index].Buffer);
-                            rhiCommandList->DrawIndexed(m_IndexCount, 1, 0, 0, 0);
+                            commandList.SetGraphicsConstantBuffer(0, *constantBuffers[index].Buffer);
+                            commandList.DrawIndexed(m_IndexCount, 1, 0, 0, 0);
                             ++rasterFrame.IssuedDrawCount;
                         }
                     }
                 }
             }
 
-            D3D12_RESOURCE_BARRIER toShaderResource = TransitionBarrier(colorTexture, colorState, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
-            commandList->ResourceBarrier(1, &toShaderResource);
-            colorState = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+            renderSucceeded = commandList.TransitionTexture(colorTexture, RHI::ResourceState::ShaderResource) && renderSucceeded;
+            commandList.EndDebugMarker();
             Renderer::PublishSceneRasterFrame(std::move(rasterFrame));
             return renderSucceeded;
         }
@@ -565,7 +545,6 @@ namespace Engine
             }
         }
 
-        ID3D12Device* m_Device = nullptr;
         RHI::Device* m_RHIDevice = nullptr;
         Scope<RHI::Pipeline> m_Pipeline;
         Scope<RHI::Shader> m_VertexShader;
@@ -590,10 +569,10 @@ namespace Engine
         Shutdown();
     }
 
-    bool NVRHID3D12ViewportSceneRenderer::Initialize(ID3D12Device* device, RHI::Device* rhiDevice)
+    bool NVRHID3D12ViewportSceneRenderer::Initialize(RHI::Device* rhiDevice)
     {
         m_Impl = CreateScope<Impl>();
-        if (m_Impl->Initialize(device, rhiDevice))
+        if (m_Impl->Initialize(rhiDevice))
             return true;
 
         m_Impl.reset();
@@ -610,12 +589,9 @@ namespace Engine
     }
 
     bool NVRHID3D12ViewportSceneRenderer::Render(
-        ID3D12GraphicsCommandList* commandList,
-        ID3D12Resource* colorTexture,
-        D3D12_RESOURCE_STATES& colorState,
-        D3D12_CPU_DESCRIPTOR_HANDLE colorRtv,
-        ID3D12Resource* depthTexture,
-        D3D12_CPU_DESCRIPTOR_HANDLE depthDsv,
+        RHI::CommandList& commandList,
+        RHI::Texture& colorTexture,
+        RHI::Texture& depthTexture,
         u32 width,
         u32 height,
         u32 frameSlot,
@@ -624,10 +600,7 @@ namespace Engine
         return m_Impl && m_Impl->Render(
             commandList,
             colorTexture,
-            colorState,
-            colorRtv,
             depthTexture,
-            depthDsv,
             width,
             height,
             frameSlot,

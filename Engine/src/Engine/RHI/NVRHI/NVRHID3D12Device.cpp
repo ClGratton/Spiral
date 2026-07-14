@@ -454,6 +454,8 @@ namespace Engine::RHI
                 if (!name.empty())
                     m_Resource->SetName(name.c_str());
 
+                m_CurrentState = ConvertResourceState(m_Description.InitialState);
+
                 return true;
             }
 
@@ -467,9 +469,13 @@ namespace Engine::RHI
                 return m_Resource.Get();
             }
 
+            D3D12_RESOURCE_STATES GetCurrentState() const { return m_CurrentState; }
+            void SetCurrentState(D3D12_RESOURCE_STATES state) { m_CurrentState = state; }
+
         private:
             TextureDescription m_Description;
             ComPtr<ID3D12Resource> m_Resource;
+            D3D12_RESOURCE_STATES m_CurrentState = D3D12_RESOURCE_STATE_COMMON;
         };
 
         class NVRHID3D12Shader final : public Shader
@@ -708,9 +714,10 @@ namespace Engine::RHI
                 Error
             };
 
-            NVRHID3D12CommandList(QueueType queueType, ID3D12GraphicsCommandList* commandList, std::string debugName)
+            NVRHID3D12CommandList(QueueType queueType, ID3D12GraphicsCommandList* commandList, ID3D12Device* device, std::string debugName)
                 : m_QueueType(queueType)
                 , m_CommandList(commandList)
+                , m_Device(device)
                 , m_DebugName(std::move(debugName))
             {
             }
@@ -719,11 +726,13 @@ namespace Engine::RHI
                 QueueType queueType,
                 ComPtr<ID3D12CommandAllocator> commandAllocator,
                 ComPtr<ID3D12GraphicsCommandList> commandList,
+                ID3D12Device* device,
                 std::string debugName)
                 : m_QueueType(queueType)
                 , m_CommandAllocator(std::move(commandAllocator))
                 , m_OwnedCommandList(std::move(commandList))
                 , m_CommandList(m_OwnedCommandList.Get())
+                , m_Device(device)
                 , m_DebugName(std::move(debugName))
             {
             }
@@ -797,6 +806,61 @@ namespace Engine::RHI
 
             void EndDebugMarker() override
             {
+            }
+
+            bool BindViewportOutputs(Texture& colorTarget, Texture* depthTarget) override
+            {
+                if (!m_CommandList || !m_Device || !depthTarget)
+                    return false;
+                auto* color = dynamic_cast<NVRHID3D12Texture*>(&colorTarget);
+                auto* depth = dynamic_cast<NVRHID3D12Texture*>(depthTarget);
+                if (!color || !depth || !HasTextureUsage(colorTarget.GetDescription().Usage, TextureUsage::RenderTarget)
+                    || !HasTextureUsage(depthTarget->GetDescription().Usage, TextureUsage::DepthStencil))
+                    return false;
+                if (!TransitionTexture(colorTarget, ResourceState::RenderTarget) || !TransitionTexture(*depthTarget, ResourceState::DepthWrite))
+                    return false;
+                D3D12_CPU_DESCRIPTOR_HANDLE rtv = AllocateOutputDescriptor(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
+                D3D12_CPU_DESCRIPTOR_HANDLE dsv = AllocateOutputDescriptor(D3D12_DESCRIPTOR_HEAP_TYPE_DSV);
+                if (!rtv.ptr || !dsv.ptr)
+                    return false;
+                m_Device->CreateRenderTargetView(color->GetResource(), nullptr, rtv);
+                m_Device->CreateDepthStencilView(depth->GetResource(), nullptr, dsv);
+                m_CommandList->OMSetRenderTargets(1, &rtv, FALSE, &dsv);
+                m_BoundColorRtv = rtv;
+                m_BoundDepthDsv = dsv;
+                return true;
+            }
+
+            bool ClearViewportOutputs(const ViewportClear& clear) override
+            {
+                if (!m_CommandList || !m_BoundColorRtv.ptr || !m_BoundDepthDsv.ptr)
+                    return false;
+                if (clear.ClearColor)
+                    m_CommandList->ClearRenderTargetView(m_BoundColorRtv, clear.Color, 0, nullptr);
+                if (clear.ClearDepth)
+                    m_CommandList->ClearDepthStencilView(m_BoundDepthDsv, D3D12_CLEAR_FLAG_DEPTH, clear.Depth, clear.Stencil, 0, nullptr);
+                return true;
+            }
+
+            bool TransitionTexture(Texture& texture, ResourceState destinationState) override
+            {
+                auto* nativeTexture = dynamic_cast<NVRHID3D12Texture*>(&texture);
+                if (!m_CommandList || !nativeTexture || !nativeTexture->GetResource())
+                    return false;
+                const D3D12_RESOURCE_STATES destination = ConvertResourceState(destinationState);
+                const D3D12_RESOURCE_STATES source = nativeTexture->GetCurrentState();
+                if (source != destination)
+                {
+                    D3D12_RESOURCE_BARRIER barrier {};
+                    barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+                    barrier.Transition.pResource = nativeTexture->GetResource();
+                    barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+                    barrier.Transition.StateBefore = source;
+                    barrier.Transition.StateAfter = destination;
+                    m_CommandList->ResourceBarrier(1, &barrier);
+                    nativeTexture->SetCurrentState(destination);
+                }
+                return true;
             }
 
             void SetGraphicsPipeline(Pipeline& pipeline) override
@@ -979,6 +1043,19 @@ namespace Engine::RHI
             }
 
         private:
+            D3D12_CPU_DESCRIPTOR_HANDLE AllocateOutputDescriptor(D3D12_DESCRIPTOR_HEAP_TYPE type)
+            {
+                D3D12_DESCRIPTOR_HEAP_DESC description {};
+                description.Type = type;
+                description.NumDescriptors = 1;
+                ComPtr<ID3D12DescriptorHeap> heap;
+                if (FAILED(m_Device->CreateDescriptorHeap(&description, IID_PPV_ARGS(&heap))))
+                    return {};
+                const D3D12_CPU_DESCRIPTOR_HANDLE handle = heap->GetCPUDescriptorHandleForHeapStart();
+                m_OutputDescriptorHeaps.push_back(std::move(heap));
+                return handle;
+            }
+
             ID3D12Resource* GetD3D12Resource(Buffer& buffer) const
             {
                 const NVRHID3D12BufferNativeHandles handles = GetNVRHID3D12BufferNativeHandles(buffer);
@@ -992,6 +1069,10 @@ namespace Engine::RHI
             ComPtr<ID3D12CommandAllocator> m_CommandAllocator;
             ComPtr<ID3D12GraphicsCommandList> m_OwnedCommandList;
             ID3D12GraphicsCommandList* m_CommandList = nullptr;
+            ID3D12Device* m_Device = nullptr;
+            std::vector<ComPtr<ID3D12DescriptorHeap>> m_OutputDescriptorHeaps;
+            D3D12_CPU_DESCRIPTOR_HANDLE m_BoundColorRtv {};
+            D3D12_CPU_DESCRIPTOR_HANDLE m_BoundDepthDsv {};
             std::string m_DebugName;
             State m_State = State::Initial;
         };
@@ -1169,7 +1250,7 @@ namespace Engine::RHI
                     return nullptr;
                 }
 
-                return CreateScope<NVRHID3D12CommandList>(queueType, std::move(allocator), std::move(commandList), std::string(debugName));
+                return CreateScope<NVRHID3D12CommandList>(queueType, std::move(allocator), std::move(commandList), m_Device.Get(), std::string(debugName));
             }
 
             bool UploadBuffer(Buffer& destination, const void* sourceData, u64 sizeBytes, u64 destinationOffset) override
@@ -1879,17 +1960,19 @@ namespace Engine::RHI
 #endif
     }
 
-    Scope<CommandList> WrapNVRHID3D12CommandList(QueueType queueType, void* nativeCommandList, std::string_view debugName)
+    Scope<CommandList> WrapNVRHID3D12CommandList(QueueType queueType, void* nativeCommandList, void* nativeDevice, std::string_view debugName)
     {
 #if defined(GE_HAS_NVRHI_D3D12)
         auto* d3dCommandList = static_cast<ID3D12GraphicsCommandList*>(nativeCommandList);
-        if (!d3dCommandList)
+        auto* d3dDevice = static_cast<ID3D12Device*>(nativeDevice);
+        if (!d3dCommandList || !d3dDevice)
             return nullptr;
 
-        return CreateScope<NVRHID3D12CommandList>(queueType, d3dCommandList, std::string(debugName));
+        return CreateScope<NVRHID3D12CommandList>(queueType, d3dCommandList, d3dDevice, std::string(debugName));
 #else
         (void)queueType;
         (void)nativeCommandList;
+        (void)nativeDevice;
         (void)debugName;
         return nullptr;
 #endif

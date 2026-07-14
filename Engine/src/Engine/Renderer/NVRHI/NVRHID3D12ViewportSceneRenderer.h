@@ -25,16 +25,13 @@ namespace Engine
         NVRHID3D12ViewportSceneRenderer();
         ~NVRHID3D12ViewportSceneRenderer();
 
-        bool Initialize(ID3D12Device* device, RHI::Device* rhiDevice);
+        bool Initialize(RHI::Device* rhiDevice);
         void Shutdown();
 
         bool Render(
-            ID3D12GraphicsCommandList* commandList,
-            ID3D12Resource* colorTexture,
-            D3D12_RESOURCE_STATES& colorState,
-            D3D12_CPU_DESCRIPTOR_HANDLE colorRtv,
-            ID3D12Resource* depthTexture,
-            D3D12_CPU_DESCRIPTOR_HANDLE depthDsv,
+            RHI::CommandList& commandList,
+            RHI::Texture& colorTexture,
+            RHI::Texture& depthTexture,
             u32 width,
             u32 height,
             u32 frameSlot,

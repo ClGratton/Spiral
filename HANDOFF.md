@@ -1,51 +1,27 @@
 # Current Handoff
 
-Updated 2026-07-14. This file is a recovery aid, not a roadmap authority; `PLAN.md` remains authoritative.
+Updated 2026-07-14. This file is a recovery aid, not roadmap authority; `PLAN.md` remains authoritative.
 
 ## Current Slice
 
-Phase 3C's shared asynchronous scene-shader portability item remains checked in `PLAN.md`. This follow-up corrects the host target contract exposed by hosted Actions replacement run `29352633796`; it does not begin Vulkan scene work.
+Phase 3C's Windows D3D12 viewport-output prerequisite is complete. The prior line was over-bundled: a backend-neutral NVRHI-output-to-native-presentation/ImGui handoff cannot be behaviorally exercised before Vulkan scene output exists. That narrow handoff is explicit required scope of the now-first unchecked Vulkan scene item.
 
-- Pinned Slang `v2026.13.1` and matching DXC `v1.9.2602` with exact archive hashes, fail-closed fetching, validated extraction, manifests, and a minimized staged runtime.
-- Added a backend-neutral shader request/package contract, stable SHA-256 cache keys, transactional versioned caching, structured diagnostics, and reflected layout/convention validation.
-- Added an in-process Slang compiler path with an exact admitted host target set: Windows x86_64 produces paired DXIL+SPIR-V through pinned DXC, while Linux/macOS produce SPIR-V-only packages. D3D12 consumes validated DXIL; SPIR-V is artifact evidence only until the Vulkan scene viewport consumes it. Non-Windows DXIL requests fail before compile with a clear unavailable-target diagnostic.
-- Added job-system fire-and-poll compilation with deduplicated requests, immutable publication, retryable terminal failure, and retention of the last valid pipeline. Smoke tests use deterministic inline execution.
-- Removed legacy D3D12 source compilation and added strict terminal/pipeline evidence markers to the render smoke test.
-- Generated Linux Editor/Sandbox/EngineTests executables now use `RUNPATH=$ORIGIN`; generated macOS counterparts use `LC_RPATH @loader_path`, allowing Slang's staged proxy to resolve its versioned compiler beside the executable without host-library paths.
-- Immutable scene snapshot/raster-frame publication retains release-store/acquire-load semantics through `std::atomic<std::shared_ptr<const T>>` only when the C++ library advertises that specialization, otherwise through the standard atomic `shared_ptr` free functions.
-
-Commits pushed to `main`:
-
-- `6edc856 Build a portable asynchronous shader pipeline`
-- `81579f1 Fix clean PowerShell toolchain setup`
+- `RHI::CommandList` binds renderer-owned color/depth outputs, deterministically clears them, and explicitly transitions a texture. Existing RHI viewport/scissor/pipeline/constant-buffer/draw commands complete the recording path.
+- The D3D12 adapter validates output usage, tracks texture state, creates transient output descriptors, and records native output work behind this contract.
+- The scene renderer now receives only `RHI::CommandList` and `RHI::Texture` references. It retains snapshot/raster behavior, per-draw constant-buffer lifetime, and shader validation. Presentation retains native command-list, swapchain, SRV/ImGui, and capture/readback ownership.
 
 ## Evidence
 
-Completed locally:
-
 - MSVC Debug build: passed with zero warnings/errors.
 - MSVC `EngineTests`: 35/35 passed.
-- Windows MinGW Debug build: passed; `EngineTests`: 35/35 passed.
-- Strict D3D12 render test: passed, including cold compile and warm disk-cache paths, deterministic A/C captures, and translated B capture.
-- Parallel and deterministic frame-task/snapshot smoke tests: passed.
-- Code style, PowerShell parsing, Bash syntax, dependency JSON, Markdown links, `git diff --check`, unsafe-ZIP rejection, and minimized-runtime tests: passed.
+- `Scripts/TestRender.ps1 -Configuration Debug -Action vs2022`: passed. A/C captures were byte-identical; B shifted right by 196.24 pixels with a 13.20% non-background ratio.
 
-Hosted Actions run `29350139365` completed with Windows D3D12 success but exposed the Linux loader and macOS atomic-specialization failures; commit `5df91bb` repaired both. Replacement run `29352633796` then built and launched both portable jobs but failed exactly 1/35 tests because it requested DXIL+SPIR-V without an admitted non-Windows DXC. Commit `2c29fbe` made the host target set explicit, and `0f02ac5` made cache loading and async publication validate every artifact requested. Final-head run `29354068102` (<https://github.com/ClGratton/Spiral/actions/runs/29354068102>) passed Code Style, Windows D3D12, Ubuntu portable/Vulkan, and macOS portable/MoltenVK jobs. Ubuntu and macOS each passed all 35 `EngineTests` with real SPIR-V compilation, reflection/layout/convention validation, deterministic cache/input invalidation, and explicit DXIL rejection. This closes the portable-host repair; it is not Vulkan scene-rendering qualification.
+This is real Windows x86_64/MSVC D3D12 viewport-output evidence. It is not Vulkan scene rendering or Vulkan handoff evidence.
 
-## Limits And Deferred Work
+## Limits And Next Work
 
-- Vulkan scene rendering is not implemented or qualified; current SPIR-V is compile/reflection/convention package evidence only.
-- Linux and macOS x86_64 portable build/test paths are qualified by run `29354068102`; Windows ARM64, Apple Silicon, Vulkan scene rendering, and physical-device breadth remain unqualified until matching executed evidence exists.
-- Local WSL cannot replace hosted Linux verification: its installed glibc is older than the vendored Premake executable's required `GLIBC_2.38`, so `Scripts/Build.sh Debug gmake` stops during generation. No system compiler/tool substitution was used.
-- Redistribution remains blocked pending the admitted Slang binary-component/notice audit.
-- Live D3D12 shader-source rebuild remains a later Phase 3C item.
-
-## Next Ordered Work
-
-Evaluation of the former next Vulkan scene item found a contract prerequisite: `Engine::RHI::CommandList` cannot bind or clear a renderer-owned color/depth target. The current D3D12 prototype compensates with native D3D12 presentation-command access, which cannot be duplicated for Vulkan without violating the required native-boundary rule. `PLAN.md` now places the smallest prerequisite immediately first: define and execute backend-neutral viewport-output recording plus its narrow NVRHI-output-to-native-presentation/ImGui handoff. It must retain raw API ownership solely in bootstrap, WSI/presentation, and ImGui.
-
-Only after that contract has real focused output evidence should the Vulkan `Engine::RHI::Device` scene-viewport item proceed. Run `29354068102` confirms real Linux Vulkan and macOS MoltenVK presentation paths are available; local Windows Vulkan smoke is also available. Neither is Vulkan scene-execution evidence.
+Vulkan scene resources/submission are not implemented. The current SPIR-V package is compilation/reflection/convention evidence only. Implement the now-first unchecked Vulkan scene viewport item through wrapped `nvrhi::DeviceHandle`, including the narrow completed-NVRHI-output-to-native-presentation/ImGui handoff; do not leak raw Vulkan above presentation.
 
 ## Working State
 
-Commits through `0f02ac5` are pushed to `main`. Inspect `git status --short` before continuing; do not discard unrelated user changes.
+The scoped change still needs style/diff/docs checks, commit, push, and one CI run recorded here. Inspect `git status --short` before continuing and preserve unrelated changes.

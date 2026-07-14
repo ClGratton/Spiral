@@ -202,7 +202,7 @@ namespace Engine
             if (!CreateFence())
                 return false;
 
-            if (!m_ViewportSceneRenderer.Initialize(m_Device, m_RHIDevice))
+            if (!m_ViewportSceneRenderer.Initialize(m_RHIDevice))
                 return false;
 
             if (!InitializeImGui())
@@ -515,13 +515,12 @@ namespace Engine
 
                 {
                     ScopedD3D12Marker viewportMarker(m_CommandList.Get(), "Capture Viewport Texture Refresh");
-                    if (!m_ViewportSceneRenderer.Render(
-                        m_CommandList.Get(),
-                        m_ViewportTextureResource,
-                        m_ViewportState,
-                        GetRtvCpuHandle(kFrameCount),
-                        m_ViewportDepthTextureResource,
-                        GetDsvCpuHandle(),
+                    Scope<RHI::CommandList> viewportCommands = RHI::WrapNVRHID3D12CommandList(
+                        RHI::QueueType::Graphics, m_CommandList.Get(), m_Device, "Editor Viewport Capture Command Bridge");
+                    if (!viewportCommands || !m_ViewportSceneRenderer.Render(
+                        *viewportCommands,
+                        *m_ViewportTexture,
+                        *m_ViewportDepthTexture,
                         m_ViewportWidth,
                         m_ViewportHeight,
                         0,
@@ -894,13 +893,12 @@ namespace Engine
             if (!m_ViewportTextureResource || !m_ViewportDepthTextureResource)
                 return true;
 
-            return m_ViewportSceneRenderer.Render(
-                m_CommandList.Get(),
-                m_ViewportTextureResource,
-                m_ViewportState,
-                GetRtvCpuHandle(kFrameCount),
-                m_ViewportDepthTextureResource,
-                GetDsvCpuHandle(),
+            Scope<RHI::CommandList> viewportCommands = RHI::WrapNVRHID3D12CommandList(
+                RHI::QueueType::Graphics, m_CommandList.Get(), m_Device, "Editor Viewport Present Command Bridge");
+            return viewportCommands && m_ViewportSceneRenderer.Render(
+                *viewportCommands,
+                *m_ViewportTexture,
+                *m_ViewportDepthTexture,
                 m_ViewportWidth,
                 m_ViewportHeight,
                 m_FrameIndex,

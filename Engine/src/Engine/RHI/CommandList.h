@@ -4,6 +4,7 @@
 #include "Engine/RHI/Pipeline.h"
 #include "Engine/RHI/Query.h"
 #include "Engine/RHI/RHICommon.h"
+#include "Engine/RHI/Texture.h"
 
 #include <string_view>
 
@@ -33,6 +34,15 @@ namespace Engine::RHI
         int Bottom = 0;
     };
 
+    struct ViewportClear
+    {
+        float Color[4] { 0.0f, 0.0f, 0.0f, 1.0f };
+        float Depth = 1.0f;
+        u8 Stencil = 0;
+        bool ClearColor = true;
+        bool ClearDepth = true;
+    };
+
     class CommandList
     {
     public:
@@ -43,6 +53,10 @@ namespace Engine::RHI
         virtual bool End() = 0;
         virtual void BeginDebugMarker(std::string_view name) = 0;
         virtual void EndDebugMarker() = 0;
+        // Renderer-owned targets only. Presentation retains swapchain/ImGui ownership.
+        virtual bool BindViewportOutputs(Texture& colorTarget, Texture* depthTarget) = 0;
+        virtual bool ClearViewportOutputs(const ViewportClear& clear) = 0;
+        virtual bool TransitionTexture(Texture& texture, ResourceState destinationState) = 0;
         virtual void SetGraphicsPipeline(Pipeline& pipeline) = 0;
         virtual void SetGraphicsConstantBuffer(u32 rootParameterIndex, Buffer& buffer) = 0;
         virtual void SetViewport(const Viewport& viewport) = 0;

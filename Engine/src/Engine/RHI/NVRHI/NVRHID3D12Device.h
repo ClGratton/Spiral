@@ -36,5 +36,5 @@ namespace Engine::RHI
     NVRHID3D12BufferNativeHandles GetNVRHID3D12BufferNativeHandles(Buffer& buffer);
     NVRHID3D12TextureNativeHandles GetNVRHID3D12TextureNativeHandles(Texture& texture);
     NVRHID3D12ShaderNativeHandles GetNVRHID3D12ShaderNativeHandles(Shader& shader);
-    Scope<CommandList> WrapNVRHID3D12CommandList(QueueType queueType, void* nativeCommandList, std::string_view debugName);
+    Scope<CommandList> WrapNVRHID3D12CommandList(QueueType queueType, void* nativeCommandList, void* nativeDevice, std::string_view debugName);
 }
