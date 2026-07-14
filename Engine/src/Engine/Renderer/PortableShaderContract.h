@@ -121,7 +121,7 @@ namespace Engine
         PortableShaderCacheSource CacheSource = PortableShaderCacheSource::Compiled;
         std::vector<PortableShaderDiagnostic> Diagnostics;
 
-        bool Succeeded() const { return Diagnostics.empty() && !Dxil.empty() && !Spirv.empty(); }
+        bool Succeeded() const { return Diagnostics.empty() && (!Dxil.empty() || !Spirv.empty()); }
         bool operator==(const PortableShaderPackage&) const = default;
     };
 

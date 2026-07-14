@@ -66,18 +66,18 @@ Do not enable every advertised feature. Enable only features required by the sel
 
 ## Shader Portability
 
-The shared shader contract now uses Slang/HLSL-style authoring and produces validated per-stage packages for the current D3D12 viewport. Pinned Slang v2026.13.1, with pinned Windows x86_64 DXC v1.9.2602 as its downstream DXIL compiler, emits both DXIL and SPIR-V. The D3D12 RHI consumes the package's DXIL; SPIR-V is presently compiled, reflected, and convention-validated artifact evidence rather than Vulkan scene execution. Normal runtime requests use asynchronous job-system fire-and-poll with atomic last-valid-package publication; deterministic-inline execution exists for focused smoke tests. Version-2 disk packages and the in-process completed-package cache use canonical SHA-256 keys over source identity/content, entry/stage, compiler identity/version and admitted package hashes, exact targets, sorted defines/options/dependencies, layout/reflection versions, expected interface, and convention schema.
+The shared shader contract uses Slang/HLSL-style authoring and produces validated per-stage packages for the current D3D12 viewport. The admitted target set is host-specific and exact: Windows x86_64 with pinned Slang v2026.13.1 plus pinned DXC v1.9.2602 produces paired DXIL+SPIR-V; Linux and macOS with their staged Slang package produce SPIR-V-only. A Linux/macOS DXIL request fails before compilation with an explicit unavailable-target diagnostic: no non-Windows DXC package or system compiler is admitted. The D3D12 RHI consumes the Windows package's DXIL; SPIR-V is presently compiled, reflected, and convention-validated artifact evidence rather than Vulkan scene execution. Normal runtime requests use asynchronous job-system fire-and-poll with atomic last-valid-package publication; deterministic-inline execution exists for focused smoke tests. Version-2 disk packages and the in-process completed-package cache use canonical SHA-256 keys over source identity/content, entry/stage, compiler identity/version and admitted package hashes, exact ordered targets, sorted defines/options/dependencies, layout/reflection versions, expected interface, and convention schema.
 
 The implemented contract requires:
 
-- deterministic DXIL and SPIR-V outputs for the shared scene passes;
+- deterministic output for every requested, admitted host target (paired DXIL+SPIR-V on Windows x86_64; SPIR-V-only on Linux/macOS);
 - reflected resource layouts matched against C++ structures and RHI pipeline layouts;
 - explicit coordinate, depth, clip-space, matrix-layout, and binding conventions;
 - cache keys that include source, compiler, target, defines, and layout version;
 - diagnostics that identify source, entry point, target, and backend;
 - focused rendering through every backend claimed to consume a target.
 
-The Windows x86_64/MSVC D3D12 viewport and its DXIL consumption are exercised. Vulkan scene rendering remains the next separate roadmap item and cannot claim parity from SPIR-V artifact generation alone. Linux, macOS, MinGW, Windows ARM64, and broader device classes remain unqualified; redistribution remains blocked pending the exact binary-component/notice audit recorded in [DEPENDENCIES.md](../DEPENDENCIES.md). Live source-change pipeline rebuild is also separate and remains pending.
+The Windows x86_64/MSVC D3D12 viewport and its DXIL consumption are exercised. Linux/macOS hosted tests must compile, reflect, convention-validate, cache, and diagnose a real SPIR-V-only package; they are not permitted to skip shader compilation. Vulkan scene rendering remains the next separate roadmap item and cannot claim parity from SPIR-V artifact generation alone. Linux, macOS, MinGW, Windows ARM64, and broader device classes remain unqualified; redistribution remains blocked pending the exact binary-component/notice audit recorded in [DEPENDENCIES.md](../DEPENDENCIES.md). Live source-change pipeline rebuild is also separate and remains pending.
 
 ## Descriptor And Binding Model
 

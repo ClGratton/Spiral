@@ -1635,11 +1635,17 @@ float4 main(float4 position : SV_Position) : SV_Target
 )";
         request.EntryPoint = "main";
         request.Stage = RHI::ShaderStage::Pixel;
+        #ifdef _WIN32
         request.Targets = { PortableShaderTarget::Dxil, PortableShaderTarget::Spirv };
+        #else
+        request.Targets = { PortableShaderTarget::Spirv };
+        #endif
         request.CompilerIdentity = "Slang";
         request.CompilerVersion = "2026.13.1";
         request.CompilerPackageHash = "fa1c9bcab2cdcd3626f7a1e250dd35d606c1b84745b64627f1dd63fca3746a70";
+        #ifdef _WIN32
         request.DownstreamCompilerPackageHash = "a1e89031421cf3c1fca6627766ab3020ca4f962ac7e2caa7fab2b33a8436151e";
+        #endif
         request.Defines = { "COLOR_SCALE=1" };
         request.Options = { "-O0" };
         PortableShaderDependency dependency;
@@ -1663,7 +1669,13 @@ float4 main(float4 position : SV_Position) : SV_Target
                 std::cerr << "  Shader diagnostic: " << diagnostic.Target << ": " << diagnostic.Message << '\n';
         };
         if (!first.Succeeded()) printShaderDiagnostics(first);
-        const bool compiled = first.Succeeded() && !first.Dxil.empty() && !first.Spirv.empty()
+        const bool compiled = first.Succeeded()
+            #ifdef _WIN32
+            && !first.Dxil.empty()
+            #else
+            && first.Dxil.empty()
+            #endif
+            && !first.Spirv.empty()
             && first.Reflection == request.ExpectedLayout && first.VertexInputs.empty()
             && first.Conventions == request.Conventions;
         const bool deterministic = second.Succeeded() && first.Dxil == second.Dxil
@@ -1743,9 +1755,22 @@ float4 main(VertexInput input) : SV_Position
         PortableShaderRequest mismatchedConvention = request;
         mismatchedConvention.Conventions.VulkanYFlip = false;
         const PortableShaderPackage conventionFailure = compiler.Compile(mismatchedConvention);
+#ifndef _WIN32
+        PortableShaderRequest unavailableDxil = request;
+        unavailableDxil.Targets = { PortableShaderTarget::Dxil, PortableShaderTarget::Spirv };
+        const PortableShaderPackage dxilFailure = compiler.Compile(unavailableDxil);
+        const bool hostTargetContract = !dxilFailure.Succeeded() && !dxilFailure.Diagnostics.empty()
+            && dxilFailure.Diagnostics.front().Message.find("DXIL target is unavailable on this host") != std::string::npos;
+#else
+        PortableShaderRequest incompletePackage = request;
+        incompletePackage.Targets = { PortableShaderTarget::Dxil };
+        const PortableShaderPackage incompleteFailure = compiler.Compile(incompletePackage);
+        const bool hostTargetContract = !incompleteFailure.Succeeded() && !incompleteFailure.Diagnostics.empty()
+            && incompleteFailure.Diagnostics.front().Message.find("requires the admitted paired DXIL+SPIR-V package") != std::string::npos;
+#endif
 
         std::filesystem::remove_all(cacheDirectory, error);
-        return Expect(compiled, "Slang produces nonempty DXIL/SPIR-V and linked-program reflection")
+        return Expect(compiled, "Slang produces the admitted host target package and linked-program reflection")
             & Expect(deterministic, "repeated Slang compilation returns deterministic cached bytes and reflection")
             & Expect(appliedInputs, "Slang defines, controlled includes, and optimization options change generated artifacts")
             & Expect(!optionFailure.Succeeded(), "unsupported compiler options return structured failures")
@@ -1757,7 +1782,8 @@ float4 main(VertexInput input) : SV_Position
             & Expect(!entryFailure.Succeeded() && !entryFailure.Diagnostics.empty(), "unknown Slang entry point returns structured diagnostics")
             & Expect(!layoutFailure.Succeeded() && !layoutFailure.Diagnostics.empty(), "real reflected layout rejects an expected-layout mismatch")
             & Expect(!conventionFailure.Succeeded() && !conventionFailure.Diagnostics.empty(),
-                "a convention mismatch fails before artifact publication");
+                "a convention mismatch fails before artifact publication")
+            & Expect(hostTargetContract, "unsupported host shader targets fail with explicit diagnostics");
     }
 
     Engine::PortableShaderPackage MakeSyntheticShaderPackage(const Engine::PortableShaderRequest& request, Engine::u8 seed)

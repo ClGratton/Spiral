@@ -48,6 +48,41 @@ namespace Engine
             return target == PortableShaderTarget::Dxil ? "DXIL" : "SPIR-V";
         }
 
+        bool HasTarget(const PortableShaderRequest& request, PortableShaderTarget target)
+        {
+            return std::find(request.Targets.begin(), request.Targets.end(), target) != request.Targets.end();
+        }
+
+        bool ValidateHostTargets(const PortableShaderRequest& request, std::string& error)
+        {
+            if (request.Targets.empty())
+            {
+                error = "at least one portable shader target is required";
+                return false;
+            }
+            const bool requestsDxil = HasTarget(request, PortableShaderTarget::Dxil);
+            const bool requestsSpirv = HasTarget(request, PortableShaderTarget::Spirv);
+            if (request.Targets.size() != static_cast<size_t>(requestsDxil) + static_cast<size_t>(requestsSpirv))
+            {
+                error = "portable shader targets must be unique";
+                return false;
+            }
+#ifdef _WIN32
+            if (!requestsDxil || !requestsSpirv)
+            {
+                error = "Windows x86_64 requires the admitted paired DXIL+SPIR-V package";
+                return false;
+            }
+#else
+            if (requestsDxil)
+            {
+                error = "DXIL target is unavailable on this host: only the admitted SPIR-V target is supported; Windows x86_64 owns the paired DXIL+SPIR-V package";
+                return false;
+            }
+#endif
+            return true;
+        }
+
         void AddDiagnostic(PortableShaderPackage& package, const PortableShaderRequest& request,
             std::string target, std::string message)
         {
@@ -743,10 +778,9 @@ namespace Engine
             AddDiagnostic(package, request, "", validationError);
             return package;
         }
-        if (std::find(request.Targets.begin(), request.Targets.end(), PortableShaderTarget::Dxil) == request.Targets.end()
-            || std::find(request.Targets.begin(), request.Targets.end(), PortableShaderTarget::Spirv) == request.Targets.end())
+        if (!ValidateHostTargets(request, validationError))
         {
-            AddDiagnostic(package, request, "", "both DXIL and SPIR-V targets are required");
+            AddDiagnostic(package, request, "", validationError);
             return package;
         }
 
@@ -783,26 +817,36 @@ namespace Engine
             AddDiagnostic(package, request, "", "failed to create the Slang global session");
             return package;
         }
-        slang::TargetDesc targets[2];
-        targets[0].format = SLANG_DXIL;
-        targets[0].profile = global->findProfile("sm_6_0");
-        targets[1].format = SLANG_SPIRV;
-        targets[1].profile = global->findProfile("sm_6_0");
+        std::vector<slang::TargetDesc> targets;
+        std::vector<PortableShaderTarget> targetKinds;
+        targets.reserve(request.Targets.size());
+        targetKinds.reserve(request.Targets.size());
         std::array<slang::CompilerOptionEntry, 2> spirvConventionOptions = {
             IntegerOption(slang::CompilerOptionName::VulkanInvertY, 1),
             IntegerOption(slang::CompilerOptionName::VulkanUseDxPositionW, 1)
         };
-        targets[1].compilerOptionEntries = spirvConventionOptions.data();
-        targets[1].compilerOptionEntryCount = static_cast<u32>(spirvConventionOptions.size());
-        if (targets[0].profile == SLANG_PROFILE_UNKNOWN || targets[1].profile == SLANG_PROFILE_UNKNOWN)
+        for (PortableShaderTarget target : request.Targets)
+        {
+            slang::TargetDesc description {};
+            description.format = target == PortableShaderTarget::Dxil ? SLANG_DXIL : SLANG_SPIRV;
+            description.profile = global->findProfile("sm_6_0");
+            if (target == PortableShaderTarget::Spirv)
+            {
+                description.compilerOptionEntries = spirvConventionOptions.data();
+                description.compilerOptionEntryCount = static_cast<u32>(spirvConventionOptions.size());
+            }
+            targets.push_back(description);
+            targetKinds.push_back(target);
+        }
+        if (std::any_of(targets.begin(), targets.end(), [](const slang::TargetDesc& target) { return target.profile == SLANG_PROFILE_UNKNOWN; }))
         {
             AddDiagnostic(package, request, "", "Slang could not resolve the required sm_6_0 profile");
             return package;
         }
 
         slang::SessionDesc sessionDesc;
-        sessionDesc.targets = targets;
-        sessionDesc.targetCount = 2;
+        sessionDesc.targets = targets.data();
+        sessionDesc.targetCount = static_cast<SlangInt>(targets.size());
         sessionDesc.defaultMatrixLayoutMode = SLANG_MATRIX_LAYOUT_ROW_MAJOR;
         sessionDesc.preprocessorMacros = macros.data();
         sessionDesc.preprocessorMacroCount = static_cast<SlangInt>(macros.size());
@@ -863,16 +907,14 @@ namespace Engine
             AddDiagnostic(package, request, "", BlobText(diagnostics));
             return package;
         }
-        ReflectedInterface targetReflection[2];
-        for (SlangInt targetIndex = 0; targetIndex < 2; ++targetIndex)
+        std::vector<ReflectedInterface> targetReflections(targets.size());
+        for (SlangInt targetIndex = 0; targetIndex < static_cast<SlangInt>(targets.size()); ++targetIndex)
         {
-            const PortableShaderTarget target = targetIndex == 0
-                ? PortableShaderTarget::Dxil
-                : PortableShaderTarget::Spirv;
+            const PortableShaderTarget target = targetKinds[static_cast<size_t>(targetIndex)];
             diagnostics.setNull();
             slang::ProgramLayout* layout = linked->getLayout(targetIndex, diagnostics.writeRef());
             std::string reflectionError;
-            if (!CollectReflection(layout, request, targetReflection[targetIndex], reflectionError))
+            if (!CollectReflection(layout, request, targetReflections[static_cast<size_t>(targetIndex)], reflectionError))
             {
                 const std::string detail = BlobText(diagnostics);
                 AddDiagnostic(package, request, TargetName(target),
@@ -881,13 +923,16 @@ namespace Engine
             }
         }
 
-        if (!SameReflection(targetReflection[0], targetReflection[1]))
+        for (size_t targetIndex = 1; targetIndex < targetReflections.size(); ++targetIndex)
         {
-            AddDiagnostic(package, request, "", "DXIL and SPIR-V program/entry-point reflections differ semantically");
-            return package;
+            if (!SameReflection(targetReflections[0], targetReflections[targetIndex]))
+            {
+                AddDiagnostic(package, request, "", "requested target program/entry-point reflections differ semantically");
+                return package;
+            }
         }
-        package.Reflection = std::move(targetReflection[0].Bindings);
-        package.VertexInputs = std::move(targetReflection[0].VertexInputs);
+        package.Reflection = std::move(targetReflections[0].Bindings);
+        package.VertexInputs = std::move(targetReflections[0].VertexInputs);
         if (!PortableShaderContract::Validate(
                 request,
                 package.Reflection,
@@ -900,11 +945,9 @@ namespace Engine
             return package;
         }
 
-        for (SlangInt targetIndex = 0; targetIndex < 2; ++targetIndex)
+        for (SlangInt targetIndex = 0; targetIndex < static_cast<SlangInt>(targets.size()); ++targetIndex)
         {
-            const PortableShaderTarget target = targetIndex == 0
-                ? PortableShaderTarget::Dxil
-                : PortableShaderTarget::Spirv;
+            const PortableShaderTarget target = targetKinds[static_cast<size_t>(targetIndex)];
             Slang::ComPtr<slang::IBlob> code;
             diagnostics.setNull();
             if (SLANG_FAILED(linked->getEntryPointCode(
@@ -925,17 +968,19 @@ namespace Engine
             destination.assign(bytes, bytes + code->getBufferSize());
         }
 
-        const bool validDxilContainer = package.Dxil.size() >= 4
-            && std::memcmp(package.Dxil.data(), "DXBC", 4) == 0;
+        const bool validDxilContainer = !HasTarget(request, PortableShaderTarget::Dxil)
+            || (package.Dxil.size() >= 4
+            && std::memcmp(package.Dxil.data(), "DXBC", 4) == 0);
         const u32 spirvMagic = package.Spirv.size() >= sizeof(u32)
             ? static_cast<u32>(package.Spirv[0])
                 | (static_cast<u32>(package.Spirv[1]) << 8)
                 | (static_cast<u32>(package.Spirv[2]) << 16)
                 | (static_cast<u32>(package.Spirv[3]) << 24)
             : 0;
-        const bool validSpirvModule = package.Spirv.size() >= sizeof(u32)
+        const bool validSpirvModule = !HasTarget(request, PortableShaderTarget::Spirv)
+            || (package.Spirv.size() >= sizeof(u32)
             && package.Spirv.size() % sizeof(u32) == 0
-            && spirvMagic == 0x07230203u;
+            && spirvMagic == 0x07230203u);
         if (!validDxilContainer || !validSpirvModule)
         {
             AddDiagnostic(package, request, "", "generated artifacts did not match the required DXIL/SPIR-V container policy");

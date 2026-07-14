@@ -4,11 +4,11 @@ Updated 2026-07-14. This file is a recovery aid, not a roadmap authority; `PLAN.
 
 ## Current Slice
 
-Phase 3C's shared asynchronous scene-shader portability item remains checked in `PLAN.md`. This follow-up repairs portability defects exposed by hosted Actions run `29350139365`; it does not begin Vulkan scene work.
+Phase 3C's shared asynchronous scene-shader portability item remains checked in `PLAN.md`. This follow-up corrects the host target contract exposed by hosted Actions replacement run `29352633796`; it does not begin Vulkan scene work.
 
 - Pinned Slang `v2026.13.1` and matching DXC `v1.9.2602` with exact archive hashes, fail-closed fetching, validated extraction, manifests, and a minimized staged runtime.
 - Added a backend-neutral shader request/package contract, stable SHA-256 cache keys, transactional versioned caching, structured diagnostics, and reflected layout/convention validation.
-- Added an in-process Slang compiler path producing paired DXIL and SPIR-V artifacts from one request. D3D12 consumes validated DXIL; SPIR-V is artifact evidence only until the Vulkan scene viewport consumes it.
+- Added an in-process Slang compiler path with an exact admitted host target set: Windows x86_64 produces paired DXIL+SPIR-V through pinned DXC, while Linux/macOS produce SPIR-V-only packages. D3D12 consumes validated DXIL; SPIR-V is artifact evidence only until the Vulkan scene viewport consumes it. Non-Windows DXIL requests fail before compile with a clear unavailable-target diagnostic.
 - Added job-system fire-and-poll compilation with deduplicated requests, immutable publication, retryable terminal failure, and retention of the last valid pipeline. Smoke tests use deterministic inline execution.
 - Removed legacy D3D12 source compilation and added strict terminal/pipeline evidence markers to the render smoke test.
 - Generated Linux Editor/Sandbox/EngineTests executables now use `RUNPATH=$ORIGIN`; generated macOS counterparts use `LC_RPATH @loader_path`, allowing Slang's staged proxy to resolve its versioned compiler beside the executable without host-library paths.
@@ -30,12 +30,13 @@ Completed locally:
 - Parallel and deterministic frame-task/snapshot smoke tests: passed.
 - Code style, PowerShell parsing, Bash syntax, dependency JSON, Markdown links, `git diff --check`, unsafe-ZIP rejection, and minimized-runtime tests: passed.
 
-Hosted Actions run `29350139365` completed with Windows D3D12 success but portable failures: Ubuntu `EngineTests` could not load staged `libslang-compiler.so.0.2026.13.1`, and macOS libc++ rejected `std::atomic<std::shared_ptr<const SceneRenderSnapshot/SceneRasterFrame>>` during the build. The local disposable WSL loader probe confirmed an ELF binary with `RUNPATH=$ORIGIN` resolves the staged versioned Slang compiler without `LD_LIBRARY_PATH`; its files were removed. Replacement CI must build and execute both portable jobs before Linux/macOS qualification is claimed.
+Hosted Actions run `29350139365` completed with Windows D3D12 success but portable failures: Ubuntu `EngineTests` could not load staged `libslang-compiler.so.0.2026.13.1`, and macOS libc++ rejected `std::atomic<std::shared_ptr<const SceneRenderSnapshot/SceneRasterFrame>>` during the build. Commit `5df91bb` repaired both. Replacement run `29352633796` (<https://github.com/cla20/Game-Engine/actions/runs/29352633796>) built and launched both portable jobs, but each failed exactly 1/35 tests: `Slang compiler emits validated portable shader packages` requested DXIL+SPIR-V, then Slang reported a failed downstream DXC/DXIL library/pass-through compiler. That is expected from the existing dependency ledger: DXC v1.9.2602 is admitted only for Windows x86_64. The portable integration test now compiles and validates SPIR-V-only packages, exercises deterministic cache/input invalidation/reflection/conventions, and asserts that a DXIL request fails clearly. Replacement CI must execute this correction before Linux/macOS qualification is claimed.
 
 ## Limits And Deferred Work
 
 - Vulkan scene rendering is not implemented or qualified; current SPIR-V is compile/reflection/convention package evidence only.
 - Linux and macOS portable-host qualification remains pending the replacement Actions run; Windows ARM64 and physical-device breadth remain unqualified until matching executed evidence exists.
+- Local WSL cannot replace hosted Linux verification: its installed glibc is older than the vendored Premake executable's required `GLIBC_2.38`, so `Scripts/Build.sh Debug gmake` stops during generation. No system compiler/tool substitution was used.
 - Redistribution remains blocked pending the admitted Slang binary-component/notice audit.
 - Live D3D12 shader-source rebuild remains a later Phase 3C item.
 
