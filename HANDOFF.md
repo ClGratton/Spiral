@@ -4,7 +4,7 @@ Updated 2026-07-14. This file is a recovery aid, not roadmap authority; `PLAN.md
 
 ## Current Slice
 
-Phase 3C's Vulkan completed-output-to-native-ImGui/swapchain handoff is implemented locally and awaits exact-head hosted evidence before its roadmap checkbox is changed.
+Phase 3C's Vulkan completed-output-to-native-ImGui/swapchain handoff is complete and checked with local Windows and exact-head hosted evidence.
 
 - The Vulkan context creates the one native device/queue and NVRHI device, then creates an `Engine::RHI::Device` wrapper around that NVRHI handle. It creates no second native device or raw Vulkan scene command path. Core supports NVRHI buffers, RGBA8/depth textures, output clear, explicit texture transitions, balanced debug markers, graphics command submission/wait/garbage collection, buffer update, and RGBA8 staging readback. Closed lists submit once only; open and previously submitted lists are rejected. Shader/pipeline/draw/query methods reject clearly.
 - `--vulkan-rhi-core-smoke`, enabled by both `TestVulkan` scripts, creates an upload buffer plus 16x12 RGBA8/depth targets, rejects open and duplicate submission, proves that close rejects an unbalanced marker, issues a balanced marker with an owned null-terminated name, clears through `Engine::RHI`, reads RGBA8 through an NVRHI staging texture, validates extent/row pitch/every pixel (one byte tolerance), and emits `VulkanRHICoreV1` with adapter class and submission status. The marker status means the calls executed; it is not GPU-capture evidence.
@@ -18,7 +18,7 @@ Phase 3C's Vulkan completed-output-to-native-ImGui/swapchain handoff is implemen
 - MSVC Debug rebuild: passed with zero warnings/errors.
 - MSVC `EngineTests`: 35/35 passed.
 - Local Windows only: `Scripts/TestVulkan.ps1 -Configuration Debug -Action vs2022` passed on the selected Windows Vulkan device, including post-resize `VulkanSceneOutputCaptureV1 ... capture=pass` and `VulkanSceneOutputHandoffV1 ... imgui=queued present=pass swapchainGeneration=2`.
-- Exact-head GitHub Actions run `29357979246` passed Code Style, Windows D3D12 regression, Ubuntu lavapipe Vulkan presentation/core smoke, macOS Apple-Paravirtual/MoltenVK presentation/core smoke, and all portable tests on commit `9c9570f`.
+- Exact-head GitHub Actions run `29369950355` passed Code Style, Windows D3D12 regression, Ubuntu lavapipe Vulkan Scene-output handoff smoke, macOS Intel Apple-Paravirtual/MoltenVK Scene-output handoff smoke across three launches, and all portable tests on commit `45878d0`.
 - `Scripts/TestRender.ps1 -Configuration Debug -Action vs2022`: passed. A/C captures were byte-identical; B shifted right by 196.24 pixels with a 13.20% non-background ratio.
 - `Scripts/CheckCodeStyle.ps1`: passed.
 
@@ -26,7 +26,7 @@ This is real local Windows x86_64/MSVC D3D12 regression and Vulkan Scene-offscre
 
 ## Limits And Next Work
 
-The Vulkan RHI core, isolated SPIR-V indexed draw, local Scene-output raster, and local output-to-ImGui/swapchain handoff are complete. The hosted Windows job remains D3D12-only; exact-head CI must still confirm the updated Vulkan smoke on Ubuntu lavapipe and macOS MoltenVK before those platform claims are made. After that evidence, check the handoff item and proceed to the frame/render graph construction item.
+The Vulkan RHI core, isolated SPIR-V indexed draw, Scene-output raster, and output-to-ImGui/swapchain handoff are complete. The hosted Windows job remains D3D12-only; Ubuntu lavapipe and macOS Intel Apple-Paravirtual/MoltenVK handoff evidence is exact-head CI `29369950355`, not physical-device breadth. The next ordered item is frame/render graph construction.
 
 The shared viewport shader renders a visible checker on stable per-face UVs plus antialiased luminous face frames, inset lines, and corner accents. This replaces the initial object-position quantization, whose `floor` boundary on constant face coordinates caused triangle-dependent precision striping when rotated. The refinement preserves the constant-buffer-only binding layout and adds no texture or sampler. Local D3D12 capture, Vulkan indexed-draw smoke (including unchanged deterministic interior/background pixels), and style pass; exact-head run `29363501290` previously passed the base UV correction on Windows D3D12, Ubuntu Vulkan, macOS MoltenVK, portable tests, and style. This is deliberately not a real texture/material path: sampled-resource and sampler bindings, texture upload/ownership, and material descriptors remain future infrastructure.
 
