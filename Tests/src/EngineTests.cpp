@@ -4,6 +4,9 @@
 #include "Engine/Math/WorldGrid.h"
 #include "Engine/RHI/Device.h"
 #include "Engine/Renderer/CapabilityDiagnostics.h"
+#include "Engine/Renderer/AsyncShaderPackageService.h"
+#include "Engine/Renderer/PortableShaderContract.h"
+#include "Engine/Renderer/SlangShaderCompiler.h"
 #include "Engine/Renderer/SceneRasterPreparation.h"
 #include "Engine/Scene/Scene.h"
 
@@ -11,6 +14,7 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <condition_variable>
 #include <filesystem>
 #include <fstream>
 #include <functional>
@@ -1506,6 +1510,423 @@ namespace
                 "invalid optional-path diagnostics survive fallback selection");
     }
 
+    bool TestPortableShaderContract()
+    {
+        using namespace Engine;
+        PortableShaderRequest request;
+        request.SourceName = "fixture.slang"; request.Source = "float4 main() : SV_Target { return 1; }"; request.EntryPoint = "main";
+        request.Stage = RHI::ShaderStage::Pixel; request.Targets = { PortableShaderTarget::Dxil, PortableShaderTarget::Spirv };
+        request.CompilerIdentity = "Slang"; request.CompilerVersion = "2026.13.1";
+        request.CompilerPackageHash = "slang-archive-sha256";
+        request.DownstreamCompilerPackageHash = "dxc-archive-sha256";
+        request.Defines = { "B=2", "A=1" }; request.Options = { "-O3" };
+        request.Dependencies = { { "b.slang", "2", "b" }, { "a.slang", "1", "a" } };
+        request.ExpectedLayout = {
+            { "View", 'b', 0, 0, RHI::ShaderStage::Pixel, "ConstantBuffer", "constant-buffer", 1, 64, 0, 0 }
+        };
+        const std::string key = PortableShaderContract::CacheKey(request);
+        PortableShaderRequest reordered = request; std::reverse(reordered.Defines.begin(), reordered.Defines.end()); std::reverse(reordered.Dependencies.begin(), reordered.Dependencies.end());
+        std::string error;
+        const std::vector<PortableShaderBinding> reflection = request.ExpectedLayout;
+        const bool accepted = PortableShaderContract::Validate(request, reflection, {}, error);
+        reordered.Source += " "; const bool sourceInvalidates = key != PortableShaderContract::CacheKey(reordered);
+        reordered = request; reordered.Dependencies[0].ContentHash = "changed"; const bool dependencyInvalidates = key != PortableShaderContract::CacheKey(reordered);
+        reordered = request; reordered.LayoutVersion++; const bool versionInvalidates = key != PortableShaderContract::CacheKey(reordered);
+        const auto invalidates = [&](const std::function<void(PortableShaderRequest&)>& mutate)
+        {
+            PortableShaderRequest changed = request;
+            mutate(changed);
+            return key != PortableShaderContract::CacheKey(changed);
+        };
+        const bool independentInputs = invalidates([](auto& r) { r.Stage = RHI::ShaderStage::Vertex; })
+            && invalidates([](auto& r) { r.Targets = { PortableShaderTarget::Dxil }; })
+            && invalidates([](auto& r) { r.Defines[0] = "B=3"; })
+            && invalidates([](auto& r) { r.CompilerIdentity = "DXC"; })
+            && invalidates([](auto& r) { r.CompilerVersion = "2026.13.2"; })
+            && invalidates([](auto& r) { r.CompilerPackageHash = "changed-package-hash"; })
+            && invalidates([](auto& r) { r.DownstreamCompilerPackageHash = "changed-downstream-package-hash"; })
+            && invalidates([](auto& r) { r.Options.push_back("-Od"); })
+            && invalidates([](auto& r) { r.ReflectionVersion++; })
+            && invalidates([](auto& r) { r.Conventions.Version++; })
+            && invalidates([](auto& r) { r.ExpectedLayout[0].Register++; })
+            && invalidates([](auto& r) { r.ExpectedLayout[0].ByteSize++; });
+        auto mismatch = reflection; mismatch[0].Register = 1;
+        const bool layoutRejected = !PortableShaderContract::Validate(request, mismatch, {}, error);
+        const auto rejectsBindingMutation = [&](const std::function<void(PortableShaderBinding&)>& mutate)
+        {
+            auto changed = reflection;
+            mutate(changed[0]);
+            return !PortableShaderContract::Validate(request, changed, {}, error);
+        };
+        const bool richLayoutRejected = rejectsBindingMutation([](auto& binding) { binding.Name = "Other"; })
+            && rejectsBindingMutation([](auto& binding) { binding.ResourceKind = "Texture2D"; })
+            && rejectsBindingMutation([](auto& binding) { binding.TypeShape = "float32x4"; })
+            && rejectsBindingMutation([](auto& binding) { binding.Count = 2; })
+            && rejectsBindingMutation([](auto& binding) { binding.ByteSize = 80; });
+        const std::filesystem::path path = TestFilePath("portable-shader.shaderpkg");
+        PortableShaderPackage written; written.Key = key; written.Dxil = { 1, 2 }; written.Spirv = { 3, 4 }; written.Reflection = reflection;
+        written.VertexInputs = { { "Position", "POSITION", 0, 0, "float32x3", 12, 1, 3 } };
+        PortableShaderPackage loaded;
+        const bool roundTrip = PortableShaderContract::StoreAtomic(path, written)
+            && PortableShaderContract::Load(path, key, loaded) && loaded == written;
+
+        PortableShaderPackage sentinel;
+        sentinel.Version = 77;
+        sentinel.Key = "sentinel-key";
+        sentinel.Dxil = { 91 };
+        sentinel.Spirv = { 92 };
+        sentinel.Reflection = { { "Sentinel", 'u', 9, 8, RHI::ShaderStage::Compute, "RWTexture3D", "uint32", 7, 6, 5, 4 } };
+        sentinel.VertexInputs = { { "SentinelInput", "SENTINEL", 3, 2, "float64x2", 16, 1, 2 } };
+        sentinel.Conventions.Coordinates = "SentinelCoordinates";
+        sentinel.Diagnostics = { { "sentinel", "entry", "target", "backend", "message" } };
+        PortableShaderPackage output = sentinel;
+        const bool badKeyRejected = !PortableShaderContract::Load(path, "wrong", output) && output == sentinel;
+
+        std::ifstream validStream(path, std::ios::binary);
+        const std::vector<char> validBytes(
+            (std::istreambuf_iterator<char>(validStream)),
+            std::istreambuf_iterator<char>());
+        std::vector<char> wrongVersionBytes = validBytes;
+        wrongVersionBytes[5] = 99;
+        { std::ofstream corrupt(path, std::ios::binary | std::ios::trunc); corrupt.write(wrongVersionBytes.data(), static_cast<std::streamsize>(wrongVersionBytes.size())); }
+        const bool versionRejected = !PortableShaderContract::Load(path, key, output) && output == sentinel;
+        { std::ofstream corrupt(path, std::ios::binary | std::ios::trunc); corrupt.write(validBytes.data(), static_cast<std::streamsize>(validBytes.size() - 3)); }
+        const bool lateTruncationRejected = !PortableShaderContract::Load(path, key, output) && output == sentinel;
+
+        const bool stableSha = PortableShaderContract::Sha256("abc")
+            == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+        const bool deterministicKey = key.size() == 64
+            && key == PortableShaderContract::CacheKey(request)
+            && key == PortableShaderContract::CacheKey(PortableShaderRequest(request));
+        return Expect(stableSha && deterministicKey, "portable shader cache key is deterministic SHA-256")
+            && Expect(accepted && sourceInvalidates && dependencyInvalidates && versionInvalidates && independentInputs, "portable shader key covers independently mutable compiler inputs")
+            && Expect(layoutRejected && richLayoutRejected, "portable shader semantic layout collisions are rejected")
+            && Expect(roundTrip && badKeyRejected && versionRejected && lateTruncationRejected,
+                "portable shader cache parse failures preserve every caller field");
+    }
+
+    bool TestSlangShaderCompilerProducesPortableValidatedPackages()
+    {
+        using namespace Engine;
+        const std::filesystem::path cacheDirectory = TestFilePath("slang-shader-cache");
+        std::error_code error;
+        std::filesystem::remove_all(cacheDirectory, error);
+
+        PortableShaderRequest request;
+        request.SourceName = "portable-fixture.slang";
+        request.Source = R"(
+#include "portable-shared.inc"
+#ifndef COLOR_SCALE
+#define COLOR_SCALE 1
+#endif
+cbuffer View : register(b0, space0)
+{
+    float4x4 ViewProjection;
+};
+Texture2D Albedo : register(t1, space0);
+SamplerState LinearSampler : register(s2, space0);
+Texture2D Layers[2] : register(t3, space0);
+
+float4 main(float4 position : SV_Position) : SV_Target
+{
+    return Albedo.Sample(LinearSampler, position.xy) + Layers[1].Sample(LinearSampler, position.xy)
+        + ViewProjection[0] + IncludedColor * COLOR_SCALE;
+}
+)";
+        request.EntryPoint = "main";
+        request.Stage = RHI::ShaderStage::Pixel;
+        request.Targets = { PortableShaderTarget::Dxil, PortableShaderTarget::Spirv };
+        request.CompilerIdentity = "Slang";
+        request.CompilerVersion = "2026.13.1";
+        request.CompilerPackageHash = "fa1c9bcab2cdcd3626f7a1e250dd35d606c1b84745b64627f1dd63fca3746a70";
+        request.DownstreamCompilerPackageHash = "a1e89031421cf3c1fca6627766ab3020ca4f962ac7e2caa7fab2b33a8436151e";
+        request.Defines = { "COLOR_SCALE=1" };
+        request.Options = { "-O0" };
+        PortableShaderDependency dependency;
+        dependency.Path = "portable-shared.inc";
+        dependency.Content = "static const float4 IncludedColor = float4(0.1, 0.2, 0.3, 0.4);\n";
+        dependency.ContentHash = PortableShaderContract::Sha256(dependency.Content);
+        request.Dependencies = { dependency };
+        request.ExpectedLayout = {
+            { "View", 'b', 0, 0, RHI::ShaderStage::Pixel, "ConstantBuffer", "struct{ViewProjection:float32x4x4:row-major@0}", 1, 64, 0, 0 },
+            { "Albedo", 't', 1, 0, RHI::ShaderStage::Pixel, "Texture2D", "float32x4", 1, 0, 1, 4 },
+            { "LinearSampler", 's', 2, 0, RHI::ShaderStage::Pixel, "SamplerState", "sampler", 1, 0, 0, 0 },
+            { "Layers", 't', 3, 0, RHI::ShaderStage::Pixel, "Texture2D", "float32x4", 2, 0, 1, 4 }
+        };
+
+        SlangShaderCompiler compiler(cacheDirectory);
+        const PortableShaderPackage first = compiler.Compile(request);
+        const PortableShaderPackage second = compiler.Compile(request);
+        const auto printShaderDiagnostics = [](const PortableShaderPackage& package)
+        {
+            for (const PortableShaderDiagnostic& diagnostic : package.Diagnostics)
+                std::cerr << "  Shader diagnostic: " << diagnostic.Target << ": " << diagnostic.Message << '\n';
+        };
+        if (!first.Succeeded()) printShaderDiagnostics(first);
+        const bool compiled = first.Succeeded() && !first.Dxil.empty() && !first.Spirv.empty()
+            && first.Reflection == request.ExpectedLayout && first.VertexInputs.empty()
+            && first.Conventions == request.Conventions;
+        const bool deterministic = second.Succeeded() && first.Dxil == second.Dxil
+            && first.Spirv == second.Spirv && first.Reflection == second.Reflection
+            && std::filesystem::exists(cacheDirectory / (first.Key + ".shaderpkg"));
+
+        PortableShaderRequest changedDefine = request;
+        changedDefine.Defines = { "COLOR_SCALE=2" };
+        const PortableShaderPackage defineOutput = compiler.Compile(changedDefine);
+        PortableShaderRequest changedInclude = request;
+        changedInclude.Dependencies[0].Content = "static const float4 IncludedColor = float4(0.8, 0.7, 0.6, 0.5);\n";
+        changedInclude.Dependencies[0].ContentHash = PortableShaderContract::Sha256(changedInclude.Dependencies[0].Content);
+        const PortableShaderPackage includeOutput = compiler.Compile(changedInclude);
+        PortableShaderRequest changedOptions = request;
+        changedOptions.Options = { "-O3" };
+        const PortableShaderPackage optionOutput = compiler.Compile(changedOptions);
+        const bool appliedInputs = defineOutput.Succeeded() && includeOutput.Succeeded() && optionOutput.Succeeded()
+            && (defineOutput.Dxil != first.Dxil || defineOutput.Spirv != first.Spirv)
+            && (includeOutput.Dxil != first.Dxil || includeOutput.Spirv != first.Spirv)
+            && (optionOutput.Dxil != first.Dxil || optionOutput.Spirv != first.Spirv);
+
+        PortableShaderRequest unsupportedOption = request;
+        unsupportedOption.Options = { "--not-an-admitted-option" };
+        const PortableShaderPackage optionFailure = compiler.Compile(unsupportedOption);
+        PortableShaderRequest undeclaredInclude = request;
+        undeclaredInclude.Dependencies.clear();
+        const PortableShaderPackage dependencyFailure = compiler.Compile(undeclaredInclude);
+        PortableShaderRequest staleDependencyHash = request;
+        staleDependencyHash.Dependencies[0].Content += "// changed";
+        const PortableShaderPackage staleHashFailure = compiler.Compile(staleDependencyHash);
+        PortableShaderRequest unusedDependency = request;
+        PortableShaderDependency unused;
+        unused.Path = "unused.inc";
+        unused.Content = "static const float Unused = 1.0;\n";
+        unused.ContentHash = PortableShaderContract::Sha256(unused.Content);
+        unusedDependency.Dependencies.push_back(unused);
+        const PortableShaderPackage unusedDependencyFailure = compiler.Compile(unusedDependency);
+
+        PortableShaderRequest vertexRequest;
+        vertexRequest.SourceName = "portable-vertex-fixture.slang";
+        vertexRequest.Source = R"(
+cbuffer View : register(b0, space0) { row_major float4x4 ViewProjection; };
+struct VertexInput { float3 Position : POSITION; float2 TexCoord : TEXCOORD1; };
+float4 main(VertexInput input) : SV_Position
+{
+    return mul(float4(input.Position + float3(input.TexCoord, 0.0), 1.0), ViewProjection);
+}
+)";
+        vertexRequest.EntryPoint = "main";
+        vertexRequest.Stage = RHI::ShaderStage::Vertex;
+        vertexRequest.Targets = request.Targets;
+        vertexRequest.CompilerIdentity = request.CompilerIdentity;
+        vertexRequest.CompilerVersion = request.CompilerVersion;
+        vertexRequest.CompilerPackageHash = request.CompilerPackageHash;
+        vertexRequest.DownstreamCompilerPackageHash = request.DownstreamCompilerPackageHash;
+        vertexRequest.ExpectedLayout = {
+            { "View", 'b', 0, 0, RHI::ShaderStage::Vertex, "ConstantBuffer", "struct{ViewProjection:float32x4x4:row-major@0}", 1, 64, 0, 0 }
+        };
+        vertexRequest.ExpectedVertexInputs = {
+            { "Position", "POSITION", 0, 0, "float32x3", 12, 1, 3 },
+            { "TexCoord", "TEXCOORD", 1, 1, "float32x2", 8, 1, 2 }
+        };
+        const PortableShaderPackage vertexOutput = compiler.Compile(vertexRequest);
+        if (!vertexOutput.Succeeded()) printShaderDiagnostics(vertexOutput);
+        const bool vertexInterface = vertexOutput.Succeeded()
+            && vertexOutput.VertexInputs == vertexRequest.ExpectedVertexInputs;
+
+        PortableShaderRequest invalidSource = request;
+        invalidSource.Source = "this is not valid Slang";
+        const PortableShaderPackage sourceFailure = compiler.Compile(invalidSource);
+        PortableShaderRequest invalidEntry = request;
+        invalidEntry.EntryPoint = "missingEntry";
+        const PortableShaderPackage entryFailure = compiler.Compile(invalidEntry);
+        PortableShaderRequest mismatchedLayout = request;
+        mismatchedLayout.ExpectedLayout[1].Register = 3;
+        const PortableShaderPackage layoutFailure = compiler.Compile(mismatchedLayout);
+        PortableShaderRequest mismatchedConvention = request;
+        mismatchedConvention.Conventions.VulkanYFlip = false;
+        const PortableShaderPackage conventionFailure = compiler.Compile(mismatchedConvention);
+
+        std::filesystem::remove_all(cacheDirectory, error);
+        return Expect(compiled, "Slang produces nonempty DXIL/SPIR-V and linked-program reflection")
+            & Expect(deterministic, "repeated Slang compilation returns deterministic cached bytes and reflection")
+            & Expect(appliedInputs, "Slang defines, controlled includes, and optimization options change generated artifacts")
+            & Expect(!optionFailure.Succeeded(), "unsupported compiler options return structured failures")
+            & Expect(!dependencyFailure.Succeeded(), "undeclared include closure returns structured failure")
+            & Expect(!staleHashFailure.Succeeded(), "stale dependency hashes return structured failure")
+            & Expect(!unusedDependencyFailure.Succeeded(), "unused declared dependencies are rejected from the resolved closure")
+            & Expect(vertexInterface, "Slang normalizes the vertex entry-point interface across DXIL and SPIR-V")
+            & Expect(!sourceFailure.Succeeded() && !sourceFailure.Diagnostics.empty(), "invalid Slang source returns structured diagnostics")
+            & Expect(!entryFailure.Succeeded() && !entryFailure.Diagnostics.empty(), "unknown Slang entry point returns structured diagnostics")
+            & Expect(!layoutFailure.Succeeded() && !layoutFailure.Diagnostics.empty(), "real reflected layout rejects an expected-layout mismatch")
+            & Expect(!conventionFailure.Succeeded() && !conventionFailure.Diagnostics.empty(),
+                "a convention mismatch fails before artifact publication");
+    }
+
+    Engine::PortableShaderPackage MakeSyntheticShaderPackage(const Engine::PortableShaderRequest& request, Engine::u8 seed)
+    {
+        Engine::PortableShaderPackage package;
+        package.Key = Engine::PortableShaderContract::CacheKey(request);
+        package.Dxil = { seed, static_cast<Engine::u8>(seed + 1) };
+        package.Spirv = { static_cast<Engine::u8>(seed + 2), static_cast<Engine::u8>(seed + 3) };
+        package.Reflection = request.ExpectedLayout;
+        return package;
+    }
+
+    bool TestAsyncShaderPackagePublicationIsNonblockingDeduplicatedAndAtomic()
+    {
+        using namespace Engine;
+        JobSystem& jobs = JobSystem::Get();
+        jobs.Shutdown();
+        jobs.Initialize(1);
+
+        std::mutex gateMutex;
+        std::condition_variable gate;
+        bool entered = false;
+        bool release = false;
+        std::atomic<int> compileCalls = 0;
+        AsyncShaderPackageService service([&](const PortableShaderRequest& request)
+        {
+            ++compileCalls;
+            std::unique_lock lock(gateMutex);
+            entered = true;
+            gate.notify_all();
+            gate.wait(lock, [&]() { return release; });
+            return MakeSyntheticShaderPackage(request, 11);
+        });
+
+        PortableShaderRequest request;
+        request.SourceName = "async-fixture.slang";
+        request.Source = "float4 main() : SV_Target { return 1; }";
+        request.EntryPoint = "main";
+        request.Stage = RHI::ShaderStage::Pixel;
+        request.Targets = { PortableShaderTarget::Dxil, PortableShaderTarget::Spirv };
+        request.CompilerIdentity = "ControlledCompiler";
+
+        const auto begin = std::chrono::steady_clock::now();
+        const ShaderPackageRequestHandle first = service.Request(request);
+        const auto requestDuration = std::chrono::steady_clock::now() - begin;
+        const ShaderPackageRequestHandle duplicate = service.Request(request);
+        {
+            std::unique_lock lock(gateMutex);
+            gate.wait_for(lock, std::chrono::seconds(2), [&]() { return entered; });
+        }
+        const ShaderPackageRequestResult pending = service.Poll(first);
+        {
+            std::scoped_lock lock(gateMutex);
+            release = true;
+        }
+        gate.notify_all();
+        jobs.WaitIdle();
+
+        const ShaderPackageRequestResult published = service.Poll(first);
+        const ShaderPackageRequestHandle cacheRequest = service.Request(request);
+        const ShaderPackageRequestResult cacheHit = service.Poll(cacheRequest);
+        const bool nonblocking = requestDuration < std::chrono::milliseconds(100);
+        const bool deduplicated = first.Id == duplicate.Id && compileCalls == 1;
+        const bool atomic = pending.Status == ShaderPackageRequestStatus::Pending && !pending.Package
+            && published.Status == ShaderPackageRequestStatus::Success && published.Package
+            && published.Package->Succeeded();
+        const bool cacheReused = cacheHit.Status == ShaderPackageRequestStatus::CacheHit
+            && cacheHit.Package == published.Package;
+
+        service.Shutdown();
+        jobs.Shutdown();
+        return Expect(nonblocking, "asynchronous shader Request returns before controlled compiler completion")
+            && Expect(deduplicated, "identical in-flight shader keys share one compiler job")
+            && Expect(atomic, "poll exposes no partial package before one immutable successful publication")
+            && Expect(cacheReused, "completed shader packages publish a structured service cache hit");
+    }
+
+    bool TestAsyncShaderFailureRetentionInlineEquivalenceAndShutdownSafety()
+    {
+        using namespace Engine;
+        PortableShaderRequest request;
+        request.SourceName = "retention-fixture.slang";
+        request.Source = "float4 main() : SV_Target { return 1; }";
+        request.EntryPoint = "main";
+        request.Stage = RHI::ShaderStage::Pixel;
+        request.Targets = { PortableShaderTarget::Dxil, PortableShaderTarget::Spirv };
+
+        const auto deterministicCompiler = [](const PortableShaderRequest& value)
+        {
+            return MakeSyntheticShaderPackage(value, 29);
+        };
+        AsyncShaderPackageService inlineService(deterministicCompiler, ShaderPackageExecutionMode::DeterministicInline);
+        const ShaderPackageRequestResult inlineResult = inlineService.Poll(inlineService.Request(request));
+        const PortableShaderPackage direct = deterministicCompiler(request);
+        const bool inlineEquivalent = inlineResult.Succeeded()
+            && inlineResult.Package->Dxil == direct.Dxil && inlineResult.Package->Spirv == direct.Spirv;
+
+        std::shared_ptr<const PortableShaderPackage> active = inlineResult.Package;
+        PortableShaderRequest failingRequest = request;
+        failingRequest.Source += " invalid";
+        AsyncShaderPackageService failingService([](const PortableShaderRequest& value)
+        {
+            PortableShaderPackage failed;
+            failed.Key = PortableShaderContract::CacheKey(value);
+            failed.Diagnostics.push_back({ value.SourceName, value.EntryPoint, "DXIL,SPIR-V", "ControlledCompiler", "injected compile failure" });
+            return failed;
+        }, ShaderPackageExecutionMode::DeterministicInline);
+        const ShaderPackageRequestResult failed = failingService.Poll(failingService.Request(failingRequest));
+        if (failed.Succeeded())
+            active = failed.Package;
+        const bool retained = failed.Status == ShaderPackageRequestStatus::Failure
+            && active == inlineResult.Package && active && active->Succeeded();
+
+        JobSystem& jobs = JobSystem::Get();
+        jobs.Shutdown();
+        jobs.Initialize(1);
+        std::mutex gateMutex;
+        std::condition_variable gate;
+        bool entered = false;
+        bool release = false;
+        AsyncShaderPackageService cancellingService([&](const PortableShaderRequest& value)
+        {
+            std::unique_lock lock(gateMutex);
+            entered = true;
+            gate.notify_all();
+            gate.wait(lock, [&]() { return release; });
+            return MakeSyntheticShaderPackage(value, 41);
+        });
+        const ShaderPackageRequestHandle cancellationHandle = cancellingService.Request(request);
+        {
+            std::unique_lock lock(gateMutex);
+            gate.wait_for(lock, std::chrono::seconds(2), [&]() { return entered; });
+        }
+        cancellingService.Shutdown();
+        const ShaderPackageRequestResult cancelledBeforeCompletion = cancellingService.Poll(cancellationHandle);
+        {
+            std::scoped_lock lock(gateMutex);
+            release = true;
+        }
+        gate.notify_all();
+        jobs.WaitIdle();
+        const ShaderPackageRequestResult cancelledAfterCompletion = cancellingService.Poll(cancellationHandle);
+        jobs.Shutdown();
+        const bool shutdownSafe = cancelledBeforeCompletion.Status == ShaderPackageRequestStatus::Cancelled
+            && cancelledAfterCompletion.Status == ShaderPackageRequestStatus::Cancelled
+            && !cancelledAfterCompletion.Package;
+
+        int throwingCompileCalls = 0;
+        AsyncShaderPackageService throwingService([&](const PortableShaderRequest& value)
+        {
+            if (++throwingCompileCalls == 1)
+                throw std::runtime_error("injected compiler exception");
+            return MakeSyntheticShaderPackage(value, 53);
+        }, ShaderPackageExecutionMode::DeterministicInline);
+        const ShaderPackageRequestHandle throwingHandle = throwingService.Request(request);
+        const ShaderPackageRequestResult throwingFailure = throwingService.Poll(throwingHandle);
+        const ShaderPackageRequestHandle retryHandle = throwingService.Request(request);
+        const ShaderPackageRequestResult retrySuccess = throwingService.Poll(retryHandle);
+        const bool exceptionRetry = throwingFailure.Status == ShaderPackageRequestStatus::Failure
+            && throwingFailure.Diagnostic.Message.find("injected compiler exception") != std::string::npos
+            && retryHandle.Id != throwingHandle.Id && retrySuccess.Succeeded()
+            && throwingCompileCalls == 2;
+
+        return Expect(inlineEquivalent, "deterministic inline mode uses equivalent compile and publication semantics")
+            && Expect(retained, "a failed refresh cannot replace the consumer's last valid package")
+            && Expect(shutdownSafe, "shutdown cancels publication and ignores late worker completion safely")
+            && Expect(exceptionRetry, "compiler exceptions publish terminal failure, clear in-flight state, and permit retry");
+    }
+
 }
 
 int main()
@@ -1513,6 +1934,9 @@ int main()
     Engine::Log::Init();
 
     const std::vector<std::pair<std::string_view, TestFunction>> tests = {
+        { "Slang compiler emits validated portable shader packages", TestSlangShaderCompilerProducesPortableValidatedPackages },
+        { "Async shader publication is nonblocking deduplicated and atomic", TestAsyncShaderPackagePublicationIsNonblockingDeduplicatedAndAtomic },
+        { "Async shader failure retention inline equivalence and shutdown safety", TestAsyncShaderFailureRetentionInlineEquivalenceAndShutdownSafety },
         { "JobSystem contains worker exceptions", TestJobSystemContainsWorkerExceptions },
         { "JobSystem inline fallback is reentrant", TestJobSystemInlineFallbackIsReentrant },
         { "JobSystem steals nested worker jobs", TestJobSystemStealsNestedWorkerJobs },
@@ -1543,6 +1967,7 @@ int main()
         { "Editor capability reason diagnostics preserve fallbacks and rejections", TestEditorCapabilityReasonDiagnosticsPreserveFallbacksAndRejections },
         { "Frame timing capability group selects usable GPU timestamps", TestFrameTimingCapabilityGroupSelectsUsableGpuTimestamps },
         { "Frame timing capability group selects portable CPU fallback", TestFrameTimingCapabilityGroupSelectsPortableCpuFallback },
+        { "Portable shader contract validates deterministic cache and layouts", TestPortableShaderContract },
         { "Frame timing capability group rejects invalid timestamp lifecycle", TestFrameTimingCapabilityGroupRejectsInvalidTimestampLifecycle }
     };
 

@@ -26,5 +26,6 @@ VSOutput VSMain(VSInput input)
 float4 PSMain(VSOutput input) : SV_Target0
 {
     float3 shaded = input.Color * 0.86f + float3(0.05f, 0.06f, 0.07f);
-    return float4(shaded, 1.0f);
+    float portableBindingProbe = 1.0f + abs(ViewProjection[0][0]) * 0.0000001f;
+    return float4(shaded * portableBindingProbe, 1.0f);
 }

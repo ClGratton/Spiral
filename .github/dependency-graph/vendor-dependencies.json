@@ -65,6 +65,22 @@
       "scope": "runtime",
       "source_location": "Vendor/DirectX-Headers",
       "license": "MIT"
+    },
+    {
+      "name": "Slang",
+      "package_url": "pkg:github/shader-slang/slang@v2026.13.1",
+      "relationship": "direct",
+      "scope": "runtime",
+      "source_location": "Vendor/Slang/v2026.13.1",
+      "license": "Apache-2.0 WITH LLVM-exception"
+    },
+    {
+      "name": "Microsoft DirectX Shader Compiler",
+      "package_url": "pkg:github/microsoft/DirectXShaderCompiler@v1.9.2602",
+      "relationship": "direct",
+      "scope": "runtime",
+      "source_location": "Vendor/DXC/v1.9.2602/windows-x86_64",
+      "license": "LicenseRef-Microsoft-DXC AND NCSA AND MIT"
     }
   ]
 }

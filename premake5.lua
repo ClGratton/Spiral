@@ -20,6 +20,35 @@ outputdir = "%{cfg.buildcfg}-%{cfg.system}-%{cfg.architecture}" .. action_suffix
 has_nvrhi = os.isdir("Vendor/NVRHI/include")
 has_vulkan_headers = os.isdir("Vendor/Vulkan-Headers/include/vulkan")
 has_directx_headers = os.isdir("Vendor/DirectX-Headers/include/directx")
+workspace_root = path.getabsolute(_MAIN_SCRIPT_DIR)
+
+local pin_file = assert(io.open(path.join(_MAIN_SCRIPT_DIR, "Scripts/ShaderToolchainPins.env"), "r"))
+shader_toolchain_pins = {}
+for line in pin_file:lines() do
+    local key, value = line:match("^([A-Z0-9_]+)=(.+)$")
+    if key ~= nil then shader_toolchain_pins[key] = value end
+end
+pin_file:close()
+assert(shader_toolchain_pins.SHADER_TOOLCHAIN_PIN_FORMAT == "1", "Unsupported shader toolchain pin format")
+slang_version = "v" .. shader_toolchain_pins.SLANG_VERSION
+slang_root = path.join("Vendor/Slang", slang_version)
+dxc_version = "v" .. shader_toolchain_pins.DXC_VERSION
+dxc_root = path.join("Vendor/DXC", dxc_version)
+
+local slang_hash_key_by_host = {
+    windows = "SLANG_WINDOWS_X86_64_SHA256",
+    linux = "SLANG_LINUX_X86_64_SHA256",
+    macosx = "SLANG_MACOS_X86_64_SHA256"
+}
+local slang_hash_key = slang_hash_key_by_host[os.host()]
+assert(slang_hash_key ~= nil and shader_toolchain_pins[slang_hash_key] ~= nil,
+    "No x86_64 Slang package hash is declared for this Premake host")
+slang_package_sha256 = shader_toolchain_pins[slang_hash_key]
+dxc_package_sha256 = os.host() == "windows" and shader_toolchain_pins.DXC_WINDOWS_X86_64_SHA256 or ""
+shader_toolchain_defines = {
+    'GE_SLANG_PACKAGE_SHA256="' .. slang_package_sha256 .. '"',
+    'GE_DXC_PACKAGE_SHA256="' .. dxc_package_sha256 .. '"'
+}
 
 group "Core"
     include "Vendor/GLFW"

@@ -16,6 +16,17 @@ Makefile
 Vendor/premake/bin/*
 !Vendor/premake/bin/.gitkeep
 
+# Pinned Slang toolchain archives, extracted compiler libraries, and runtime staging.
+Vendor/Slang/*
+!Vendor/Slang/README.md
+!Vendor/Slang/THIRD_PARTY_NOTICE.md
+
+# Pinned DXC archive, compiler/validator binaries, and extraction cache.
+Vendor/DXC/*
+!Vendor/DXC/README.md
+!Vendor/DXC/NOTICE.md
+
+
 # OS/editor noise
 .DS_Store
 Thumbs.db

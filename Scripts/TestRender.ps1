@@ -63,6 +63,66 @@ foreach ($Marker in $RequiredMarkers) {
         throw "D3D12 render smoke did not emit required marker: $Marker"
     }
 }
+
+$ConventionEvidence = "schema=1\|matrix=row-major\|d3dClipDepth=zero-to-one\|spirvY=inverted\|frontFace=clockwise\|binding=D3DRegisterSpace"
+$TerminalPattern = "PortableShaderTerminalV1 status=(?<status>success|cache-hit) request=[1-9][0-9]* stage=(?<stage>vertex|pixel) cacheMode=(?<cacheMode>compiled|cache-hit) cacheSource=(?<cacheSource>compiler|disk|service) compiler=Slang-2026\.13\.1 backend=Slang targets=DXIL\+SPIR-V key=(?<key>[0-9a-f]{64}) bindings=(?<bindings>[1-9][0-9]*) vertexInputs=(?<vertexInputs>[0-9]+) conventions=$ConventionEvidence legacySourceCompile=false"
+$TerminalMatches = [regex]::Matches($JoinedLog, $TerminalPattern)
+if ($TerminalMatches.Count -ne 2) {
+    throw "D3D12 render smoke requires exactly two successful PortableShaderTerminalV1 package markers; found $($TerminalMatches.Count)."
+}
+
+$TerminalByStage = @{}
+foreach ($Match in $TerminalMatches) {
+    $Stage = $Match.Groups["stage"].Value
+    if ($TerminalByStage.ContainsKey($Stage)) {
+        throw "D3D12 render smoke emitted duplicate PortableShaderTerminalV1 evidence for stage '$Stage'."
+    }
+    $TerminalByStage[$Stage] = $Match
+
+    $Status = $Match.Groups["status"].Value
+    $CacheMode = $Match.Groups["cacheMode"].Value
+    $CacheSource = $Match.Groups["cacheSource"].Value
+    $ValidCacheEvidence =
+        ($Status -eq "success" -and $CacheMode -eq "compiled" -and $CacheSource -eq "compiler") -or
+        ($Status -eq "success" -and $CacheMode -eq "cache-hit" -and $CacheSource -eq "disk") -or
+        ($Status -eq "cache-hit" -and $CacheMode -eq "cache-hit" -and $CacheSource -eq "service")
+    if (!$ValidCacheEvidence) {
+        throw "D3D12 portable shader stage '$Stage' emitted inconsistent terminal status/cache evidence."
+    }
+}
+if (!$TerminalByStage.ContainsKey("vertex") -or !$TerminalByStage.ContainsKey("pixel")) {
+    throw "D3D12 render smoke requires successful terminal package evidence for both vertex and pixel stages."
+}
+if ([int]$TerminalByStage["vertex"].Groups["vertexInputs"].Value -lt 1) {
+    throw "D3D12 vertex terminal package marker did not contain reflected vertex-input evidence."
+}
+if ([int]$TerminalByStage["pixel"].Groups["vertexInputs"].Value -ne 0) {
+    throw "D3D12 pixel terminal package marker reported unexpected vertex inputs."
+}
+
+$ActivePattern = "D3D12PortablePipelineV1 status=active vertexStatus=(?<vertexStatus>success|cache-hit) vertexCacheMode=(?<vertexCacheMode>compiled|cache-hit) vertexCacheSource=(?<vertexCacheSource>compiler|disk|service) vertexKey=(?<vertexKey>[0-9a-f]{64}) vertexBindings=(?<vertexBindings>[1-9][0-9]*) vertexInputs=(?<vertexInputs>[1-9][0-9]*) pixelStatus=(?<pixelStatus>success|cache-hit) pixelCacheMode=(?<pixelCacheMode>compiled|cache-hit) pixelCacheSource=(?<pixelCacheSource>compiler|disk|service) pixelKey=(?<pixelKey>[0-9a-f]{64}) pixelBindings=(?<pixelBindings>[1-9][0-9]*) pixelInputs=0 compiler=Slang-2026\.13\.1 backend=D3D12\+Slang targets=DXIL\+SPIR-V conventions=$ConventionEvidence legacySourceCompile=false"
+$ActiveMatches = [regex]::Matches($JoinedLog, $ActivePattern)
+if ($ActiveMatches.Count -ne 1) {
+    throw "D3D12 render smoke requires exactly one complete D3D12PortablePipelineV1 active marker; found $($ActiveMatches.Count)."
+}
+$Active = $ActiveMatches[0]
+foreach ($Stage in @("vertex", "pixel")) {
+    if ($TerminalByStage[$Stage].Groups["key"].Value -ne $Active.Groups["${Stage}Key"].Value) {
+        throw "D3D12 portable pipeline $Stage key does not match its terminal package marker."
+    }
+    if ($TerminalByStage[$Stage].Groups["status"].Value -ne $Active.Groups["${Stage}Status"].Value) {
+        throw "D3D12 portable pipeline $Stage status does not match its terminal package marker."
+    }
+    if ($TerminalByStage[$Stage].Groups["cacheMode"].Value -ne $Active.Groups["${Stage}CacheMode"].Value -or
+        $TerminalByStage[$Stage].Groups["cacheSource"].Value -ne $Active.Groups["${Stage}CacheSource"].Value) {
+        throw "D3D12 portable pipeline $Stage cache evidence does not match its terminal package marker."
+    }
+}
+if ($JoinedLog -match "PortableShaderTerminalV1 status=(pending|failure|cancelled|unknown)" -or
+    $JoinedLog -match "D3D12PortablePipelineV1 status=(pending|failure|cancelled|unknown)" -or
+    $JoinedLog -match "legacySourceCompile=true") {
+    throw "D3D12 render smoke emitted pending-only, failure, cancellation, unknown, or legacy shader compile evidence."
+}
 $CanonicalOriginPatterns = @(
     "D3D12 scene origin raster case A:.*sectorX=244140625, localX=2047\.5, originSectorX=244140625, originLocalX=2047\.5,",
     "D3D12 scene origin raster case B:.*sectorX=244140626, localX=-2047\.5, originSectorX=244140625, originLocalX=2047\.5,",

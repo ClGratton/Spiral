@@ -5,6 +5,11 @@ PREMAKE_VERSION="${PREMAKE_VERSION:-5.0.0-beta8}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PREMAKE_DIR="$ROOT/Vendor/premake/bin"
 
+[[ "$(uname -m)" == "x86_64" ]] || {
+    echo "This workspace currently generates x86_64 projects only; host architecture '$(uname -m)' is unsupported. FetchSlang.sh may be used separately to audit a pinned ARM64 package, but Setup will not fetch an unusable build toolchain." >&2
+    exit 1
+}
+
 mkdir -p "$PREMAKE_DIR"
 
 case "$(uname -s)" in
@@ -75,6 +80,12 @@ if [[ ! -x "$PREMAKE_EXE" ]]; then
 
     chmod +x "$PREMAKE_EXE" || true
 fi
+
+bash "$ROOT/Scripts/FetchSlang.sh"
+
+case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*) bash "$ROOT/Scripts/FetchDXC.sh" ;;
+esac
 
 echo "Setup complete."
 echo "Premake: $PREMAKE_EXE"

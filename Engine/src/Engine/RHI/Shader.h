@@ -3,9 +3,17 @@
 #include "Engine/RHI/RHICommon.h"
 
 #include <string>
+#include <vector>
 
 namespace Engine::RHI
 {
+    enum class ShaderBinaryFormat
+    {
+        None,
+        Dxil,
+        Spirv
+    };
+
     struct ShaderDescription
     {
         std::string DebugName;
@@ -14,6 +22,8 @@ namespace Engine::RHI
         std::string EntryPoint = "main";
         std::string TargetProfile;
         ShaderStage Stage = ShaderStage::None;
+        ShaderBinaryFormat BinaryFormat = ShaderBinaryFormat::None;
+        std::vector<u8> Binary;
     };
 
     class Shader

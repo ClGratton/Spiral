@@ -1,7 +1,7 @@
 # Verification Guide
 
 Status: Living contract
-Date: 2026-07-13
+Date: 2026-07-14
 
 Verification must exercise the behavior claimed by the change. Compilation proves build compatibility; it does not prove a runtime or editor workflow.
 
@@ -104,7 +104,9 @@ Windows D3D12 viewport behavior and non-blank capture:
 .\Scripts\TestRender.ps1 -Configuration Debug -Action vs2022
 ```
 
-This smoke requires the D3D12 versioned-profile selection marker before accepting the capture. It also launches `--scene-origin-raster-smoke`, waits for a stable editor-viewport projection, and captures cases A/B/C at trillion-unit coordinates around a real 4096-unit sector boundary. A and C place camera/origin and mesh together on opposite sides of that boundary and must be byte-identical; B moves only the mesh across the boundary and must differ, retain comparable foreground area, and move the foreground centroid right. Renderer diagnostics identify the current snapshot frame/entity/canonical sector-local position/origin/relative position and exactly one issued draw in each case. The measured MSVC D3D12 run produced byte-identical A/C images, a 196.24-pixel rightward B centroid shift, and a 13.20% non-background ratio. This qualifies snapshot-driven built-in prototype-geometry raster only on the selected Windows/MSVC D3D12 device; it does not qualify real mesh/material resources, Vulkan scene raster, culling, coordinate debug views, physics, or ray/TLAS/query consumers.
+This smoke requires the D3D12 versioned-profile selection marker before accepting the capture. It also requires exactly one successful `PortableShaderTerminalV1` marker for each vertex/pixel stage and one complete `D3D12PortablePipelineV1 status=active` marker. Those structured markers must agree on valid 64-hex package keys, terminal success/cache-hit state, cache mode/source, nonzero reflected bindings, vertex-input counts, compiler `Slang-2026.13.1`, backend identity, exact targets `DXIL+SPIR-V`, convention schema 1 (row-major, zero-to-one D3D clip depth, inverted SPIR-V Y, clockwise front face, D3D register-space bindings), and `legacySourceCompile=false`. Pending-only, failed, cancelled, unknown, duplicate-stage, key/status/cache-mismatched, or legacy compile evidence fails the smoke.
+
+The same run launches `--scene-origin-raster-smoke`, waits for a stable editor-viewport projection, and captures cases A/B/C at trillion-unit coordinates around a real 4096-unit sector boundary. A and C place camera/origin and mesh together on opposite sides of that boundary and must be byte-identical; B moves only the mesh across the boundary and must differ, retain comparable foreground area, and move the foreground centroid right. Renderer diagnostics identify the current snapshot frame/entity/canonical sector-local position/origin/relative position and exactly one issued draw in each case. The measured MSVC D3D12 run produced byte-identical A/C images, a 196.24-pixel rightward B centroid shift, and a 13.20% non-background ratio. It proves the selected Windows x86_64/MSVC D3D12 viewport consumed Slang-generated DXIL and issued the real prototype draw. The paired SPIR-V output is compiled, reflected, convention-validated package evidence, not Vulkan scene execution. Normal editor startup compiles through job-system fire-and-poll; the smoke intentionally selects deterministic-inline execution. Slang v2026.13.1 and Windows x86_64 DXC v1.9.2602 are exact admitted pins; other Slang host archives are acquisition targets only, and redistribution remains blocked by the binary-component/notice audit in [DEPENDENCIES.md](DEPENDENCIES.md). This does not qualify Vulkan scene raster, Linux, macOS, MinGW, Windows ARM64, real mesh/material resources, culling, coordinate debug views, physics, or ray/TLAS/query consumers.
 
 To exercise the strict runtime failure path, launch a missing adapter and require a nonzero exit plus per-candidate strict-preference rejection diagnostics:
 

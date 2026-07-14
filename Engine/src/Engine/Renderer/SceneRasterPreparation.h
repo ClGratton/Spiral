@@ -8,6 +8,7 @@
 #include "Engine/Scene/SceneRenderSnapshot.h"
 
 #include <cstddef>
+#include <string>
 #include <vector>
 
 namespace Engine
@@ -27,10 +28,19 @@ namespace Engine
 
     struct SceneRasterFrame
     {
+        enum class Availability
+        {
+            Ready,
+            ShaderPipelinePending,
+            ShaderPipelineUnavailable
+        };
+
         u64 SnapshotFrameIndex = 0;
         Math::DVec3 TranslationOrigin;
         bool HasValidView = false;
         u32 IssuedDrawCount = 0;
+        Availability RasterAvailability = Availability::Ready;
+        std::string Diagnostic;
         std::vector<SceneRasterInstance> Instances;
     };
 

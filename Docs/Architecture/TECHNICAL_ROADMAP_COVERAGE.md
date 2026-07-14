@@ -32,7 +32,7 @@ Phases 4–9 are smaller because they layer algorithms onto that foundation, but
 | Camera-relative/large-world coordinate contract | Scene snapshot, culling, raster, debug, RT transforms | Phase 3B |
 | CPU frame task graph and immutable publication | Render extraction, parallel preparation, animation/physics integration | Phase 3B |
 | Backend-neutral render snapshot | Any scene renderer or render graph pass | Phase 3B |
-| Shared asynchronous DXIL/SPIR-V shader contract | Vulkan scene parity and all shared passes | Phase 3C |
+| Shared asynchronous DXIL/SPIR-V shader contract | Vulkan scene parity and all shared passes | Phase 3C foundation is implemented and D3D12 consumes DXIL; paired SPIR-V is validated artifact evidence until the following Vulkan scene-RHI item consumes it. |
 | Executable render graph and GPU retirement | Multi-pass renderer, transient reuse, AA, visibility, GI, rays | Phase 3C |
 | KTX2/Basis target cook and basic texture upload/mips | Phase 4 mip/filter validation and Phase 5 calibrated materials | Phase 3D |
 | Descriptor/bindless model with bounded fallback | Material tables, visibility resolve, streamed textures/geometry | Phase 3D |

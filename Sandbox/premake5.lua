@@ -32,12 +32,26 @@ project "Sandbox"
     end
 
     filter "system:windows"
+        libdirs { "%{wks.location}/" .. slang_root .. "/windows-x86_64/lib" }
+        links { "slang" }
+        postbuildcommands { 'powershell -ExecutionPolicy Bypass -NoProfile -File "' .. workspace_root .. '/Scripts/StageSlangRuntime.ps1" -Source "' .. workspace_root .. '/' .. slang_root .. '/windows-x86_64" -DxcSource "' .. workspace_root .. '/' .. dxc_root .. '/windows-x86_64" -Destination "%{cfg.targetdir}"' }
+
+    filter "system:linux"
+        libdirs { "%{wks.location}/" .. slang_root .. "/linux-x86_64/lib" }
+        links { "slang" }
+        postbuildcommands { 'bash "' .. workspace_root .. '/Scripts/StageSlangRuntime.sh" "' .. workspace_root .. '/' .. slang_root .. '/linux-x86_64" "%{cfg.targetdir}"' }
+
+    filter "system:macosx"
+        libdirs { "%{wks.location}/" .. slang_root .. "/macos-x86_64/lib" }
+        links { "slang" }
+        postbuildcommands { 'bash "' .. workspace_root .. '/Scripts/StageSlangRuntime.sh" "' .. workspace_root .. '/' .. slang_root .. '/macos-x86_64" "%{cfg.targetdir}"' }
+
+    filter {}
+
+    filter "system:windows"
         systemversion "latest"
         defines { "GE_PLATFORM_WINDOWS" }
         links { "gdi32", "user32", "shell32", "opengl32", "d3d12", "dxgi", "dxguid" }
-
-    filter { "system:windows", "action:vs*" }
-        links { "d3dcompiler" }
 
     filter "action:vs*"
         buildoptions { "/Zc:preprocessor" }

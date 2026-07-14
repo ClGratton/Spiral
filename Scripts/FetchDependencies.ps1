@@ -57,4 +57,5 @@ if ($IncludeNVRHIPlatformHeaders) {
         -Path "Vendor/DirectX-Headers"
 }
 
+
 Write-Host "Dependency fetch complete."

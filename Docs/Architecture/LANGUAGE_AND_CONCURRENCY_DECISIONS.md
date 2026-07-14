@@ -221,6 +221,8 @@ Rules:
 - Validate generated shader layouts against C++/C# structs.
 - Keep backend-specific escape hatches for shader features not expressible cleanly yet.
 
+Current implementation scope: the Windows x86_64/MSVC D3D12 viewport compiles its disk-backed Slang/HLSL-style source with pinned Slang v2026.13.1 and pinned downstream DXC v1.9.2602 into one validated DXIL+SPIR-V package per stage. D3D12 consumes DXIL; SPIR-V is retained as reflected and convention-validated portability evidence until the Vulkan scene-RHI path consumes it. Normal runtime compilation is asynchronous through the job system, while deterministic-inline mode is reserved for smoke tests. Live source-change pipeline rebuild, non-MSVC host qualification, Vulkan scene execution, and redistribution clearance remain separate pending work.
+
 ## DOTS Assessment
 
 Unity DOTS is the right family of ideas:

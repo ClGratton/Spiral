@@ -29,6 +29,11 @@ project "Engine"
         "ImGui"
     }
 
+    -- These values come from the same admitted pin ledger consumed by the
+    -- fetch scripts. Runtime cache identity must use the archive digests, not
+    -- a manually duplicated version-only label.
+    defines(shader_toolchain_defines)
+
     if has_nvrhi then
         includedirs { "%{wks.location}/Vendor/NVRHI/include" }
         links { "NVRHI" }
@@ -53,6 +58,23 @@ project "Engine"
         }
         defines { "GE_HAS_DIRECTX_HEADERS=1" }
     end
+
+    filter "system:windows"
+        includedirs { "%{wks.location}/" .. slang_root .. "/windows-x86_64/include" }
+        libdirs { "%{wks.location}/" .. slang_root .. "/windows-x86_64/lib" }
+        links { "slang" }
+
+    filter "system:linux"
+        includedirs { "%{wks.location}/" .. slang_root .. "/linux-x86_64/include" }
+        libdirs { "%{wks.location}/" .. slang_root .. "/linux-x86_64/lib" }
+        links { "slang" }
+
+    filter "system:macosx"
+        includedirs { "%{wks.location}/" .. slang_root .. "/macos-x86_64/include" }
+        libdirs { "%{wks.location}/" .. slang_root .. "/macos-x86_64/lib" }
+        links { "slang" }
+
+    filter {}
 
     defines
     {
