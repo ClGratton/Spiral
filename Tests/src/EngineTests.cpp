@@ -2139,6 +2139,19 @@ float4 main(VertexInput input) : SV_Position
             && Expect(!IsBufferStateCompatible(BufferUsage::Storage, BufferCpuAccess::None, ResourceState::Unknown), "unknown state is rejected");
     }
 
+    bool TestRhiCompletionTokenContract()
+    {
+        using namespace Engine::RHI;
+        const CompletionToken invalid {};
+        const CompletionToken missingDevice { 0, 1 };
+        const CompletionToken missingSubmission { 1, 0 };
+        const CompletionToken issued { 7, 11 };
+        return Expect(!invalid.IsValid(), "zero completion token is invalid")
+            && Expect(!missingDevice.IsValid(), "completion token requires a device identity")
+            && Expect(!missingSubmission.IsValid(), "completion token requires an issued submission identity")
+            && Expect(issued.IsValid(), "completion token preserves opaque nonzero device and submission identities");
+    }
+
 }
 
 int main()
@@ -2153,6 +2166,7 @@ int main()
         { "Render graph tracks RAW WAR WAW barriers and queue transitions", TestRenderGraphTracksRawWarWawBarriersAndQueueTransitions },
         { "Render graph rejects invalid declarations and cycles", TestRenderGraphRejectsInvalidDeclarationsAndCycles },
         { "RHI buffer transition contract rejects incompatible states", TestRhiBufferTransitionContract },
+        { "RHI completion token contract rejects unissued identities", TestRhiCompletionTokenContract },
         { "JobSystem contains worker exceptions", TestJobSystemContainsWorkerExceptions },
         { "JobSystem inline fallback is reentrant", TestJobSystemInlineFallbackIsReentrant },
         { "JobSystem steals nested worker jobs", TestJobSystemStealsNestedWorkerJobs },

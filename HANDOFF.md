@@ -4,7 +4,13 @@ Updated 2026-07-15. This file is a recovery aid, not roadmap authority; `PLAN.md
 
 ## Current Slice
 
-### Latest: Phase 3C RHI Buffer Transition Prerequisite
+### Latest: Phase 3C Asynchronous Completion And Recording-Reuse Prerequisite
+
+The completion prerequisite is implemented locally and awaits the required exact-head CI evidence before its `PLAN.md` checkbox is changed. `RHI::Device::Submit` maps accepted work to an opaque monotonic token, `QueryCompletion` is nonblocking, and `WaitForCompletion` has a caller-supplied finite deadline. D3D12 maps tokens to per-queue fence values; Vulkan/NVRHI maps them to NVRHI graphics timeline instances and polls NVRHI's completion counter. The existing `SubmitAndWait` helper calls the new primitives. A submitted owned list retains its own token and rejects `Begin` before retirement; invalid, cross-device, and unissued token identities are rejected.
+
+`RHICompletionSmokeV1` performs real graphics submission, token validation, nonblocking first query (allowing a legitimately fast completion), finite wait, and same-object re-record/re-submit after GPU retirement. Local Windows/MSVC Debug evidence passes: `EngineTests` 40/40, `TestRender.ps1 -SkipBuild`, and `TestVulkan.ps1`. The implementation adds no graph executor, cross-queue graph schedule, transient allocator, or viewport adoption. The next ordered item remains the graph execution core after this prerequisite is checked with hosted evidence.
+
+### Previous: Phase 3C RHI Buffer Transition Prerequisite
 
 The buffer-transition execution prerequisite is complete and checked in `PLAN.md`: `RHI::CommandList::TransitionBuffer` records explicit whole-buffer transitions from backend-neutral `ResourceState` values. Graph compilation remains the state/dependency authority; this RHI operation only translates a supplied state and adds no graph execution, resource binding, callback, queue-synchronization, or transient-allocation policy.
 

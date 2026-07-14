@@ -73,6 +73,14 @@ namespace Engine
                 m_VulkanContext.reset();
                 return false;
             }
+            if (args.HasFlag("--rhi-completion-smoke")
+                && !RunRHICompletionSmoke(*m_VulkanContext->GetRHIDevice(), "Vulkan"))
+            {
+                Log::Error("Vulkan RHI completion smoke failed");
+                m_VulkanContext->Shutdown();
+                m_VulkanContext.reset();
+                return false;
+            }
             if (args.HasFlag("--vulkan-rhi-indexed-draw-smoke") && !RunVulkanRHIIndexedDrawSmoke())
             {
                 Log::Error("Vulkan RHI indexed draw smoke failed");
@@ -111,6 +119,12 @@ namespace Engine
             if (args.HasFlag("--rhi-buffer-transition-smoke") && !RunRHIBufferTransitionSmoke(*m_Device, "D3D12"))
             {
                 Log::Error("D3D12 RHI buffer-transition smoke failed");
+                m_Device.reset();
+                return false;
+            }
+            if (args.HasFlag("--rhi-completion-smoke") && !RunRHICompletionSmoke(*m_Device, "D3D12"))
+            {
+                Log::Error("D3D12 RHI completion smoke failed");
                 m_Device.reset();
                 return false;
             }
@@ -403,6 +417,34 @@ namespace Engine
             ", invalid=", rejectedInvalidState ? "rejected" : "accepted",
             ", lifecycle=", (rejectedOutsideRecording && rejectedAfterClose) ? "pass" : "fail",
             ", submission=", submitted ? "pass" : "fail",
+            ", result=", passed ? "pass" : "fail");
+        return passed;
+    }
+
+    bool NVRHIRenderBackend::RunRHICompletionSmoke(RHI::Device& device, std::string_view backendName)
+    {
+        Scope<RHI::CommandList> list = device.CreateCommandList(RHI::QueueType::Graphics, "RHICompletionSmokeV1");
+        const bool closed = list && list->Begin() && list->End();
+        const RHI::CompletionToken token = closed ? device.Submit(*list) : RHI::CompletionToken {};
+        const RHI::CompletionStatus initial = token.IsValid() ? device.QueryCompletion(token) : RHI::CompletionStatus::Invalid;
+        const RHI::CompletionToken crossDevice { token.DeviceId + 1, token.SubmissionId };
+        const RHI::CompletionToken stale { token.DeviceId, token.SubmissionId + 1 };
+        const bool invalidRejected = device.QueryCompletion({}) == RHI::CompletionStatus::Invalid;
+        const bool crossDeviceRejected = token.IsValid() && device.QueryCompletion(crossDevice) == RHI::CompletionStatus::Invalid;
+        const bool staleRejected = token.IsValid() && device.QueryCompletion(stale) == RHI::CompletionStatus::Invalid;
+        const bool incompleteReuseRejected = initial != RHI::CompletionStatus::Incomplete || !list->Begin();
+        const bool waitCompleted = token.IsValid() && device.WaitForCompletion(token, 5000);
+        const bool finalComplete = waitCompleted && device.QueryCompletion(token) == RHI::CompletionStatus::Complete;
+        const bool reused = finalComplete && list->Begin() && list->End();
+        const RHI::CompletionToken reuseToken = reused ? device.Submit(*list) : RHI::CompletionToken {};
+        const bool reuseRetired = reuseToken.IsValid() && device.WaitForCompletion(reuseToken, 5000);
+        const bool passed = invalidRejected && crossDeviceRejected && staleRejected && incompleteReuseRejected
+            && finalComplete && reuseRetired;
+        Log::Info("RHICompletionSmokeV1 backend=", backendName,
+            ", tokenValidation=", (invalidRejected && crossDeviceRejected && staleRejected) ? "pass" : "fail",
+            ", query=nonblocking-", initial == RHI::CompletionStatus::Incomplete ? "incomplete" : (initial == RHI::CompletionStatus::Complete ? "complete" : "failed"),
+            ", wait=", finalComplete ? "pass" : "fail",
+            ", reuse=", (incompleteReuseRejected && reuseRetired) ? "pass" : "fail",
             ", result=", passed ? "pass" : "fail");
         return passed;
     }

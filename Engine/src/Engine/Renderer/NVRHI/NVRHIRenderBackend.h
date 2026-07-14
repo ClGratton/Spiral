@@ -33,6 +33,7 @@ namespace Engine
         bool CaptureViewportToFile(std::string_view path);
         bool RunVulkanRHICoreSmoke();
         bool RunRHIBufferTransitionSmoke(RHI::Device& device, std::string_view backendName);
+        bool RunRHICompletionSmoke(RHI::Device& device, std::string_view backendName);
         bool RunVulkanRHIIndexedDrawSmoke();
         bool RunVulkanSceneViewportRasterSmoke();
 

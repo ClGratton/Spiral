@@ -2,6 +2,7 @@
 
 #include "Engine/RHI/Buffer.h"
 #include "Engine/RHI/CommandList.h"
+#include "Engine/RHI/CompletionToken.h"
 #include "Engine/RHI/Device.h"
 #include "Engine/RHI/Pipeline.h"
 #include "Engine/RHI/Query.h"

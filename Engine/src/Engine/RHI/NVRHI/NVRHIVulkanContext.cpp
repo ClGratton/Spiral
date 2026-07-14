@@ -298,7 +298,11 @@ namespace Engine::RHI
             m_NativeHandles.GraphicsQueue = m_GraphicsQueue;
             m_NativeHandles.NVRHIDevice = m_NVRHIDevice.Get();
             m_NativeHandles.GraphicsQueueFamily = m_GraphicsQueueFamily;
-            m_RHIDevice = CreateNVRHIVulkanDevice(description, m_Capabilities, m_NVRHIDevice.Get());
+            m_RHIDevice = CreateNVRHIVulkanDevice(
+                description,
+                m_Capabilities,
+                m_NVRHIDevice.Get(),
+                m_NativeNVRHIDevice.Get());
             if (!m_RHIDevice)
             {
                 Log::Error("Could not create the Engine::RHI wrapper around the NVRHI Vulkan device");

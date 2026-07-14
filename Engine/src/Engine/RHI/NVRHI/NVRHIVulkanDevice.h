@@ -2,7 +2,11 @@
 
 #include "Engine/RHI/Device.h"
 
-namespace nvrhi { class IDevice; }
+namespace nvrhi
+{
+    class IDevice;
+    namespace vulkan { class IDevice; }
+}
 
 namespace Engine::RHI
 {
@@ -19,6 +23,7 @@ namespace Engine::RHI
     Scope<Device> CreateNVRHIVulkanDevice(
         DeviceDescription description,
         const DeviceCapabilities& capabilities,
-        nvrhi::IDevice* nativeDevice);
+        nvrhi::IDevice* nativeDevice,
+        nvrhi::vulkan::IDevice* completionDevice);
     NVRHIVulkanTextureNativeHandles GetNVRHIVulkanTextureNativeHandles(Texture& texture);
 }

@@ -4,6 +4,7 @@
 #include "Engine/RHI/Buffer.h"
 #include "Engine/RHI/Capability.h"
 #include "Engine/RHI/CommandList.h"
+#include "Engine/RHI/CompletionToken.h"
 #include "Engine/RHI/Pipeline.h"
 #include "Engine/RHI/Query.h"
 #include "Engine/RHI/Shader.h"
@@ -96,6 +97,13 @@ namespace Engine::RHI
         virtual Scope<CommandList> CreateCommandList(QueueType queueType, std::string_view debugName) = 0;
         virtual bool UploadBuffer(Buffer& destination, const void* sourceData, u64 sizeBytes, u64 destinationOffset = 0) = 0;
         virtual bool ReadbackTexture(Texture& source, TextureReadback& destination) = 0;
+        // Returns after the queue accepts closed work. The opaque token is
+        // subsequently owned by this Device for query/wait/reuse decisions.
+        virtual CompletionToken Submit(CommandList& commandList) = 0;
+        virtual CompletionStatus QueryCompletion(const CompletionToken& token) = 0;
+        // A finite timeout is required; false reports invalid/stale/cross-device
+        // tokens, device failure, or an incomplete timeout.
+        virtual bool WaitForCompletion(const CompletionToken& token, u32 timeoutMilliseconds) = 0;
         virtual bool SubmitAndWait(CommandList& commandList) = 0;
 
         virtual void WaitIdle() = 0;

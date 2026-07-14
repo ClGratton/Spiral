@@ -4,8 +4,14 @@
 
 #if defined(GE_HAS_NVRHI_VULKAN)
     #include <nvrhi/nvrhi.h>
+    #include <nvrhi/vulkan.h>
+    #include <atomic>
+    #include <chrono>
     #include <cstring>
     #include <limits>
+    #include <functional>
+    #include <unordered_map>
+    #include <thread>
     #include <vector>
 #endif
 
@@ -14,6 +20,7 @@ namespace Engine::RHI
 #if defined(GE_HAS_NVRHI_VULKAN)
     namespace
     {
+        std::atomic<u64> s_NextCompletionDeviceId { 1 };
         bool HasBufferUsage(BufferUsage value, BufferUsage flag)
         {
             return (static_cast<u32>(value) & static_cast<u32>(flag)) != 0;
@@ -161,12 +168,15 @@ namespace Engine::RHI
         class VulkanCommandList final : public CommandList
         {
         public:
-            VulkanCommandList(QueueType queueType, std::string name, nvrhi::CommandListHandle list, nvrhi::IDevice* device)
-                : m_QueueType(queueType), m_Name(std::move(name)), m_List(std::move(list)), m_Device(device) {}
+            VulkanCommandList(QueueType queueType, std::string name, nvrhi::CommandListHandle list, nvrhi::IDevice* device,
+                std::function<CompletionStatus(const CompletionToken&)> queryCompletion)
+                : m_QueueType(queueType), m_Name(std::move(name)), m_List(std::move(list)), m_Device(device), m_QueryCompletion(std::move(queryCompletion)) {}
             QueueType GetQueueType() const override { return m_QueueType; }
             bool Begin() override
             {
-                if (m_State == State::Recording || !m_List)
+                if (m_State == State::Recording || !m_List
+                    || (m_State == State::Submitted && (!m_LastSubmission.IsValid() || !m_QueryCompletion
+                        || m_QueryCompletion(m_LastSubmission) != CompletionStatus::Complete)))
                     return false;
                 m_List->open();
                 m_DebugMarkerNames.clear();
@@ -269,10 +279,11 @@ namespace Engine::RHI
             void WriteTimestamp(QueryPool&, u32) override {}
             void ResolveQueryPool(QueryPool&, u32, u32) override {}
             bool Ready() const { return m_State == State::Closed; }
-            bool MarkSubmitted()
+            bool MarkSubmitted(const CompletionToken& token)
             {
-                if (!Ready())
+                if (!Ready() || !token.IsValid())
                     return false;
+                m_LastSubmission = token;
                 m_State = State::Submitted;
                 return true;
             }
@@ -301,14 +312,19 @@ namespace Engine::RHI
             Viewport m_Viewport;
             ScissorRect m_Scissor;
             std::vector<std::string> m_DebugMarkerNames;
+            std::function<CompletionStatus(const CompletionToken&)> m_QueryCompletion;
+            CompletionToken m_LastSubmission;
             State m_State = State::Ready;
         };
 
         class VulkanDevice final : public Device
         {
         public:
-            VulkanDevice(DeviceDescription description, DeviceCapabilities capabilities, nvrhi::IDevice* device)
-                : m_Description(std::move(description)), m_Capabilities(std::move(capabilities)), m_Device(device) {}
+            VulkanDevice(DeviceDescription description, DeviceCapabilities capabilities, nvrhi::IDevice* device,
+                nvrhi::vulkan::IDevice* completionDevice)
+                : m_Description(std::move(description)), m_Capabilities(std::move(capabilities)), m_Device(device)
+                , m_CompletionDevice(completionDevice)
+                , m_CompletionDeviceId(s_NextCompletionDeviceId.fetch_add(1)) {}
             const DeviceDescription& GetDescription() const override { return m_Description; }
             const DeviceCapabilities& GetCapabilities() const override { return m_Capabilities; }
             Scope<Buffer> CreateBuffer(const BufferDescription& description) override
@@ -390,7 +406,8 @@ namespace Engine::RHI
             Scope<CommandList> CreateCommandList(QueueType type, std::string_view name) override
             {
                 if (!m_Device || type != QueueType::Graphics) return nullptr;
-                nvrhi::CommandListHandle list = m_Device->createCommandList(); return list ? CreateScope<VulkanCommandList>(type, std::string(name), list, m_Device) : nullptr;
+                nvrhi::CommandListHandle list = m_Device->createCommandList(); return list ? CreateScope<VulkanCommandList>(type, std::string(name), list, m_Device,
+                    [this](const CompletionToken& token) { return QueryCompletion(token); }) : nullptr;
             }
             bool UploadBuffer(Buffer& destination, const void* data, u64 size, u64 offset) override
             {
@@ -426,27 +443,74 @@ namespace Engine::RHI
                 out = std::move(readback);
                 return true;
             }
-            bool SubmitAndWait(CommandList& commandList) override
+            CompletionToken Submit(CommandList& commandList) override
             {
                 auto* list = dynamic_cast<VulkanCommandList*>(&commandList);
-                if (!m_Device || !list || !list->MarkSubmitted())
+                if (!m_Device || !m_CompletionDevice || !list || !list->Ready())
+                    return {};
+                const u64 nativeSubmissionId = m_Device->executeCommandList(list->Native());
+                if (nativeSubmissionId == 0)
+                    return {};
+                const CompletionToken token { m_CompletionDeviceId, m_NextCompletionSubmissionId++ };
+                m_CompletionEntries.emplace(token.SubmissionId, nativeSubmissionId);
+                return list->MarkSubmitted(token) ? token : CompletionToken {};
+            }
+            CompletionStatus QueryCompletion(const CompletionToken& token) override
+            {
+                const auto found = FindCompletionEntry(token);
+                if (found == m_CompletionEntries.end())
+                    return CompletionStatus::Invalid;
+                if (!m_CompletionDevice)
+                    return CompletionStatus::Failed;
+                return m_CompletionDevice->queueGetCompletedInstance(nvrhi::CommandQueue::Graphics) >= found->second
+                    ? CompletionStatus::Complete : CompletionStatus::Incomplete;
+            }
+            bool WaitForCompletion(const CompletionToken& token, u32 timeoutMilliseconds) override
+            {
+                const auto found = FindCompletionEntry(token);
+                if (found == m_CompletionEntries.end() || timeoutMilliseconds == 0 || !m_CompletionDevice)
                     return false;
-                m_Device->executeCommandList(list->Native());
-                const bool ok = m_Device->waitForIdle();
-                m_Device->runGarbageCollection();
-                return ok;
+                const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMilliseconds);
+                do
+                {
+                    if (QueryCompletion(token) == CompletionStatus::Complete)
+                        return true;
+                    std::this_thread::yield();
+                } while (std::chrono::steady_clock::now() < deadline);
+                return QueryCompletion(token) == CompletionStatus::Complete;
+            }
+            bool SubmitAndWait(CommandList& commandList) override
+            {
+                const CompletionToken token = Submit(commandList);
+                const bool completed = token.IsValid() && WaitForCompletion(token, std::numeric_limits<u32>::max());
+                if (m_Device)
+                    m_Device->runGarbageCollection();
+                return completed;
             }
             void WaitIdle() override { if (m_Device) { m_Device->waitForIdle(); m_Device->runGarbageCollection(); } }
         private:
             DeviceDescription m_Description;
             DeviceCapabilities m_Capabilities;
             nvrhi::IDevice* m_Device = nullptr;
+            nvrhi::vulkan::IDevice* m_CompletionDevice = nullptr;
+            u64 m_CompletionDeviceId = 0;
+            u64 m_NextCompletionSubmissionId = 1;
+            std::unordered_map<u64, u64> m_CompletionEntries;
+
+            std::unordered_map<u64, u64>::const_iterator FindCompletionEntry(const CompletionToken& token) const
+            {
+                if (!token.IsValid() || token.DeviceId != m_CompletionDeviceId)
+                    return m_CompletionEntries.end();
+                return m_CompletionEntries.find(token.SubmissionId);
+            }
         };
     }
 
-    Scope<Device> CreateNVRHIVulkanDevice(DeviceDescription description, const DeviceCapabilities& capabilities, nvrhi::IDevice* nativeDevice)
+    Scope<Device> CreateNVRHIVulkanDevice(DeviceDescription description, const DeviceCapabilities& capabilities, nvrhi::IDevice* nativeDevice,
+        nvrhi::vulkan::IDevice* completionDevice)
     {
-        return nativeDevice ? CreateScope<VulkanDevice>(std::move(description), capabilities, nativeDevice) : nullptr;
+        return nativeDevice && completionDevice
+            ? CreateScope<VulkanDevice>(std::move(description), capabilities, nativeDevice, completionDevice) : nullptr;
     }
 
     NVRHIVulkanTextureNativeHandles GetNVRHIVulkanTextureNativeHandles(Texture& texture)
@@ -461,7 +525,7 @@ namespace Engine::RHI
         };
     }
 #else
-    Scope<Device> CreateNVRHIVulkanDevice(DeviceDescription, const DeviceCapabilities&, nvrhi::IDevice*) { return nullptr; }
+    Scope<Device> CreateNVRHIVulkanDevice(DeviceDescription, const DeviceCapabilities&, nvrhi::IDevice*, nvrhi::vulkan::IDevice*) { return nullptr; }
     NVRHIVulkanTextureNativeHandles GetNVRHIVulkanTextureNativeHandles(Texture&) { return {}; }
 #endif
 }

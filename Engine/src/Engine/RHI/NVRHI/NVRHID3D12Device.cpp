@@ -24,10 +24,14 @@
     #endif
 
     #include <cstring>
+    #include <atomic>
+    #include <array>
+    #include <functional>
     #include <iomanip>
     #include <limits>
     #include <sstream>
     #include <string>
+    #include <unordered_map>
     #include <vector>
 #endif
 
@@ -37,6 +41,8 @@ namespace Engine::RHI
     namespace
     {
         using Microsoft::WRL::ComPtr;
+
+        std::atomic<u64> s_NextCompletionDeviceId { 1 };
 
         D3D12_RESOURCE_STATES ConvertResourceState(ResourceState state)
         {
@@ -773,13 +779,15 @@ namespace Engine::RHI
                 ComPtr<ID3D12CommandAllocator> commandAllocator,
                 ComPtr<ID3D12GraphicsCommandList> commandList,
                 ID3D12Device* device,
-                std::string debugName)
+                std::string debugName,
+                std::function<CompletionStatus(const CompletionToken&)> queryCompletion)
                 : m_QueueType(queueType)
                 , m_CommandAllocator(std::move(commandAllocator))
                 , m_OwnedCommandList(std::move(commandList))
                 , m_CommandList(m_OwnedCommandList.Get())
                 , m_Device(device)
                 , m_DebugName(std::move(debugName))
+                , m_QueryCompletion(std::move(queryCompletion))
             {
             }
 
@@ -791,6 +799,10 @@ namespace Engine::RHI
             bool Begin() override
             {
                 if (!m_CommandAllocator || !m_OwnedCommandList || m_State == State::Recording)
+                    return false;
+                if (m_State == State::Submitted
+                    && (!m_LastSubmission.IsValid() || !m_QueryCompletion
+                        || m_QueryCompletion(m_LastSubmission) != CompletionStatus::Complete))
                     return false;
 
                 HRESULT result = m_CommandAllocator->Reset();
@@ -835,9 +847,13 @@ namespace Engine::RHI
                 return m_OwnedCommandList && m_State == State::Closed;
             }
 
-            void MarkSubmitted()
+            bool MarkSubmitted(const CompletionToken& token)
             {
+                if (!token.IsValid() || !IsReadyToSubmit())
+                    return false;
+                m_LastSubmission = token;
                 m_State = State::Submitted;
+                return true;
             }
 
             ID3D12CommandList* GetNativeCommandList() const
@@ -1142,6 +1158,8 @@ namespace Engine::RHI
             D3D12_CPU_DESCRIPTOR_HANDLE m_BoundColorRtv {};
             D3D12_CPU_DESCRIPTOR_HANDLE m_BoundDepthDsv {};
             std::string m_DebugName;
+            std::function<CompletionStatus(const CompletionToken&)> m_QueryCompletion;
+            CompletionToken m_LastSubmission;
             State m_State = State::Initial;
         };
 
@@ -1173,14 +1191,18 @@ namespace Engine::RHI
         public:
             explicit NVRHID3D12Device(DeviceDescription description)
                 : m_Description(std::move(description))
+                , m_CompletionDeviceId(s_NextCompletionDeviceId.fetch_add(1))
             {
             }
 
             ~NVRHID3D12Device() override
             {
                 WaitIdle();
-                if (m_SubmissionFenceEvent)
-                    CloseHandle(m_SubmissionFenceEvent);
+                for (QueueCompletion& completion : m_QueueCompletions)
+                {
+                    if (completion.Event)
+                        CloseHandle(completion.Event);
+                }
             }
 
             bool Initialize(NVRHIAdapterInfo& adapterInfo)
@@ -1318,7 +1340,8 @@ namespace Engine::RHI
                     return nullptr;
                 }
 
-                return CreateScope<NVRHID3D12CommandList>(queueType, std::move(allocator), std::move(commandList), m_Device.Get(), std::string(debugName));
+                return CreateScope<NVRHID3D12CommandList>(queueType, std::move(allocator), std::move(commandList), m_Device.Get(), std::string(debugName),
+                    [this](const CompletionToken& token) { return QueryCompletion(token); });
             }
 
             bool UploadBuffer(Buffer& destination, const void* sourceData, u64 sizeBytes, u64 destinationOffset) override
@@ -1363,13 +1386,13 @@ namespace Engine::RHI
                 return false;
             }
 
-            bool SubmitAndWait(CommandList& commandList) override
+            CompletionToken Submit(CommandList& commandList) override
             {
                 auto* nativeCommandList = dynamic_cast<NVRHID3D12CommandList*>(&commandList);
                 if (!nativeCommandList || !nativeCommandList->IsReadyToSubmit())
                 {
                     Log::Error("D3D12 RHI command list submission requires a closed, device-owned command list");
-                    return false;
+                    return {};
                 }
 
                 ID3D12CommandQueue* queue = GetQueue(nativeCommandList->GetQueueType());
@@ -1377,12 +1400,43 @@ namespace Engine::RHI
                 if (!queue || !nativeLists[0])
                 {
                     Log::Error("D3D12 RHI command list submission received incomplete native objects");
-                    return false;
+                    return {};
                 }
 
                 queue->ExecuteCommandLists(1, nativeLists);
-                nativeCommandList->MarkSubmitted();
-                return WaitForQueueSubmission(queue);
+                const CompletionToken token = SignalQueueSubmission(nativeCommandList->GetQueueType(), queue);
+                return token.IsValid() && nativeCommandList->MarkSubmitted(token) ? token : CompletionToken {};
+            }
+
+            CompletionStatus QueryCompletion(const CompletionToken& token) override
+            {
+                const CompletionEntry* entry = FindCompletionEntry(token);
+                if (!entry)
+                    return CompletionStatus::Invalid;
+                ID3D12Fence* fence = GetSubmissionFence(entry->Queue);
+                return !fence ? CompletionStatus::Failed
+                    : (fence->GetCompletedValue() >= entry->FenceValue ? CompletionStatus::Complete : CompletionStatus::Incomplete);
+            }
+
+            bool WaitForCompletion(const CompletionToken& token, u32 timeoutMilliseconds) override
+            {
+                const CompletionEntry* entry = FindCompletionEntry(token);
+                if (!entry || timeoutMilliseconds == 0)
+                    return false;
+                if (QueryCompletion(token) == CompletionStatus::Complete)
+                    return true;
+                ID3D12Fence* fence = GetSubmissionFence(entry->Queue);
+                HANDLE event = GetSubmissionFenceEvent(entry->Queue);
+                if (!fence || !event || FAILED(fence->SetEventOnCompletion(entry->FenceValue, event)))
+                    return false;
+                return WaitForSingleObject(event, timeoutMilliseconds) == WAIT_OBJECT_0
+                    && QueryCompletion(token) == CompletionStatus::Complete;
+            }
+
+            bool SubmitAndWait(CommandList& commandList) override
+            {
+                const CompletionToken token = Submit(commandList);
+                return token.IsValid() && WaitForCompletion(token, INFINITE);
             }
 
             void WaitIdle() override
@@ -1404,6 +1458,59 @@ namespace Engine::RHI
             }
 
         private:
+            struct CompletionEntry
+            {
+                QueueType Queue = QueueType::Graphics;
+                u64 FenceValue = 0;
+            };
+
+            struct QueueCompletion
+            {
+                ComPtr<ID3D12Fence> Fence;
+                HANDLE Event = nullptr;
+                u64 NextFenceValue = 1;
+            };
+
+            static size_t GetQueueCompletionIndex(QueueType queueType)
+            {
+                return static_cast<size_t>(queueType);
+            }
+
+            const CompletionEntry* FindCompletionEntry(const CompletionToken& token) const
+            {
+                if (!token.IsValid() || token.DeviceId != m_CompletionDeviceId)
+                    return nullptr;
+                const auto found = m_CompletionEntries.find(token.SubmissionId);
+                return found == m_CompletionEntries.end() ? nullptr : &found->second;
+            }
+
+            ID3D12Fence* GetSubmissionFence(QueueType queueType) const
+            {
+                return m_QueueCompletions[GetQueueCompletionIndex(queueType)].Fence.Get();
+            }
+
+            HANDLE GetSubmissionFenceEvent(QueueType queueType) const
+            {
+                return m_QueueCompletions[GetQueueCompletionIndex(queueType)].Event;
+            }
+
+            CompletionToken SignalQueueSubmission(QueueType queueType, ID3D12CommandQueue* queue)
+            {
+                QueueCompletion& completion = m_QueueCompletions[GetQueueCompletionIndex(queueType)];
+                if (!queue || !completion.Fence)
+                    return {};
+                const u64 fenceValue = completion.NextFenceValue++;
+                const HRESULT result = queue->Signal(completion.Fence.Get(), fenceValue);
+                if (FAILED(result))
+                {
+                    Log::Error("Could not signal D3D12 RHI completion fence: ", HResultToString(result));
+                    return {};
+                }
+                const CompletionToken token { m_CompletionDeviceId, m_NextCompletionSubmissionId++ };
+                m_CompletionEntries.emplace(token.SubmissionId, CompletionEntry { queueType, fenceValue });
+                return token;
+            }
+
             void EnableDebugLayer()
             {
                 if (!m_Description.EnableValidation)
@@ -1818,52 +1925,21 @@ namespace Engine::RHI
 
             bool CreateSubmissionFence()
             {
-                const HRESULT result = m_Device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&m_SubmissionFence));
-                if (FAILED(result))
+                for (QueueCompletion& completion : m_QueueCompletions)
                 {
-                    Log::Error("Could not create D3D12 RHI submission fence: ", HResultToString(result));
-                    return false;
+                    const HRESULT result = m_Device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&completion.Fence));
+                    if (FAILED(result))
+                    {
+                        Log::Error("Could not create D3D12 RHI submission fence: ", HResultToString(result));
+                        return false;
+                    }
+                    completion.Event = CreateEvent(nullptr, FALSE, FALSE, nullptr);
+                    if (!completion.Event)
+                    {
+                        Log::Error("Could not create D3D12 RHI submission-fence event");
+                        return false;
+                    }
                 }
-
-                m_SubmissionFenceEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
-                if (!m_SubmissionFenceEvent)
-                {
-                    Log::Error("Could not create D3D12 RHI submission-fence event");
-                    return false;
-                }
-
-                return true;
-            }
-
-            bool WaitForQueueSubmission(ID3D12CommandQueue* queue)
-            {
-                if (!queue || !m_SubmissionFence || !m_SubmissionFenceEvent)
-                    return false;
-
-                const u64 fenceValue = m_NextSubmissionFenceValue++;
-                const HRESULT signalResult = queue->Signal(m_SubmissionFence.Get(), fenceValue);
-                if (FAILED(signalResult))
-                {
-                    Log::Error("Could not signal D3D12 RHI submission fence: ", HResultToString(signalResult));
-                    return false;
-                }
-
-                if (m_SubmissionFence->GetCompletedValue() >= fenceValue)
-                    return true;
-
-                const HRESULT eventResult = m_SubmissionFence->SetEventOnCompletion(fenceValue, m_SubmissionFenceEvent);
-                if (FAILED(eventResult))
-                {
-                    Log::Error("Could not wait for D3D12 RHI submission fence: ", HResultToString(eventResult));
-                    return false;
-                }
-
-                if (WaitForSingleObject(m_SubmissionFenceEvent, INFINITE) != WAIT_OBJECT_0)
-                {
-                    Log::Error("D3D12 RHI submission fence wait did not complete");
-                    return false;
-                }
-
                 return true;
             }
 
@@ -1960,9 +2036,10 @@ namespace Engine::RHI
             ComPtr<ID3D12CommandQueue> m_GraphicsQueue;
             ComPtr<ID3D12CommandQueue> m_ComputeQueue;
             ComPtr<ID3D12CommandQueue> m_CopyQueue;
-            ComPtr<ID3D12Fence> m_SubmissionFence;
-            HANDLE m_SubmissionFenceEvent = nullptr;
-            u64 m_NextSubmissionFenceValue = 1;
+            std::array<QueueCompletion, 3> m_QueueCompletions;
+            u64 m_CompletionDeviceId = 0;
+            u64 m_NextCompletionSubmissionId = 1;
+            std::unordered_map<u64, CompletionEntry> m_CompletionEntries;
             nvrhi::DeviceHandle m_NVRHIDevice;
         };
     }

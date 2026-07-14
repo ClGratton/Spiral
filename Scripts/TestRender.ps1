@@ -38,7 +38,7 @@ foreach ($Path in @($ResolvedCapturePath) + $SceneOriginCapturePaths) {
     }
 }
 
-$Output = & $Editor --capture-viewport --smoke-test --renderer-capability-smoke --scene-origin-raster-smoke --rhi-buffer-transition-smoke 2>&1 | Tee-Object -Variable RenderLog
+$Output = & $Editor --capture-viewport --smoke-test --renderer-capability-smoke --scene-origin-raster-smoke --rhi-buffer-transition-smoke --rhi-completion-smoke 2>&1 | Tee-Object -Variable RenderLog
 if ($LASTEXITCODE -ne 0) {
     throw "Editor render smoke run failed with exit code $LASTEXITCODE."
 }
@@ -57,12 +57,16 @@ $RequiredMarkers = @(
     "D3D12 scene origin raster case C:",
     "D3D12 scene origin raster smoke passed",
     "RHIBufferTransitionSmokeV1 backend=D3D12, invalid=rejected, lifecycle=pass, submission=pass, result=pass"
+    "RHICompletionSmokeV1 backend=D3D12, tokenValidation=pass, query=nonblocking-"
 )
 $JoinedLog = $RenderLog -join "`n"
 foreach ($Marker in $RequiredMarkers) {
     if (!$JoinedLog.Contains($Marker)) {
         throw "D3D12 render smoke did not emit required marker: $Marker"
     }
+}
+if ($JoinedLog -notmatch 'RHICompletionSmokeV1 backend=D3D12, tokenValidation=pass, query=nonblocking-(incomplete|complete), wait=pass, reuse=pass, result=pass') {
+    throw "D3D12 render smoke did not prove completion-token retirement and recording reuse."
 }
 
 $ConventionEvidence = "schema=1\|matrix=row-major\|d3dClipDepth=zero-to-one\|spirvY=inverted\|frontFace=clockwise\|binding=D3DRegisterSpace"
