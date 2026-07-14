@@ -26,7 +26,7 @@ This is real Windows x86_64/MSVC D3D12 viewport-output evidence. It is not Vulka
 
 The Vulkan RHI core and isolated SPIR-V indexed-draw items are complete. The hosted Windows job remains D3D12-only; its Vulkan evidence is the labeled local run, while hosted Ubuntu/macOS exercise their Vulkan paths. The next implementation item integrates the Scene viewport and the narrow completed-NVRHI-output-to-native-presentation/ImGui handoff.
 
-The shared viewport shader renders a visible checker on stable per-face UVs. This replaces the initial object-position quantization, whose `floor` boundary on constant face coordinates caused triangle-dependent precision striping when rotated. Local D3D12 capture, Vulkan indexed-draw smoke, 35/35 tests, and style pass with the UV correction; hosted correction evidence is pending. This is deliberately not a real texture/material path: sampled-resource and sampler bindings, texture upload/ownership, and material descriptors remain future infrastructure.
+The shared viewport shader renders a visible checker on stable per-face UVs. This replaces the initial object-position quantization, whose `floor` boundary on constant face coordinates caused triangle-dependent precision striping when rotated. Local D3D12 capture, Vulkan indexed-draw smoke, 35/35 tests, and style pass with the UV correction; exact-head run `29363501290` passed Windows D3D12, Ubuntu Vulkan, macOS MoltenVK, portable tests, and style. This is deliberately not a real texture/material path: sampled-resource and sampler bindings, texture upload/ownership, and material descriptors remain future infrastructure.
 
 ### Completed Phase 3C Indexed Draw
 
