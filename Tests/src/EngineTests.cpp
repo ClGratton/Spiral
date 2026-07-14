@@ -2121,6 +2121,24 @@ float4 main(VertexInput input) : SV_Position
             && Expect(!cycle.Success && cycle.Error.find("cycle") != std::string::npos, "explicit dependency cycles are rejected");
     }
 
+    bool TestRhiBufferTransitionContract()
+    {
+        using namespace Engine::RHI;
+        const BufferUsage copyBuffer = static_cast<BufferUsage>(
+            static_cast<Engine::u32>(BufferUsage::CopySource) | static_cast<Engine::u32>(BufferUsage::CopyDest));
+        const BufferUsage readOnlyBuffer = static_cast<BufferUsage>(
+            static_cast<Engine::u32>(BufferUsage::Vertex) | static_cast<Engine::u32>(BufferUsage::Constant));
+
+        return Expect(IsBufferStateCompatible(copyBuffer, BufferCpuAccess::None, ResourceState::CopyDest), "copy destination buffers accept CopyDest")
+            && Expect(IsBufferStateCompatible(copyBuffer, BufferCpuAccess::None, ResourceState::CopySource), "copy source buffers accept CopySource")
+            && Expect(!IsBufferStateCompatible(copyBuffer, BufferCpuAccess::None, ResourceState::ShaderResource), "copy-only buffers reject read-only shader state")
+            && Expect(IsBufferStateCompatible(readOnlyBuffer, BufferCpuAccess::None, ResourceState::ShaderResource), "vertex and constant buffers accept portable read-only state")
+            && Expect(!IsBufferStateCompatible(readOnlyBuffer, BufferCpuAccess::None, ResourceState::UnorderedAccess), "read-only buffers reject UAV state")
+            && Expect(!IsBufferStateCompatible(BufferUsage::Storage, BufferCpuAccess::Write, ResourceState::UnorderedAccess), "CPU-visible buffers reject transitions")
+            && Expect(!IsBufferStateCompatible(BufferUsage::Storage, BufferCpuAccess::None, ResourceState::RenderTarget), "buffer-incompatible texture state is rejected")
+            && Expect(!IsBufferStateCompatible(BufferUsage::Storage, BufferCpuAccess::None, ResourceState::Unknown), "unknown state is rejected");
+    }
+
 }
 
 int main()
@@ -2134,6 +2152,7 @@ int main()
         { "Render graph orders hazards and lifetimes deterministically", TestRenderGraphOrdersHazardsAndLifetimesDeterministically },
         { "Render graph tracks RAW WAR WAW barriers and queue transitions", TestRenderGraphTracksRawWarWawBarriersAndQueueTransitions },
         { "Render graph rejects invalid declarations and cycles", TestRenderGraphRejectsInvalidDeclarationsAndCycles },
+        { "RHI buffer transition contract rejects incompatible states", TestRhiBufferTransitionContract },
         { "JobSystem contains worker exceptions", TestJobSystemContainsWorkerExceptions },
         { "JobSystem inline fallback is reentrant", TestJobSystemInlineFallbackIsReentrant },
         { "JobSystem steals nested worker jobs", TestJobSystemStealsNestedWorkerJobs },

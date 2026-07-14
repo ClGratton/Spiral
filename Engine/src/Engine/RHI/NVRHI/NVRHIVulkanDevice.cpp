@@ -88,11 +88,14 @@ namespace Engine::RHI
             }
             void SetDevice(nvrhi::IDevice* device) { m_Device = device; }
             nvrhi::IBuffer* Native() const { return m_Buffer; }
+            ResourceState GetCurrentState() const { return m_CurrentState; }
+            void SetCurrentState(ResourceState state) { m_CurrentState = state; }
         private:
             BufferDescription m_Description;
             nvrhi::BufferHandle m_Buffer;
             nvrhi::IDevice* m_Device = nullptr;
             bool m_Mapped = false;
+            ResourceState m_CurrentState = ResourceState::Common;
         };
 
         class VulkanTexture final : public Texture
@@ -217,6 +220,19 @@ namespace Engine::RHI
                 if (m_State != State::Recording || !native) return false;
                 m_List->setTextureState(native->Native(), nvrhi::AllSubresources, ConvertState(state)); m_List->commitBarriers(); return true;
             }
+            bool TransitionBuffer(Buffer& buffer, ResourceState state) override
+            {
+                auto* native = dynamic_cast<VulkanBuffer*>(&buffer);
+                if (m_State != State::Recording || !native
+                    || !IsBufferStateCompatible(buffer.GetDescription().Usage, buffer.GetDescription().CpuAccess, state))
+                    return false;
+                if (native->GetCurrentState() == state)
+                    return true;
+                m_List->setBufferState(native->Native(), ConvertState(state));
+                m_List->commitBarriers();
+                native->SetCurrentState(state);
+                return true;
+            }
             void SetGraphicsPipeline(Pipeline& pipeline) override { m_Pipeline = dynamic_cast<VulkanPipeline*>(&pipeline); }
             void SetGraphicsConstantBuffer(u32 rootParameterIndex, Buffer& buffer) override
             {
@@ -306,7 +322,13 @@ namespace Engine::RHI
                 d.setIsVertexBuffer(HasBufferUsage(description.Usage, BufferUsage::Vertex)).setIsIndexBuffer(HasBufferUsage(description.Usage, BufferUsage::Index)).setIsConstantBuffer(HasBufferUsage(description.Usage, BufferUsage::Constant)).setCanHaveUAVs(HasBufferUsage(description.Usage, BufferUsage::Storage));
                 d.setCpuAccess(description.CpuAccess == BufferCpuAccess::Read ? nvrhi::CpuAccessMode::Read : description.CpuAccess == BufferCpuAccess::Write ? nvrhi::CpuAccessMode::Write : nvrhi::CpuAccessMode::None);
                 nvrhi::BufferHandle native = m_Device->createBuffer(d); if (!native) return nullptr;
-                auto result = CreateScope<VulkanBuffer>(description, native); result->SetDevice(m_Device); return result;
+                const ResourceState trackedInitialState = (description.InitialState == ResourceState::Common || description.InitialState == ResourceState::Unknown)
+                    && HasBufferUsage(description.Usage, BufferUsage::CopyDest)
+                    ? ResourceState::CopyDest : description.InitialState;
+                auto result = CreateScope<VulkanBuffer>(description, native);
+                result->SetDevice(m_Device);
+                result->SetCurrentState(trackedInitialState == ResourceState::Unknown ? ResourceState::Common : trackedInitialState);
+                return result;
             }
             Scope<Texture> CreateTexture(const TextureDescription& description) override
             {

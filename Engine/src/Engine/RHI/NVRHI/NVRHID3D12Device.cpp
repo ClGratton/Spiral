@@ -348,6 +348,11 @@ namespace Engine::RHI
                 return m_CurrentState;
             }
 
+            void SetCurrentState(D3D12_RESOURCE_STATES state)
+            {
+                m_CurrentState = state;
+            }
+
         private:
             D3D12_HEAP_TYPE GetHeapType() const
             {
@@ -899,6 +904,44 @@ namespace Engine::RHI
                     m_CommandList->ResourceBarrier(1, &barrier);
                     nativeTexture->SetCurrentState(destination);
                 }
+                return true;
+            }
+
+            bool TransitionBuffer(Buffer& buffer, ResourceState destinationState) override
+            {
+                auto* nativeBuffer = dynamic_cast<NVRHID3D12Buffer*>(&buffer);
+                if (m_State != State::Recording || !m_CommandList || !nativeBuffer || !nativeBuffer->GetResource())
+                    return false;
+                if (!IsBufferStateCompatible(buffer.GetDescription().Usage, buffer.GetDescription().CpuAccess, destinationState))
+                    return false;
+
+                D3D12_RESOURCE_STATES destination = D3D12_RESOURCE_STATE_COMMON;
+                if (destinationState == ResourceState::ShaderResource)
+                {
+                    const BufferUsage usage = buffer.GetDescription().Usage;
+                    destination = HasBufferUsage(usage, BufferUsage::Vertex)
+                            || HasBufferUsage(usage, BufferUsage::Index)
+                            || HasBufferUsage(usage, BufferUsage::Constant)
+                        ? D3D12_RESOURCE_STATE_GENERIC_READ
+                        : D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+                }
+                else
+                {
+                    destination = ConvertResourceState(destinationState);
+                }
+
+                const D3D12_RESOURCE_STATES source = nativeBuffer->GetCurrentState();
+                if (source == destination)
+                    return true;
+
+                D3D12_RESOURCE_BARRIER barrier {};
+                barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+                barrier.Transition.pResource = nativeBuffer->GetResource();
+                barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+                barrier.Transition.StateBefore = source;
+                barrier.Transition.StateAfter = destination;
+                m_CommandList->ResourceBarrier(1, &barrier);
+                nativeBuffer->SetCurrentState(destination);
                 return true;
             }
 

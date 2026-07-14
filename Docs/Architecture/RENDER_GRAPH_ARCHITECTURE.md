@@ -48,6 +48,8 @@ The graph is the authority for intended logical resource states, pass dependenci
 
 Execution covers both textures and buffers. Because construction already emits buffer-state transitions, the backend-neutral command-list contract must expose explicit buffer transitions on D3D12 and Vulkan/NVRHI before the execution core can truthfully consume every compiled resource class. A texture-only executor is not an acceptable silent fallback; unsupported state/usage combinations must fail before submission with actionable diagnostics.
 
+`CommandList::TransitionBuffer` records a whole-buffer transition from a compiled `ResourceState`; it accepts neither an inferred pass use nor a native state value. GPU-only buffers may transition to `Common`, compatible copy states, read-only `ShaderResource`, or storage `UnorderedAccess`; CPU-visible upload/readback buffers, `Unknown`, and texture-only states fail. D3D12 owns the native whole-resource barrier and tracked state, mapping vertex/index/constant read-only use to `GENERIC_READ`; Vulkan owns NVRHI `setBufferState` plus `commitBarriers` and tracks no-op repeats. These are backend translation details, not graph policy. Existing upload/copy helpers retain their scoped bootstrap barriers; when a destination is already explicitly `CopyDest`, they emit no duplicate transition.
+
 The transition from bootstrap automatic barriers to explicit graph barriers is measured per backend. It does not change renderer pass declarations or permit native API state policy to leak above `Engine::RHI`.
 
 ## Transient Resource Contract

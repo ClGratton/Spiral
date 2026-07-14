@@ -1,8 +1,18 @@
 # Current Handoff
 
-Updated 2026-07-14. This file is a recovery aid, not roadmap authority; `PLAN.md` remains authoritative.
+Updated 2026-07-15. This file is a recovery aid, not roadmap authority; `PLAN.md` remains authoritative.
 
 ## Current Slice
+
+### Latest: Phase 3C RHI Buffer Transition Prerequisite
+
+The first execution prerequisite is complete locally and checked in `PLAN.md`: `RHI::CommandList::TransitionBuffer` records explicit whole-buffer transitions from backend-neutral `ResourceState` values. Graph compilation remains the state/dependency authority; this RHI operation only translates a supplied state and adds no graph execution, resource binding, callback, queue-synchronization, or transient-allocation policy.
+
+- `IsBufferStateCompatible` accepts GPU-only Common, declared CopySource/CopyDest, declared read-only ShaderResource, and Storage UnorderedAccess states; it rejects CPU-visible buffers, Unknown, and texture-only states. Vertex/index/constant buffers use the portable read-only state; D3D12 maps that state to `GENERIC_READ`.
+- D3D12 tracks the buffer's whole-resource native state and records `ResourceBarrier` only when it changes. Vulkan/NVRHI records `setBufferState` and `commitBarriers`, keeps the existing automatic tracking bootstrap mode, and suppresses wrapper-tracked no-op repeats. Existing copy/upload behavior remains intact and does not add a duplicate CopyDest barrier when the explicit state already matches.
+- `RHIBufferTransitionSmokeV1`, required by both headed smoke scripts, rejects transitions outside recording, incompatible state/usage, and post-close calls; it then records CopyDest, CopySource, and a no-op repeat before valid synchronous submission. The marker includes backend, invalid, lifecycle, submission, and result fields.
+
+Local Windows/MSVC Debug evidence: full rebuild (zero warnings/errors), `EngineTests` 39/39, `Scripts/TestRender.ps1 -Configuration Debug -Action vs2022`, and `Scripts/TestVulkan.ps1 -Configuration Debug -Action vs2022` all passed. Hosted CI is required next after pushing this scoped change. The next unchecked item is the single-queue frame/render-graph execution core.
 
 ### Latest: Phase 3C Render-Graph Construction
 

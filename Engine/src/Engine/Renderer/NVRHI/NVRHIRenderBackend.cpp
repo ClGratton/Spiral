@@ -65,6 +65,14 @@ namespace Engine
                 m_VulkanContext.reset();
                 return false;
             }
+            if (args.HasFlag("--rhi-buffer-transition-smoke")
+                && !RunRHIBufferTransitionSmoke(*m_VulkanContext->GetRHIDevice(), "Vulkan"))
+            {
+                Log::Error("Vulkan RHI buffer-transition smoke failed");
+                m_VulkanContext->Shutdown();
+                m_VulkanContext.reset();
+                return false;
+            }
             if (args.HasFlag("--vulkan-rhi-indexed-draw-smoke") && !RunVulkanRHIIndexedDrawSmoke())
             {
                 Log::Error("Vulkan RHI indexed draw smoke failed");
@@ -100,6 +108,12 @@ namespace Engine
             }
 
             m_RendererBackend = RendererBackend::NVRHID3D12;
+            if (args.HasFlag("--rhi-buffer-transition-smoke") && !RunRHIBufferTransitionSmoke(*m_Device, "D3D12"))
+            {
+                Log::Error("D3D12 RHI buffer-transition smoke failed");
+                m_Device.reset();
+                return false;
+            }
             return true;
         }
 
@@ -363,6 +377,34 @@ namespace Engine
             ", lifecycle=", (rejectedOpenSubmission && rejectedDuplicateSubmission) ? "pass" : "fail", ", cpuMapNone=", rejectedNoCpuMap ? "pass" : "fail",
             ", markers=", (opened && rejectedUnbalancedMarkerEnd) ? "executed-balanced" : "not-executed");
         return pixelsOk && rejectedDuplicateSubmission;
+    }
+
+    bool NVRHIRenderBackend::RunRHIBufferTransitionSmoke(RHI::Device& device, std::string_view backendName)
+    {
+        RHI::BufferDescription description;
+        description.DebugName = "RHIBufferTransitionSmokeV1";
+        description.SizeBytes = sizeof(u32);
+        description.Usage = static_cast<RHI::BufferUsage>(
+            static_cast<u32>(RHI::BufferUsage::CopySource) | static_cast<u32>(RHI::BufferUsage::CopyDest));
+        Scope<RHI::Buffer> buffer = device.CreateBuffer(description);
+        Scope<RHI::CommandList> list = buffer ? device.CreateCommandList(RHI::QueueType::Graphics, "RHIBufferTransitionSmokeV1") : nullptr;
+        const bool rejectedOutsideRecording = list && !list->TransitionBuffer(*buffer, RHI::ResourceState::CopyDest);
+        const bool recording = list && list->Begin();
+        const bool rejectedInvalidState = recording && !list->TransitionBuffer(*buffer, RHI::ResourceState::RenderTarget);
+        const bool transitions = recording
+            && list->TransitionBuffer(*buffer, RHI::ResourceState::CopyDest)
+            && list->TransitionBuffer(*buffer, RHI::ResourceState::CopySource)
+            && list->TransitionBuffer(*buffer, RHI::ResourceState::CopySource);
+        const bool closed = transitions && list->End();
+        const bool rejectedAfterClose = closed && !list->TransitionBuffer(*buffer, RHI::ResourceState::CopyDest);
+        const bool submitted = closed && device.SubmitAndWait(*list);
+        const bool passed = rejectedOutsideRecording && rejectedInvalidState && rejectedAfterClose && submitted;
+        Log::Info("RHIBufferTransitionSmokeV1 backend=", backendName,
+            ", invalid=", rejectedInvalidState ? "rejected" : "accepted",
+            ", lifecycle=", (rejectedOutsideRecording && rejectedAfterClose) ? "pass" : "fail",
+            ", submission=", submitted ? "pass" : "fail",
+            ", result=", passed ? "pass" : "fail");
+        return passed;
     }
 
     bool NVRHIRenderBackend::RunVulkanRHIIndexedDrawSmoke()

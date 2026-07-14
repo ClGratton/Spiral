@@ -27,6 +27,41 @@ namespace Engine::RHI
         Read
     };
 
+    // Buffer transitions describe GPU-visible uses only. CPU-visible upload and
+    // readback buffers have fixed native heap states and are not transitionable.
+    // Vertex, index, constant, and structured buffers share ShaderResource as
+    // the backend-neutral read-only state; the backend selects its compatible
+    // native read state.
+    inline bool IsBufferStateCompatible(BufferUsage usage, BufferCpuAccess cpuAccess, ResourceState state)
+    {
+        if (cpuAccess != BufferCpuAccess::None)
+            return false;
+
+        const auto hasUsage = [usage](BufferUsage flag)
+        {
+            return (static_cast<u32>(usage) & static_cast<u32>(flag)) != 0;
+        };
+
+        switch (state)
+        {
+            case ResourceState::Common: return true;
+            case ResourceState::ShaderResource:
+                return hasUsage(BufferUsage::Vertex) || hasUsage(BufferUsage::Index)
+                    || hasUsage(BufferUsage::Constant) || hasUsage(BufferUsage::Structured)
+                    || hasUsage(BufferUsage::Storage);
+            case ResourceState::UnorderedAccess: return hasUsage(BufferUsage::Storage);
+            case ResourceState::CopySource: return hasUsage(BufferUsage::CopySource);
+            case ResourceState::CopyDest: return hasUsage(BufferUsage::CopyDest);
+            case ResourceState::Unknown:
+            case ResourceState::RenderTarget:
+            case ResourceState::DepthWrite:
+            case ResourceState::Present:
+                return false;
+        }
+
+        return false;
+    }
+
     struct BufferDescription
     {
         std::string DebugName;

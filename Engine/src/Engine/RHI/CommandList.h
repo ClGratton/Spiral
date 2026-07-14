@@ -57,6 +57,9 @@ namespace Engine::RHI
         virtual bool BindViewportOutputs(Texture& colorTarget, Texture* depthTarget) = 0;
         virtual bool ClearViewportOutputs(const ViewportClear& clear) = 0;
         virtual bool TransitionTexture(Texture& texture, ResourceState destinationState) = 0;
+        // Records one explicit whole-buffer transition. Graph execution supplies
+        // state intent; this API does not infer pass or native state policy.
+        virtual bool TransitionBuffer(Buffer& buffer, ResourceState destinationState) = 0;
         virtual void SetGraphicsPipeline(Pipeline& pipeline) = 0;
         virtual void SetGraphicsConstantBuffer(u32 rootParameterIndex, Buffer& buffer) = 0;
         virtual void SetViewport(const Viewport& viewport) = 0;
