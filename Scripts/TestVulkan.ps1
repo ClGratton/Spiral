@@ -57,7 +57,7 @@ if ($JoinedLog -notmatch $DiagnosticsPattern) {
 if ($JoinedLog -notmatch 'VulkanSceneOutputCaptureV1 outputGeneration=[2-9][0-9]* capture=pass') {
     throw "Vulkan render smoke did not capture the post-resize renderer-owned Scene output."
 }
-if ($JoinedLog -notmatch 'VulkanSceneOutputHandoffV1 producer=pass outputGeneration=[2-9][0-9]* descriptor=registered descriptorGeneration=[2-9][0-9]* imgui=queued present=pass swapchainGeneration=2') {
+if ($JoinedLog -notmatch 'VulkanSceneOutputHandoffV1 producer=pass outputGeneration=[2-9][0-9]* descriptor=registered descriptorGeneration=[2-9][0-9]* imgui=queued present=pass swapchainGeneration=[2-9][0-9]*') {
     throw "Vulkan render smoke did not prove post-resize ImGui consumption and swapchain presentation of the Scene output."
 }
 

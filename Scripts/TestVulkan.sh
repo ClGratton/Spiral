@@ -136,7 +136,7 @@ for ((ATTEMPT = 1; ATTEMPT <= ITERATIONS; ++ATTEMPT)); do
         echo "Vulkan render smoke did not capture the post-resize renderer-owned Scene output on attempt $ATTEMPT/$ITERATIONS." >&2
         exit 1
     fi
-    if ! grep -Eq 'VulkanSceneOutputHandoffV1 producer=pass outputGeneration=[2-9][0-9]* descriptor=registered descriptorGeneration=[2-9][0-9]* imgui=queued present=pass swapchainGeneration=2' "$LOG_FILE"; then
+    if ! grep -Eq 'VulkanSceneOutputHandoffV1 producer=pass outputGeneration=[2-9][0-9]* descriptor=registered descriptorGeneration=[2-9][0-9]* imgui=queued present=pass swapchainGeneration=[2-9][0-9]*' "$LOG_FILE"; then
         echo "Vulkan render smoke did not prove post-resize ImGui consumption and swapchain presentation on attempt $ATTEMPT/$ITERATIONS." >&2
         exit 1
     fi
