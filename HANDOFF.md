@@ -4,27 +4,28 @@ Updated 2026-07-14. This file is a recovery aid, not roadmap authority; `PLAN.md
 
 ## Current Slice
 
-Phase 3C's Windows D3D12 viewport-output prerequisite is complete. Vulkan is now honestly split into core resource/clear/readback, then SPIR-V/pipeline/indexed draw, then Scene-output/ImGui integration.
+Phase 3C's Vulkan immutable-snapshot-to-renderer-output raster slice is complete locally and awaits the exact-head hosted run. Native Vulkan output-to-ImGui/swapchain handoff remains separate.
 
 - The Vulkan context creates the one native device/queue and NVRHI device, then creates an `Engine::RHI::Device` wrapper around that NVRHI handle. It creates no second native device or raw Vulkan scene command path. Core supports NVRHI buffers, RGBA8/depth textures, output clear, explicit texture transitions, balanced debug markers, graphics command submission/wait/garbage collection, buffer update, and RGBA8 staging readback. Closed lists submit once only; open and previously submitted lists are rejected. Shader/pipeline/draw/query methods reject clearly.
 - `--vulkan-rhi-core-smoke`, enabled by both `TestVulkan` scripts, creates an upload buffer plus 16x12 RGBA8/depth targets, rejects open and duplicate submission, proves that close rejects an unbalanced marker, issues a balanced marker with an owned null-terminated name, clears through `Engine::RHI`, reads RGBA8 through an NVRHI staging texture, validates extent/row pitch/every pixel (one byte tolerance), and emits `VulkanRHICoreV1` with adapter class and submission status. The marker status means the calls executed; it is not GPU-capture evidence.
 - The D3D12 adapter creates texture-owned persistent CPU-only RTV/DSV descriptors at output-texture initialization. View binding validates usage, transitions texture state, and binds those existing non-shader-visible handles without per-frame descriptor-heap allocation; renderer-owned texture destruction releases the views. Scene marker lifetime is scope-bound, including output-bind/clear failure returns.
 - The scene renderer now receives only `RHI::CommandList` and `RHI::Texture` references. It retains snapshot/raster behavior, per-draw constant-buffer lifetime, and shader validation. Presentation retains native command-list, swapchain, SRV/ImGui, and capture/readback ownership.
+- `NVRHIVulkanViewportSceneRenderer` reuses the renderer-published immutable snapshot, `PrepareSceneRasterFrame`, and `EditorViewport.hlsl` SPIR-V package. It creates no native Vulkan object or command path. It owns RGBA8/depth output replacement after synchronous GPU retirement, records NVRHI/RHI output bind/clear/draw/transition commands, and its smoke readbacks the final 64x48 color after a 48x36-to-64x48 resize. `VulkanSceneViewportRasterV1` requires raster/readback/geometry/background/resize pass states, final row layout, the clear background, and a bounded cube foreground count. It does not expose a texture to ImGui or a swapchain.
 
 ## Evidence
 
 - MSVC Debug build: passed with zero warnings/errors.
 - MSVC `EngineTests`: 35/35 passed.
-- Local Windows only: `Scripts/TestVulkan.ps1 -Configuration Debug -Action vs2022` passed on the selected Windows Vulkan device, including `lifecycle=pass`, `cpuMapNone=pass`, and `markers=executed-balanced` in `VulkanRHICoreV1`.
+- Local Windows only: `Scripts/TestVulkan.ps1 -Configuration Debug -Action vs2022` passed on the selected Windows Vulkan device, including `VulkanSceneViewportRasterV1 snapshot=pass pipeline=pass raster=pass readback=pass geometry=pass background=pass resize=pass`.
 - Exact-head GitHub Actions run `29357979246` passed Code Style, Windows D3D12 regression, Ubuntu lavapipe Vulkan presentation/core smoke, macOS Apple-Paravirtual/MoltenVK presentation/core smoke, and all portable tests on commit `9c9570f`.
 - `Scripts/TestRender.ps1 -Configuration Debug -Action vs2022`: passed. A/C captures were byte-identical; B shifted right by 196.24 pixels with a 13.20% non-background ratio.
 - `Scripts/CheckCodeStyle.ps1`: passed.
 
-This is real Windows x86_64/MSVC D3D12 viewport-output evidence. It is not Vulkan scene rendering or Vulkan handoff evidence.
+This is real local Windows x86_64/MSVC D3D12 regression and Vulkan Scene-offscreen evidence. It is not Vulkan ImGui/swapchain handoff, Linux/macOS Scene evidence, or physical-device breadth qualification.
 
 ## Limits And Next Work
 
-The Vulkan RHI core and isolated SPIR-V indexed-draw items are complete. The hosted Windows job remains D3D12-only; its Vulkan evidence is the labeled local run, while hosted Ubuntu/macOS exercise their Vulkan paths. The former combined Scene viewport/handoff item proved too large for one bounded owner and is now split without changing its intent. The next implementation item consumes the immutable Scene snapshot and renders it through `Engine::RHI`/NVRHI into renderer-owned Vulkan color/depth outputs with deterministic readback; the immediately following item integrates that completed output into the existing native Vulkan ImGui/swapchain bridge.
+The Vulkan RHI core, isolated SPIR-V indexed draw, and local Scene-output raster items are complete. The hosted Windows job remains D3D12-only; exact-head CI must still confirm the updated Vulkan smoke on Ubuntu lavapipe and macOS MoltenVK before those platform claims are made. The next unchecked roadmap item integrates the completed renderer-owned output into the existing native Vulkan ImGui/swapchain bridge.
 
 The shared viewport shader renders a visible checker on stable per-face UVs plus antialiased luminous face frames, inset lines, and corner accents. This replaces the initial object-position quantization, whose `floor` boundary on constant face coordinates caused triangle-dependent precision striping when rotated. The refinement preserves the constant-buffer-only binding layout and adds no texture or sampler. Local D3D12 capture, Vulkan indexed-draw smoke (including unchanged deterministic interior/background pixels), and style pass; exact-head run `29363501290` previously passed the base UV correction on Windows D3D12, Ubuntu Vulkan, macOS MoltenVK, portable tests, and style. This is deliberately not a real texture/material path: sampled-resource and sampler bindings, texture upload/ownership, and material descriptors remain future infrastructure.
 
@@ -36,4 +37,4 @@ Local Windows Debug evidence passes: `VulkanRHIIndexedDrawV1` reports every stag
 
 ## Working State
 
-Baseline through Vulkan core is `ee42695`; indexed-draw implementation and hosted corrections are `256a31a`, `813fd9b`, and `f89f9d3`. Exact-head run `29361689869` is green. The first unchecked roadmap item is the bounded Vulkan Scene snapshot-to-renderer-owned-output raster slice; it has not started. The native presentation/ImGui handoff remains the next separate item.
+Baseline through Vulkan core is `ee42695`; indexed-draw implementation and hosted corrections are `256a31a`, `813fd9b`, and `f89f9d3`. Exact-head run `29361689869` is green. The current uncommitted slice adds Vulkan Scene raster/readback; commit and record its exact-head CI result before handoff. The native presentation/ImGui handoff is next.

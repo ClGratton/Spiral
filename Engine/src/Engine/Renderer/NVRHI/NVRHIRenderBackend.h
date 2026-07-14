@@ -6,6 +6,7 @@
 #include "Engine/RHI/NVRHI/NVRHIVulkanContext.h"
 #include "Engine/Renderer/NVRHI/NVRHID3D12Presentation.h"
 #include "Engine/Renderer/NVRHI/NVRHIVulkanPresentation.h"
+#include "Engine/Renderer/NVRHI/NVRHIVulkanViewportSceneRenderer.h"
 #include "Engine/Renderer/RenderBackend.h"
 
 struct ImDrawData;
@@ -31,6 +32,7 @@ namespace Engine
         bool CaptureViewportToFile(std::string_view path);
         bool RunVulkanRHICoreSmoke();
         bool RunVulkanRHIIndexedDrawSmoke();
+        bool RunVulkanSceneViewportRasterSmoke();
 
         const RHI::NVRHIAdapterInfo& GetAdapterInfo() const { return m_AdapterInfo; }
         RendererBackend GetRendererBackend() const { return m_RendererBackend; }
@@ -44,6 +46,7 @@ namespace Engine
         Scope<NVRHID3D12Presentation> m_D3D12Presentation;
         Scope<RHI::NVRHIVulkanContext> m_VulkanContext;
         Scope<NVRHIVulkanPresentation> m_VulkanPresentation;
+        Scope<NVRHIVulkanViewportSceneRenderer> m_VulkanSceneRenderer;
         RHI::Backend m_RequestedBackend = RHI::Backend::None;
         RendererBackend m_RendererBackend = RendererBackend::NVRHICommon;
     };

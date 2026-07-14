@@ -72,6 +72,13 @@ namespace Engine
                 m_VulkanContext.reset();
                 return false;
             }
+            if (args.HasFlag("--vulkan-scene-viewport-raster-smoke") && !RunVulkanSceneViewportRasterSmoke())
+            {
+                Log::Error("Vulkan Scene viewport raster smoke failed");
+                m_VulkanContext->Shutdown();
+                m_VulkanContext.reset();
+                return false;
+            }
             return true;
         }
 
@@ -110,6 +117,7 @@ namespace Engine
 
         if (m_VulkanContext)
         {
+            m_VulkanSceneRenderer.reset();
             m_VulkanContext->WaitIdle();
             m_VulkanContext->Shutdown();
             m_VulkanContext.reset();
@@ -364,5 +372,47 @@ namespace Engine
                 foregroundPixels += !pixelMatches(x, y, {{ 10, 13, 15, 255 }}) ? 1u : 0u;
         Log::Info("VulkanRHIIndexedDrawV1 package=", packageOk ? "pass" : "fail", " reflection=", packageOk ? "pass" : "fail", " pipeline=", pipeline ? "pass" : "fail", " constants=", uploads ? "pass" : "fail", " draw=", submitted ? "pass" : "fail", " submit=", submitted ? "pass" : "fail", " readback=", readbackOk ? "pass" : "fail", " interior=", interior ? "pass" : "fail", " background=", background ? "pass" : "fail", " actualInterior=", static_cast<u32>(interiorPixel[0]), ",", static_cast<u32>(interiorPixel[1]), ",", static_cast<u32>(interiorPixel[2]), ",", static_cast<u32>(interiorPixel[3]), " foregroundPixels=", foregroundPixels, " rowPitch=", readback.RowPitchBytes, " vertexKey=", vertexPackage.Key, " pixelKey=", pixelPackage.Key, " validation=", validationError);
         return interior && background;
+    }
+
+    bool NVRHIRenderBackend::RunVulkanSceneViewportRasterSmoke()
+    {
+        RHI::Device* device = m_VulkanContext ? m_VulkanContext->GetRHIDevice() : nullptr;
+        if (!device)
+            return false;
+        m_VulkanSceneRenderer = CreateScope<NVRHIVulkanViewportSceneRenderer>();
+        if (!m_VulkanSceneRenderer->Initialize(device))
+            return false;
+
+        SceneRenderSnapshot snapshot;
+        snapshot.FrameIndex = 1;
+        snapshot.WorldGridPolicy = Math::WorldGridPolicy {};
+        SceneRenderView view;
+        view.Camera.Valid = true;
+        view.Camera.TranslationOrigin = { 0.0, 0.0, 0.0 };
+        view.Camera.HasCanonicalTranslationOrigin = Math::TryDecomposeWorldPosition(view.Camera.TranslationOrigin, snapshot.WorldGridPolicy, view.Camera.TranslationOriginPosition);
+        view.Camera.ViewProjection = Math::Mat4::Identity();
+        snapshot.Views.push_back(view);
+        SceneRenderMesh mesh;
+        mesh.SourceEntity = 1;
+        mesh.Transform.Position = view.Camera.TranslationOriginPosition;
+        snapshot.Meshes.push_back(mesh);
+        Renderer::PublishSceneRenderSnapshot(std::move(snapshot));
+        const ClearColor background { 0.04f, 0.05f, 0.06f, 1.0f };
+        const bool firstRaster = m_VulkanSceneRenderer->RenderCurrentSnapshot(48, 36, background);
+        const u64 firstGeneration = m_VulkanSceneRenderer->GetOutputGeneration();
+        const bool resizedRaster = firstRaster && m_VulkanSceneRenderer->RenderCurrentSnapshot(64, 48, background);
+        const u64 outputGeneration = m_VulkanSceneRenderer->GetOutputGeneration();
+        RHI::TextureReadback readback;
+        const bool readbackOk = resizedRaster && m_VulkanSceneRenderer->ReadbackColor(readback);
+        const std::array<u8, 4> expectedBackground { 10, 13, 15, 255 };
+        auto pixel = [&readback](u32 x, u32 y) { return &readback.Data[static_cast<size_t>(y) * readback.RowPitchBytes + static_cast<size_t>(x) * 4]; };
+        bool backgroundOk = readbackOk && readback.Extent.Width == 64 && readback.Extent.Height == 48 && readback.RowPitchBytes >= 64 * 4 && readback.Data.size() >= static_cast<size_t>(readback.RowPitchBytes) * 48;
+        if (backgroundOk) for (u32 channel = 0; channel < 4; ++channel) if (std::abs(static_cast<int>(pixel(2, 2)[channel]) - expectedBackground[channel]) > 3) backgroundOk = false;
+        u32 foregroundPixels = 0;
+        for (u32 y = 0; readbackOk && y < readback.Extent.Height; ++y) for (u32 x = 0; x < readback.Extent.Width; ++x) { const u8* value = pixel(x, y); const int delta = std::abs(static_cast<int>(value[0]) - expectedBackground[0]) + std::abs(static_cast<int>(value[1]) - expectedBackground[1]) + std::abs(static_cast<int>(value[2]) - expectedBackground[2]); foregroundPixels += delta > 24 ? 1u : 0u; }
+        const bool geometryOk = foregroundPixels > 300 && foregroundPixels < 2600;
+        const bool resizeOk = firstGeneration == 1 && outputGeneration == 2;
+        Log::Info("VulkanSceneViewportRasterV1 snapshot=pass pipeline=pass raster=", resizedRaster ? "pass" : "fail", " readback=", readbackOk ? "pass" : "fail", " geometry=", geometryOk ? "pass" : "fail", " background=", backgroundOk ? "pass" : "fail", " resize=", resizeOk ? "pass" : "fail", " outputGeneration=", outputGeneration, " size=", readback.Extent.Width, "x", readback.Extent.Height, " foregroundPixels=", foregroundPixels, " rowPitch=", readback.RowPitchBytes);
+        return resizedRaster && readbackOk && geometryOk && backgroundOk && resizeOk;
     }
 }
