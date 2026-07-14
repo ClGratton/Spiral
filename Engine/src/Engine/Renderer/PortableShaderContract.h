@@ -135,10 +135,14 @@ namespace Engine
             const std::vector<PortableShaderBinding>& bindings,
             const std::vector<PortableShaderVertexInput>& vertexInputs,
             std::string& error);
+        static bool ValidatePackage(
+            const PortableShaderRequest& request,
+            const PortableShaderPackage& package,
+            std::string& error);
         static bool StoreAtomic(const std::filesystem::path& path, const PortableShaderPackage& package);
         static bool Load(
             const std::filesystem::path& path,
-            std::string_view expectedKey,
+            const PortableShaderRequest& request,
             PortableShaderPackage& package);
     };
 }

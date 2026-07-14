@@ -118,26 +118,11 @@ namespace Engine
             try
             {
                 compiled = compile(request);
-                succeeded = compiled.Succeeded();
                 std::string validationError;
-                if (succeeded && compiled.Key != handle.Key)
+                succeeded = PortableShaderContract::ValidatePackage(request, compiled, validationError);
+                if (!succeeded)
                 {
-                    terminalMessage = "compiler returned a shader package with the wrong canonical key";
-                    succeeded = false;
-                }
-                if (succeeded && compiled.Conventions != request.Conventions)
-                {
-                    terminalMessage = "compiler returned a shader package with mismatched backend conventions";
-                    succeeded = false;
-                }
-                if (succeeded && !PortableShaderContract::Validate(
-                        request,
-                        compiled.Reflection,
-                        compiled.VertexInputs,
-                        validationError))
-                {
-                    terminalMessage = "compiler returned an invalid shader interface: " + validationError;
-                    succeeded = false;
+                    terminalMessage = "compiler returned an invalid shader package: " + validationError;
                 }
                 if (succeeded)
                 {

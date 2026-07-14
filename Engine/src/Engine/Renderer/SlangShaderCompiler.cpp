@@ -804,7 +804,7 @@ namespace Engine
             AddDiagnostic(package, request, "", validationError);
             return package;
         }
-        if (!m_CacheDirectory.empty() && PortableShaderContract::Load(cachePath, package.Key, package))
+        if (!m_CacheDirectory.empty() && PortableShaderContract::Load(cachePath, request, package))
         {
             package.CacheSource = PortableShaderCacheSource::DiskCache;
             return package;

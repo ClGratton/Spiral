@@ -1565,10 +1565,23 @@ namespace
             && rejectsBindingMutation([](auto& binding) { binding.ByteSize = 80; });
         const std::filesystem::path path = TestFilePath("portable-shader.shaderpkg");
         PortableShaderPackage written; written.Key = key; written.Dxil = { 1, 2 }; written.Spirv = { 3, 4 }; written.Reflection = reflection;
-        written.VertexInputs = { { "Position", "POSITION", 0, 0, "float32x3", 12, 1, 3 } };
         PortableShaderPackage loaded;
         const bool roundTrip = PortableShaderContract::StoreAtomic(path, written)
-            && PortableShaderContract::Load(path, key, loaded) && loaded == written;
+            && PortableShaderContract::Load(path, request, loaded) && loaded == written;
+
+        PortableShaderPackage missingRequestedArtifact = written;
+        missingRequestedArtifact.Dxil.clear();
+        PortableShaderRequest spirvOnlyRequest = request;
+        spirvOnlyRequest.Targets = { PortableShaderTarget::Spirv };
+        PortableShaderPackage spirvOnlyPackage = missingRequestedArtifact;
+        spirvOnlyPackage.Key = PortableShaderContract::CacheKey(spirvOnlyRequest);
+        std::string packageError;
+        const bool artifactCompleteness = !PortableShaderContract::ValidatePackage(request, missingRequestedArtifact, packageError)
+            && packageError.find("missing requested DXIL artifact") != std::string::npos
+            && PortableShaderContract::ValidatePackage(spirvOnlyRequest, spirvOnlyPackage, packageError);
+        const std::filesystem::path incompletePath = TestFilePath("portable-shader-incomplete.shaderpkg");
+        const bool incompleteCacheRejected = PortableShaderContract::StoreAtomic(incompletePath, missingRequestedArtifact)
+            && !PortableShaderContract::Load(incompletePath, request, loaded);
 
         PortableShaderPackage sentinel;
         sentinel.Version = 77;
@@ -1580,7 +1593,9 @@ namespace
         sentinel.Conventions.Coordinates = "SentinelCoordinates";
         sentinel.Diagnostics = { { "sentinel", "entry", "target", "backend", "message" } };
         PortableShaderPackage output = sentinel;
-        const bool badKeyRejected = !PortableShaderContract::Load(path, "wrong", output) && output == sentinel;
+        PortableShaderRequest wrongKeyRequest = request;
+        wrongKeyRequest.Source += " changed";
+        const bool badKeyRejected = !PortableShaderContract::Load(path, wrongKeyRequest, output) && output == sentinel;
 
         std::ifstream validStream(path, std::ios::binary);
         const std::vector<char> validBytes(
@@ -1589,9 +1604,9 @@ namespace
         std::vector<char> wrongVersionBytes = validBytes;
         wrongVersionBytes[5] = 99;
         { std::ofstream corrupt(path, std::ios::binary | std::ios::trunc); corrupt.write(wrongVersionBytes.data(), static_cast<std::streamsize>(wrongVersionBytes.size())); }
-        const bool versionRejected = !PortableShaderContract::Load(path, key, output) && output == sentinel;
+        const bool versionRejected = !PortableShaderContract::Load(path, request, output) && output == sentinel;
         { std::ofstream corrupt(path, std::ios::binary | std::ios::trunc); corrupt.write(validBytes.data(), static_cast<std::streamsize>(validBytes.size() - 3)); }
-        const bool lateTruncationRejected = !PortableShaderContract::Load(path, key, output) && output == sentinel;
+        const bool lateTruncationRejected = !PortableShaderContract::Load(path, request, output) && output == sentinel;
 
         const bool stableSha = PortableShaderContract::Sha256("abc")
             == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
@@ -1601,6 +1616,8 @@ namespace
         return Expect(stableSha && deterministicKey, "portable shader cache key is deterministic SHA-256")
             && Expect(accepted && sourceInvalidates && dependencyInvalidates && versionInvalidates && independentInputs, "portable shader key covers independently mutable compiler inputs")
             && Expect(layoutRejected && richLayoutRejected, "portable shader semantic layout collisions are rejected")
+            && Expect(artifactCompleteness && incompleteCacheRejected,
+                "portable shader cache accepts only every requested artifact while allowing unrequested artifacts to be empty")
             && Expect(roundTrip && badKeyRejected && versionRejected && lateTruncationRejected,
                 "portable shader cache parse failures preserve every caller field");
     }
@@ -1853,12 +1870,30 @@ float4 main(VertexInput input) : SV_Position
         const bool cacheReused = cacheHit.Status == ShaderPackageRequestStatus::CacheHit
             && cacheHit.Package == published.Package;
 
+        AsyncShaderPackageService integrityService([](const PortableShaderRequest& value)
+        {
+            PortableShaderPackage package = MakeSyntheticShaderPackage(value, 19);
+            package.Dxil.clear();
+            return package;
+        }, ShaderPackageExecutionMode::DeterministicInline);
+        const ShaderPackageRequestResult incompletePublication = integrityService.Poll(integrityService.Request(request));
+        PortableShaderRequest spirvOnlyRequest = request;
+        spirvOnlyRequest.Targets = { PortableShaderTarget::Spirv };
+        const ShaderPackageRequestResult spirvOnlyPublication = integrityService.Poll(integrityService.Request(spirvOnlyRequest));
+        const bool publicationCompleteness = incompletePublication.Status == ShaderPackageRequestStatus::Failure
+            && incompletePublication.Diagnostic.Message.find("missing requested DXIL artifact") != std::string::npos
+            && spirvOnlyPublication.Succeeded() && spirvOnlyPublication.Package
+            && spirvOnlyPublication.Package->Dxil.empty() && !spirvOnlyPublication.Package->Spirv.empty();
+
         service.Shutdown();
+        integrityService.Shutdown();
         jobs.Shutdown();
         return Expect(nonblocking, "asynchronous shader Request returns before controlled compiler completion")
             && Expect(deduplicated, "identical in-flight shader keys share one compiler job")
             && Expect(atomic, "poll exposes no partial package before one immutable successful publication")
-            && Expect(cacheReused, "completed shader packages publish a structured service cache hit");
+            && Expect(cacheReused, "completed shader packages publish a structured service cache hit")
+            && Expect(publicationCompleteness,
+                "async publication rejects missing requested artifacts and accepts SPIR-V-only packages");
     }
 
     bool TestAsyncShaderFailureRetentionInlineEquivalenceAndShutdownSafety()

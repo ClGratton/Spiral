@@ -444,6 +444,48 @@ namespace Engine
         return true;
     }
 
+    bool PortableShaderContract::ValidatePackage(
+        const PortableShaderRequest& request,
+        const PortableShaderPackage& package,
+        std::string& error)
+    {
+        if (!package.Diagnostics.empty())
+        {
+            error = "shader package contains diagnostics";
+            return false;
+        }
+        if (package.Key != CacheKey(request))
+        {
+            error = "shader package key differs from the request cache key";
+            return false;
+        }
+        const auto requiresTarget = [&request](PortableShaderTarget target)
+        {
+            return std::find(request.Targets.begin(), request.Targets.end(), target) != request.Targets.end();
+        };
+        if (requiresTarget(PortableShaderTarget::Dxil) && package.Dxil.empty())
+        {
+            error = "shader package is missing requested DXIL artifact";
+            return false;
+        }
+        if (requiresTarget(PortableShaderTarget::Spirv) && package.Spirv.empty())
+        {
+            error = "shader package is missing requested SPIR-V artifact";
+            return false;
+        }
+        if (!requiresTarget(PortableShaderTarget::Dxil) && !requiresTarget(PortableShaderTarget::Spirv))
+        {
+            error = "shader package request has no targets";
+            return false;
+        }
+        if (package.Conventions != request.Conventions)
+        {
+            error = "shader package conventions differ from the request";
+            return false;
+        }
+        return Validate(request, package.Reflection, package.VertexInputs, error);
+    }
+
     bool PortableShaderContract::StoreAtomic(const std::filesystem::path& path, const PortableShaderPackage& package)
     {
         if (!IsValidCachedPackage(package))
@@ -493,7 +535,7 @@ namespace Engine
 
     bool PortableShaderContract::Load(
         const std::filesystem::path& path,
-        std::string_view expectedKey,
+        const PortableShaderRequest& request,
         PortableShaderPackage& package)
     {
         std::ifstream stream(path, std::ios::binary);
@@ -504,7 +546,7 @@ namespace Engine
             || !stream.read(reinterpret_cast<char*>(&candidate.Version), sizeof(candidate.Version))
             || candidate.Version != 2
             || !ReadString(stream, candidate.Key)
-            || candidate.Key != expectedKey
+            || candidate.Key != CacheKey(request)
             || !ReadBytes(stream, candidate.Dxil)
             || !ReadBytes(stream, candidate.Spirv))
         {
@@ -548,7 +590,9 @@ namespace Engine
         candidate.Conventions.ZeroToOneDepth = (conventionFlags & 2) != 0;
         candidate.Conventions.VulkanYFlip = (conventionFlags & 4) != 0;
         candidate.Conventions.ClockwiseFrontFace = (conventionFlags & 8) != 0;
-        if (stream.peek() != std::char_traits<char>::eof() || !IsValidCachedPackage(candidate))
+        std::string validationError;
+        if (stream.peek() != std::char_traits<char>::eof() || !IsValidCachedPackage(candidate)
+            || !ValidatePackage(request, candidate, validationError))
             return false;
 
         package = std::move(candidate);
