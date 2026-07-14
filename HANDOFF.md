@@ -42,9 +42,9 @@ Hosted Actions run `29350139365` completed with Windows D3D12 success but expose
 
 ## Next Ordered Work
 
-The first unchecked `PLAN.md` item is Vulkan `Engine::RHI::Device` scene-viewport resources and command submission through the wrapped `nvrhi::DeviceHandle`, while keeping raw Vulkan confined to bootstrap, WSI/presentation, and ImGui.
+Evaluation of the former next Vulkan scene item found a contract prerequisite: `Engine::RHI::CommandList` cannot bind or clear a renderer-owned color/depth target. The current D3D12 prototype compensates with native D3D12 presentation-command access, which cannot be duplicated for Vulkan without violating the required native-boundary rule. `PLAN.md` now places the smallest prerequisite immediately first: define and execute backend-neutral viewport-output recording plus its narrow NVRHI-output-to-native-presentation/ImGui handoff. It must retain raw API ownership solely in bootstrap, WSI/presentation, and ImGui.
 
-Run `29354068102` confirms real Linux Vulkan and macOS MoltenVK presentation paths are available; local Windows Vulkan smoke is also available. The scene slice must add focused Vulkan scene execution/capture evidence rather than treating those presentation results or compilation as backend behavior.
+Only after that contract has real focused output evidence should the Vulkan `Engine::RHI::Device` scene-viewport item proceed. Run `29354068102` confirms real Linux Vulkan and macOS MoltenVK presentation paths are available; local Windows Vulkan smoke is also available. Neither is Vulkan scene-execution evidence.
 
 ## Working State
 
