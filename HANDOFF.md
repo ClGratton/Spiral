@@ -10,7 +10,7 @@ The first graph-construction roadmap item is implemented and checked. `RenderGra
 
 This is intentionally a compiler-only plan: there are no pass callbacks, physical/imported resource bindings, RHI barrier emission, command recording, queue signal/wait submission, transient allocation/reuse, GPU retirement, or viewport integration. The next ordered roadmap item owns those mechanisms.
 
-Focused local Windows MSVC Debug evidence: `EngineTests` builds and passes 38/38, including graph-order/lifetime, RAW/WAR/WAW/barrier/queue-transition, and invalid-declaration/cycle contract cases. Portable and hosted evidence is pending the scoped push.
+Focused local Windows MSVC Debug evidence: `EngineTests` builds and passes 38/38, including graph-order/lifetime, RAW/WAR/WAW/barrier/queue-transition, and invalid-declaration/cycle contract cases. Exact-head CI run `29371379723` passed Code Style, Windows D3D12 regression/`EngineTests`, Ubuntu portable build/tests plus lavapipe Vulkan smoke, and macOS portable build/tests plus MoltenVK smoke for commit `5921701`; dependency-submission run `29371379763` also passed.
 
 Phase 3C's Vulkan completed-output-to-native-ImGui/swapchain handoff is complete and checked with local Windows and exact-head hosted evidence.
 
