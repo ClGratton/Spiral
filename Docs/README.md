@@ -25,6 +25,7 @@ Code, tests, captures, and completed CI jobs are evidence of actual behavior. If
 | [Docs/README.md](README.md) | Complete Markdown catalog, authority order, and documentation update matrix. | Any Markdown file, document role, authority, or update responsibility changes. |
 | [AGENTS.md](../AGENTS.md) | Persistent agent workflow, authority, scopes, verification, roadmap, portability, and documentation rules. | Workflow, scopes, authority, model policy, or required documents change. |
 | [PLAN.md](../PLAN.md) | Only execution-order and completion-status authority. | Behavior, prerequisites, order, current state, verification, or completion changes. |
+| [HANDOFF.md](../HANDOFF.md) | Concise recovery snapshot of the latest completed work, evidence, blockers, and next ordered item; never overrides `PLAN.md`. | A substantial slice is handed off or its outstanding evidence/blocker changes. |
 | [PRODUCT.md](../PRODUCT.md) | Product users, purpose, principles, and accessibility goals. | Product direction or user promises change. |
 | [DESIGN.md](../DESIGN.md) | Editor visual system and interaction contracts. | Editor layout, styling, or interaction rules change. |
 | [README.md](../README.md) | Build/run quick start and concise current implementation summary. | Commands, dependencies, platform status, or primary navigation changes. |
