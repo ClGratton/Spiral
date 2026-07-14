@@ -85,6 +85,7 @@ REQUIRED_MARKERS=(
     "Vulkan swapchain recreated after window resize"
     "Vulkan render smoke verified native ImGui presentation after resize"
     "VulkanRHICoreV1"
+    "lifecycle=pass, cpuMapNone=pass, markers=executed-balanced"
 )
 
 if [[ "$SYSTEM_DIR" == "macosx" ]]; then

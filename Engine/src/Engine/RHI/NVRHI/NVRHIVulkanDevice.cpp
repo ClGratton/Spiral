@@ -5,6 +5,8 @@
 #if defined(GE_HAS_NVRHI_VULKAN)
     #include <nvrhi/nvrhi.h>
     #include <cstring>
+    #include <limits>
+    #include <vector>
 #endif
 
 namespace Engine::RHI
@@ -56,14 +58,31 @@ namespace Engine::RHI
             VulkanBuffer(BufferDescription description, nvrhi::BufferHandle buffer)
                 : m_Description(std::move(description)), m_Buffer(std::move(buffer)) {}
             const BufferDescription& GetDescription() const override { return m_Description; }
-            void* Map() override { return m_Buffer ? m_Device->mapBuffer(m_Buffer, nvrhi::CpuAccessMode::Write) : nullptr; }
-            void Unmap() override { if (m_Buffer) m_Device->unmapBuffer(m_Buffer); }
+            void* Map() override
+            {
+                if (!m_Buffer || !m_Device || m_Mapped || m_Description.CpuAccess == BufferCpuAccess::None)
+                    return nullptr;
+                const nvrhi::CpuAccessMode access = m_Description.CpuAccess == BufferCpuAccess::Read
+                    ? nvrhi::CpuAccessMode::Read : nvrhi::CpuAccessMode::Write;
+                void* mapped = m_Device->mapBuffer(m_Buffer, access);
+                m_Mapped = mapped != nullptr;
+                return mapped;
+            }
+            void Unmap() override
+            {
+                if (m_Buffer && m_Device && m_Mapped)
+                {
+                    m_Device->unmapBuffer(m_Buffer);
+                    m_Mapped = false;
+                }
+            }
             void SetDevice(nvrhi::IDevice* device) { m_Device = device; }
             nvrhi::IBuffer* Native() const { return m_Buffer; }
         private:
             BufferDescription m_Description;
             nvrhi::BufferHandle m_Buffer;
             nvrhi::IDevice* m_Device = nullptr;
+            bool m_Mapped = false;
         };
 
         class VulkanTexture final : public Texture
@@ -84,14 +103,43 @@ namespace Engine::RHI
             VulkanCommandList(QueueType queueType, std::string name, nvrhi::CommandListHandle list)
                 : m_QueueType(queueType), m_Name(std::move(name)), m_List(std::move(list)) {}
             QueueType GetQueueType() const override { return m_QueueType; }
-            bool Begin() override { if (m_Open || !m_List) return false; m_List->open(); m_Open = true; return true; }
-            bool End() override { if (!m_Open) return false; m_List->close(); m_Open = false; m_Closed = true; return true; }
-            void BeginDebugMarker(std::string_view name) override { if (m_Open) m_List->beginMarker(name.data()); }
-            void EndDebugMarker() override { if (m_Open) m_List->endMarker(); }
+            bool Begin() override
+            {
+                if (m_State == State::Recording || !m_List)
+                    return false;
+                m_List->open();
+                m_DebugMarkerNames.clear();
+                m_Color = nullptr;
+                m_Depth = nullptr;
+                m_State = State::Recording;
+                return true;
+            }
+            bool End() override
+            {
+                if (m_State != State::Recording || !m_DebugMarkerNames.empty())
+                    return false;
+                m_List->close();
+                m_State = State::Closed;
+                return true;
+            }
+            void BeginDebugMarker(std::string_view name) override
+            {
+                if (m_State != State::Recording)
+                    return;
+                m_DebugMarkerNames.emplace_back(name);
+                m_List->beginMarker(m_DebugMarkerNames.back().c_str());
+            }
+            void EndDebugMarker() override
+            {
+                if (m_State != State::Recording || m_DebugMarkerNames.empty())
+                    return;
+                m_List->endMarker();
+                m_DebugMarkerNames.pop_back();
+            }
             bool BindViewportOutputs(Texture& color, Texture* depth) override { m_Color = dynamic_cast<VulkanTexture*>(&color); m_Depth = depth ? dynamic_cast<VulkanTexture*>(depth) : nullptr; return m_Color && (!depth || m_Depth); }
             bool ClearViewportOutputs(const ViewportClear& clear) override
             {
-                if (!m_Open || !m_Color) return false;
+                if (m_State != State::Recording || !m_Color) return false;
                 if (clear.ClearColor) m_List->clearTextureFloat(m_Color->Native(), nvrhi::AllSubresources, nvrhi::Color(clear.Color[0], clear.Color[1], clear.Color[2], clear.Color[3]));
                 if (clear.ClearDepth && m_Depth) m_List->clearDepthStencilTexture(m_Depth->Native(), nvrhi::AllSubresources, true, clear.Depth, false, clear.Stencil);
                 return true;
@@ -99,7 +147,7 @@ namespace Engine::RHI
             bool TransitionTexture(Texture& texture, ResourceState state) override
             {
                 auto* native = dynamic_cast<VulkanTexture*>(&texture);
-                if (!m_Open || !native) return false;
+                if (m_State != State::Recording || !native) return false;
                 m_List->setTextureState(native->Native(), nvrhi::AllSubresources, ConvertState(state)); m_List->commitBarriers(); return true;
             }
             void SetGraphicsPipeline(Pipeline&) override { Log::Error("Vulkan RHI graphics pipelines are deferred to the next Phase 3C item"); }
@@ -113,16 +161,31 @@ namespace Engine::RHI
             void ResetQueryPool(QueryPool&, u32, u32) override {}
             void WriteTimestamp(QueryPool&, u32) override {}
             void ResolveQueryPool(QueryPool&, u32, u32) override {}
-            bool Ready() const { return m_Closed; }
+            bool Ready() const { return m_State == State::Closed; }
+            bool MarkSubmitted()
+            {
+                if (!Ready())
+                    return false;
+                m_State = State::Submitted;
+                return true;
+            }
             nvrhi::ICommandList* Native() const { return m_List; }
         private:
+            enum class State
+            {
+                Ready,
+                Recording,
+                Closed,
+                Submitted
+            };
+
             QueueType m_QueueType;
             std::string m_Name;
             nvrhi::CommandListHandle m_List;
             VulkanTexture* m_Color = nullptr;
             VulkanTexture* m_Depth = nullptr;
-            bool m_Open = false;
-            bool m_Closed = false;
+            std::vector<std::string> m_DebugMarkerNames;
+            State m_State = State::Ready;
         };
 
         class VulkanDevice final : public Device
@@ -185,12 +248,35 @@ namespace Engine::RHI
                 nvrhi::StagingTextureHandle staging = m_Device->createStagingTexture(texture->Native()->getDesc(), nvrhi::CpuAccessMode::Read); if (!staging) return false;
                 Scope<CommandList> list = CreateCommandList(QueueType::Graphics, "Vulkan RHI Texture Readback"); if (!list || !list->Begin()) return false;
                 static_cast<VulkanCommandList*>(list.get())->Native()->copyTexture(staging, nvrhi::TextureSlice(), texture->Native(), nvrhi::TextureSlice()); if (!list->End() || !SubmitAndWait(*list)) return false;
-                size_t rowPitch = 0; void* mapped = m_Device->mapStagingTexture(staging, nvrhi::TextureSlice(), nvrhi::CpuAccessMode::Read, &rowPitch); if (!mapped) return false;
-                out.Extent = d.Extent; out.TextureFormat = d.TextureFormat; out.RowPitchBytes = static_cast<u32>(rowPitch); out.Data.resize(rowPitch * d.Extent.Height); std::memcpy(out.Data.data(), mapped, out.Data.size()); m_Device->unmapStagingTexture(staging); return true;
+                size_t rowPitch = 0;
+                void* mapped = m_Device->mapStagingTexture(staging, nvrhi::TextureSlice(), nvrhi::CpuAccessMode::Read, &rowPitch);
+                if (!mapped || !rowPitch || rowPitch > std::numeric_limits<u32>::max() || rowPitch > std::numeric_limits<size_t>::max() / d.Extent.Height)
+                    return false;
+                struct ScopedStagingTextureUnmap final
+                {
+                    nvrhi::IDevice* Device;
+                    nvrhi::IStagingTexture* Texture;
+                    ~ScopedStagingTextureUnmap() { Device->unmapStagingTexture(Texture); }
+                } unmap { m_Device, staging };
+                const size_t dataSize = rowPitch * static_cast<size_t>(d.Extent.Height);
+                TextureReadback readback;
+                readback.Extent = d.Extent;
+                readback.TextureFormat = d.TextureFormat;
+                readback.RowPitchBytes = static_cast<u32>(rowPitch);
+                readback.Data.resize(dataSize);
+                std::memcpy(readback.Data.data(), mapped, dataSize);
+                out = std::move(readback);
+                return true;
             }
             bool SubmitAndWait(CommandList& commandList) override
             {
-                auto* list = dynamic_cast<VulkanCommandList*>(&commandList); if (!list || !list->Ready()) return false; m_Device->executeCommandList(list->Native()); const bool ok = m_Device->waitForIdle(); m_Device->runGarbageCollection(); return ok;
+                auto* list = dynamic_cast<VulkanCommandList*>(&commandList);
+                if (!m_Device || !list || !list->MarkSubmitted())
+                    return false;
+                m_Device->executeCommandList(list->Native());
+                const bool ok = m_Device->waitForIdle();
+                m_Device->runGarbageCollection();
+                return ok;
             }
             void WaitIdle() override { if (m_Device) { m_Device->waitForIdle(); m_Device->runGarbageCollection(); } }
         private:

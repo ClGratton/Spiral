@@ -36,7 +36,8 @@ $RequiredMarkers = @(
     "Vulkan render smoke requested window resize",
     "Vulkan swapchain recreated after window resize",
     "Vulkan render smoke verified native ImGui presentation after resize",
-    "VulkanRHICoreV1"
+    "VulkanRHICoreV1",
+    "lifecycle=pass, cpuMapNone=pass, markers=executed-balanced"
 )
 
 $JoinedLog = $VulkanLog -join "`n"

@@ -223,6 +223,13 @@ namespace Engine
         bufferDescription.SizeBytes = sizeof(u32);
         bufferDescription.Usage = RHI::BufferUsage::CopyDest;
         Scope<RHI::Buffer> uploadBuffer = device->CreateBuffer(bufferDescription);
+        RHI::BufferDescription noCpuMapBufferDescription;
+        noCpuMapBufferDescription.DebugName = "VulkanRHICoreV1 No CPU Map";
+        noCpuMapBufferDescription.SizeBytes = sizeof(u32);
+        noCpuMapBufferDescription.Usage = RHI::BufferUsage::CopyDest;
+        noCpuMapBufferDescription.CpuAccess = RHI::BufferCpuAccess::None;
+        Scope<RHI::Buffer> noCpuMapBuffer = device->CreateBuffer(noCpuMapBufferDescription);
+        const bool rejectedNoCpuMap = noCpuMapBuffer && !noCpuMapBuffer->Map();
         const u32 uploadValue = 0x564B5248u;
         const bool bufferUpload = uploadBuffer
             && device->UploadBuffer(*uploadBuffer, &uploadValue, sizeof(uploadValue));
@@ -245,13 +252,21 @@ namespace Engine
         clear.Color[1] = 0.5f;
         clear.Color[2] = 0.75f;
         clear.Color[3] = 1.0f;
-        const bool submitted = bufferUpload && color && depth && list && list->Begin()
+        const bool opened = bufferUpload && color && depth && list && list->Begin();
+        const bool rejectedOpenSubmission = opened && !device->SubmitAndWait(*list);
+        if (opened)
+            list->BeginDebugMarker(std::string_view("VulkanRHICoreV1 Marker", sizeof("VulkanRHICoreV1 Marker") - 1));
+        const bool rejectedUnbalancedMarkerEnd = opened && !list->End();
+        if (opened)
+            list->EndDebugMarker();
+        const bool submitted = rejectedNoCpuMap && rejectedOpenSubmission && rejectedUnbalancedMarkerEnd
             && list->BindViewportOutputs(*color, depth.get())
             && list->TransitionTexture(*color, RHI::ResourceState::RenderTarget)
             && list->TransitionTexture(*depth, RHI::ResourceState::DepthWrite)
             && list->ClearViewportOutputs(clear)
             && list->TransitionTexture(*color, RHI::ResourceState::CopySource)
             && list->End() && device->SubmitAndWait(*list);
+        const bool rejectedDuplicateSubmission = submitted && !device->SubmitAndWait(*list);
         RHI::TextureReadback readback;
         const bool readbackOk = submitted && device->ReadbackTexture(*color, readback);
         bool pixelsOk = readbackOk && readback.Extent.Width == width && readback.Extent.Height == height
@@ -266,7 +281,9 @@ namespace Engine
         Log::Info("VulkanRHICoreV1 adapter=", capabilities.Identity.Name,
             ", deviceClass=", RHI::ToString(capabilities.Identity.Type), ", size=", width, "x", height,
             ", bufferUpload=", bufferUpload ? "pass" : "fail", ", clear=", submitted ? "pass" : "fail", ", readback=", readbackOk ? "pass" : "fail",
-            ", pixels=", pixelsOk ? "pass" : "fail", ", nvrhiSubmission=", submitted ? "pass" : "fail");
-        return pixelsOk;
+            ", pixels=", pixelsOk ? "pass" : "fail", ", nvrhiSubmission=", submitted ? "pass" : "fail",
+            ", lifecycle=", (rejectedOpenSubmission && rejectedDuplicateSubmission) ? "pass" : "fail", ", cpuMapNone=", rejectedNoCpuMap ? "pass" : "fail",
+            ", markers=", (opened && rejectedUnbalancedMarkerEnd) ? "executed-balanced" : "not-executed");
+        return pixelsOk && rejectedDuplicateSubmission;
     }
 }
