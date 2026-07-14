@@ -24,6 +24,8 @@ namespace Engine
         Math::DVec3 TranslationOrigin;
         u64 StableViewId = 0;
         Math::SectorIndex TranslationOriginSector;
+        Math::SectorLocalPosition TranslationOriginPosition;
+        bool HasCanonicalTranslationOrigin = false;
         bool TemporalHistoryInvalidated = false;
         bool Valid = false;
     };
@@ -47,6 +49,8 @@ namespace Engine
     {
         u64 StableViewId = 0;
         Math::DVec3 WorldPosition;
+        Math::SectorLocalPosition CanonicalWorldPosition;
+        bool HasCanonicalWorldPosition = false;
         Math::Vec3 RotationDegrees;
         CameraProjection Projection;
         float AspectRatio = 0.0f;

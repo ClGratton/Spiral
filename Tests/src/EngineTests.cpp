@@ -733,6 +733,36 @@ namespace
         const bool overflowRejected = !TryNormalizeSectorLocal(overflowing, policy, rejected)
             && !TryDecomposeWorldPosition({ std::numeric_limits<double>::max(), 0.0, 0.0 }, policy, rejected);
 
+        SectorLocalPosition positiveExtreme;
+        positiveExtreme.Sector.X = std::numeric_limits<Engine::i64>::max();
+        SectorLocalPosition negativeExtreme;
+        negativeExtreme.Sector.X = std::numeric_limits<Engine::i64>::min();
+        DVec3 rejectedRelative { 7.0, 8.0, 9.0 };
+        const bool relativeOverflowRejected = !TryGetSectorLocalRelativePosition(
+                positiveExtreme, negativeExtreme, policy, rejectedRelative)
+            && !TryGetSectorLocalRelativePosition(
+                negativeExtreme, positiveExtreme, policy, rejectedRelative)
+            && rejectedRelative.X == 7.0
+            && rejectedRelative.Y == 8.0
+            && rejectedRelative.Z == 9.0;
+
+        WorldGridPolicy floatRangePolicy;
+        floatRangePolicy.SectorExtent = 1.0e39;
+        SectorLocalPosition oneSectorAway;
+        oneSectorAway.Sector.X = 1;
+        SectorLocalPosition zeroOrigin;
+        const bool floatRangeRejected = IsWorldGridPolicyValid(floatRangePolicy)
+            && !TryGetSectorLocalRelativePosition(
+                oneSectorAway, zeroOrigin, floatRangePolicy, rejectedRelative);
+
+        WorldGridPolicy nonFiniteRelativePolicy;
+        nonFiniteRelativePolicy.SectorExtent = 1.0e308;
+        SectorLocalPosition twoSectorsAway;
+        twoSectorsAway.Sector.X = 2;
+        const bool nonFiniteRelativeRejected = IsWorldGridPolicyValid(nonFiniteRelativePolicy)
+            && !TryGetSectorLocalRelativePosition(
+                twoSectorsAway, zeroOrigin, nonFiniteRelativePolicy, rejectedRelative);
+
         return Expect(canonicalCases, "signed world coordinates decompose into one canonical centered half-open sector/local form")
             && Expect(normalizedValid, "noncanonical local coordinates carry across signed sectors deterministically")
             && Expect(customExtentValid, "valid project-specific non-power-of-two sector extents remain canonical")
@@ -747,7 +777,10 @@ namespace
             && Expect(empty.Status == SectorRangeStatus::Empty,
                 "degenerate max-exclusive bounds are reported as empty")
             && Expect(invalidInputsRejected, "invalid grid policies and non-finite positions are rejected")
-            && Expect(overflowRejected, "sector carries and absolute decomposition reject signed-sector overflow");
+            && Expect(overflowRejected, "sector carries and absolute decomposition reject signed-sector overflow")
+            && Expect(relativeOverflowRejected, "relative conversion rejects signed-sector subtraction overflow transactionally")
+            && Expect(floatRangeRejected, "relative conversion rejects finite results outside the float translated-space range")
+            && Expect(nonFiniteRelativeRejected, "relative conversion rejects non-finite sector-delta products");
     }
 
     bool TestPerViewSectorSnappedOriginTracking()
@@ -945,6 +978,66 @@ namespace
         const Engine::SceneRasterFrame invalidRaster = Engine::PrepareSceneRasterFrame(
             scene.ExtractRenderSnapshot(104, {}));
 
+        Engine::Scene positiveExtremeScene("Positive Canonical Raster Extreme");
+        const Engine::Entity positiveExtremeMesh = positiveExtremeScene.CreateEntity("Positive Extreme Mesh");
+        positiveExtremeScene.AddMeshRendererComponent(positiveExtremeMesh, meshRenderer);
+        Engine::Math::SectorLocalPosition positiveCameraPosition;
+        positiveCameraPosition.Sector.X = std::numeric_limits<Engine::i64>::max() - 1;
+        positiveCameraPosition.Local.X = 0.25;
+        Engine::Math::SectorLocalPosition positiveMeshPosition = positiveCameraPosition;
+        positiveMeshPosition.Local.X = 0.5;
+        const bool positiveExtremeAssigned = positiveExtremeScene.SetEntitySectorLocalPosition(
+            positiveExtremeMesh, positiveMeshPosition);
+        Engine::Math::DVec3 positiveApproximateCamera;
+        Engine::Math::DVec3 positiveApproximateMesh;
+        const bool positiveApproximateAliased = Engine::Math::TryComposeApproximateWorldPosition(
+                positiveCameraPosition, positiveExtremeScene.GetWorldGridPolicy(), positiveApproximateCamera)
+            && Engine::Math::TryComposeApproximateWorldPosition(
+                positiveMeshPosition, positiveExtremeScene.GetWorldGridPolicy(), positiveApproximateMesh)
+            && positiveApproximateCamera.X == positiveApproximateMesh.X;
+        Engine::TrackedCameraViewRequest positiveViewRequest;
+        positiveViewRequest.StableViewId = 901;
+        positiveViewRequest.WorldPosition = positiveApproximateCamera;
+        positiveViewRequest.CanonicalWorldPosition = positiveCameraPosition;
+        positiveViewRequest.HasCanonicalWorldPosition = true;
+        positiveViewRequest.Projection = projection;
+        positiveViewRequest.AspectRatio = 16.0f / 9.0f;
+        Engine::CameraViewOriginTracker positiveTracker;
+        const Engine::CameraView positiveView = positiveTracker.BuildView(
+            positiveViewRequest, positiveExtremeScene.GetWorldGridPolicy());
+        const Engine::SceneRasterFrame positiveExtremeRaster = Engine::PrepareSceneRasterFrame(
+            positiveExtremeScene.ExtractRenderSnapshot(105, positiveView));
+
+        Engine::Scene negativeExtremeScene("Negative Canonical Raster Extreme");
+        const Engine::Entity negativeExtremeMesh = negativeExtremeScene.CreateEntity("Negative Extreme Mesh");
+        negativeExtremeScene.AddMeshRendererComponent(negativeExtremeMesh, meshRenderer);
+        Engine::Math::SectorLocalPosition negativeCameraPosition;
+        negativeCameraPosition.Sector.X = std::numeric_limits<Engine::i64>::min() + 1;
+        negativeCameraPosition.Local.X = -0.25;
+        Engine::Math::SectorLocalPosition negativeMeshPosition = negativeCameraPosition;
+        negativeMeshPosition.Local.X = 0.25;
+        const bool negativeExtremeAssigned = negativeExtremeScene.SetEntitySectorLocalPosition(
+            negativeExtremeMesh, negativeMeshPosition);
+        Engine::Math::DVec3 negativeApproximateCamera;
+        Engine::Math::DVec3 negativeApproximateMesh;
+        const bool negativeApproximateAliased = Engine::Math::TryComposeApproximateWorldPosition(
+                negativeCameraPosition, negativeExtremeScene.GetWorldGridPolicy(), negativeApproximateCamera)
+            && Engine::Math::TryComposeApproximateWorldPosition(
+                negativeMeshPosition, negativeExtremeScene.GetWorldGridPolicy(), negativeApproximateMesh)
+            && negativeApproximateCamera.X == negativeApproximateMesh.X;
+        Engine::TrackedCameraViewRequest negativeViewRequest;
+        negativeViewRequest.StableViewId = 902;
+        negativeViewRequest.WorldPosition = negativeApproximateCamera;
+        negativeViewRequest.CanonicalWorldPosition = negativeCameraPosition;
+        negativeViewRequest.HasCanonicalWorldPosition = true;
+        negativeViewRequest.Projection = projection;
+        negativeViewRequest.AspectRatio = 16.0f / 9.0f;
+        Engine::CameraViewOriginTracker negativeTracker;
+        const Engine::CameraView negativeView = negativeTracker.BuildView(
+            negativeViewRequest, negativeExtremeScene.GetWorldGridPolicy());
+        const Engine::SceneRasterFrame negativeExtremeRaster = Engine::PrepareSceneRasterFrame(
+            negativeExtremeScene.ExtractRenderSnapshot(106, negativeView));
+
         const bool epochDataValid = rasterA.HasValidView
             && rasterA.SnapshotFrameIndex == 100
             && rasterA.Instances.size() == 1
@@ -954,10 +1047,29 @@ namespace
             && rasterB.Instances[0].CameraRelativePosition.X == 1.0f
             && rasterC.Instances.size() == 1
             && rasterC.Instances[0].CameraRelativePosition.X == 0.0f;
+        const bool canonicalExtremeValid = positiveExtremeAssigned
+            && positiveApproximateAliased
+            && positiveView.Valid
+            && positiveView.HasCanonicalTranslationOrigin
+            && positiveView.TranslationOriginPosition.Sector == positiveCameraPosition.Sector
+            && positiveView.TranslationOriginPosition.Local.X == positiveCameraPosition.Local.X
+            && positiveExtremeRaster.HasValidView
+            && positiveExtremeRaster.Instances.size() == 1
+            && positiveExtremeRaster.Instances[0].CameraRelativePosition.X == 0.25f
+            && negativeExtremeAssigned
+            && negativeApproximateAliased
+            && negativeView.Valid
+            && negativeView.HasCanonicalTranslationOrigin
+            && negativeView.TranslationOriginPosition.Sector == negativeCameraPosition.Sector
+            && negativeView.TranslationOriginPosition.Local.X == negativeCameraPosition.Local.X
+            && negativeExtremeRaster.HasValidView
+            && negativeExtremeRaster.Instances.size() == 1
+            && negativeExtremeRaster.Instances[0].CameraRelativePosition.X == 0.5f;
         const bool retainedEpochValid = snapshotA->FrameIndex == 100
             && snapshotA->Views.size() == 1
             && snapshotA->Views[0].Camera.TranslationOrigin.X == cameraA.X
-            && snapshotA->Meshes[0].Transform.WorldPosition.X == meshA.X;
+            && snapshotA->Meshes[0].Transform.Position.Sector.X == 244140625
+            && snapshotA->Meshes[0].Transform.Position.Local.X == 0.0;
         const bool equivalentViewsValid = alternateRaster.Instances.size() == 1
             && MatricesNear(rasterA.Instances[0].ModelViewProjection,
                 alternateRaster.Instances[0].ModelViewProjection);
@@ -969,6 +1081,7 @@ namespace
                 "moving camera and mesh together across an origin transition preserves the raster transform")
             && Expect(retainedEpochValid, "a newer origin epoch does not mutate a retained snapshot")
             && Expect(equivalentViewsValid, "an arbitrary translated origin preserves the same camera-relative raster result")
+            && Expect(canonicalExtremeValid, "tracker-derived canonical snapshot/raster conversion preserves nonzero local deltas when extreme absolute doubles alias")
             && Expect(!invalidRaster.HasValidView && invalidRaster.Instances.empty(),
                 "a snapshot without a valid view cannot produce raster instances");
     }
@@ -1037,7 +1150,8 @@ namespace
             && first->Cameras.size() == 2
             && first->Cameras[0].SourceEntity == mainCamera.Id
             && first->Cameras[0].Main
-            && first->Cameras[0].Transform.WorldPosition.X == 1000.25
+            && first->Cameras[0].Transform.Position.Sector.X == 0
+            && first->Cameras[0].Transform.Position.Local.X == 1000.25
             && first->Cameras[1].SourceEntity == secondaryCamera.Id
             && !first->Cameras[1].Main
             && first->Cameras[1].Projection.VerticalFovDegrees == 72.0f;
@@ -1049,7 +1163,8 @@ namespace
             && first->Meshes[1].SourceEntity == visibleMesh.Id
             && first->Meshes[1].MeshAsset == 42
             && first->Meshes[1].MaterialAsset == 84
-            && first->Meshes[1].Transform.WorldPosition.X == 1234567890123.5
+            && first->Meshes[1].Transform.Position.Sector.X == 301408176
+            && first->Meshes[1].Transform.Position.Local.X == 1227.5
             && first->Meshes[1].Transform.RotationDegrees.Y == 20.0f
             && first->Meshes[1].Transform.Scale.Z == 4.0f;
         const bool lightExtractionValid = first
@@ -1066,8 +1181,10 @@ namespace
             && second != first
             && first->FrameIndex == 41
             && second->FrameIndex == 42
-            && first->Meshes[1].Transform.WorldPosition.X == 1234567890123.5
-            && second->Meshes[1].Transform.WorldPosition.X == -1.0
+            && first->Meshes[1].Transform.Position.Sector.X == 301408176
+            && first->Meshes[1].Transform.Position.Local.X == 1227.5
+            && second->Meshes[1].Transform.Position.Sector.X == 0
+            && second->Meshes[1].Transform.Position.Local.X == -1.0
             && first->Lights.size() == 1
             && second->Lights.empty();
         return Expect(cameraAuthorityValid, "the snapshot copies deterministic camera records and authoritative main-camera identity")

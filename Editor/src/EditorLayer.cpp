@@ -366,6 +366,8 @@ void EditorLayer::OnUpdate(Engine::Timestep timestep)
     Engine::TrackedCameraViewRequest viewportViewRequest;
     viewportViewRequest.StableViewId = 1;
     viewportViewRequest.WorldPosition = m_EditorCamera.GetPosition();
+    viewportViewRequest.CanonicalWorldPosition = m_ActiveScene.GetMainCameraTransform().GetPosition();
+    viewportViewRequest.HasCanonicalWorldPosition = true;
     viewportViewRequest.RotationDegrees = m_EditorCamera.GetRotationDegrees();
     viewportViewRequest.Projection = m_EditorCamera.GetProjection();
     viewportViewRequest.AspectRatio = m_EditorCamera.GetAspectRatio();
@@ -441,14 +443,15 @@ void EditorLayer::ConfigureSceneOriginRasterSmoke()
         throw std::runtime_error("Scene origin raster smoke requires the active NVRHI D3D12 backend");
 
     constexpr double base = 1000000000000.0;
+    constexpr double sectorBoundaryOffset = 2048.0;
     m_ActiveScene = Engine::Scene("Scene Origin Raster Smoke");
     m_SceneOriginRasterMeshEntity = m_ActiveScene.CreateEntity("Scene Origin Raster Mesh");
     Engine::MeshRendererComponent meshRenderer;
     meshRenderer.MeshAsset = 42;
     meshRenderer.MaterialAsset = 84;
     m_ActiveScene.AddMeshRendererComponent(m_SceneOriginRasterMeshEntity, meshRenderer);
-    m_ActiveScene.SetEntityWorldPosition(m_SceneOriginRasterMeshEntity, { base, 0.0, 0.0 });
-    m_ActiveScene.SetEntityWorldPosition(m_ActiveScene.GetMainCameraEntity(), { base, 0.0, -3.35 });
+    m_ActiveScene.SetEntityWorldPosition(m_SceneOriginRasterMeshEntity, { base + sectorBoundaryOffset - 0.5, 0.0, 0.0 });
+    m_ActiveScene.SetEntityWorldPosition(m_ActiveScene.GetMainCameraEntity(), { base + sectorBoundaryOffset - 0.5, 0.0, -3.35 });
     m_SelectedEntity = m_SceneOriginRasterMeshEntity;
     SyncEditorCameraStateFromMainCamera(true);
 }
@@ -459,24 +462,27 @@ void EditorLayer::AdvanceSceneOriginRasterSmoke()
         return;
 
     constexpr double base = 1000000000000.0;
+    constexpr double sectorBoundaryOffset = 2048.0;
+    constexpr double caseA = base + sectorBoundaryOffset - 0.5;
+    constexpr double caseB = base + sectorBoundaryOffset + 0.5;
     Engine::TransformComponent* meshTransform = m_ActiveScene.TryGetTransform(m_SceneOriginRasterMeshEntity);
     if (!meshTransform)
         throw std::runtime_error("Scene origin raster smoke lost its mesh entity");
 
     if (m_FrameCounter == 3)
     {
-        m_ActiveScene.SetEntityWorldPosition(m_SceneOriginRasterMeshEntity, { base, 0.0, 0.0 });
-        m_CameraPosition = { base, 0.0, -3.35 };
+        m_ActiveScene.SetEntityWorldPosition(m_SceneOriginRasterMeshEntity, { caseA, 0.0, 0.0 });
+        m_CameraPosition = { caseA, 0.0, -3.35 };
     }
     else if (m_FrameCounter == 4)
     {
-        m_ActiveScene.SetEntityWorldPosition(m_SceneOriginRasterMeshEntity, { base + 1.0, 0.0, 0.0 });
-        m_CameraPosition = { base, 0.0, -3.35 };
+        m_ActiveScene.SetEntityWorldPosition(m_SceneOriginRasterMeshEntity, { caseB, 0.0, 0.0 });
+        m_CameraPosition = { caseA, 0.0, -3.35 };
     }
     else if (m_FrameCounter == 5)
     {
-        m_ActiveScene.SetEntityWorldPosition(m_SceneOriginRasterMeshEntity, { base + 1.0, 0.0, 0.0 });
-        m_CameraPosition = { base + 1.0, 0.0, -3.35 };
+        m_ActiveScene.SetEntityWorldPosition(m_SceneOriginRasterMeshEntity, { caseB, 0.0, 0.0 });
+        m_CameraPosition = { caseB, 0.0, -3.35 };
     }
     else
     {
@@ -514,11 +520,17 @@ void EditorLayer::CaptureSceneOriginRasterSmoke()
         throw std::runtime_error("Scene origin raster smoke did not draw the current immutable snapshot epoch");
     }
 
-    const double expectedOriginX = 1000000000000.0 + (m_FrameCounter == 5 ? 1.0 : 0.0);
+    constexpr double base = 1000000000000.0;
+    constexpr double sectorBoundaryOffset = 2048.0;
+    constexpr double caseA = base + sectorBoundaryOffset - 0.5;
+    constexpr double caseB = base + sectorBoundaryOffset + 0.5;
+    const double expectedOriginX = m_FrameCounter == 5 ? caseB : caseA;
     const float expectedRelativeX = m_FrameCounter == 4 ? 1.0f : 0.0f;
     const Engine::SceneRasterInstance& instance = rasterFrame->Instances[0];
     if (rasterFrame->TranslationOrigin.X != expectedOriginX
         || instance.TranslationOrigin.X != expectedOriginX
+        || instance.TranslationOriginPosition.Sector.X != (m_FrameCounter == 5 ? 244140626LL : 244140625LL)
+        || instance.Position.Sector.X != (m_FrameCounter == 3 ? 244140625LL : 244140626LL)
         || instance.CameraRelativePosition.X != expectedRelativeX)
     {
         throw std::runtime_error("Scene origin raster smoke observed mixed view and mesh epochs");
@@ -530,7 +542,10 @@ void EditorLayer::CaptureSceneOriginRasterSmoke()
         ": frame=", rasterFrame->SnapshotFrameIndex,
         ", entity=", instance.SourceEntity,
         ", draws=", rasterFrame->IssuedDrawCount,
-        ", worldX=", instance.WorldPosition.X,
+        ", sectorX=", instance.Position.Sector.X,
+        ", localX=", instance.Position.Local.X,
+        ", originSectorX=", instance.TranslationOriginPosition.Sector.X,
+        ", originLocalX=", instance.TranslationOriginPosition.Local.X,
         ", originX=", rasterFrame->TranslationOrigin.X,
         ", relativeX=", instance.CameraRelativePosition.X);
 

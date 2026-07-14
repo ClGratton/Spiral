@@ -3,6 +3,7 @@
 #include "Engine/Assets/AssetHandle.h"
 #include "Engine/Core/Base.h"
 #include "Engine/Math/Math.h"
+#include "Engine/Math/WorldGrid.h"
 #include "Engine/Scene/Entity.h"
 #include "Engine/Scene/SceneRenderSnapshot.h"
 
@@ -16,8 +17,9 @@ namespace Engine
         EntityId SourceEntity = kInvalidEntityId;
         AssetHandle MeshAsset = kInvalidAssetHandle;
         AssetHandle MaterialAsset = kInvalidAssetHandle;
-        Math::DVec3 WorldPosition;
+        Math::SectorLocalPosition Position;
         Math::DVec3 TranslationOrigin;
+        Math::SectorLocalPosition TranslationOriginPosition;
         Math::Vec3 CameraRelativePosition;
         Math::Mat4 CameraRelativeModel;
         Math::Mat4 ModelViewProjection;

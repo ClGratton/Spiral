@@ -93,6 +93,35 @@ namespace Engine::Math
             return true;
         }
 
+        bool TryGetRelativeAxis(
+            i64 sector,
+            double local,
+            i64 originSector,
+            double originLocal,
+            double extent,
+            double& outRelative)
+        {
+            if (!std::isfinite(local) || !std::isfinite(originLocal))
+                return false;
+
+            i64 sectorDelta = 0;
+            if ((originSector > 0 && sector < std::numeric_limits<i64>::min() + originSector)
+                || (originSector < 0 && sector > std::numeric_limits<i64>::max() + originSector))
+            {
+                return false;
+            }
+            sectorDelta = sector - originSector;
+
+            const double result = static_cast<double>(sectorDelta) * extent + (local - originLocal);
+            if (!std::isfinite(result)
+                || result < -static_cast<double>(std::numeric_limits<float>::max())
+                || result > static_cast<double>(std::numeric_limits<float>::max()))
+                return false;
+
+            outRelative = result;
+            return true;
+        }
+
         bool TryCountRange(const SectorIndex& min, const SectorIndex& max, u64 limit, u64& outCount)
         {
             const long double spans[3] = {
@@ -192,6 +221,27 @@ namespace Engine::Math
             return false;
 
         outWorldPosition = result;
+        return true;
+    }
+
+    bool TryGetSectorLocalRelativePosition(
+        const SectorLocalPosition& position,
+        const SectorLocalPosition& origin,
+        const WorldGridPolicy& policy,
+        DVec3& outRelativePosition)
+    {
+        if (!IsCanonical(position, policy) || !IsCanonical(origin, policy))
+            return false;
+
+        DVec3 result;
+        if (!TryGetRelativeAxis(position.Sector.X, position.Local.X, origin.Sector.X, origin.Local.X, policy.SectorExtent, result.X)
+            || !TryGetRelativeAxis(position.Sector.Y, position.Local.Y, origin.Sector.Y, origin.Local.Y, policy.SectorExtent, result.Y)
+            || !TryGetRelativeAxis(position.Sector.Z, position.Local.Z, origin.Sector.Z, origin.Local.Z, policy.SectorExtent, result.Z))
+        {
+            return false;
+        }
+
+        outRelativePosition = result;
         return true;
     }
 

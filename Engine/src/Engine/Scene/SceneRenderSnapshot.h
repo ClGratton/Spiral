@@ -3,6 +3,7 @@
 #include "Engine/Assets/AssetHandle.h"
 #include "Engine/Core/Base.h"
 #include "Engine/Math/Math.h"
+#include "Engine/Math/WorldGrid.h"
 #include "Engine/Scene/Camera.h"
 #include "Engine/Scene/Components.h"
 #include "Engine/Scene/Entity.h"
@@ -13,7 +14,7 @@ namespace Engine
 {
     struct SceneRenderTransform
     {
-        Math::DVec3 WorldPosition;
+        Math::SectorLocalPosition Position;
         Math::Vec3 RotationDegrees;
         Math::Vec3 Scale = { 1.0f, 1.0f, 1.0f };
     };
@@ -58,6 +59,7 @@ namespace Engine
     {
         u64 FrameIndex = 0;
         EntityId MainCameraEntity = kInvalidEntityId;
+        Math::WorldGridPolicy WorldGridPolicy;
         std::vector<SceneRenderMesh> Meshes;
         std::vector<SceneRenderLight> Lights;
         std::vector<SceneRenderCamera> Cameras;

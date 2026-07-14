@@ -138,14 +138,14 @@ namespace Engine
         SceneRenderSnapshot snapshot;
         snapshot.FrameIndex = frameIndex;
         snapshot.MainCameraEntity = m_MainCameraEntity.Id;
+        snapshot.WorldGridPolicy = m_WorldGridPolicy;
         if (renderView.Valid)
             snapshot.Views.push_back({ renderView });
 
         for (const SceneEntity& entity : m_Entities)
         {
             SceneRenderTransform transform;
-            if (!entity.Transform.TryGetApproximateWorldPosition(m_WorldGridPolicy, transform.WorldPosition))
-                continue;
+            transform.Position = entity.Transform.GetPosition();
             transform.RotationDegrees = entity.Transform.RotationDegrees;
             transform.Scale = entity.Transform.Scale;
 

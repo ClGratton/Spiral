@@ -66,6 +66,14 @@ namespace Engine::Math
         const SectorLocalPosition& position,
         const WorldGridPolicy& policy,
         DVec3& outWorldPosition);
+    // Calculates a translated position without first composing either endpoint
+    // into an approximate absolute double. The result is suitable for a
+    // camera-relative float conversion only when it is finite and representable.
+    bool TryGetSectorLocalRelativePosition(
+        const SectorLocalPosition& position,
+        const SectorLocalPosition& origin,
+        const WorldGridPolicy& policy,
+        DVec3& outRelativePosition);
     SectorRange GetOverlappingSectorRange(
         const DVec3& minInclusive,
         const DVec3& maxExclusive,

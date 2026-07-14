@@ -16,6 +16,59 @@ namespace Engine
         {
             return std::isfinite(value.X) && std::isfinite(value.Y) && std::isfinite(value.Z);
         }
+
+        bool IsFloatRepresentable(const Math::DVec3& value)
+        {
+            const double limit = static_cast<double>(std::numeric_limits<float>::max());
+            return IsFinite(value)
+                && value.X >= -limit && value.X <= limit
+                && value.Y >= -limit && value.Y <= limit
+                && value.Z >= -limit && value.Z <= limit;
+        }
+
+        CameraView BuildCameraViewFromRelativePosition(
+            const Math::DVec3& worldPosition,
+            const Math::Vec3& rotationDegrees,
+            const CameraProjection& projection,
+            float aspectRatio,
+            const Math::DVec3& translationOrigin,
+            const Math::DVec3& cameraRelativePosition)
+        {
+            CameraView view;
+            if (!IsFinite(worldPosition)
+                || !IsFinite(rotationDegrees)
+                || !IsFinite(translationOrigin)
+                || !IsFloatRepresentable(cameraRelativePosition)
+                || !std::isfinite(aspectRatio)
+                || !std::isfinite(projection.VerticalFovDegrees)
+                || !std::isfinite(projection.NearClip)
+                || !std::isfinite(projection.FarClip))
+            {
+                return view;
+            }
+
+            const float pitch = Math::DegreesToRadians(rotationDegrees.X);
+            const float yaw = Math::DegreesToRadians(rotationDegrees.Y);
+            const float roll = Math::DegreesToRadians(rotationDegrees.Z);
+            const Math::Mat4 inverseRotation = Math::RotationYawPitchRoll(-yaw, -pitch, -roll);
+            const Math::Mat4 relativeTranslation = Math::Translation({
+                -static_cast<float>(cameraRelativePosition.X),
+                -static_cast<float>(cameraRelativePosition.Y),
+                -static_cast<float>(cameraRelativePosition.Z)
+            });
+
+            view.View = Math::Multiply(relativeTranslation, inverseRotation);
+            view.Projection = Math::PerspectiveLH(
+                Math::DegreesToRadians(projection.VerticalFovDegrees),
+                aspectRatio,
+                projection.NearClip,
+                projection.FarClip);
+            view.ViewProjection = Math::Multiply(view.View, view.Projection);
+            view.WorldPosition = worldPosition;
+            view.TranslationOrigin = translationOrigin;
+            view.Valid = true;
+            return view;
+        }
     }
 
     CameraView BuildCameraView(
@@ -25,40 +78,17 @@ namespace Engine
         float aspectRatio,
         const Math::DVec3& translationOrigin)
     {
-        CameraView view;
-        if (!IsFinite(worldPosition)
-            || !IsFinite(rotationDegrees)
-            || !IsFinite(translationOrigin)
-            || !std::isfinite(aspectRatio)
-            || !std::isfinite(projection.VerticalFovDegrees)
-            || !std::isfinite(projection.NearClip)
-            || !std::isfinite(projection.FarClip))
-        {
-            return view;
-        }
-
-        const float pitch = Math::DegreesToRadians(rotationDegrees.X);
-        const float yaw = Math::DegreesToRadians(rotationDegrees.Y);
-        const float roll = Math::DegreesToRadians(rotationDegrees.Z);
-        const Math::Mat4 inverseRotation = Math::RotationYawPitchRoll(-yaw, -pitch, -roll);
-        const Math::Vec3 cameraRelative = Math::CameraRelative(worldPosition, translationOrigin);
-        const Math::Mat4 relativeTranslation = Math::Translation({
-            -cameraRelative.X,
-            -cameraRelative.Y,
-            -cameraRelative.Z
-        });
-
-        view.View = Math::Multiply(relativeTranslation, inverseRotation);
-        view.Projection = Math::PerspectiveLH(
-            Math::DegreesToRadians(projection.VerticalFovDegrees),
+        return BuildCameraViewFromRelativePosition(
+            worldPosition,
+            rotationDegrees,
+            projection,
             aspectRatio,
-            projection.NearClip,
-            projection.FarClip);
-        view.ViewProjection = Math::Multiply(view.View, view.Projection);
-        view.WorldPosition = worldPosition;
-        view.TranslationOrigin = translationOrigin;
-        view.Valid = true;
-        return view;
+            translationOrigin,
+            {
+                worldPosition.X - translationOrigin.X,
+                worldPosition.Y - translationOrigin.Y,
+                worldPosition.Z - translationOrigin.Z
+            });
     }
 
     bool ShouldRebaseCameraOriginAxis(
@@ -90,8 +120,16 @@ namespace Engine
             return {};
 
         Math::SectorLocalPosition cameraPosition;
-        if (!Math::TryDecomposeWorldPosition(request.WorldPosition, policy, cameraPosition))
+        if (request.HasCanonicalWorldPosition)
+        {
+            if (!Math::IsCanonical(request.CanonicalWorldPosition, policy))
+                return {};
+            cameraPosition = request.CanonicalWorldPosition;
+        }
+        else if (!Math::TryDecomposeWorldPosition(request.WorldPosition, policy, cameraPosition))
+        {
             return {};
+        }
 
         const auto stateIt = m_ViewStates.find(request.StableViewId);
         ViewState candidate = stateIt == m_ViewStates.end() ? ViewState {} : stateIt->second;
@@ -102,14 +140,17 @@ namespace Engine
             || candidate.Policy.OriginHysteresis != policy.OriginHysteresis;
         if (policy.OriginMode == Math::WorldOriginMode::ExactCamera)
         {
-            CameraView view = BuildCameraView(
+            CameraView view = BuildCameraViewFromRelativePosition(
                 request.WorldPosition,
                 request.RotationDegrees,
                 request.Projection,
                 request.AspectRatio,
-                request.WorldPosition);
+                request.WorldPosition,
+                {});
             view.StableViewId = request.StableViewId;
             view.TranslationOriginSector = cameraPosition.Sector;
+            view.TranslationOriginPosition = cameraPosition;
+            view.HasCanonicalTranslationOrigin = true;
             view.TemporalHistoryInvalidated = policyOrModeChanged || request.DiscontinuousRelocation;
             if (!view.Valid)
                 return {};
@@ -154,12 +195,23 @@ namespace Engine
         if (!Math::TryComposeApproximateWorldPosition(originPosition, policy, translationOrigin))
             return {};
 
-        CameraView view = BuildCameraView(
+        Math::DVec3 cameraRelativePosition;
+        if (!Math::TryGetSectorLocalRelativePosition(
+            cameraPosition,
+            originPosition,
+            policy,
+            cameraRelativePosition))
+        {
+            return {};
+        }
+
+        CameraView view = BuildCameraViewFromRelativePosition(
             request.WorldPosition,
             request.RotationDegrees,
             request.Projection,
             request.AspectRatio,
-            translationOrigin);
+            translationOrigin,
+            cameraRelativePosition);
         if (!view.Valid)
             return {};
 
@@ -169,6 +221,8 @@ namespace Engine
         m_ViewStates[request.StableViewId] = candidate;
         view.StableViewId = request.StableViewId;
         view.TranslationOriginSector = candidate.OriginSector;
+        view.TranslationOriginPosition = originPosition;
+        view.HasCanonicalTranslationOrigin = true;
         view.TemporalHistoryInvalidated = policyOrModeChanged || originChanged || request.DiscontinuousRelocation;
         return view;
     }
