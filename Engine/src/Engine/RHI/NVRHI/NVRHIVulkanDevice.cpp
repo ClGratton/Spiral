@@ -341,13 +341,17 @@ namespace Engine::RHI
             {
                 auto* vertex = dynamic_cast<VulkanShader*>(description.VertexShader);
                 auto* pixel = dynamic_cast<VulkanShader*>(description.PixelShader);
-                if (!m_Device || description.Type != PipelineType::Graphics || !vertex || !pixel || description.VertexInputs.size() != 2 || description.ConstantBufferBindings.size() != 1
+                if (!m_Device || description.Type != PipelineType::Graphics || !vertex || !pixel || description.VertexInputs.size() != 3 || description.ConstantBufferBindings.size() != 1
                     || description.ConstantBufferBindings[0].ShaderRegister != 0 || description.ConstantBufferBindings[0].RegisterSpace != 0) return nullptr;
                 std::vector<nvrhi::VertexAttributeDesc> attributes;
                 for (const VertexInputAttribute& input : description.VertexInputs)
                 {
-                    if (input.AttributeFormat != Format::R32G32B32Float || input.InputSlot != 0 || input.InputRate != VertexInputRate::PerVertex) return nullptr;
-                    attributes.emplace_back(nvrhi::VertexAttributeDesc().setName(input.SemanticName + std::to_string(input.SemanticIndex)).setFormat(nvrhi::Format::RGB32_FLOAT).setBufferIndex(input.InputSlot).setOffset(input.OffsetBytes).setElementStride(24));
+                    if (input.InputSlot != 0 || input.InputRate != VertexInputRate::PerVertex) return nullptr;
+                    const nvrhi::Format format = input.AttributeFormat == Format::R32G32B32Float
+                        ? nvrhi::Format::RGB32_FLOAT
+                        : input.AttributeFormat == Format::R32G32Float ? nvrhi::Format::RG32_FLOAT : nvrhi::Format::UNKNOWN;
+                    if (format == nvrhi::Format::UNKNOWN) return nullptr;
+                    attributes.emplace_back(nvrhi::VertexAttributeDesc().setName(input.SemanticName + std::to_string(input.SemanticIndex)).setFormat(format).setBufferIndex(input.InputSlot).setOffset(input.OffsetBytes).setElementStride(32));
                 }
                 nvrhi::InputLayoutHandle inputLayout = m_Device->createInputLayout(attributes.data(), static_cast<u32>(attributes.size()), vertex->Native());
                 nvrhi::VulkanBindingOffsets bindingOffsets;
