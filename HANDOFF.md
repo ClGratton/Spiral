@@ -24,7 +24,9 @@ This is real Windows x86_64/MSVC D3D12 viewport-output evidence. It is not Vulka
 
 ## Limits And Next Work
 
-The Vulkan RHI core item is complete. The hosted Windows job remains D3D12-only and provides no Vulkan marker evidence; Windows Vulkan qualification is the labeled local run above. The next implementation item consumes SPIR-V and adds reflected pipeline/binding/input-layout plus deterministic indexed offscreen draw; it must not claim Scene or ImGui integration.
+The Vulkan RHI core and isolated SPIR-V indexed-draw items are complete. The hosted Windows job remains D3D12-only; its Vulkan evidence is the labeled local run, while hosted Ubuntu/macOS exercise their Vulkan paths. The next implementation item integrates the Scene viewport and the narrow completed-NVRHI-output-to-native-presentation/ImGui handoff.
+
+The shared viewport shader now renders a visible object-space checker on the prototype cube using only existing position/color interpolators and the constant buffer. Local D3D12 capture and Vulkan indexed-draw smoke pass. This is deliberately not a real texture/material path: sampled-resource and sampler bindings, texture upload/ownership, and material descriptors remain future infrastructure.
 
 ### Completed Phase 3C Indexed Draw
 
