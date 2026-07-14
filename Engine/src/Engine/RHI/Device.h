@@ -95,6 +95,10 @@ namespace Engine::RHI
         // device instance. Null, foreign-backend, and cross-device resources fail.
         virtual bool OwnsResource(const Buffer* resource) const = 0;
         virtual bool OwnsResource(const Texture* resource) const = 0;
+        // Observes only the last state accepted by this exact device for a live
+        // wrapper. It never exposes native state values or adopts caller state.
+        virtual bool QueryResourceState(const Buffer* resource, ResourceState& state) const = 0;
+        virtual bool QueryResourceState(const Texture* resource, ResourceState& state) const = 0;
         virtual Scope<Shader> CreateShader(const ShaderDescription& description) = 0;
         virtual Scope<Pipeline> CreatePipeline(const PipelineDescription& description) = 0;
         virtual Scope<QueryPool> CreateQueryPool(const QueryPoolDescription& description) = 0;

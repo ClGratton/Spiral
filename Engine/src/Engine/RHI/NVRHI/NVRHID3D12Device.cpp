@@ -302,6 +302,7 @@ namespace Engine::RHI
                     m_Resource->SetName(name.c_str());
 
                 m_CurrentState = GetInitialState();
+                m_TrackedState = m_Description.InitialState;
                 return true;
             }
 
@@ -360,6 +361,9 @@ namespace Engine::RHI
                 m_CurrentState = state;
             }
 
+            ResourceState GetTrackedState() const { return m_TrackedState; }
+            void SetTrackedState(ResourceState state) { m_TrackedState = state; }
+
             u64 GetOwnerId() const { return m_OwnerId; }
 
         private:
@@ -391,6 +395,7 @@ namespace Engine::RHI
             ComPtr<ID3D12Resource> m_Resource;
             void* m_MappedData = nullptr;
             D3D12_RESOURCE_STATES m_CurrentState = D3D12_RESOURCE_STATE_COMMON;
+            ResourceState m_TrackedState = ResourceState::Common;
         };
 
         class NVRHID3D12Texture final : public Texture
@@ -477,6 +482,7 @@ namespace Engine::RHI
                     return false;
 
                 m_CurrentState = ConvertResourceState(m_Description.InitialState);
+                m_TrackedState = m_Description.InitialState;
 
                 return true;
             }
@@ -495,6 +501,8 @@ namespace Engine::RHI
             D3D12_CPU_DESCRIPTOR_HANDLE GetDepthStencilView() const { return m_DepthStencilView; }
             D3D12_RESOURCE_STATES GetCurrentState() const { return m_CurrentState; }
             void SetCurrentState(D3D12_RESOURCE_STATES state) { m_CurrentState = state; }
+            ResourceState GetTrackedState() const { return m_TrackedState; }
+            void SetTrackedState(ResourceState state) { m_TrackedState = state; }
             u64 GetOwnerId() const { return m_OwnerId; }
 
         private:
@@ -534,6 +542,7 @@ namespace Engine::RHI
             D3D12_CPU_DESCRIPTOR_HANDLE m_RenderTargetView {};
             D3D12_CPU_DESCRIPTOR_HANDLE m_DepthStencilView {};
             D3D12_RESOURCE_STATES m_CurrentState = D3D12_RESOURCE_STATE_COMMON;
+            ResourceState m_TrackedState = ResourceState::Common;
         };
 
         class NVRHID3D12Shader final : public Shader
@@ -828,6 +837,8 @@ namespace Engine::RHI
                 }
 
                 m_State = State::Recording;
+                m_TextureStates.clear();
+                m_BufferStates.clear();
                 return true;
             }
 
@@ -858,6 +869,7 @@ namespace Engine::RHI
                 if (!token.IsValid() || !IsReadyToSubmit())
                     return false;
                 m_LastSubmission = token;
+                CommitTrackedStates();
                 m_State = State::Submitted;
                 return true;
             }
@@ -916,10 +928,11 @@ namespace Engine::RHI
             bool TransitionTexture(Texture& texture, ResourceState destinationState) override
             {
                 auto* nativeTexture = dynamic_cast<NVRHID3D12Texture*>(&texture);
-                if (!m_CommandList || !nativeTexture || !nativeTexture->GetResource())
+                if ((m_OwnedCommandList && m_State != State::Recording) || !m_CommandList || !nativeTexture || !nativeTexture->GetResource()
+                    || destinationState == ResourceState::Unknown)
                     return false;
                 const D3D12_RESOURCE_STATES destination = ConvertResourceState(destinationState);
-                const D3D12_RESOURCE_STATES source = nativeTexture->GetCurrentState();
+                const D3D12_RESOURCE_STATES source = GetTextureState(*nativeTexture);
                 if (source != destination)
                 {
                     D3D12_RESOURCE_BARRIER barrier {};
@@ -929,7 +942,13 @@ namespace Engine::RHI
                     barrier.Transition.StateBefore = source;
                     barrier.Transition.StateAfter = destination;
                     m_CommandList->ResourceBarrier(1, &barrier);
-                    nativeTexture->SetCurrentState(destination);
+                    if (m_OwnedCommandList)
+                        StageTextureState(*nativeTexture, destination, destinationState);
+                    else
+                    {
+                        nativeTexture->SetCurrentState(destination);
+                        nativeTexture->SetTrackedState(destinationState);
+                    }
                 }
                 return true;
             }
@@ -957,7 +976,7 @@ namespace Engine::RHI
                     destination = ConvertResourceState(destinationState);
                 }
 
-                const D3D12_RESOURCE_STATES source = nativeBuffer->GetCurrentState();
+                const D3D12_RESOURCE_STATES source = GetBufferState(*nativeBuffer);
                 if (source == destination)
                     return true;
 
@@ -968,7 +987,7 @@ namespace Engine::RHI
                 barrier.Transition.StateBefore = source;
                 barrier.Transition.StateAfter = destination;
                 m_CommandList->ResourceBarrier(1, &barrier);
-                nativeBuffer->SetCurrentState(destination);
+                StageBufferState(*nativeBuffer, destination, destinationState);
                 return true;
             }
 
@@ -1152,6 +1171,64 @@ namespace Engine::RHI
             }
 
         private:
+            struct TextureState
+            {
+                NVRHID3D12Texture* Resource = nullptr;
+                D3D12_RESOURCE_STATES Native = D3D12_RESOURCE_STATE_COMMON;
+                ResourceState Tracked = ResourceState::Common;
+            };
+
+            struct BufferState
+            {
+                NVRHID3D12Buffer* Resource = nullptr;
+                D3D12_RESOURCE_STATES Native = D3D12_RESOURCE_STATE_COMMON;
+                ResourceState Tracked = ResourceState::Common;
+            };
+
+            D3D12_RESOURCE_STATES GetTextureState(const NVRHID3D12Texture& resource) const
+            {
+                for (const TextureState& state : m_TextureStates)
+                    if (state.Resource == &resource)
+                        return state.Native;
+                return resource.GetCurrentState();
+            }
+
+            D3D12_RESOURCE_STATES GetBufferState(const NVRHID3D12Buffer& resource) const
+            {
+                for (const BufferState& state : m_BufferStates)
+                    if (state.Resource == &resource)
+                        return state.Native;
+                return resource.GetCurrentState();
+            }
+
+            void StageTextureState(NVRHID3D12Texture& resource, D3D12_RESOURCE_STATES native, ResourceState tracked)
+            {
+                for (TextureState& state : m_TextureStates)
+                    if (state.Resource == &resource) { state.Native = native; state.Tracked = tracked; return; }
+                m_TextureStates.push_back({ &resource, native, tracked });
+            }
+
+            void StageBufferState(NVRHID3D12Buffer& resource, D3D12_RESOURCE_STATES native, ResourceState tracked)
+            {
+                for (BufferState& state : m_BufferStates)
+                    if (state.Resource == &resource) { state.Native = native; state.Tracked = tracked; return; }
+                m_BufferStates.push_back({ &resource, native, tracked });
+            }
+
+            void CommitTrackedStates()
+            {
+                for (const TextureState& state : m_TextureStates)
+                {
+                    state.Resource->SetCurrentState(state.Native);
+                    state.Resource->SetTrackedState(state.Tracked);
+                }
+                for (const BufferState& state : m_BufferStates)
+                {
+                    state.Resource->SetCurrentState(state.Native);
+                    state.Resource->SetTrackedState(state.Tracked);
+                }
+            }
+
             ID3D12Resource* GetD3D12Resource(Buffer& buffer) const
             {
                 const NVRHID3D12BufferNativeHandles handles = GetNVRHID3D12BufferNativeHandles(buffer);
@@ -1171,6 +1248,8 @@ namespace Engine::RHI
             std::string m_DebugName;
             std::function<CompletionStatus(const CompletionToken&)> m_QueryCompletion;
             CompletionToken m_LastSubmission;
+            std::vector<TextureState> m_TextureStates;
+            std::vector<BufferState> m_BufferStates;
             State m_State = State::Initial;
         };
 
@@ -1299,6 +1378,24 @@ namespace Engine::RHI
             {
                 const auto* texture = dynamic_cast<const NVRHID3D12Texture*>(resource);
                 return texture && texture->GetOwnerId() == m_ResourceOwnerId;
+            }
+
+            bool QueryResourceState(const Buffer* resource, ResourceState& state) const override
+            {
+                const auto* buffer = dynamic_cast<const NVRHID3D12Buffer*>(resource);
+                if (!buffer || !OwnsResource(resource) || buffer->GetTrackedState() == ResourceState::Unknown)
+                    return false;
+                state = buffer->GetTrackedState();
+                return true;
+            }
+
+            bool QueryResourceState(const Texture* resource, ResourceState& state) const override
+            {
+                const auto* texture = dynamic_cast<const NVRHID3D12Texture*>(resource);
+                if (!texture || !OwnsResource(resource) || texture->GetTrackedState() == ResourceState::Unknown)
+                    return false;
+                state = texture->GetTrackedState();
+                return true;
             }
 
             Scope<Shader> CreateShader(const ShaderDescription& description) override

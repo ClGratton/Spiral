@@ -115,11 +115,14 @@ namespace Engine::RHI
                 : m_Description(std::move(description)), m_Texture(std::move(texture)), m_OwnerId(ownerId) {}
             const TextureDescription& GetDescription() const override { return m_Description; }
             nvrhi::ITexture* Native() const { return m_Texture; }
+            ResourceState GetCurrentState() const { return m_CurrentState; }
+            void SetCurrentState(ResourceState state) { m_CurrentState = state; }
             u64 GetOwnerId() const { return m_OwnerId; }
         private:
             TextureDescription m_Description;
             nvrhi::TextureHandle m_Texture;
             const u64 m_OwnerId;
+            ResourceState m_CurrentState = ResourceState::Common;
         };
 
         class VulkanShader final : public Shader
@@ -187,6 +190,8 @@ namespace Engine::RHI
                 m_DebugMarkerNames.clear();
                 m_Color = nullptr;
                 m_Depth = nullptr;
+                m_TextureStates.clear();
+                m_BufferStates.clear();
                 m_State = State::Recording;
                 return true;
             }
@@ -232,8 +237,12 @@ namespace Engine::RHI
             bool TransitionTexture(Texture& texture, ResourceState state) override
             {
                 auto* native = dynamic_cast<VulkanTexture*>(&texture);
-                if (m_State != State::Recording || !native) return false;
-                m_List->setTextureState(native->Native(), nvrhi::AllSubresources, ConvertState(state)); m_List->commitBarriers(); return true;
+                if (m_State != State::Recording || !native || state == ResourceState::Unknown) return false;
+                if (GetTextureState(*native) == state) return true;
+                m_List->setTextureState(native->Native(), nvrhi::AllSubresources, ConvertState(state));
+                m_List->commitBarriers();
+                StageTextureState(*native, state);
+                return true;
             }
             bool TransitionBuffer(Buffer& buffer, ResourceState state) override
             {
@@ -241,11 +250,11 @@ namespace Engine::RHI
                 if (m_State != State::Recording || !native
                     || !IsBufferStateCompatible(buffer.GetDescription().Usage, buffer.GetDescription().CpuAccess, state))
                     return false;
-                if (native->GetCurrentState() == state)
+                if (GetBufferState(*native) == state)
                     return true;
                 m_List->setBufferState(native->Native(), ConvertState(state));
                 m_List->commitBarriers();
-                native->SetCurrentState(state);
+                StageBufferState(*native, state);
                 return true;
             }
             void SetGraphicsPipeline(Pipeline& pipeline) override { m_Pipeline = dynamic_cast<VulkanPipeline*>(&pipeline); }
@@ -289,11 +298,49 @@ namespace Engine::RHI
                 if (!Ready() || !token.IsValid())
                     return false;
                 m_LastSubmission = token;
+                CommitTrackedStates();
                 m_State = State::Submitted;
                 return true;
             }
             nvrhi::ICommandList* Native() const { return m_List; }
         private:
+            struct TextureState { VulkanTexture* Resource = nullptr; ResourceState State = ResourceState::Common; };
+            struct BufferState { VulkanBuffer* Resource = nullptr; ResourceState State = ResourceState::Common; };
+
+            ResourceState GetTextureState(const VulkanTexture& resource) const
+            {
+                for (const TextureState& state : m_TextureStates)
+                    if (state.Resource == &resource) return state.State;
+                return resource.GetCurrentState();
+            }
+
+            ResourceState GetBufferState(const VulkanBuffer& resource) const
+            {
+                for (const BufferState& state : m_BufferStates)
+                    if (state.Resource == &resource) return state.State;
+                return resource.GetCurrentState();
+            }
+
+            void StageTextureState(VulkanTexture& resource, ResourceState state)
+            {
+                for (TextureState& pending : m_TextureStates)
+                    if (pending.Resource == &resource) { pending.State = state; return; }
+                m_TextureStates.push_back({ &resource, state });
+            }
+
+            void StageBufferState(VulkanBuffer& resource, ResourceState state)
+            {
+                for (BufferState& pending : m_BufferStates)
+                    if (pending.Resource == &resource) { pending.State = state; return; }
+                m_BufferStates.push_back({ &resource, state });
+            }
+
+            void CommitTrackedStates()
+            {
+                for (const TextureState& state : m_TextureStates) state.Resource->SetCurrentState(state.State);
+                for (const BufferState& state : m_BufferStates) state.Resource->SetCurrentState(state.State);
+            }
+
             enum class State
             {
                 Ready,
@@ -319,6 +366,8 @@ namespace Engine::RHI
             std::vector<std::string> m_DebugMarkerNames;
             std::function<CompletionStatus(const CompletionToken&)> m_QueryCompletion;
             CompletionToken m_LastSubmission;
+            std::vector<TextureState> m_TextureStates;
+            std::vector<BufferState> m_BufferStates;
             State m_State = State::Ready;
         };
 
@@ -349,7 +398,7 @@ namespace Engine::RHI
                     ? ResourceState::CopyDest : description.InitialState;
                 auto result = CreateScope<VulkanBuffer>(description, native, m_ResourceOwnerId);
                 result->SetDevice(m_Device);
-                result->SetCurrentState(trackedInitialState == ResourceState::Unknown ? ResourceState::Common : trackedInitialState);
+                result->SetCurrentState(trackedInitialState);
                 return result;
             }
             Scope<Texture> CreateTexture(const TextureDescription& description) override
@@ -370,7 +419,17 @@ namespace Engine::RHI
                                 : nvrhi::ResourceStates::CopySource;
                 nvrhi::TextureDesc d; d.setWidth(description.Extent.Width).setHeight(description.Extent.Height).setMipLevels(1).setArraySize(1).setSampleCount(1).setFormat(format).setDebugName(description.DebugName).enableAutomaticStateTracking(initialState);
                 d.setIsRenderTarget(HasTextureUsage(description.Usage, TextureUsage::RenderTarget) || HasTextureUsage(description.Usage, TextureUsage::DepthStencil)).setIsUAV(HasTextureUsage(description.Usage, TextureUsage::UnorderedAccess)); d.isShaderResource = HasTextureUsage(description.Usage, TextureUsage::ShaderResource);
-                nvrhi::TextureHandle native = m_Device->createTexture(d); return native ? CreateScope<VulkanTexture>(description, native, m_ResourceOwnerId) : nullptr;
+                nvrhi::TextureHandle native = m_Device->createTexture(d);
+                if (!native) return nullptr;
+                auto result = CreateScope<VulkanTexture>(description, native, m_ResourceOwnerId);
+                const ResourceState trackedInitialState = description.InitialState == ResourceState::Unknown ? ResourceState::Unknown
+                    : description.InitialState == ResourceState::Common
+                    ? HasTextureUsage(description.Usage, TextureUsage::DepthStencil) ? ResourceState::DepthWrite
+                        : HasTextureUsage(description.Usage, TextureUsage::RenderTarget) ? ResourceState::RenderTarget
+                        : HasTextureUsage(description.Usage, TextureUsage::CopyDest) ? ResourceState::CopyDest : ResourceState::CopySource
+                    : description.InitialState;
+                result->SetCurrentState(trackedInitialState);
+                return result;
             }
             bool OwnsResource(const Buffer* resource) const override
             {
@@ -381,6 +440,20 @@ namespace Engine::RHI
             {
                 const auto* texture = dynamic_cast<const VulkanTexture*>(resource);
                 return texture && texture->GetOwnerId() == m_ResourceOwnerId;
+            }
+            bool QueryResourceState(const Buffer* resource, ResourceState& state) const override
+            {
+                const auto* buffer = dynamic_cast<const VulkanBuffer*>(resource);
+                if (!buffer || !OwnsResource(resource) || buffer->GetCurrentState() == ResourceState::Unknown) return false;
+                state = buffer->GetCurrentState();
+                return true;
+            }
+            bool QueryResourceState(const Texture* resource, ResourceState& state) const override
+            {
+                const auto* texture = dynamic_cast<const VulkanTexture*>(resource);
+                if (!texture || !OwnsResource(resource) || texture->GetCurrentState() == ResourceState::Unknown) return false;
+                state = texture->GetCurrentState();
+                return true;
             }
             Scope<Shader> CreateShader(const ShaderDescription& description) override
             {

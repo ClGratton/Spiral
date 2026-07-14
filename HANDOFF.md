@@ -4,6 +4,16 @@ Updated 2026-07-15. This file is a recovery aid, not roadmap authority; `PLAN.md
 
 ## Current Slice
 
+### Latest: Phase 3 Resource-State Query Prerequisite
+
+The checked graph-import prerequisite adds read-only `RHI::Device::QueryResourceState` overloads for texture and buffer wrappers. Queries require a live wrapper owned by that exact RHI device and return only portable `ResourceState`; null, foreign-backend, same-backend-other-device, and `Unknown` values fail. There is no external state adoption or native-state exposure.
+
+Device-owned command lists now retain transition state locally while recording. Their wrapper state is committed only after `Submit` accepts the closed list and returns a valid completion token; invalid recording, failed close, or failed submission cannot publish the requested new state. D3D12 commits matching native and portable wrapper state together; Vulkan/NVRHI commits the portable wrapper state after NVRHI accepts the list. The pre-existing D3D12 presentation bridge retains its explicit native-list behavior and is not an import/graph execution path.
+
+`RHIResourceStateSmokeV1`, required by both headed scripts, creates an owned CopyDest texture and buffer, observes their initial values, proves transitions are still hidden during recording and after an invalid `Unknown` attempt, submits valid CopySource transitions, observes both final values, and rejects null/unknown cases. Deterministic `EngineTests` covers foreign-backend and same-backend-other-device cases. Local Windows/MSVC Debug evidence passed: build with zero warnings/errors, 41/41 `EngineTests`, `TestRender.ps1`, `TestVulkan.ps1`, `CheckCodeStyle.ps1`, `git diff --check`, and Markdown-link audit. Hosted CI is pending the scoped push. The next ordered `PLAN.md` item is the single-queue frame/render-graph execution core.
+
+## Current Slice
+
 ### Latest: Phase 3C D3D12 Texture Readback Parity Prerequisite
 
 The D3D12 readback prerequisite is implemented and checked in `PLAN.md`. `RHI::Device::ReadbackTexture` accepts only a live texture created by the exact D3D12 RHI device with a nonzero single-mip/layer/sample RGBA8 extent, `CopySource` usage, and already-finalized `CopySource` state. It rejects foreign/wrong-wrapper, depth, unsupported format, invalid shape, invalid footprint arithmetic, and wrong-state input before recording. The device derives the native copy footprint internally, uses an RHI-owned D3D12 command list and CPU-readback buffer, submits through `CompletionToken`, waits with a finite 5000 ms deadline, leaves the source in `CopySource`, and compacts each aligned native row into initialized CPU bytes (`RowPitchBytes=width*4`). No presentation/swapchain/ImGui capture bridge is called or duplicated.

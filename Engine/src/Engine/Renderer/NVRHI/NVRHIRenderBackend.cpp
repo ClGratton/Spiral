@@ -89,6 +89,14 @@ namespace Engine
                 m_VulkanContext.reset();
                 return false;
             }
+            if (args.HasFlag("--rhi-resource-state-smoke")
+                && !RunRHIResourceStateSmoke(*m_VulkanContext->GetRHIDevice(), "Vulkan"))
+            {
+                Log::Error("Vulkan RHI resource-state smoke failed");
+                m_VulkanContext->Shutdown();
+                m_VulkanContext.reset();
+                return false;
+            }
             if (args.HasFlag("--vulkan-rhi-indexed-draw-smoke") && !RunVulkanRHIIndexedDrawSmoke())
             {
                 Log::Error("Vulkan RHI indexed draw smoke failed");
@@ -139,6 +147,12 @@ namespace Engine
             if (args.HasFlag("--rhi-resource-ownership-smoke") && !RunRHIResourceOwnershipSmoke(*m_Device, "D3D12"))
             {
                 Log::Error("D3D12 RHI resource-ownership smoke failed");
+                m_Device.reset();
+                return false;
+            }
+            if (args.HasFlag("--rhi-resource-state-smoke") && !RunRHIResourceStateSmoke(*m_Device, "D3D12"))
+            {
+                Log::Error("D3D12 RHI resource-state smoke failed");
                 m_Device.reset();
                 return false;
             }
@@ -489,6 +503,56 @@ namespace Engine
         Log::Info("RHIResourceOwnershipSmokeV1 backend=", backendName,
             ", owned=", owned ? "pass" : "fail",
             ", null=rejected", nullRejected ? "" : "-failed",
+            ", result=", passed ? "pass" : "fail");
+        return passed;
+    }
+
+    bool NVRHIRenderBackend::RunRHIResourceStateSmoke(RHI::Device& device, std::string_view backendName)
+    {
+        RHI::BufferDescription bufferDescription;
+        bufferDescription.DebugName = "RHIResourceStateSmokeV1 Buffer";
+        bufferDescription.SizeBytes = sizeof(u32);
+        bufferDescription.Usage = static_cast<RHI::BufferUsage>(static_cast<u32>(RHI::BufferUsage::CopyDest) | static_cast<u32>(RHI::BufferUsage::CopySource));
+        bufferDescription.InitialState = RHI::ResourceState::CopyDest;
+        RHI::TextureDescription textureDescription;
+        textureDescription.DebugName = "RHIResourceStateSmokeV1 Texture";
+        textureDescription.Extent = { 4, 4 };
+        textureDescription.TextureFormat = RHI::Format::R8G8B8A8Unorm;
+        textureDescription.Usage = static_cast<RHI::TextureUsage>(static_cast<u32>(RHI::TextureUsage::CopyDest) | static_cast<u32>(RHI::TextureUsage::CopySource));
+        textureDescription.InitialState = RHI::ResourceState::CopyDest;
+        Scope<RHI::Buffer> buffer = device.CreateBuffer(bufferDescription);
+        Scope<RHI::Texture> texture = device.CreateTexture(textureDescription);
+        RHI::ResourceState observed = RHI::ResourceState::Unknown;
+        const bool initial = buffer && texture
+            && device.QueryResourceState(buffer.get(), observed) && observed == RHI::ResourceState::CopyDest
+            && device.QueryResourceState(texture.get(), observed) && observed == RHI::ResourceState::CopyDest;
+        Scope<RHI::CommandList> list = initial ? device.CreateCommandList(RHI::QueueType::Graphics, "RHIResourceStateSmokeV1") : nullptr;
+        const bool recording = list && list->Begin();
+        const bool rejectedInvalidRecord = recording && !list->TransitionTexture(*texture, RHI::ResourceState::Unknown)
+            && device.QueryResourceState(texture.get(), observed) && observed == RHI::ResourceState::CopyDest;
+        const bool transitions = rejectedInvalidRecord && list->TransitionTexture(*texture, RHI::ResourceState::CopySource)
+            && list->TransitionBuffer(*buffer, RHI::ResourceState::CopySource);
+        const bool pendingInvisible = transitions
+            && device.QueryResourceState(buffer.get(), observed) && observed == RHI::ResourceState::CopyDest
+            && device.QueryResourceState(texture.get(), observed) && observed == RHI::ResourceState::CopyDest;
+        const bool submitted = pendingInvisible && list->End() && device.SubmitAndWait(*list);
+        const bool final = submitted
+            && device.QueryResourceState(buffer.get(), observed) && observed == RHI::ResourceState::CopySource
+            && device.QueryResourceState(texture.get(), observed) && observed == RHI::ResourceState::CopySource;
+        RHI::TextureDescription unknownDescription = textureDescription;
+        unknownDescription.DebugName = "RHIResourceStateSmokeV1 Unknown";
+        unknownDescription.InitialState = RHI::ResourceState::Unknown;
+        Scope<RHI::Texture> unknownTexture = device.CreateTexture(unknownDescription);
+        const bool invalid = !device.QueryResourceState(static_cast<const RHI::Buffer*>(nullptr), observed)
+            && !device.QueryResourceState(static_cast<const RHI::Texture*>(nullptr), observed)
+            && unknownTexture && !device.QueryResourceState(unknownTexture.get(), observed);
+        const bool passed = initial && rejectedInvalidRecord && pendingInvisible && final && invalid;
+        Log::Info("RHIResourceStateSmokeV1 backend=", backendName,
+            ", initial=pass", initial ? "" : "-failed",
+            ", pending=", pendingInvisible ? "hidden" : "visible",
+            ", invalid=", invalid ? "rejected" : "accepted",
+            ", submission=", submitted ? "pass" : "fail",
+            ", final=", final ? "pass" : "fail",
             ", result=", passed ? "pass" : "fail");
         return passed;
     }
