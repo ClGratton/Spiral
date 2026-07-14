@@ -250,7 +250,7 @@ namespace Engine::RHI
                 static_cast<VulkanCommandList*>(list.get())->Native()->copyTexture(staging, nvrhi::TextureSlice(), texture->Native(), nvrhi::TextureSlice()); if (!list->End() || !SubmitAndWait(*list)) return false;
                 size_t rowPitch = 0;
                 void* mapped = m_Device->mapStagingTexture(staging, nvrhi::TextureSlice(), nvrhi::CpuAccessMode::Read, &rowPitch);
-                if (!mapped || !rowPitch || rowPitch > std::numeric_limits<u32>::max() || rowPitch > std::numeric_limits<size_t>::max() / d.Extent.Height)
+                if (!mapped)
                     return false;
                 struct ScopedStagingTextureUnmap final
                 {
@@ -258,6 +258,8 @@ namespace Engine::RHI
                     nvrhi::IStagingTexture* Texture;
                     ~ScopedStagingTextureUnmap() { Device->unmapStagingTexture(Texture); }
                 } unmap { m_Device, staging };
+                if (!rowPitch || rowPitch > std::numeric_limits<u32>::max() || rowPitch > std::numeric_limits<size_t>::max() / d.Extent.Height)
+                    return false;
                 const size_t dataSize = rowPitch * static_cast<size_t>(d.Extent.Height);
                 TextureReadback readback;
                 readback.Extent = d.Extent;
