@@ -46,6 +46,8 @@ The graph is the authority for intended logical resource states, pass dependenci
 - a pass must never mix automatic and explicit ownership in a way that can emit duplicate, reordered, or contradictory transitions;
 - imported-resource initial/final states and cross-queue signal/wait edges remain explicit regardless of backend automation.
 
+Execution covers both textures and buffers. Because construction already emits buffer-state transitions, the backend-neutral command-list contract must expose explicit buffer transitions on D3D12 and Vulkan/NVRHI before the execution core can truthfully consume every compiled resource class. A texture-only executor is not an acceptable silent fallback; unsupported state/usage combinations must fail before submission with actionable diagnostics.
+
 The transition from bootstrap automatic barriers to explicit graph barriers is measured per backend. It does not change renderer pass declarations or permit native API state policy to leak above `Engine::RHI`.
 
 ## Transient Resource Contract
