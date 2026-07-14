@@ -27,4 +27,4 @@ The first core item remains unchecked until a replacement exact-head hosted Linu
 
 ## Working State
 
-Baseline includes documentation commit `842929f` on top of `3c1ac41`; preserve both. This acceptance correction passed the local Windows checks and must be committed/pushed as the replacement exact head. GitHub Actions run `29357156058` is already running for the prior head; do not modify or wait on it. A run triggered by the replacement head can provide only the Linux/macOS Vulkan smoke evidence named above, never Windows Vulkan evidence. The working tree should otherwise be clean; generated build output is ignored.
+Baseline includes documentation commit `842929f` on top of `3c1ac41`; preserve both. Acceptance correction `bcb176a` passed the local Windows checks and is pushed to `main` as the replacement head. GitHub Actions run `29357156058` is already running for the prior head; do not modify or wait on it. A run triggered by the replacement head can provide only the Linux/macOS Vulkan smoke evidence named above, never Windows Vulkan evidence. The working tree should otherwise be clean; generated build output is ignored.
