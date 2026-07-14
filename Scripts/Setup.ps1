@@ -25,15 +25,10 @@ if (!(Test-Path $PremakeExe)) {
     Expand-Archive -Path $Archive -DestinationPath $PremakeDir -Force
 }
 
+# PowerShell child scripts propagate terminating errors directly. LASTEXITCODE
+# belongs to native commands and may be unset or stale in a clean session.
 & (Join-Path $PSScriptRoot "FetchSlang.ps1")
-if ($LASTEXITCODE -ne 0) {
-    throw "Pinned Slang toolchain setup failed with exit code $LASTEXITCODE."
-}
-
 & (Join-Path $PSScriptRoot "FetchDXC.ps1")
-if ($LASTEXITCODE -ne 0) {
-    throw "Pinned DXC toolchain setup failed with exit code $LASTEXITCODE."
-}
 
 if (!(Test-Path $PremakeExe)) {
     throw "Premake executable was not found after setup: $PremakeExe"
