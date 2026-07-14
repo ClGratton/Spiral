@@ -47,7 +47,7 @@ foreach ($Marker in $RequiredMarkers) {
         throw "Vulkan render smoke did not emit required marker: $Marker"
     }
 }
-$DiagnosticsPattern = "Editor renderer capability diagnostics rendered: profile=Phase 3 Vulkan Bootstrap Presentation V1, adapter=.+, qualification=Bootstrap, formats=[1-9][0-9]*, features=7, groups=1, candidates=[1-9][0-9]*"
+$DiagnosticsPattern = "Editor renderer capability diagnostics rendered: profile=Phase 3 Vulkan Bootstrap Presentation V1, adapter=.+, qualification=Bootstrap, formats=[1-9][0-9]*, features=9, groups=1, candidates=[1-9][0-9]*"
 if ($JoinedLog -notmatch $DiagnosticsPattern) {
     throw "Vulkan render smoke did not emit a complete editor capability diagnostics marker."
 }
