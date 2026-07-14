@@ -750,6 +750,157 @@ namespace
             && Expect(overflowRejected, "sector carries and absolute decomposition reject signed-sector overflow");
     }
 
+    bool TestPerViewSectorSnappedOriginTracking()
+    {
+        using namespace Engine;
+        using namespace Engine::Math;
+
+        WorldGridPolicy snappedPolicy;
+        snappedPolicy.OriginMode = WorldOriginMode::SectorSnapped;
+        CameraViewOriginTracker tracker;
+        TrackedCameraViewRequest request;
+        request.StableViewId = 101;
+        request.Projection = {};
+        request.AspectRatio = 16.0f / 9.0f;
+
+        request.WorldPosition = { 0.0, 0.0, 0.0 };
+        const CameraView initial = tracker.BuildView(request, snappedPolicy);
+        request.WorldPosition = { 2200.0, 0.0, 0.0 };
+        const CameraView insideForwardBand = tracker.BuildView(request, snappedPolicy);
+        request.WorldPosition = { 2310.0, 0.0, 0.0 };
+        const CameraView crossedForwardBand = tracker.BuildView(request, snappedPolicy);
+        request.WorldPosition = { 2200.0, 0.0, 0.0 };
+        const CameraView insideReturnBand = tracker.BuildView(request, snappedPolicy);
+
+        request.WorldPosition = { 10.0 * 4096.0 + 17.0, 0.0, 0.0 };
+        request.DiscontinuousRelocation = true;
+        const CameraView teleported = tracker.BuildView(request, snappedPolicy);
+        request.DiscontinuousRelocation = false;
+
+        TrackedCameraViewRequest secondView = request;
+        secondView.StableViewId = 202;
+        secondView.WorldPosition = { -10.0 * 4096.0 - 17.0, 0.0, 0.0 };
+        const CameraView secondInitial = tracker.BuildView(secondView, snappedPolicy);
+        Scene scene("Per-view origin epochs", snappedPolicy);
+        const std::shared_ptr<const SceneRenderSnapshot> firstViewEpoch =
+            std::make_shared<const SceneRenderSnapshot>(scene.ExtractRenderSnapshot(1, teleported));
+        const std::shared_ptr<const SceneRenderSnapshot> secondViewEpoch =
+            std::make_shared<const SceneRenderSnapshot>(scene.ExtractRenderSnapshot(2, secondInitial));
+        request.WorldPosition = { 10.0 * 4096.0 + 32.0, 0.0, 0.0 };
+        const CameraView firstAfterSecond = tracker.BuildView(request, snappedPolicy);
+
+        WorldGridPolicy exactPolicy = snappedPolicy;
+        exactPolicy.OriginMode = WorldOriginMode::ExactCamera;
+        request.WorldPosition = { 1234567890123.25, -8.0, 4.0 };
+        const CameraView exact = tracker.BuildView(request, exactPolicy);
+
+        const double threshold = snappedPolicy.SectorExtent * 0.5 + snappedPolicy.OriginHysteresis;
+        CameraViewOriginTracker positiveBoundaryTracker;
+        TrackedCameraViewRequest positiveBoundaryRequest = request;
+        positiveBoundaryRequest.StableViewId = 303;
+        positiveBoundaryRequest.WorldPosition = { 0.0, 0.0, 0.0 };
+        positiveBoundaryTracker.BuildView(positiveBoundaryRequest, snappedPolicy);
+        positiveBoundaryRequest.WorldPosition = { threshold, 0.0, 0.0 };
+        const CameraView positiveBoundary = positiveBoundaryTracker.BuildView(positiveBoundaryRequest, snappedPolicy);
+        positiveBoundaryRequest.WorldPosition = { std::nextafter(threshold, std::numeric_limits<double>::infinity()), 0.0, 0.0 };
+        const CameraView positiveBeyondBoundary = positiveBoundaryTracker.BuildView(positiveBoundaryRequest, snappedPolicy);
+
+        CameraViewOriginTracker negativeBoundaryTracker;
+        TrackedCameraViewRequest negativeBoundaryRequest = request;
+        negativeBoundaryRequest.StableViewId = 404;
+        negativeBoundaryRequest.WorldPosition = { 0.0, 0.0, 0.0 };
+        negativeBoundaryTracker.BuildView(negativeBoundaryRequest, snappedPolicy);
+        negativeBoundaryRequest.WorldPosition = { -threshold, 0.0, 0.0 };
+        const CameraView negativeBoundary = negativeBoundaryTracker.BuildView(negativeBoundaryRequest, snappedPolicy);
+        negativeBoundaryRequest.WorldPosition = { std::nextafter(-threshold, -std::numeric_limits<double>::infinity()), 0.0, 0.0 };
+        const CameraView negativeBeyondBoundary = negativeBoundaryTracker.BuildView(negativeBoundaryRequest, snappedPolicy);
+
+        CameraViewOriginTracker transactionalTracker;
+        TrackedCameraViewRequest transactionalRequest = request;
+        transactionalRequest.StableViewId = 505;
+        transactionalRequest.WorldPosition = {};
+        transactionalTracker.BuildView(transactionalRequest, snappedPolicy);
+        transactionalRequest.AspectRatio = std::numeric_limits<float>::quiet_NaN();
+        const CameraView invalidModeChange = transactionalTracker.BuildView(transactionalRequest, exactPolicy);
+        transactionalRequest.AspectRatio = 16.0f / 9.0f;
+        const CameraView validModeChange = transactionalTracker.BuildView(transactionalRequest, exactPolicy);
+        WorldGridPolicy changedPolicy = snappedPolicy;
+        changedPolicy.SectorExtent = 8192.0;
+        transactionalRequest.AspectRatio = std::numeric_limits<float>::quiet_NaN();
+        const CameraView invalidPolicyChange = transactionalTracker.BuildView(transactionalRequest, changedPolicy);
+        transactionalRequest.AspectRatio = 16.0f / 9.0f;
+        const CameraView validPolicyChange = transactionalTracker.BuildView(transactionalRequest, changedPolicy);
+
+        const bool noFlap = initial.Valid
+            && initial.TranslationOriginSector.X == 0
+            && insideForwardBand.TranslationOriginSector.X == 0
+            && crossedForwardBand.TranslationOriginSector.X == 1
+            && insideReturnBand.TranslationOriginSector.X == 1
+            && !insideForwardBand.TemporalHistoryInvalidated
+            && crossedForwardBand.TemporalHistoryInvalidated
+            && !insideReturnBand.TemporalHistoryInvalidated;
+        const bool teleportAndViewsIndependent = teleported.Valid
+            && teleported.TranslationOriginSector.X == 10
+            && teleported.TemporalHistoryInvalidated
+            && secondInitial.Valid
+            && secondInitial.TranslationOriginSector.X == -10
+            && firstAfterSecond.Valid
+            && firstAfterSecond.TranslationOriginSector.X == 10
+            && teleported.TranslationOriginSector.X == 10
+            && secondInitial.TranslationOriginSector.X == -10
+            && firstViewEpoch->Views[0].Camera.StableViewId == 101
+            && firstViewEpoch->Views[0].Camera.TranslationOriginSector.X == 10
+            && secondViewEpoch->Views[0].Camera.StableViewId == 202
+            && secondViewEpoch->Views[0].Camera.TranslationOriginSector.X == -10;
+        const bool exactCameraRemainsDefaultBehavior = exact.Valid
+            && exact.TranslationOrigin.X == request.WorldPosition.X
+            && exact.TranslationOrigin.Y == request.WorldPosition.Y
+            && exact.TranslationOrigin.Z == request.WorldPosition.Z
+            && exact.StableViewId == request.StableViewId;
+        const bool exactBoundaries = positiveBoundary.Valid
+            && positiveBoundary.TranslationOriginSector.X == 0
+            && !positiveBoundary.TemporalHistoryInvalidated
+            && positiveBeyondBoundary.TranslationOriginSector.X == 1
+            && positiveBeyondBoundary.TemporalHistoryInvalidated
+            && negativeBoundary.Valid
+            && negativeBoundary.TranslationOriginSector.X == 0
+            && !negativeBoundary.TemporalHistoryInvalidated
+            && negativeBeyondBoundary.TranslationOriginSector.X == -1
+            && negativeBeyondBoundary.TemporalHistoryInvalidated;
+        const bool failedRequestsDoNotCommitState = !invalidModeChange.Valid
+            && validModeChange.Valid
+            && validModeChange.TemporalHistoryInvalidated
+            && !invalidPolicyChange.Valid
+            && validPolicyChange.Valid
+            && validPolicyChange.TemporalHistoryInvalidated;
+        const i64 maxSector = std::numeric_limits<i64>::max();
+        const i64 minSector = std::numeric_limits<i64>::min();
+        const double positiveExactLocal = -snappedPolicy.SectorExtent * 0.5 + snappedPolicy.OriginHysteresis;
+        const double negativeExactLocal = snappedPolicy.SectorExtent * 0.5 - snappedPolicy.OriginHysteresis;
+        const bool extremeSectorPrecision = !ShouldRebaseCameraOriginAxis(
+                maxSector, positiveExactLocal, maxSector - 1, snappedPolicy)
+            && ShouldRebaseCameraOriginAxis(
+                maxSector,
+                std::nextafter(positiveExactLocal, std::numeric_limits<double>::infinity()),
+                maxSector - 1,
+                snappedPolicy)
+            && !ShouldRebaseCameraOriginAxis(
+                minSector, negativeExactLocal, minSector + 1, snappedPolicy)
+            && ShouldRebaseCameraOriginAxis(
+                minSector,
+                std::nextafter(negativeExactLocal, -std::numeric_limits<double>::infinity()),
+                minSector + 1,
+                snappedPolicy)
+            && ShouldRebaseCameraOriginAxis(maxSector, 0.0, minSector, snappedPolicy);
+
+        return Expect(noFlap, "sector-snapped origins retain an axis inside the hysteresis band without flapping")
+            && Expect(teleportAndViewsIndependent, "stable view IDs retain independent origins and teleports jump directly to the destination sector")
+            && Expect(exactCameraRemainsDefaultBehavior, "exact-camera mode publishes the exact camera origin without sector hysteresis")
+            && Expect(exactBoundaries, "sector-snapped hysteresis retains exact positive and negative boundaries, then changes just beyond them")
+            && Expect(failedRequestsDoNotCommitState, "invalid mode or policy-change requests leave prior view state intact for the next valid epoch")
+            && Expect(extremeSectorPrecision, "adjacent extreme signed sectors retain local hysteresis detail without double-precision sector collapse");
+    }
+
     bool TestSceneRasterOriginEpochInvariance()
     {
         constexpr double base = 1000000000000.0;
@@ -1260,6 +1411,7 @@ int main()
         { "Scene rejects invalid version 4 world state", TestSceneRejectsInvalidVersionFourWorldState },
         { "Camera-relative large-world transform", TestCameraRelativeLargeWorldTransform },
         { "World grid canonicalization and bounds", TestWorldGridCanonicalizationAndBounds },
+        { "Per-view sector-snapped origin tracking", TestPerViewSectorSnappedOriginTracking },
         { "Scene raster origin epoch invariance", TestSceneRasterOriginEpochInvariance },
         { "Scene render snapshot extraction and retained epochs", TestSceneRenderSnapshotExtractionAndRetainedEpochs },
         { "Scene rejects truncated components", TestSceneRejectsTruncatedComponent },

@@ -32,7 +32,7 @@ private:
     void DrawInspectorPanel();
     void DrawRendererBackendSelector();
     void ApplyEditorCameraStateToScene();
-    void SyncEditorCameraStateFromMainCamera();
+    void SyncEditorCameraStateFromMainCamera(bool discontinuousRelocation = false);
     void DrawViewportPanel();
     void DrawConsolePanel();
     void DrawProfilerPanel();
@@ -116,6 +116,8 @@ private:
     Engine::Entity m_SceneOriginRasterMeshEntity;
     Engine::Entity m_SelectedEntity;
     Engine::EditorCamera m_EditorCamera;
+    Engine::CameraViewOriginTracker m_ViewportOriginTracker;
+    bool m_ViewportDiscontinuousRelocationPending = true;
     std::shared_ptr<const Engine::SceneRenderSnapshot> m_FirstSceneRenderSnapshot;
     std::array<double, 3> m_CameraPosition = { 0.0, 0.0, -3.35 };
     std::array<float, 3> m_CameraRotation = { 0.0f, 0.0f, 0.0f };

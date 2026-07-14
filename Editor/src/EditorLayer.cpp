@@ -302,7 +302,7 @@ void EditorLayer::OnAttach()
     }
     if (!std::filesystem::exists(m_ProjectPath) || !LoadProject())
         EnsureDefaultSceneEntities();
-    SyncEditorCameraStateFromMainCamera();
+    SyncEditorCameraStateFromMainCamera(true);
     m_CaptureViewportRequested = Engine::Application::Get().GetSpecification().CommandLineArgs.HasFlag("--capture-viewport");
     m_SaveSceneSmokeRequested = Engine::Application::Get().GetSpecification().CommandLineArgs.HasFlag("--save-scene-smoke");
     m_AssetWatchSmokeRequested = Engine::Application::Get().GetSpecification().CommandLineArgs.HasFlag("--asset-watch-smoke");
@@ -363,10 +363,19 @@ void EditorLayer::OnUpdate(Engine::Timestep timestep)
     AdvanceSceneOriginRasterSmoke();
     HandleAssetWatchEvents();
 
+    Engine::TrackedCameraViewRequest viewportViewRequest;
+    viewportViewRequest.StableViewId = 1;
+    viewportViewRequest.WorldPosition = m_EditorCamera.GetPosition();
+    viewportViewRequest.RotationDegrees = m_EditorCamera.GetRotationDegrees();
+    viewportViewRequest.Projection = m_EditorCamera.GetProjection();
+    viewportViewRequest.AspectRatio = m_EditorCamera.GetAspectRatio();
+    viewportViewRequest.DiscontinuousRelocation = m_ViewportDiscontinuousRelocationPending;
+    const Engine::CameraView viewportView = m_ViewportOriginTracker.BuildView(
+        viewportViewRequest, m_ActiveScene.GetWorldGridPolicy());
     Engine::Renderer::PublishSceneRenderSnapshot(
-        m_ActiveScene.ExtractRenderSnapshot(
-            Engine::Application::Get().GetFrameIndex(),
-            m_EditorCamera.GetCameraView()));
+        m_ActiveScene.ExtractRenderSnapshot(Engine::Application::Get().GetFrameIndex(), viewportView));
+    if (viewportView.Valid)
+        m_ViewportDiscontinuousRelocationPending = false;
     RunSceneRenderSnapshotSmoke();
 
     if (m_FrameCounter == 1)
@@ -441,7 +450,7 @@ void EditorLayer::ConfigureSceneOriginRasterSmoke()
     m_ActiveScene.SetEntityWorldPosition(m_SceneOriginRasterMeshEntity, { base, 0.0, 0.0 });
     m_ActiveScene.SetEntityWorldPosition(m_ActiveScene.GetMainCameraEntity(), { base, 0.0, -3.35 });
     m_SelectedEntity = m_SceneOriginRasterMeshEntity;
-    SyncEditorCameraStateFromMainCamera();
+    SyncEditorCameraStateFromMainCamera(true);
 }
 
 void EditorLayer::AdvanceSceneOriginRasterSmoke()
@@ -790,7 +799,7 @@ void EditorLayer::DrawInspectorPanel()
     if (!selectedEntity->Camera)
         transformChanged |= DrawVec3Control("Scale", selectedEntity->Transform.Scale, 0.05f, 0.01f, 100.0f);
     if (transformChanged && selectedEntity->EntityHandle == m_ActiveScene.GetMainCameraEntity())
-        SyncEditorCameraStateFromMainCamera();
+        SyncEditorCameraStateFromMainCamera(true);
     historyStateChanged |= transformChanged;
     ImGui::PopID();
 
@@ -1040,7 +1049,7 @@ void EditorLayer::ApplyEditorCameraStateToScene()
     m_ActiveScene.SetMainCamera(camera);
 }
 
-void EditorLayer::SyncEditorCameraStateFromMainCamera()
+void EditorLayer::SyncEditorCameraStateFromMainCamera(bool discontinuousRelocation)
 {
     const Engine::TransformComponent& cameraTransform = m_ActiveScene.GetMainCameraTransform();
     const Engine::CameraComponent& camera = m_ActiveScene.GetMainCamera();
@@ -1057,6 +1066,7 @@ void EditorLayer::SyncEditorCameraStateFromMainCamera()
     m_EditorCamera.SetPosition(cameraPosition);
     m_EditorCamera.SetRotationDegrees(cameraTransform.RotationDegrees);
     m_EditorCamera.SetProjection(camera.Projection);
+    m_ViewportDiscontinuousRelocationPending |= discontinuousRelocation;
     Engine::Renderer::SetClearColor({ camera.BackgroundColor.X, camera.BackgroundColor.Y, camera.BackgroundColor.Z, 1.0f });
 }
 
@@ -1822,6 +1832,9 @@ void EditorLayer::RunSceneRenderSnapshotSmoke()
         || snapshot->Meshes.size() != expectedMeshes
         || snapshot->Lights.size() != expectedLights
         || snapshot->Cameras.size() != expectedCameras
+        || snapshot->Views.size() != 1
+        || !snapshot->Views[0].Camera.Valid
+        || snapshot->Views[0].Camera.StableViewId != 1
         || !hasMainCameraRecord)
     {
         throw std::runtime_error("Scene render snapshot smoke did not match the active Scene extraction");
@@ -1829,6 +1842,8 @@ void EditorLayer::RunSceneRenderSnapshotSmoke()
 
     if (!m_FirstSceneRenderSnapshot)
     {
+        if (!snapshot->Views[0].Camera.TemporalHistoryInvalidated)
+            throw std::runtime_error("Scene render snapshot smoke did not invalidate the initial discontinuous viewport epoch");
         m_FirstSceneRenderSnapshot = snapshot;
         return;
     }
@@ -1837,6 +1852,12 @@ void EditorLayer::RunSceneRenderSnapshotSmoke()
         || m_FirstSceneRenderSnapshot->FrameIndex >= snapshot->FrameIndex)
     {
         throw std::runtime_error("Scene render snapshot smoke did not retain an immutable older epoch");
+    }
+    if (m_FirstSceneRenderSnapshot->Views[0].Camera.StableViewId != 1
+        || !m_FirstSceneRenderSnapshot->Views[0].Camera.TemporalHistoryInvalidated
+        || snapshot->Views[0].Camera.TemporalHistoryInvalidated)
+    {
+        throw std::runtime_error("Scene render snapshot smoke did not consume its viewport discontinuity exactly once");
     }
 
     Engine::Log::Info(
@@ -1931,7 +1952,7 @@ bool EditorLayer::CreateNewProject(std::string name, const std::filesystem::path
     m_RedoHistory.clear();
 
     EnsureDefaultSceneEntities();
-    SyncEditorCameraStateFromMainCamera();
+    SyncEditorCameraStateFromMainCamera(true);
     m_AssetWatcher.SyncRegistry(m_AssetRegistry);
     if (!SaveProject())
     {
@@ -2043,7 +2064,7 @@ bool EditorLayer::LoadProject()
     m_PlayerStartEntity = m_ActiveScene.FindEntityByName("Player Start");
     m_SelectedEntity = m_PrototypeMeshEntity ? m_PrototypeMeshEntity : m_ActiveScene.GetMainCameraEntity();
     m_AssetWatcher.SyncRegistry(m_AssetRegistry);
-    SyncEditorCameraStateFromMainCamera();
+    SyncEditorCameraStateFromMainCamera(true);
 
     Engine::Log::Info("Project loaded: ", m_ProjectPath);
     m_ConsoleLines.emplace_back("Project loaded: " + m_ProjectPath);
@@ -2082,7 +2103,7 @@ void EditorLayer::RestoreHistoryState(const HistoryState& state)
     if (!m_ActiveScene.IsEntityValid(m_SelectedEntity))
         m_SelectedEntity = m_PrototypeMeshEntity ? m_PrototypeMeshEntity : m_ActiveScene.GetMainCameraEntity();
 
-    SyncEditorCameraStateFromMainCamera();
+    SyncEditorCameraStateFromMainCamera(true);
     m_AssetWatcher.SyncRegistry(m_AssetRegistry);
 }
 
