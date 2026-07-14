@@ -31,6 +31,8 @@ The active Bootstrap report is copied into a renderer-owned read-only snapshot a
 
 The first consumer group is `Phase3FrameTimingV1`. It prefers GPU timestamp queries only when their advertised/enabled/implemented lifecycle is usable. Current D3D12 and Vulkan timestamp recording/resolve paths are unimplemented, so the group selects the portable CPU steady-clock timing already integrated into the frame and pass workflow, retains the native timestamp detail as its unavailable-path reason, and publishes the fallback. Headed presentation smokes mark that selected path exercised and qualify the group at Presentation independently from the device's Bootstrap level. This does not complete GPU timing, Scene qualification, later consumer groups, dedicated Vulkan queue enablement, physical-device breadth, or Production qualification.
 
+The former single Vulkan scene checklist item is deliberately split. The first prerequisite is an NVRHI-backed Vulkan `Engine::RHI::Device` primitive group, proven by an offscreen indexed draw and NVRHI staging readback after the existing context creates its one native device and queue. It is neither Scene rendering nor an ImGui bridge: the later item remains responsible for consuming an immutable Scene snapshot and handing a completed output to native presentation. The adapter must never create a second `VkDevice` or submit raw Vulkan scene commands; raw Vulkan remains bootstrap/WSI/ImGui-only. This split prevents SPIR-V package validation or a clear-only test from being misrepresented as Scene qualification.
+
 ## Adapter Selection
 
 The engine must enumerate adapters and select by required capabilities, limits, presentation support, and user preference rather than vendor identity. Selection must record:

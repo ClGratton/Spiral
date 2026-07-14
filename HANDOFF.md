@@ -4,7 +4,7 @@ Updated 2026-07-14. This file is a recovery aid, not roadmap authority; `PLAN.md
 
 ## Current Slice
 
-Phase 3C's Windows D3D12 viewport-output prerequisite is complete. The prior line was over-bundled: a backend-neutral NVRHI-output-to-native-presentation/ImGui handoff cannot be behaviorally exercised before Vulkan scene output exists. That narrow handoff is explicit required scope of the now-first unchecked Vulkan scene item.
+Phase 3C's Windows D3D12 viewport-output prerequisite is complete. The Vulkan line was also over-bundled and is now split in `PLAN.md`: first implement and exercise wrapped-NVRHI Vulkan RHI primitives via deterministic offscreen draw/readback; then integrate a Scene snapshot and the narrow completed-output-to-ImGui handoff.
 
 - `RHI::CommandList` binds renderer-owned color/depth outputs, deterministically clears them, and explicitly transitions a texture. Existing RHI viewport/scissor/pipeline/constant-buffer/draw commands complete the recording path.
 - The D3D12 adapter creates texture-owned persistent CPU-only RTV/DSV descriptors at output-texture initialization. View binding validates usage, transitions texture state, and binds those existing non-shader-visible handles without per-frame descriptor-heap allocation; renderer-owned texture destruction releases the views. Scene marker lifetime is scope-bound, including output-bind/clear failure returns.
@@ -20,8 +20,8 @@ This is real Windows x86_64/MSVC D3D12 viewport-output evidence. It is not Vulka
 
 ## Limits And Next Work
 
-Vulkan scene resources/submission are not implemented. The current SPIR-V package is compilation/reflection/convention evidence only. Implement the now-first unchecked Vulkan scene viewport item through wrapped `nvrhi::DeviceHandle`, including the narrow completed-NVRHI-output-to-native-presentation/ImGui handoff; do not leak raw Vulkan above presentation.
+Vulkan RHI resources/submission are not implemented. The current SPIR-V package is compilation/reflection/convention evidence only. The next item must create an `Engine::RHI::Device` adapter around the context's existing `nvrhi::DeviceHandle`, then prove the exact primitive group through an NVRHI offscreen indexed draw and NVRHI staging readback. Do not create a second Vulkan device/queue, leak native handles into renderer APIs, consume a Scene snapshot, or add an ImGui texture bridge in that prerequisite. Hosted Windows, Ubuntu lavapipe, and macOS MoltenVK evidence is required before checking it.
 
 ## Working State
 
-Commit `293fb8e` (`Add D3D12 RHI viewport output recording`) is pushed to `main`. Its dependency-submission workflow run [29355459931](https://github.com/ClGratton/Spiral/actions/runs/29355459931) passed. The corresponding main CI run [29355459967](https://github.com/ClGratton/Spiral/actions/runs/29355459967) was still in progress at the prior handoff; record its final result if available. This follow-up correction will trigger a newer main CI run; inspect `git status --short` before continuing and preserve unrelated changes.
+Baseline was clean `main` at `3c1ac41334a31aba9a9a9a3ed02bf326b6d35b64`; user reports CI run `29355748666` green. The current uncommitted documentation-only split changes `PLAN.md`, `Docs/Architecture/RENDERER_CAPABILITY_CONTRACT.md`, and this handoff. No build artifacts were produced.
