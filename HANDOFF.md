@@ -4,6 +4,14 @@ Updated 2026-07-14. This file is a recovery aid, not roadmap authority; `PLAN.md
 
 ## Current Slice
 
+### Latest: Phase 3C Render-Graph Construction
+
+The first graph-construction roadmap item is implemented and checked. `RenderGraph` validates logical pass/resource declarations (read/write/read-write, queue/state/stage intent), derives RAW/WAR/WAW and explicit-order edges, rejects invalid handles/declarations, transient read-before-write, and cycles, and stable-topologically orders passes by registration index among ready peers. It calculates resource lifetimes in that compiled order and produces abstract state barriers plus cross-queue transition records only where an ordered resource dependency crosses queues.
+
+This is intentionally a compiler-only plan: there are no pass callbacks, physical/imported resource bindings, RHI barrier emission, command recording, queue signal/wait submission, transient allocation/reuse, GPU retirement, or viewport integration. The next ordered roadmap item owns those mechanisms.
+
+Focused local Windows MSVC Debug evidence: `EngineTests` builds and passes 38/38, including graph-order/lifetime, RAW/WAR/WAW/barrier/queue-transition, and invalid-declaration/cycle contract cases. Portable and hosted evidence is pending the scoped push.
+
 Phase 3C's Vulkan completed-output-to-native-ImGui/swapchain handoff is complete and checked with local Windows and exact-head hosted evidence.
 
 - The Vulkan context creates the one native device/queue and NVRHI device, then creates an `Engine::RHI::Device` wrapper around that NVRHI handle. It creates no second native device or raw Vulkan scene command path. Core supports NVRHI buffers, RGBA8/depth textures, output clear, explicit texture transitions, balanced debug markers, graphics command submission/wait/garbage collection, buffer update, and RGBA8 staging readback. Closed lists submit once only; open and previously submitted lists are rejected. Shader/pipeline/draw/query methods reject clearly.

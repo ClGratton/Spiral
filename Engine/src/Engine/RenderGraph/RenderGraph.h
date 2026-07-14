@@ -6,6 +6,7 @@
 #include "Engine/RHI/Texture.h"
 
 #include <limits>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -92,6 +93,24 @@ namespace Engine
             RHI::ResourceState After = RHI::ResourceState::Unknown;
         };
 
+        struct Dependency
+        {
+            PassHandle Producer;
+            PassHandle Consumer;
+            ResourceHandle Resource;
+        };
+
+        struct QueueTransition
+        {
+            PassHandle Producer;
+            PassHandle Consumer;
+            ResourceHandle Resource;
+            RHI::QueueType SourceQueue = RHI::QueueType::Graphics;
+            RHI::QueueType DestinationQueue = RHI::QueueType::Graphics;
+            RHI::ResourceState Before = RHI::ResourceState::Unknown;
+            RHI::ResourceState After = RHI::ResourceState::Unknown;
+        };
+
         struct CompiledPass
         {
             PassHandle Pass;
@@ -106,7 +125,9 @@ namespace Engine
             bool Success = false;
             std::string Error;
             std::vector<ResourceLifetime> ResourceLifetimes;
+            std::vector<Dependency> Dependencies;
             std::vector<Barrier> Barriers;
+            std::vector<QueueTransition> QueueTransitions;
             std::vector<CompiledPass> Passes;
         };
 
@@ -115,6 +136,7 @@ namespace Engine
         PassHandle AddPass(std::string name, RHI::QueueType queue = RHI::QueueType::Graphics, bool allowCulling = false);
         void AddDebugPass(std::string name);
         void AddResourceUse(PassHandle pass, ResourceUse use);
+        void AddDependency(PassHandle producer, PassHandle consumer);
         void AddRead(PassHandle pass, ResourceHandle resource, RHI::ResourceState state = RHI::ResourceState::ShaderResource, RHI::ShaderStage stages = RHI::ShaderStage::All);
         void AddWrite(PassHandle pass, ResourceHandle resource, RHI::ResourceState state);
         void AddReadWrite(PassHandle pass, ResourceHandle resource, RHI::ResourceState state, RHI::ShaderStage stages = RHI::ShaderStage::All);
@@ -143,6 +165,7 @@ namespace Engine
     private:
         std::vector<ResourceDescription> m_Resources;
         std::vector<PassDescription> m_Passes;
+        std::vector<Dependency> m_ExplicitDependencies;
         std::vector<std::string> m_DebugPasses;
     };
 }

@@ -9,17 +9,17 @@ The render graph is shared infrastructure for most renderer phases, not one rend
 
 ## Current Foundation
 
-The checked Phase 1 item remains accurate and intentionally narrow: pass and resource declarations compile into registration-order first/last-use intervals and abstract resource-state transitions. The implementation does not yet:
+The checked Phase 3 construction item is a compiler-only logical graph. A pass declares read, write, or read-write access with queue, required state, and shader-stage intent; compilation validates those declarations, derives RAW/WAR/WAW edges and declared ordering constraints, rejects invalid handles, ambiguous duplicate uses, transient read-before-write, and cycles, then produces stable topological order. Resource first/last-use intervals, state barriers, and cross-queue transition records are calculated from that order, not registration order.
 
-- derive a dependency graph or topological pass order;
-- detect cycles, read-before-write hazards, or ambiguous writers;
+The compiler deliberately does not:
+
 - bind declared resources to imported or graph-owned RHI resources;
 - record and execute pass callbacks;
-- turn abstract transitions into RHI barriers and queue synchronization;
+- turn abstract transitions into RHI barriers or queue signal/wait commands;
 - retire per-frame graph state and transient resources against GPU completion;
 - drive the real scene viewport.
 
-The new unchecked Phase 3 construction item owns that missing behavior. It must not be checked for another declarations-only scaffold.
+Those belong to the following Phase 3 execution/integration item. The construction compiler is an authority for intended logical dependencies and state; it is not an execution path.
 
 ## Construction And Scheduling Contract
 
@@ -73,13 +73,8 @@ These are dependency flags, not claims that every listed item requires a unique 
 
 ## Completion And Verification
 
-The Phase 3 construction item is complete only when all of the following are demonstrated:
+The Phase 3 construction item is complete when focused deterministic tests cover declared-use validation, dependency ordering and independent-pass stability, cycles, read-before-write, lifetime calculation in resolved order, barriers, and cross-queue dependency records, with the normal build/test suite and code style passing.
 
-- focused deterministic tests cover dependency ordering, cycles, read-before-write validation, lifetime calculation in resolved order, barriers, and cross-queue synchronization;
-- imported and transient resources bind to real RHI resources;
-- at least one real multi-pass scene-viewport workflow executes through the graph;
-- GPU retirement protects per-frame state and resource reuse;
-- a runtime render smoke or capture exercises the integrated path on each backend claimed by the checklist wording;
-- code style and the normal build/test suite pass.
+The following execution/integration item separately requires imported and transient resources to bind to real RHI resources, callbacks and graph-derived RHI barriers/commands to execute, cross-queue signal/wait submission, GPU retirement, and a representative multi-pass scene-viewport smoke or capture on every backend it claims. A queue-transition record is intentionally not an emitted synchronization primitive.
 
 Transient allocation remains a separate unchecked item until physical reuse and GPU-safe retirement are themselves integrated and exercised.

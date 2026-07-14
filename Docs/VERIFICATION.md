@@ -131,6 +131,10 @@ Both commands must publish the stable-ID editor viewport view after mutable laye
 
 ## Renderer Verification
 
+## Render Graph Construction Verification
+
+The construction compiler is verified by deterministic `EngineTests`, not a renderer capture: tests must prove stable topological ordering (including independent passes), RAW/WAR/WAW edges, transient read-before-write rejection, invalid declaration diagnostics, explicit dependency-cycle rejection, lifetimes in compiled rather than registration order, state barriers, and cross-queue transition records paired with a resource dependency. This evidence verifies only the logical plan. Physical/imported binding, RHI barrier emission, queue signal/wait submission, callback execution, GPU retirement, transient allocation/reuse, and viewport integration require the next execution/integration item and its runtime evidence.
+
 `EngineTests` includes GPU-independent renderer-capability policy coverage. It proves lifecycle invariants, deterministic candidate ranking, retained rejection reasons, required format-usage validation, compatible queue fallbacks, strict selection by stable adapter ID, and `Phase3FrameTimingV1` selection of usable GPU timestamps versus the CPU steady-clock fallback. These tests do not prove a physical adapter or backend runtime path.
 
 Windows D3D12 viewport behavior and non-blank capture:

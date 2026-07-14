@@ -2,6 +2,7 @@
 #include "Engine/Jobs/FrameTaskGraph.h"
 #include "Engine/Jobs/JobSystem.h"
 #include "Engine/Math/WorldGrid.h"
+#include "Engine/RenderGraph/RenderGraph.h"
 #include "Engine/RHI/Device.h"
 #include "Engine/Renderer/CapabilityDiagnostics.h"
 #include "Engine/Renderer/AsyncShaderPackageService.h"
@@ -1988,6 +1989,138 @@ float4 main(VertexInput input) : SV_Position
             && Expect(exceptionRetry, "compiler exceptions publish terminal failure, clear in-flight state, and permit retry");
     }
 
+    Engine::RHI::TextureDescription MakeGraphTexture(std::string name, Engine::RHI::ResourceState initialState = Engine::RHI::ResourceState::Common)
+    {
+        Engine::RHI::TextureDescription description;
+        description.DebugName = std::move(name);
+        description.Extent = { 32, 32 };
+        description.TextureFormat = Engine::RHI::Format::R8G8B8A8Unorm;
+        description.InitialState = initialState;
+        return description;
+    }
+
+    bool TestRenderGraphOrdersHazardsAndLifetimesDeterministically()
+    {
+        using namespace Engine;
+        using namespace Engine::RHI;
+
+        RenderGraph graph;
+        const auto texture = graph.AddTexture(MakeGraphTexture("graph-order"));
+        const auto writer = graph.AddPass("Writer");
+        const auto reader = graph.AddPass("Reader");
+        const auto independent = graph.AddPass("Independent");
+        graph.AddWrite(writer, texture, ResourceState::RenderTarget);
+        graph.AddRead(reader, texture);
+        graph.AddDependency(independent, writer);
+
+        const RenderGraph::CompileResult result = graph.Compile();
+        const bool ordered = result.Success && result.Passes.size() == 3
+            && result.Passes[0].Pass.Index == independent.Index
+            && result.Passes[1].Pass.Index == writer.Index
+            && result.Passes[2].Pass.Index == reader.Index;
+        const bool hazards = result.Dependencies.size() == 2
+            && result.Dependencies[0].Producer.Index == independent.Index
+            && result.Dependencies[0].Consumer.Index == writer.Index
+            && result.Dependencies[1].Producer.Index == writer.Index
+            && result.Dependencies[1].Consumer.Index == reader.Index
+            && result.Dependencies[1].Resource.Index == texture.Index;
+        const bool lifetime = result.ResourceLifetimes.size() == 1
+            && result.ResourceLifetimes[0].Used
+            && result.ResourceLifetimes[0].FirstPass == 1
+            && result.ResourceLifetimes[0].LastPass == 2;
+
+        RenderGraph stableGraph;
+        stableGraph.AddPass("First");
+        stableGraph.AddPass("Second");
+        stableGraph.AddPass("Third");
+        const RenderGraph::CompileResult stable = stableGraph.Compile();
+        const bool stableIndependentOrder = stable.Success && stable.Passes.size() == 3
+            && stable.Passes[0].Pass.Index == 0 && stable.Passes[1].Pass.Index == 1 && stable.Passes[2].Pass.Index == 2;
+
+        return Expect(ordered, "explicit ordering and RAW hazards produce deterministic topological pass order")
+            && Expect(hazards, "the compiler records explicit and resource-hazard dependency edges")
+            && Expect(lifetime, "resource lifetime intervals use compiled order rather than registration order")
+            && Expect(stableIndependentOrder, "independent passes retain stable registration order");
+    }
+
+    bool TestRenderGraphTracksRawWarWawBarriersAndQueueTransitions()
+    {
+        using namespace Engine;
+        using namespace Engine::RHI;
+
+        RenderGraph graph;
+        const auto texture = graph.AddTexture(MakeGraphTexture("graph-hazards"));
+        const auto upload = graph.AddPass("Upload", QueueType::Copy);
+        const auto sample = graph.AddPass("Sample", QueueType::Graphics);
+        const auto overwrite = graph.AddPass("Overwrite", QueueType::Graphics);
+        graph.AddWrite(upload, texture, ResourceState::CopyDest);
+        graph.AddRead(sample, texture, ResourceState::ShaderResource, ShaderStage::Pixel);
+        graph.AddWrite(overwrite, texture, ResourceState::RenderTarget);
+
+        const RenderGraph::CompileResult result = graph.Compile();
+        const bool hazards = result.Success && result.Dependencies.size() == 3
+            && result.Dependencies[0].Producer.Index == upload.Index && result.Dependencies[0].Consumer.Index == sample.Index
+            && result.Dependencies[1].Producer.Index == upload.Index && result.Dependencies[1].Consumer.Index == overwrite.Index
+            && result.Dependencies[2].Producer.Index == sample.Index && result.Dependencies[2].Consumer.Index == overwrite.Index;
+        const bool barriers = result.Barriers.size() == 3
+            && result.Barriers[0].Pass.Index == upload.Index && result.Barriers[0].Before == ResourceState::Common && result.Barriers[0].After == ResourceState::CopyDest
+            && result.Barriers[1].Pass.Index == sample.Index && result.Barriers[1].Before == ResourceState::CopyDest && result.Barriers[1].After == ResourceState::ShaderResource
+            && result.Barriers[2].Pass.Index == overwrite.Index && result.Barriers[2].Before == ResourceState::ShaderResource && result.Barriers[2].After == ResourceState::RenderTarget;
+        const bool queueTransition = result.QueueTransitions.size() == 1
+            && result.QueueTransitions[0].Producer.Index == upload.Index && result.QueueTransitions[0].Consumer.Index == sample.Index
+            && result.QueueTransitions[0].SourceQueue == QueueType::Copy && result.QueueTransitions[0].DestinationQueue == QueueType::Graphics
+            && result.QueueTransitions[0].Before == ResourceState::CopyDest && result.QueueTransitions[0].After == ResourceState::ShaderResource;
+
+        RenderGraph readWriteGraph;
+        const auto imported = readWriteGraph.AddTexture(MakeGraphTexture("imported"), RenderGraph::ResourceLifetimeKind::Imported);
+        const auto readWrite = readWriteGraph.AddPass("ReadWrite");
+        readWriteGraph.AddReadWrite(readWrite, imported, ResourceState::UnorderedAccess, ShaderStage::Compute);
+        const RenderGraph::CompileResult readWriteResult = readWriteGraph.Compile();
+        const bool readWriteDeclaration = readWriteResult.Success && readWriteResult.Barriers.size() == 1
+            && readWriteResult.Barriers[0].After == ResourceState::UnorderedAccess;
+
+        return Expect(hazards, "RAW, WAW, and WAR hazards become ordered dependency records")
+            && Expect(barriers, "state barriers are derived deterministically from ordered uses")
+            && Expect(queueTransition, "cross-queue ordered uses produce an ownership and synchronization record")
+            && Expect(readWriteDeclaration, "read-write declarations preserve explicit unordered-access and stage intent");
+    }
+
+    bool TestRenderGraphRejectsInvalidDeclarationsAndCycles()
+    {
+        using namespace Engine;
+        using namespace Engine::RHI;
+
+        RenderGraph readBeforeWrite;
+        const auto transient = readBeforeWrite.AddTexture(MakeGraphTexture("transient"));
+        const auto reader = readBeforeWrite.AddPass("Reader");
+        readBeforeWrite.AddRead(reader, transient);
+        const RenderGraph::CompileResult unresolved = readBeforeWrite.Compile();
+
+        RenderGraph invalidUse;
+        const auto pass = invalidUse.AddPass("Invalid");
+        invalidUse.AddRead(pass, { 77 });
+        const RenderGraph::CompileResult invalidHandle = invalidUse.Compile();
+
+        RenderGraph duplicateUse;
+        const auto duplicateTexture = duplicateUse.AddTexture(MakeGraphTexture("duplicate"), RenderGraph::ResourceLifetimeKind::Imported);
+        const auto duplicatePass = duplicateUse.AddPass("Duplicate");
+        duplicateUse.AddRead(duplicatePass, duplicateTexture);
+        duplicateUse.AddWrite(duplicatePass, duplicateTexture, ResourceState::RenderTarget);
+        const RenderGraph::CompileResult duplicate = duplicateUse.Compile();
+
+        RenderGraph cycleGraph;
+        const auto first = cycleGraph.AddPass("First");
+        const auto second = cycleGraph.AddPass("Second");
+        cycleGraph.AddDependency(first, second);
+        cycleGraph.AddDependency(second, first);
+        const RenderGraph::CompileResult cycle = cycleGraph.Compile();
+
+        return Expect(!unresolved.Success && unresolved.Error.find("before any write") != std::string::npos, "transient reads without a producer are rejected")
+            && Expect(!invalidHandle.Success && invalidHandle.Error.find("invalid resource") != std::string::npos, "invalid resource handles are rejected")
+            && Expect(!duplicate.Success && duplicate.Error.find("same resource") != std::string::npos, "ambiguous duplicate declarations are rejected")
+            && Expect(!cycle.Success && cycle.Error.find("cycle") != std::string::npos, "explicit dependency cycles are rejected");
+    }
+
 }
 
 int main()
@@ -1998,6 +2131,9 @@ int main()
         { "Slang compiler emits validated portable shader packages", TestSlangShaderCompilerProducesPortableValidatedPackages },
         { "Async shader publication is nonblocking deduplicated and atomic", TestAsyncShaderPackagePublicationIsNonblockingDeduplicatedAndAtomic },
         { "Async shader failure retention inline equivalence and shutdown safety", TestAsyncShaderFailureRetentionInlineEquivalenceAndShutdownSafety },
+        { "Render graph orders hazards and lifetimes deterministically", TestRenderGraphOrdersHazardsAndLifetimesDeterministically },
+        { "Render graph tracks RAW WAR WAW barriers and queue transitions", TestRenderGraphTracksRawWarWawBarriersAndQueueTransitions },
+        { "Render graph rejects invalid declarations and cycles", TestRenderGraphRejectsInvalidDeclarationsAndCycles },
         { "JobSystem contains worker exceptions", TestJobSystemContainsWorkerExceptions },
         { "JobSystem inline fallback is reentrant", TestJobSystemInlineFallbackIsReentrant },
         { "JobSystem steals nested worker jobs", TestJobSystemStealsNestedWorkerJobs },
