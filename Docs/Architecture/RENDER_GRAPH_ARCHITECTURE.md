@@ -19,7 +19,7 @@ The compiler deliberately does not:
 - retire per-frame graph state and transient resources against GPU completion;
 - drive the real scene viewport.
 
-Those belong to the following Phase 3 execution/integration item. The construction compiler is an authority for intended logical dependencies and state; it is not an execution path.
+Those belong to the following ordered Phase 3 execution-core, cross-queue, and real-workflow integration items. The construction compiler is an authority for intended logical dependencies and state; it is not an execution path.
 
 ## Construction And Scheduling Contract
 
@@ -34,7 +34,7 @@ Each frame builds a graph from pass registrations. Every pass declares its resou
 
 Execution must bind logical resources to physical `Engine::RHI` resources, invoke pass callbacks with a restricted execution context, record the compiled barriers and commands, and submit work in dependency order. Imported resources must declare initial and required final states. Queue transitions must include the required signal/wait relationship; a queue-name change alone is not synchronization.
 
-Construction and execution are separate roadmap gates. A compiled dependency/barrier plan does not complete execution until real passes, physical/imported resources, command recording/submission, frame contexts, GPU retirement, and the scene viewport use it.
+Construction, single-queue execution core, cross-queue execution, and real-workflow adoption are separate roadmap gates. A compiled dependency/barrier plan does not complete execution. The core first binds real physical/imported resources, records same-queue work, and retires frame contexts by GPU completion; the next gate turns queue-dependency records into explicit signal/wait submission; the final gate moves a representative multi-pass Scene viewport onto that path and proves output equivalence before its bootstrap path is removed.
 
 ## Barrier Authority
 
@@ -75,6 +75,6 @@ These are dependency flags, not claims that every listed item requires a unique 
 
 The Phase 3 construction item is complete when focused deterministic tests cover declared-use validation, dependency ordering and independent-pass stability, cycles, read-before-write, lifetime calculation in resolved order, barriers, and cross-queue dependency records, with the normal build/test suite and code style passing.
 
-The following execution/integration item separately requires imported and transient resources to bind to real RHI resources, callbacks and graph-derived RHI barriers/commands to execute, cross-queue signal/wait submission, GPU retirement, and a representative multi-pass scene-viewport smoke or capture on every backend it claims. A queue-transition record is intentionally not an emitted synchronization primitive.
+The following execution-core item separately requires imported and explicitly supplied physical resources to bind to real RHI resources, callbacks and graph-derived same-queue RHI barriers/commands to execute, deterministic submission, GPU retirement, and focused real-resource evidence. The next cross-queue item requires compiled queue dependencies to become explicit RHI signal/wait submission and ownership transitions; a queue-transition record is intentionally not an emitted synchronization primitive. The following real-workflow item then requires a representative multi-pass Scene-viewport smoke or capture on every backend it claims, with graph/pass capture labels and output equivalence against the bootstrap path.
 
 Transient allocation remains a separate unchecked item until physical reuse and GPU-safe retirement are themselves integrated and exercised.
