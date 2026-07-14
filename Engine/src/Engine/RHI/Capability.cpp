@@ -105,6 +105,10 @@ namespace Engine::RHI
                 evaluation.RejectionReasons.emplace_back("presentation support is unavailable");
             if (profile.RequireTimelineSynchronization && !candidate.TimelineSynchronization)
                 evaluation.RejectionReasons.emplace_back("timeline synchronization is unavailable");
+            if (profile.RequireDynamicRendering && !candidate.DynamicRendering)
+                evaluation.RejectionReasons.emplace_back("Vulkan dynamic rendering is unavailable");
+            if (profile.RequireSynchronization2 && !candidate.Synchronization2)
+                evaluation.RejectionReasons.emplace_back("Vulkan synchronization2 is unavailable");
             if (profile.MinimumTextureDimension2D > candidate.MaximumTextureDimension2D)
                 evaluation.RejectionReasons.emplace_back("maximum 2D texture dimension is below the profile minimum");
             if (!profile.AllowSoftwareAdapter && IsSoftware(candidate.Identity.Type))
@@ -165,6 +169,8 @@ namespace Engine::RHI
             case DeviceFeature::NeuralShaders: return "Neural Shaders";
             case DeviceFeature::Timestamps: return "Timestamps";
             case DeviceFeature::TimelineSynchronization: return "Timeline Synchronization";
+            case DeviceFeature::DynamicRendering: return "Dynamic Rendering";
+            case DeviceFeature::Synchronization2: return "Synchronization2";
             case DeviceFeature::BufferDeviceAddress: return "Buffer Device Address";
             case DeviceFeature::Count: break;
         }

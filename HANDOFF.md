@@ -26,6 +26,12 @@ This is real Windows x86_64/MSVC D3D12 viewport-output evidence. It is not Vulka
 
 The Vulkan RHI core item is complete. The hosted Windows job remains D3D12-only and provides no Vulkan marker evidence; Windows Vulkan qualification is the labeled local run above. The next implementation item consumes SPIR-V and adds reflected pipeline/binding/input-layout plus deterministic indexed offscreen draw; it must not claim Scene or ImGui integration.
 
+### Pending Phase 3C Indexed-Draw Acceptance
+
+The scoped implementation adds SPIR-V-only RHI shader wrappers, reflected `ViewportConstants`/`POSITION0`/`COLOR0` pipeline validation, NVRHI framebuffer/binding/input-layout recording, and `--vulkan-rhi-indexed-draw-smoke`. It loads `Engine/Shaders/EditorViewport.hlsl` through `ShaderLibrary`, validates the existing package/reflection, and passes only SPIR-V to Vulkan. NVRHI graphics additionally gates and enables Vulkan 1.3 dynamic rendering/synchronization2, uses SPIR-V entry point `main`, and maps the current constant-buffer-only layout's HLSL `b0` to descriptor set 0/binding 0.
+
+Local Windows Debug evidence passes: `VulkanRHIIndexedDrawV1` reports every stage `pass`, interior RGBA `210,59,40,255`, and 172 foreground pixels; `EngineTests` remains 35/35 and code style passes. The roadmap checkbox remains pending until the pushed exact-head Ubuntu lavapipe and macOS MoltenVK jobs exercise the same marker. No Scene snapshot or ImGui handoff was added.
+
 ## Working State
 
-Baseline includes documentation commit `842929f`, Vulkan core implementation `7cd657b`, acceptance hardening `bcb176a`, and scoped-unmap correction `9c9570f`. Exact-head run `29357979246` is green. The first unchecked `PLAN.md` item is now the medium SPIR-V/reflection/pipeline/indexed-offscreen-draw slice; preserve the no-Scene/no-ImGui boundary. The working tree should otherwise be clean; generated build output is ignored.
+Baseline through Vulkan core is `ee42695`; exact-head core run `29357979246` is green. The indexed-draw implementation is locally accepted and awaits exact-head hosted Vulkan evidence before its checkbox changes. Preserve the no-Scene/no-ImGui boundary; the following Scene integration item has not started.

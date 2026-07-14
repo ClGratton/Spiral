@@ -274,6 +274,12 @@ namespace Engine::RHI
             m_Capabilities.GetFeature(DeviceFeature::TimelineSynchronization) = MakeCapabilityState(
                 m_TimelineSemaphoreAdvertised, true, true, false,
                 "Required and enabled for the NVRHI Vulkan bootstrap; no focused timeline exercise is recorded yet");
+            m_Capabilities.GetFeature(DeviceFeature::DynamicRendering) = MakeCapabilityState(
+                m_DynamicRenderingAdvertised, m_DynamicRenderingEnabled, true, false,
+                "Required by NVRHI graphics pipelines and beginRendering; enabled in the Vulkan 1.3 feature chain");
+            m_Capabilities.GetFeature(DeviceFeature::Synchronization2) = MakeCapabilityState(
+                m_Synchronization2Advertised, m_Synchronization2Enabled, true, false,
+                "Required by NVRHI state tracking pipelineBarrier2; enabled in the Vulkan 1.3 feature chain");
             m_Capabilities.GetFeature(DeviceFeature::BufferDeviceAddress) = MakeCapabilityState(
                 m_BufferDeviceAddressAdvertised,
                 m_BufferDeviceAddressEnabled,
@@ -410,6 +416,8 @@ namespace Engine::RHI
                 VkQueueFamilyProperties GraphicsQueueProperties {};
                 u32 GraphicsQueueFamily = std::numeric_limits<u32>::max();
                 bool BufferDeviceAddress = false;
+                bool DynamicRendering = false;
+                bool Synchronization2 = false;
                 bool PortabilitySubset = false;
                 std::vector<std::string> QueryNotes;
             };
@@ -424,6 +432,8 @@ namespace Engine::RHI
             profile.RequireCopy = true;
             profile.AllowGraphicsQueueFallback = true;
             profile.RequireTimelineSynchronization = true;
+            profile.RequireDynamicRendering = true;
+            profile.RequireSynchronization2 = true;
             profile.AllowSoftwareAdapter = true;
             profile.RequiredFormats.push_back({
                 Format::R8G8B8A8Unorm,
@@ -546,12 +556,23 @@ namespace Engine::RHI
 
                 VkPhysicalDeviceVulkan12Features vulkan12Features {};
                 vulkan12Features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
+                VkPhysicalDeviceVulkan13Features vulkan13Features {};
+                vulkan13Features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
+                vulkan12Features.pNext = &vulkan13Features;
                 VkPhysicalDeviceFeatures2 features {};
                 features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
                 features.pNext = &vulkan12Features;
                 VULKAN_HPP_DEFAULT_DISPATCHER.vkGetPhysicalDeviceFeatures2(device, &features);
                 candidate.TimelineSynchronization = vulkan12Features.timelineSemaphore == VK_TRUE;
                 native.BufferDeviceAddress = vulkan12Features.bufferDeviceAddress == VK_TRUE;
+                candidate.DynamicRendering = vulkan13Features.dynamicRendering == VK_TRUE;
+                candidate.Synchronization2 = vulkan13Features.synchronization2 == VK_TRUE;
+                native.DynamicRendering = candidate.DynamicRendering;
+                native.Synchronization2 = candidate.Synchronization2;
+                native.QueryNotes.emplace_back(
+                    "Vulkan 1.3 graphics features: dynamicRendering="
+                    + std::string(native.DynamicRendering ? "yes" : "no")
+                    + ", synchronization2=" + std::string(native.Synchronization2 ? "yes" : "no"));
 
                 candidates.push_back(std::move(candidate));
                 nativeCandidates.push_back(std::move(native));
@@ -606,6 +627,10 @@ namespace Engine::RHI
             m_SelectedQueueProperties = selectedNative.GraphicsQueueProperties;
             m_SelectedIdentity = selectedCandidate.Identity;
             m_TimelineSemaphoreAdvertised = selectedCandidate.TimelineSynchronization;
+            m_DynamicRenderingAdvertised = selectedNative.DynamicRendering;
+            m_Synchronization2Advertised = selectedNative.Synchronization2;
+            m_DynamicRenderingEnabled = false;
+            m_Synchronization2Enabled = false;
             m_BufferDeviceAddressAdvertised = selectedNative.BufferDeviceAddress;
             m_BufferDeviceAddressEnabled = false;
             m_SelectedFormats = selectedCandidate.Formats;
@@ -648,6 +673,11 @@ namespace Engine::RHI
             vulkan12Features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
             vulkan12Features.timelineSemaphore = VK_TRUE;
             vulkan12Features.bufferDeviceAddress = m_BufferDeviceAddressEnabled ? VK_TRUE : VK_FALSE;
+            VkPhysicalDeviceVulkan13Features vulkan13Features {};
+            vulkan13Features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
+            vulkan13Features.dynamicRendering = m_DynamicRenderingAdvertised ? VK_TRUE : VK_FALSE;
+            vulkan13Features.synchronization2 = m_Synchronization2Advertised ? VK_TRUE : VK_FALSE;
+            vulkan12Features.pNext = &vulkan13Features;
 
             VkDeviceCreateInfo deviceInfo {};
             deviceInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
@@ -665,6 +695,8 @@ namespace Engine::RHI
             }
             VULKAN_HPP_DEFAULT_DISPATCHER.init(m_Instance, m_GetInstanceProcAddr, m_Device);
             VULKAN_HPP_DEFAULT_DISPATCHER.vkGetDeviceQueue(m_Device, m_GraphicsQueueFamily, 0, &m_GraphicsQueue);
+            m_DynamicRenderingEnabled = m_DynamicRenderingAdvertised;
+            m_Synchronization2Enabled = m_Synchronization2Advertised;
             return m_GraphicsQueue != VK_NULL_HANDLE;
         }
 
@@ -761,6 +793,10 @@ namespace Engine::RHI
         VkQueueFamilyProperties m_SelectedQueueProperties {};
         AdapterIdentity m_SelectedIdentity;
         bool m_TimelineSemaphoreAdvertised = false;
+        bool m_DynamicRenderingAdvertised = false;
+        bool m_DynamicRenderingEnabled = false;
+        bool m_Synchronization2Advertised = false;
+        bool m_Synchronization2Enabled = false;
         bool m_BufferDeviceAddressAdvertised = false;
         bool m_BufferDeviceAddressEnabled = false;
         bool m_PortabilityEnumerationEnabled = false;

@@ -79,7 +79,9 @@ The implemented contract requires:
 - diagnostics that identify source, entry point, target, and backend;
 - focused rendering through every backend claimed to consume a target.
 
-The Windows x86_64/MSVC D3D12 viewport and its DXIL consumption are exercised. Linux/macOS hosted tests must compile, reflect, convention-validate, cache, and diagnose a real SPIR-V-only package; they are not permitted to skip shader compilation. Vulkan scene rendering remains the next separate roadmap item and cannot claim parity from SPIR-V artifact generation alone. Linux, macOS, MinGW, Windows ARM64, and broader device classes remain unqualified; redistribution remains blocked pending the exact binary-component/notice audit recorded in [DEPENDENCIES.md](../DEPENDENCIES.md). Live source-change pipeline rebuild is also separate and remains pending.
+The Windows x86_64/MSVC D3D12 viewport and its DXIL consumption are exercised. The Vulkan RHI graphics path consumes the package's SPIR-V in a deterministic indexed offscreen draw, but Scene viewport and ImGui-output integration remain separate. Linux/macOS hosted tests must compile, reflect, convention-validate, cache, and diagnose a real SPIR-V-only package; they are not permitted to skip shader compilation. Linux, macOS, MinGW, Windows ARM64, and broader device classes remain unqualified until their matching runtime evidence is recorded; redistribution remains blocked pending the exact binary-component/notice audit recorded in [DEPENDENCIES.md](../DEPENDENCIES.md). Live source-change pipeline rebuild is also separate and remains pending.
+
+NVRHI's Vulkan graphics implementation requires Vulkan 1.3 dynamic rendering and synchronization2. The Vulkan profile queries, rejects when absent, enables, and reports both before device creation. For the current constant-buffer-only shader layout, NVRHI's constant-buffer binding offset is explicitly zero so reflected HLSL `b0` matches SPIR-V descriptor set 0/binding 0; later sampled-resource/sampler tables must define non-colliding offsets as part of their own descriptor contract.
 
 ## Descriptor And Binding Model
 

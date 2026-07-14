@@ -52,6 +52,16 @@ namespace Engine::RHI
             }
         }
 
+        nvrhi::ShaderType ConvertShaderStage(ShaderStage stage)
+        {
+            switch (stage)
+            {
+                case ShaderStage::Vertex: return nvrhi::ShaderType::Vertex;
+                case ShaderStage::Pixel: return nvrhi::ShaderType::Pixel;
+                default: return nvrhi::ShaderType::None;
+            }
+        }
+
         class VulkanBuffer final : public Buffer
         {
         public:
@@ -97,11 +107,59 @@ namespace Engine::RHI
             nvrhi::TextureHandle m_Texture;
         };
 
+        class VulkanShader final : public Shader
+        {
+        public:
+            VulkanShader(ShaderDescription description, nvrhi::ShaderHandle shader)
+                : m_Description(std::move(description)), m_Shader(std::move(shader)) {}
+            const ShaderDescription& GetDescription() const override { return m_Description; }
+            nvrhi::IShader* Native() const { return m_Shader; }
+            const nvrhi::ShaderHandle& NativeHandle() const { return m_Shader; }
+        private:
+            ShaderDescription m_Description;
+            nvrhi::ShaderHandle m_Shader;
+        };
+
+        class VulkanPipeline final : public Pipeline
+        {
+        public:
+            VulkanPipeline(PipelineDescription description, nvrhi::InputLayoutHandle inputLayout, nvrhi::BindingLayoutHandle bindings, nvrhi::ShaderHandle vertex, nvrhi::ShaderHandle pixel)
+                : m_Description(std::move(description)), m_InputLayout(std::move(inputLayout)), m_Bindings(std::move(bindings)), m_Vertex(std::move(vertex)), m_Pixel(std::move(pixel)) {}
+            const PipelineDescription& GetDescription() const override { return m_Description; }
+            nvrhi::IInputLayout* InputLayout() const { return m_InputLayout; }
+            nvrhi::IBindingLayout* Bindings() const { return m_Bindings; }
+            nvrhi::IGraphicsPipeline* GetOrCreateNative(nvrhi::IDevice* device, const nvrhi::FramebufferInfo& framebufferInfo)
+            {
+                if (m_NativePipeline && m_FramebufferInfo == framebufferInfo)
+                    return m_NativePipeline;
+                if (!device)
+                    return nullptr;
+                nvrhi::GraphicsPipelineDesc pipeline;
+                pipeline.setPrimType(nvrhi::PrimitiveType::TriangleList).setInputLayout(m_InputLayout)
+                    .setVertexShader(m_Vertex).setPixelShader(m_Pixel).addBindingLayout(m_Bindings);
+                pipeline.renderState.rasterState.setCullNone().setFrontCounterClockwise(false);
+                pipeline.renderState.depthStencilState.depthTestEnable = m_Description.DepthTestEnable;
+                pipeline.renderState.depthStencilState.depthWriteEnable = m_Description.DepthWriteEnable;
+                m_NativePipeline = device->createGraphicsPipeline(pipeline, framebufferInfo);
+                if (m_NativePipeline)
+                    m_FramebufferInfo = framebufferInfo;
+                return m_NativePipeline;
+            }
+        private:
+            PipelineDescription m_Description;
+            nvrhi::InputLayoutHandle m_InputLayout;
+            nvrhi::BindingLayoutHandle m_Bindings;
+            nvrhi::ShaderHandle m_Vertex;
+            nvrhi::ShaderHandle m_Pixel;
+            nvrhi::GraphicsPipelineHandle m_NativePipeline;
+            nvrhi::FramebufferInfo m_FramebufferInfo;
+        };
+
         class VulkanCommandList final : public CommandList
         {
         public:
-            VulkanCommandList(QueueType queueType, std::string name, nvrhi::CommandListHandle list)
-                : m_QueueType(queueType), m_Name(std::move(name)), m_List(std::move(list)) {}
+            VulkanCommandList(QueueType queueType, std::string name, nvrhi::CommandListHandle list, nvrhi::IDevice* device)
+                : m_QueueType(queueType), m_Name(std::move(name)), m_List(std::move(list)), m_Device(device) {}
             QueueType GetQueueType() const override { return m_QueueType; }
             bool Begin() override
             {
@@ -136,7 +194,16 @@ namespace Engine::RHI
                 m_List->endMarker();
                 m_DebugMarkerNames.pop_back();
             }
-            bool BindViewportOutputs(Texture& color, Texture* depth) override { m_Color = dynamic_cast<VulkanTexture*>(&color); m_Depth = depth ? dynamic_cast<VulkanTexture*>(depth) : nullptr; return m_Color && (!depth || m_Depth); }
+            bool BindViewportOutputs(Texture& color, Texture* depth) override
+            {
+                m_Color = dynamic_cast<VulkanTexture*>(&color); m_Depth = depth ? dynamic_cast<VulkanTexture*>(depth) : nullptr;
+                if (!m_Color || !m_Depth || !HasTextureUsage(color.GetDescription().Usage, TextureUsage::RenderTarget)
+                    || !HasTextureUsage(depth->GetDescription().Usage, TextureUsage::DepthStencil)) return false;
+                nvrhi::FramebufferDesc framebuffer;
+                framebuffer.addColorAttachment(m_Color->Native()).setDepthAttachment(m_Depth->Native());
+                m_Framebuffer = m_Device->createFramebuffer(framebuffer);
+                return m_Framebuffer != nullptr;
+            }
             bool ClearViewportOutputs(const ViewportClear& clear) override
             {
                 if (m_State != State::Recording || !m_Color) return false;
@@ -150,14 +217,38 @@ namespace Engine::RHI
                 if (m_State != State::Recording || !native) return false;
                 m_List->setTextureState(native->Native(), nvrhi::AllSubresources, ConvertState(state)); m_List->commitBarriers(); return true;
             }
-            void SetGraphicsPipeline(Pipeline&) override { Log::Error("Vulkan RHI graphics pipelines are deferred to the next Phase 3C item"); }
-            void SetGraphicsConstantBuffer(u32, Buffer&) override { Log::Error("Vulkan RHI graphics bindings are deferred to the next Phase 3C item"); }
-            void SetViewport(const Viewport&) override {}
-            void SetScissorRect(const ScissorRect&) override {}
-            void SetVertexBuffer(u32, Buffer&) override {}
-            void SetIndexBuffer(Buffer&, IndexFormat) override {}
+            void SetGraphicsPipeline(Pipeline& pipeline) override { m_Pipeline = dynamic_cast<VulkanPipeline*>(&pipeline); }
+            void SetGraphicsConstantBuffer(u32 rootParameterIndex, Buffer& buffer) override
+            {
+                auto* native = dynamic_cast<VulkanBuffer*>(&buffer);
+                if (!m_Pipeline || !native || rootParameterIndex != 0) { m_BindingSet = nullptr; return; }
+                nvrhi::BindingSetDesc bindings;
+                bindings.bindings.push_back(nvrhi::BindingSetItem::ConstantBuffer(rootParameterIndex, native->Native()));
+                m_BindingSet = m_Device->createBindingSet(bindings, m_Pipeline->Bindings());
+            }
+            void SetViewport(const Viewport& viewport) override { m_Viewport = viewport; }
+            void SetScissorRect(const ScissorRect& rect) override { m_Scissor = rect; }
+            void SetVertexBuffer(u32 slot, Buffer& buffer) override { if (slot == 0) m_Vertex = dynamic_cast<VulkanBuffer*>(&buffer); }
+            void SetIndexBuffer(Buffer& buffer, IndexFormat format) override { m_Index = dynamic_cast<VulkanBuffer*>(&buffer); m_IndexFormat = format; }
             bool CopyBuffer(Buffer&, u64, Buffer&, u64, u64) override { Log::Error("Vulkan RHI buffer copy recording is not implemented"); return false; }
-            void DrawIndexed(u32, u32, u32, int, u32) override { Log::Error("Vulkan RHI indexed drawing is deferred to the next Phase 3C item"); }
+            void DrawIndexed(u32 indexCount, u32 instanceCount, u32 startIndex, int baseVertex, u32 startInstance) override
+            {
+                if (m_State != State::Recording || !m_Pipeline || !m_Framebuffer || !m_BindingSet || !m_Vertex || !m_Index || baseVertex != 0)
+                {
+                    Log::Error("Vulkan indexed draw rejected: recording=", m_State == State::Recording ? "yes" : "no", ", pipeline=", m_Pipeline ? "yes" : "no", ", framebuffer=", m_Framebuffer ? "yes" : "no", ", bindings=", m_BindingSet ? "yes" : "no", ", vertex=", m_Vertex ? "yes" : "no", ", index=", m_Index ? "yes" : "no", ", baseVertex=", baseVertex);
+                    return;
+                }
+                nvrhi::IGraphicsPipeline* nativePipeline = m_Pipeline->GetOrCreateNative(m_Device, m_Framebuffer->getFramebufferInfo());
+                if (!nativePipeline) return;
+                nvrhi::ViewportState viewport;
+                viewport.addViewport(nvrhi::Viewport(m_Viewport.X, m_Viewport.X + m_Viewport.Width, m_Viewport.Y, m_Viewport.Y + m_Viewport.Height, m_Viewport.MinDepth, m_Viewport.MaxDepth)).addScissorRect(nvrhi::Rect(m_Scissor.Left, m_Scissor.Right, m_Scissor.Top, m_Scissor.Bottom));
+                nvrhi::GraphicsState state;
+                state.setPipeline(nativePipeline).setFramebuffer(m_Framebuffer).setViewport(viewport).addBindingSet(m_BindingSet)
+                    .addVertexBuffer(nvrhi::VertexBufferBinding().setBuffer(m_Vertex->Native()).setSlot(0).setOffset(0))
+                    .setIndexBuffer(nvrhi::IndexBufferBinding().setBuffer(m_Index->Native()).setFormat(m_IndexFormat == IndexFormat::Uint16 ? nvrhi::Format::R16_UINT : nvrhi::Format::R32_UINT).setOffset(0));
+                m_List->setGraphicsState(state);
+                m_List->drawIndexed(nvrhi::DrawArguments().setVertexCount(indexCount).setInstanceCount(instanceCount).setStartIndexLocation(startIndex).setStartVertexLocation(0).setStartInstanceLocation(startInstance));
+            }
             void ResetQueryPool(QueryPool&, u32, u32) override {}
             void WriteTimestamp(QueryPool&, u32) override {}
             void ResolveQueryPool(QueryPool&, u32, u32) override {}
@@ -182,8 +273,17 @@ namespace Engine::RHI
             QueueType m_QueueType;
             std::string m_Name;
             nvrhi::CommandListHandle m_List;
+            nvrhi::IDevice* m_Device = nullptr;
+            nvrhi::FramebufferHandle m_Framebuffer;
+            nvrhi::BindingSetHandle m_BindingSet;
             VulkanTexture* m_Color = nullptr;
             VulkanTexture* m_Depth = nullptr;
+            VulkanPipeline* m_Pipeline = nullptr;
+            VulkanBuffer* m_Vertex = nullptr;
+            VulkanBuffer* m_Index = nullptr;
+            IndexFormat m_IndexFormat = IndexFormat::Uint16;
+            Viewport m_Viewport;
+            ScissorRect m_Scissor;
             std::vector<std::string> m_DebugMarkerNames;
             State m_State = State::Ready;
         };
@@ -228,13 +328,43 @@ namespace Engine::RHI
                 d.setIsRenderTarget(HasTextureUsage(description.Usage, TextureUsage::RenderTarget) || HasTextureUsage(description.Usage, TextureUsage::DepthStencil)).setIsUAV(HasTextureUsage(description.Usage, TextureUsage::UnorderedAccess)); d.isShaderResource = HasTextureUsage(description.Usage, TextureUsage::ShaderResource);
                 nvrhi::TextureHandle native = m_Device->createTexture(d); return native ? CreateScope<VulkanTexture>(description, native) : nullptr;
             }
-            Scope<Shader> CreateShader(const ShaderDescription&) override { Log::Error("Vulkan RHI shaders are deferred to the next Phase 3C item"); return nullptr; }
-            Scope<Pipeline> CreatePipeline(const PipelineDescription&) override { Log::Error("Vulkan RHI graphics pipelines are deferred to the next Phase 3C item"); return nullptr; }
+            Scope<Shader> CreateShader(const ShaderDescription& description) override
+            {
+                if (!m_Device || description.BinaryFormat != ShaderBinaryFormat::Spirv || description.Binary.empty() || ConvertShaderStage(description.Stage) == nvrhi::ShaderType::None)
+                    return nullptr;
+                nvrhi::ShaderDesc shaderDescription;
+                shaderDescription.setShaderType(ConvertShaderStage(description.Stage)).setDebugName(description.DebugName).setEntryName(description.EntryPoint);
+                nvrhi::ShaderHandle shader = m_Device->createShader(shaderDescription, description.Binary.data(), description.Binary.size());
+                return shader ? CreateScope<VulkanShader>(description, shader) : nullptr;
+            }
+            Scope<Pipeline> CreatePipeline(const PipelineDescription& description) override
+            {
+                auto* vertex = dynamic_cast<VulkanShader*>(description.VertexShader);
+                auto* pixel = dynamic_cast<VulkanShader*>(description.PixelShader);
+                if (!m_Device || description.Type != PipelineType::Graphics || !vertex || !pixel || description.VertexInputs.size() != 2 || description.ConstantBufferBindings.size() != 1
+                    || description.ConstantBufferBindings[0].ShaderRegister != 0 || description.ConstantBufferBindings[0].RegisterSpace != 0) return nullptr;
+                std::vector<nvrhi::VertexAttributeDesc> attributes;
+                for (const VertexInputAttribute& input : description.VertexInputs)
+                {
+                    if (input.AttributeFormat != Format::R32G32B32Float || input.InputSlot != 0 || input.InputRate != VertexInputRate::PerVertex) return nullptr;
+                    attributes.emplace_back(nvrhi::VertexAttributeDesc().setName(input.SemanticName + std::to_string(input.SemanticIndex)).setFormat(nvrhi::Format::RGB32_FLOAT).setBufferIndex(input.InputSlot).setOffset(input.OffsetBytes).setElementStride(24));
+                }
+                nvrhi::InputLayoutHandle inputLayout = m_Device->createInputLayout(attributes.data(), static_cast<u32>(attributes.size()), vertex->Native());
+                nvrhi::VulkanBindingOffsets bindingOffsets;
+                bindingOffsets.setConstantBufferOffset(0);
+                nvrhi::BindingLayoutDesc bindingLayout;
+                bindingLayout.setVisibility(nvrhi::ShaderType::Vertex | nvrhi::ShaderType::Pixel)
+                    .setRegisterSpaceAndDescriptorSet(0)
+                    .setBindingOffsets(bindingOffsets)
+                    .addItem(nvrhi::BindingLayoutItem::ConstantBuffer(0));
+                nvrhi::BindingLayoutHandle bindings = m_Device->createBindingLayout(bindingLayout);
+                return inputLayout && bindings ? CreateScope<VulkanPipeline>(description, inputLayout, bindings, vertex->NativeHandle(), pixel->NativeHandle()) : nullptr;
+            }
             Scope<QueryPool> CreateQueryPool(const QueryPoolDescription&) override { Log::Error("Vulkan RHI query pools are not implemented"); return nullptr; }
             Scope<CommandList> CreateCommandList(QueueType type, std::string_view name) override
             {
                 if (!m_Device || type != QueueType::Graphics) return nullptr;
-                nvrhi::CommandListHandle list = m_Device->createCommandList(); return list ? CreateScope<VulkanCommandList>(type, std::string(name), list) : nullptr;
+                nvrhi::CommandListHandle list = m_Device->createCommandList(); return list ? CreateScope<VulkanCommandList>(type, std::string(name), list, m_Device) : nullptr;
             }
             bool UploadBuffer(Buffer& destination, const void* data, u64 size, u64 offset) override
             {

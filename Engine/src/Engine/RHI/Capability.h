@@ -19,6 +19,8 @@ namespace Engine::RHI
         NeuralShaders,
         Timestamps,
         TimelineSynchronization,
+        DynamicRendering,
+        Synchronization2,
         BufferDeviceAddress,
         Count
     };
@@ -150,6 +152,8 @@ namespace Engine::RHI
         u32 ApiMinor = 0;
         u32 MaximumTextureDimension2D = 0;
         bool TimelineSynchronization = false;
+        bool DynamicRendering = false;
+        bool Synchronization2 = false;
         std::int64_t PerformanceScore = 0;
     };
 
@@ -165,6 +169,8 @@ namespace Engine::RHI
         bool RequireCopy = false;
         bool AllowGraphicsQueueFallback = true;
         bool RequireTimelineSynchronization = false;
+        bool RequireDynamicRendering = false;
+        bool RequireSynchronization2 = false;
         bool AllowSoftwareAdapter = true;
         std::vector<FormatRequirement> RequiredFormats;
     };

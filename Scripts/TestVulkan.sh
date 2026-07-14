@@ -86,6 +86,7 @@ REQUIRED_MARKERS=(
     "Vulkan render smoke verified native ImGui presentation after resize"
     "VulkanRHICoreV1"
     "lifecycle=pass, cpuMapNone=pass, markers=executed-balanced"
+    "VulkanRHIIndexedDrawV1 package=pass reflection=pass pipeline=pass constants=pass draw=pass submit=pass readback=pass interior=pass background=pass"
 )
 
 if [[ "$SYSTEM_DIR" == "macosx" ]]; then
@@ -104,7 +105,7 @@ for ((ATTEMPT = 1; ATTEMPT <= ITERATIONS; ++ATTEMPT)); do
 
     echo "Vulkan render smoke attempt $ATTEMPT/$ITERATIONS"
     set +e
-    (cd "$ROOT" && "$EDITOR" --vulkan-render-smoke --renderer-capability-smoke --vulkan-rhi-core-smoke) 2>&1 | tee "$LOG_FILE"
+    (cd "$ROOT" && "$EDITOR" --vulkan-render-smoke --renderer-capability-smoke --vulkan-rhi-core-smoke --vulkan-rhi-indexed-draw-smoke) 2>&1 | tee "$LOG_FILE"
     STATUS=${PIPESTATUS[0]}
     set -e
     if [[ $STATUS -ne 0 ]]; then
