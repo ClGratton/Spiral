@@ -82,8 +82,8 @@ on every supported standard-library implementation. Where the C++ library
 advertises `__cpp_lib_atomic_shared_ptr`, it may use the specialization;
 otherwise it must use the standard atomic `shared_ptr` free functions with the
 same orderings. The two headless scene-render-snapshot smoke commands below
-exercise the retained-epoch behavior, and the replacement Ubuntu/macOS Actions
-jobs are required before claiming those hosts pass.
+exercise the retained-epoch behavior. Final-head Actions run `29354068102`
+passed this implementation through the Ubuntu and macOS portable jobs.
 
 Replacement run `29352633796` proved the loader and atomic-publication repairs
 by building and launching both portable `EngineTests` jobs, then failed exactly
@@ -94,6 +94,9 @@ package, validates its reflection/layout/conventions, confirms deterministic
 disk-cache reuse and input invalidation, and verifies that an explicit DXIL
 request returns the unavailable-target diagnostic. It must not skip the
 integration test, use a system DXC, or infer Vulkan scene execution.
+Final-head run `29354068102` passed all 35 tests on both Ubuntu and macOS with
+that contract; the same run also passed Linux Vulkan and macOS MoltenVK
+presentation, which remains presentation rather than Vulkan scene evidence.
 
 `EngineTests` verifies the large-world coordinate foundation by subtracting an exact double-precision per-view origin before float conversion at trillion-unit coordinates, ensuring the exact-camera-origin float view contains no absolute-world translation. It verifies the version-1 world-grid primitives at negative and exact centered boundaries, immediately adjacent representable values, trillion-unit positions, multi-sector carries, checked invalid inputs, min-inclusive/max-exclusive ranges, and bounded oversized classification. Canonical relative conversion rejects signed-sector subtraction overflow, non-finite sector products, and finite results outside translated float range transactionally. For Scene format 4, it verifies canonical signed-sector/local transform and complete `WorldGridPolicy` persistence (including non-default policy data), absence of serialized `MainCamera.Transform`, legacy v1-v3 absolute-double migration through the default policy with selected-entity camera-transform precedence, rejection of noncanonical/invalid v4 world state, and preservation of the destination Scene after a rejected load. It also verifies stable-ID per-view origin tracking: exact-camera default behavior, exact positive/negative sector-snapped hysteresis boundaries and no-flap behavior, direct destination-sector teleport handling, failed-request transactional state, adjacent extreme signed-sector local-detail preservation, independent multi-view state, and retained immutable complete view epochs. It further verifies deterministic backend-neutral render extraction, main-camera authority, stable source/entity and asset handles, hidden-mesh omission, copied light/camera/canonical-transform values, arbitrary-origin raster invariance, mesh-only motion, camera-plus-mesh origin transition invariance, and tracker-derived nonzero local mesh-camera deltas at extreme positive and negative sectors where approximate absolute doubles alias. The MSVC Debug build completed with zero warnings/errors and the focused executable passed all 31 cases. These checks establish canonical sector/local snapshot/raster propagation for the current snapshot and raster-preparation path; they do not qualify real mesh/material GPU resources, culling, coordinate debug views, physics, or ray-tracing consumers.
 

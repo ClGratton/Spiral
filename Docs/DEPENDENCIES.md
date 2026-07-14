@@ -110,8 +110,9 @@ staged proxy-to-versioned-compiler lookup without environment-variable or
 system-library fallback. Hosted Actions run `29350139365` proved the previous
 Linux output lacked that lookup when `EngineTests` failed to load
 `libslang-compiler.so.0.2026.13.1`; a disposable WSL probe verified the ELF
-repair, while replacement hosted Linux/macOS execution remains the
-qualification gate.
+repair. Final-head hosted run `29354068102` then passed all Ubuntu and macOS
+build, `EngineTests`, and platform presentation steps without an environment or
+system-library fallback.
 `Vendor/Slang/THIRD_PARTY_NOTICE.md` records that the official binary
 archive carries `LICENSE` but no exact binary component/notice manifest. The
 runtime output includes that gate and records `distribution_status=blocked` in

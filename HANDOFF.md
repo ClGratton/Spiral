@@ -30,22 +30,22 @@ Completed locally:
 - Parallel and deterministic frame-task/snapshot smoke tests: passed.
 - Code style, PowerShell parsing, Bash syntax, dependency JSON, Markdown links, `git diff --check`, unsafe-ZIP rejection, and minimized-runtime tests: passed.
 
-Hosted Actions run `29350139365` completed with Windows D3D12 success but portable failures: Ubuntu `EngineTests` could not load staged `libslang-compiler.so.0.2026.13.1`, and macOS libc++ rejected `std::atomic<std::shared_ptr<const SceneRenderSnapshot/SceneRasterFrame>>` during the build. Commit `5df91bb` repaired both. Replacement run `29352633796` (<https://github.com/ClGratton/Spiral/actions/runs/29352633796>) built and launched both portable jobs, but each failed exactly 1/35 tests: `Slang compiler emits validated portable shader packages` requested DXIL+SPIR-V, then Slang reported a failed downstream DXC/DXIL library/pass-through compiler. That is expected from the existing dependency ledger: DXC v1.9.2602 is admitted only for Windows x86_64. The portable integration test now compiles and validates SPIR-V-only packages, exercises deterministic cache/input invalidation/reflection/conventions, and asserts that a DXIL request fails clearly. Commit `2c29fbe` is pushed to `main`; queued hosted runs `29353654307` (<https://github.com/ClGratton/Spiral/actions/runs/29353654307>) and `29353654316` (<https://github.com/ClGratton/Spiral/actions/runs/29353654316>) are the pending Linux/macOS execution gate. Do not convert their queued/build result into Vulkan scene-rendering qualification.
+Hosted Actions run `29350139365` completed with Windows D3D12 success but exposed the Linux loader and macOS atomic-specialization failures; commit `5df91bb` repaired both. Replacement run `29352633796` then built and launched both portable jobs but failed exactly 1/35 tests because it requested DXIL+SPIR-V without an admitted non-Windows DXC. Commit `2c29fbe` made the host target set explicit, and `0f02ac5` made cache loading and async publication validate every artifact requested. Final-head run `29354068102` (<https://github.com/ClGratton/Spiral/actions/runs/29354068102>) passed Code Style, Windows D3D12, Ubuntu portable/Vulkan, and macOS portable/MoltenVK jobs. Ubuntu and macOS each passed all 35 `EngineTests` with real SPIR-V compilation, reflection/layout/convention validation, deterministic cache/input invalidation, and explicit DXIL rejection. This closes the portable-host repair; it is not Vulkan scene-rendering qualification.
 
 ## Limits And Deferred Work
 
 - Vulkan scene rendering is not implemented or qualified; current SPIR-V is compile/reflection/convention package evidence only.
-- Linux and macOS portable-host qualification remains pending the replacement Actions run; Windows ARM64 and physical-device breadth remain unqualified until matching executed evidence exists.
+- Linux and macOS x86_64 portable build/test paths are qualified by run `29354068102`; Windows ARM64, Apple Silicon, Vulkan scene rendering, and physical-device breadth remain unqualified until matching executed evidence exists.
 - Local WSL cannot replace hosted Linux verification: its installed glibc is older than the vendored Premake executable's required `GLIBC_2.38`, so `Scripts/Build.sh Debug gmake` stops during generation. No system compiler/tool substitution was used.
 - Redistribution remains blocked pending the admitted Slang binary-component/notice audit.
 - Live D3D12 shader-source rebuild remains a later Phase 3C item.
 
 ## Next Ordered Work
 
-After the replacement hosted run verifies this repair, the first unchecked `PLAN.md` item is Vulkan `Engine::RHI::Device` scene-viewport resources and command submission through the wrapped `nvrhi::DeviceHandle`, while keeping raw Vulkan confined to bootstrap, WSI/presentation, and ImGui.
+The first unchecked `PLAN.md` item is Vulkan `Engine::RHI::Device` scene-viewport resources and command submission through the wrapped `nvrhi::DeviceHandle`, while keeping raw Vulkan confined to bootstrap, WSI/presentation, and ImGui.
 
-Before implementing it, confirm that a real Vulkan execution path is available for focused runtime verification. Do not substitute source inspection or compilation for backend behavior.
+Run `29354068102` confirms real Linux Vulkan and macOS MoltenVK presentation paths are available; local Windows Vulkan smoke is also available. The scene slice must add focused Vulkan scene execution/capture evidence rather than treating those presentation results or compilation as backend behavior.
 
 ## Working State
 
-The implementation commits above were pushed and the working tree was clean before adding this handoff document and its catalog entry. Inspect `git status --short` before continuing; do not discard unrelated user changes.
+Commits through `0f02ac5` are pushed to `main`. Inspect `git status --short` before continuing; do not discard unrelated user changes.
