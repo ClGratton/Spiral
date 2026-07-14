@@ -43,6 +43,27 @@ namespace Engine
             std::byte* Mapped = nullptr;
         };
 
+        class ScopedCommandListDebugMarker final
+        {
+        public:
+            ScopedCommandListDebugMarker(RHI::CommandList& commandList, std::string_view name)
+                : m_CommandList(commandList)
+            {
+                m_CommandList.BeginDebugMarker(name);
+            }
+
+            ~ScopedCommandListDebugMarker()
+            {
+                m_CommandList.EndDebugMarker();
+            }
+
+            ScopedCommandListDebugMarker(const ScopedCommandListDebugMarker&) = delete;
+            ScopedCommandListDebugMarker& operator=(const ScopedCommandListDebugMarker&) = delete;
+
+        private:
+            RHI::CommandList& m_CommandList;
+        };
+
         constexpr std::array<ViewportVertex, 24> kPrototypeMeshVertices = {
             ViewportVertex{{ -0.75f, -0.75f, -0.75f }, { 0.22f, 0.68f, 1.00f }},
             ViewportVertex{{ -0.75f,  0.75f, -0.75f }, { 0.22f, 0.68f, 1.00f }},
@@ -147,7 +168,7 @@ namespace Engine
             PollShaderCompilation();
             PollShaderHotReload();
 
-            commandList.BeginDebugMarker("Viewport Scene Snapshot Pass");
+            ScopedCommandListDebugMarker marker(commandList, "Viewport Scene Snapshot Pass");
             RHI::ViewportClear clear;
             clear.Color[0] = clearColor.R;
             clear.Color[1] = clearColor.G;
@@ -207,7 +228,6 @@ namespace Engine
             }
 
             renderSucceeded = commandList.TransitionTexture(colorTexture, RHI::ResourceState::ShaderResource) && renderSucceeded;
-            commandList.EndDebugMarker();
             Renderer::PublishSceneRasterFrame(std::move(rasterFrame));
             return renderSucceeded;
         }

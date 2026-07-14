@@ -454,6 +454,13 @@ namespace Engine::RHI
                 if (!name.empty())
                     m_Resource->SetName(name.c_str());
 
+                if (HasTextureUsage(m_Description.Usage, TextureUsage::RenderTarget)
+                    && !CreateOutputView(device, D3D12_DESCRIPTOR_HEAP_TYPE_RTV))
+                    return false;
+                if (HasTextureUsage(m_Description.Usage, TextureUsage::DepthStencil)
+                    && !CreateOutputView(device, D3D12_DESCRIPTOR_HEAP_TYPE_DSV))
+                    return false;
+
                 m_CurrentState = ConvertResourceState(m_Description.InitialState);
 
                 return true;
@@ -469,12 +476,46 @@ namespace Engine::RHI
                 return m_Resource.Get();
             }
 
+            D3D12_CPU_DESCRIPTOR_HANDLE GetRenderTargetView() const { return m_RenderTargetView; }
+            D3D12_CPU_DESCRIPTOR_HANDLE GetDepthStencilView() const { return m_DepthStencilView; }
             D3D12_RESOURCE_STATES GetCurrentState() const { return m_CurrentState; }
             void SetCurrentState(D3D12_RESOURCE_STATES state) { m_CurrentState = state; }
 
         private:
+            bool CreateOutputView(ID3D12Device* device, D3D12_DESCRIPTOR_HEAP_TYPE type)
+            {
+                D3D12_DESCRIPTOR_HEAP_DESC descriptorHeapDesc {};
+                descriptorHeapDesc.Type = type;
+                descriptorHeapDesc.NumDescriptors = 1;
+                ComPtr<ID3D12DescriptorHeap> descriptorHeap;
+                if (FAILED(device->CreateDescriptorHeap(&descriptorHeapDesc, IID_PPV_ARGS(&descriptorHeap))))
+                {
+                    Log::Error("Could not create D3D12 RHI output descriptor for texture '", m_Description.DebugName, "'");
+                    return false;
+                }
+
+                const D3D12_CPU_DESCRIPTOR_HANDLE handle = descriptorHeap->GetCPUDescriptorHandleForHeapStart();
+                if (type == D3D12_DESCRIPTOR_HEAP_TYPE_RTV)
+                {
+                    device->CreateRenderTargetView(m_Resource.Get(), nullptr, handle);
+                    m_RenderTargetDescriptorHeap = std::move(descriptorHeap);
+                    m_RenderTargetView = handle;
+                }
+                else
+                {
+                    device->CreateDepthStencilView(m_Resource.Get(), nullptr, handle);
+                    m_DepthStencilDescriptorHeap = std::move(descriptorHeap);
+                    m_DepthStencilView = handle;
+                }
+                return true;
+            }
+
             TextureDescription m_Description;
             ComPtr<ID3D12Resource> m_Resource;
+            ComPtr<ID3D12DescriptorHeap> m_RenderTargetDescriptorHeap;
+            ComPtr<ID3D12DescriptorHeap> m_DepthStencilDescriptorHeap;
+            D3D12_CPU_DESCRIPTOR_HANDLE m_RenderTargetView {};
+            D3D12_CPU_DESCRIPTOR_HANDLE m_DepthStencilView {};
             D3D12_RESOURCE_STATES m_CurrentState = D3D12_RESOURCE_STATE_COMMON;
         };
 
@@ -810,7 +851,7 @@ namespace Engine::RHI
 
             bool BindViewportOutputs(Texture& colorTarget, Texture* depthTarget) override
             {
-                if (!m_CommandList || !m_Device || !depthTarget)
+                if (!m_CommandList || !depthTarget)
                     return false;
                 auto* color = dynamic_cast<NVRHID3D12Texture*>(&colorTarget);
                 auto* depth = dynamic_cast<NVRHID3D12Texture*>(depthTarget);
@@ -819,12 +860,10 @@ namespace Engine::RHI
                     return false;
                 if (!TransitionTexture(colorTarget, ResourceState::RenderTarget) || !TransitionTexture(*depthTarget, ResourceState::DepthWrite))
                     return false;
-                D3D12_CPU_DESCRIPTOR_HANDLE rtv = AllocateOutputDescriptor(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
-                D3D12_CPU_DESCRIPTOR_HANDLE dsv = AllocateOutputDescriptor(D3D12_DESCRIPTOR_HEAP_TYPE_DSV);
+                const D3D12_CPU_DESCRIPTOR_HANDLE rtv = color->GetRenderTargetView();
+                const D3D12_CPU_DESCRIPTOR_HANDLE dsv = depth->GetDepthStencilView();
                 if (!rtv.ptr || !dsv.ptr)
                     return false;
-                m_Device->CreateRenderTargetView(color->GetResource(), nullptr, rtv);
-                m_Device->CreateDepthStencilView(depth->GetResource(), nullptr, dsv);
                 m_CommandList->OMSetRenderTargets(1, &rtv, FALSE, &dsv);
                 m_BoundColorRtv = rtv;
                 m_BoundDepthDsv = dsv;
@@ -1043,19 +1082,6 @@ namespace Engine::RHI
             }
 
         private:
-            D3D12_CPU_DESCRIPTOR_HANDLE AllocateOutputDescriptor(D3D12_DESCRIPTOR_HEAP_TYPE type)
-            {
-                D3D12_DESCRIPTOR_HEAP_DESC description {};
-                description.Type = type;
-                description.NumDescriptors = 1;
-                ComPtr<ID3D12DescriptorHeap> heap;
-                if (FAILED(m_Device->CreateDescriptorHeap(&description, IID_PPV_ARGS(&heap))))
-                    return {};
-                const D3D12_CPU_DESCRIPTOR_HANDLE handle = heap->GetCPUDescriptorHandleForHeapStart();
-                m_OutputDescriptorHeaps.push_back(std::move(heap));
-                return handle;
-            }
-
             ID3D12Resource* GetD3D12Resource(Buffer& buffer) const
             {
                 const NVRHID3D12BufferNativeHandles handles = GetNVRHID3D12BufferNativeHandles(buffer);
@@ -1070,7 +1096,6 @@ namespace Engine::RHI
             ComPtr<ID3D12GraphicsCommandList> m_OwnedCommandList;
             ID3D12GraphicsCommandList* m_CommandList = nullptr;
             ID3D12Device* m_Device = nullptr;
-            std::vector<ComPtr<ID3D12DescriptorHeap>> m_OutputDescriptorHeaps;
             D3D12_CPU_DESCRIPTOR_HANDLE m_BoundColorRtv {};
             D3D12_CPU_DESCRIPTOR_HANDLE m_BoundDepthDsv {};
             std::string m_DebugName;
