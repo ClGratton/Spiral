@@ -37,4 +37,4 @@ Local Windows Debug evidence passes: `VulkanRHIIndexedDrawV1` reports every stag
 
 ## Working State
 
-Baseline through Vulkan core is `ee42695`; indexed-draw implementation and hosted corrections are `256a31a`, `813fd9b`, and `f89f9d3`. Vulkan Scene raster/readback is committed as `f2ff2f6`; CI run `29368558656` is in progress (Code Style passed; Windows, Ubuntu lavapipe, and macOS MoltenVK jobs were building at the last check). Keep the roadmap item unchecked until that exact-head run completes successfully. The native presentation/ImGui handoff is next.
+Baseline through Vulkan core is `ee42695`; indexed-draw implementation and hosted corrections are `256a31a`, `813fd9b`, and `f89f9d3`. Vulkan Scene raster/readback is committed as `f2ff2f6`; exact-head run `29368558656` passed Code Style, Windows D3D12 regression, Ubuntu lavapipe Vulkan, macOS MoltenVK, and all portable smoke/test steps. The raster checklist item is complete. The native completed-output-to-presentation/ImGui handoff is the first unchecked item.
