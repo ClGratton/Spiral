@@ -32,11 +32,13 @@ project "EngineTests"
     filter "system:linux"
         libdirs { "%{wks.location}/" .. slang_root .. "/linux-x86_64/lib" }
         links { "slang" }
+        linkoptions { "-Wl,-rpath,'$$ORIGIN'" }
         postbuildcommands { 'bash "' .. workspace_root .. '/Scripts/StageSlangRuntime.sh" "' .. workspace_root .. '/' .. slang_root .. '/linux-x86_64" "%{cfg.targetdir}"' }
 
     filter "system:macosx"
         libdirs { "%{wks.location}/" .. slang_root .. "/macos-x86_64/lib" }
         links { "slang" }
+        linkoptions { "-Wl,-rpath,@loader_path" }
         postbuildcommands { 'bash "' .. workspace_root .. '/Scripts/StageSlangRuntime.sh" "' .. workspace_root .. '/' .. slang_root .. '/macos-x86_64" "%{cfg.targetdir}"' }
 
     filter {}

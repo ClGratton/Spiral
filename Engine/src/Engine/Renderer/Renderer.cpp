@@ -17,14 +17,44 @@ namespace Engine
     {
         using Clock = std::chrono::steady_clock;
 
+        template <typename T>
+        class AtomicSharedPointer
+        {
+        public:
+            void Store(std::shared_ptr<const T> value)
+            {
+#if defined(__cpp_lib_atomic_shared_ptr) && __cpp_lib_atomic_shared_ptr >= 201711L
+                m_Value.store(std::move(value), std::memory_order_release);
+#else
+                std::atomic_store_explicit(&m_Value, std::move(value), std::memory_order_release);
+#endif
+            }
+
+            std::shared_ptr<const T> Load() const
+            {
+#if defined(__cpp_lib_atomic_shared_ptr) && __cpp_lib_atomic_shared_ptr >= 201711L
+                return m_Value.load(std::memory_order_acquire);
+#else
+                return std::atomic_load_explicit(&m_Value, std::memory_order_acquire);
+#endif
+            }
+
+        private:
+#if defined(__cpp_lib_atomic_shared_ptr) && __cpp_lib_atomic_shared_ptr >= 201711L
+            std::atomic<std::shared_ptr<const T>> m_Value;
+#else
+            std::shared_ptr<const T> m_Value;
+#endif
+        };
+
         RendererCapabilities s_Capabilities;
         RHI::DeviceCapabilities s_DeviceCapabilities;
         ClearColor s_ClearColor;
         RenderViewportRect s_ViewportRect;
         RendererBuildInfo s_BuildInfo;
         RendererFrameTiming s_FrameTiming;
-        std::atomic<std::shared_ptr<const SceneRenderSnapshot>> s_SceneRenderSnapshot;
-        std::atomic<std::shared_ptr<const SceneRasterFrame>> s_SceneRasterFrame;
+        AtomicSharedPointer<SceneRenderSnapshot> s_SceneRenderSnapshot;
+        AtomicSharedPointer<SceneRasterFrame> s_SceneRasterFrame;
         Scope<RenderBackend> s_Backend;
         std::vector<RendererBackendOption> s_BackendOptions;
         Clock::time_point s_RendererFrameStart;
@@ -332,8 +362,8 @@ namespace Engine
 
     void Renderer::Shutdown()
     {
-        s_SceneRenderSnapshot.store({}, std::memory_order_release);
-        s_SceneRasterFrame.store({}, std::memory_order_release);
+        s_SceneRenderSnapshot.Store({});
+        s_SceneRasterFrame.Store({});
         if (!s_Initialized)
             return;
 
@@ -530,23 +560,23 @@ namespace Engine
     {
         std::shared_ptr<const SceneRenderSnapshot> published =
             std::make_shared<const SceneRenderSnapshot>(std::move(snapshot));
-        s_SceneRenderSnapshot.store(std::move(published), std::memory_order_release);
+        s_SceneRenderSnapshot.Store(std::move(published));
     }
 
     std::shared_ptr<const SceneRenderSnapshot> Renderer::GetSceneRenderSnapshot()
     {
-        return s_SceneRenderSnapshot.load(std::memory_order_acquire);
+        return s_SceneRenderSnapshot.Load();
     }
 
     void Renderer::PublishSceneRasterFrame(SceneRasterFrame frame)
     {
         std::shared_ptr<const SceneRasterFrame> published =
             std::make_shared<const SceneRasterFrame>(std::move(frame));
-        s_SceneRasterFrame.store(std::move(published), std::memory_order_release);
+        s_SceneRasterFrame.Store(std::move(published));
     }
 
     std::shared_ptr<const SceneRasterFrame> Renderer::GetLastSceneRasterFrame()
     {
-        return s_SceneRasterFrame.load(std::memory_order_acquire);
+        return s_SceneRasterFrame.Load();
     }
 }
