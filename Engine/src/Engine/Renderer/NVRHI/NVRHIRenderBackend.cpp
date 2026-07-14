@@ -215,12 +215,72 @@ namespace Engine
 
     bool NVRHIRenderBackend::PrepareViewportTexture(u32 width, u32 height)
     {
-        return m_D3D12Presentation && m_D3D12Presentation->PrepareViewportTexture(width, height);
+        if (m_D3D12Presentation)
+            return m_D3D12Presentation->PrepareViewportTexture(width, height);
+        if (!m_VulkanPresentation || !m_VulkanContext || width == 0 || height == 0)
+            return false;
+
+        if (!m_VulkanSceneRenderer)
+        {
+            m_VulkanSceneRenderer = CreateScope<NVRHIVulkanViewportSceneRenderer>();
+            if (!m_VulkanSceneRenderer->Initialize(m_VulkanContext->GetRHIDevice()))
+            {
+                m_VulkanSceneRenderer.reset();
+                Log::Error("Could not initialize Vulkan Scene viewport renderer for ImGui handoff");
+                return false;
+            }
+        }
+
+        const bool replacingOutput = m_VulkanSceneRenderer->GetOutputGeneration() == 0
+            || m_VulkanSceneRenderer->GetOutputWidth() != width
+            || m_VulkanSceneRenderer->GetOutputHeight() != height;
+        if (replacingOutput)
+        {
+            // The descriptor borrows the NVRHI image view. Retire all prior
+            // ImGui use before removing it and replacing the renderer target.
+            m_VulkanContext->WaitIdle();
+            m_VulkanPresentation->ReleaseViewportOutput();
+        }
+        if (!m_VulkanSceneRenderer->RenderCurrentSnapshot(width, height, Renderer::GetClearColor()))
+            return false;
+        const u64 outputGeneration = m_VulkanSceneRenderer->GetOutputGeneration();
+        if (Application::Get().GetSpecification().CommandLineArgs.HasFlag("--vulkan-render-smoke")
+            && m_VulkanOutputCaptureGeneration != outputGeneration)
+        {
+            RHI::TextureReadback readback;
+            const bool captured = m_VulkanSceneRenderer->ReadbackColor(readback);
+            const bool dimensions = captured && readback.Extent.Width == width && readback.Extent.Height == height
+                && readback.RowPitchBytes >= width * 4
+                && readback.Data.size() >= static_cast<size_t>(readback.RowPitchBytes) * height;
+            u32 nonBackground = 0;
+            for (u32 y = 0; dimensions && y < height; ++y)
+                for (u32 x = 0; x < width; ++x)
+                {
+                    const u8* pixel = readback.Data.data() + static_cast<size_t>(y) * readback.RowPitchBytes + static_cast<size_t>(x) * 4;
+                    nonBackground += pixel[0] != 10 || pixel[1] != 13 || pixel[2] != 15 ? 1u : 0u;
+                }
+            const bool content = dimensions && nonBackground > 0;
+            Log::Info("VulkanSceneOutputCaptureV1 outputGeneration=", outputGeneration,
+                " capture=", content ? "pass" : "fail", " size=", readback.Extent.Width, "x", readback.Extent.Height,
+                " foregroundPixels=", nonBackground);
+            if (!content)
+                return false;
+            m_VulkanOutputCaptureGeneration = outputGeneration;
+        }
+        return m_VulkanPresentation->RegisterViewportOutput(
+            m_VulkanSceneRenderer->GetOutputNativeHandles(), outputGeneration);
     }
 
     u64 NVRHIRenderBackend::GetViewportTextureId() const
     {
-        return m_D3D12Presentation ? m_D3D12Presentation->GetViewportTextureId() : 0;
+        return m_D3D12Presentation ? m_D3D12Presentation->GetViewportTextureId()
+            : (m_VulkanPresentation ? m_VulkanPresentation->GetViewportTextureId() : 0);
+    }
+
+    void NVRHIRenderBackend::MarkViewportTextureQueued(u64 textureId)
+    {
+        if (m_VulkanPresentation)
+            m_VulkanPresentation->MarkViewportTextureQueued(textureId);
     }
 
     bool NVRHIRenderBackend::CaptureViewportToFile(std::string_view path)

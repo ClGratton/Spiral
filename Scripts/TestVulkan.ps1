@@ -40,6 +40,8 @@ $RequiredMarkers = @(
     "lifecycle=pass, cpuMapNone=pass, markers=executed-balanced",
     "VulkanRHIIndexedDrawV1 package=pass reflection=pass pipeline=pass constants=pass draw=pass submit=pass readback=pass interior=pass background=pass"
     "VulkanSceneViewportRasterV1 snapshot=pass pipeline=pass raster=pass readback=pass geometry=pass background=pass resize=pass"
+    "VulkanSceneOutputCaptureV1 outputGeneration="
+    "VulkanSceneOutputHandoffV1 producer=pass"
 )
 
 $JoinedLog = $VulkanLog -join "`n"
@@ -51,6 +53,12 @@ foreach ($Marker in $RequiredMarkers) {
 $DiagnosticsPattern = "Editor renderer capability diagnostics rendered: profile=Phase 3 Vulkan Bootstrap Presentation V1, adapter=.+, qualification=Bootstrap, formats=[1-9][0-9]*, features=9, groups=1, candidates=[1-9][0-9]*"
 if ($JoinedLog -notmatch $DiagnosticsPattern) {
     throw "Vulkan render smoke did not emit a complete editor capability diagnostics marker."
+}
+if ($JoinedLog -notmatch 'VulkanSceneOutputCaptureV1 outputGeneration=[2-9][0-9]* capture=pass') {
+    throw "Vulkan render smoke did not capture the post-resize renderer-owned Scene output."
+}
+if ($JoinedLog -notmatch 'VulkanSceneOutputHandoffV1 producer=pass outputGeneration=[2-9][0-9]* descriptor=registered descriptorGeneration=[2-9][0-9]* imgui=queued present=pass swapchainGeneration=2') {
+    throw "Vulkan render smoke did not prove post-resize ImGui consumption and swapchain presentation of the Scene output."
 }
 
 Write-Host "Vulkan render smoke passed: $Configuration ($Action)"

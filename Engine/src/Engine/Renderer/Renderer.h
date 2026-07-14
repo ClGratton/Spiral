@@ -131,6 +131,7 @@ namespace Engine
         static const RenderViewportRect& GetViewportRect();
         static bool PrepareViewportTexture(u32 width, u32 height);
         static u64 GetViewportTextureId();
+        static void MarkViewportTextureQueued(u64 textureId);
         static bool CaptureViewportToFile(std::string_view path);
         static RendererBackend GetActiveBackend();
         static const char* GetActiveBackendName();

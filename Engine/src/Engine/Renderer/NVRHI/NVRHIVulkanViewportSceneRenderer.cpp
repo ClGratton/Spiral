@@ -91,7 +91,7 @@ namespace Engine
             // Render submits synchronously in this pre-handoff slice, so the old
             // renderer-owned outputs are GPU-retired before replacement.
             m_Color.reset(); m_Depth.reset();
-            RHI::TextureDescription color; color.DebugName = "Vulkan Scene Viewport Color"; color.Extent = { width, height }; color.TextureFormat = RHI::Format::R8G8B8A8Unorm; color.Usage = static_cast<RHI::TextureUsage>(static_cast<u32>(RHI::TextureUsage::RenderTarget) | static_cast<u32>(RHI::TextureUsage::CopySource));
+            RHI::TextureDescription color; color.DebugName = "Vulkan Scene Viewport Color"; color.Extent = { width, height }; color.TextureFormat = RHI::Format::R8G8B8A8Unorm; color.Usage = static_cast<RHI::TextureUsage>(static_cast<u32>(RHI::TextureUsage::RenderTarget) | static_cast<u32>(RHI::TextureUsage::CopySource) | static_cast<u32>(RHI::TextureUsage::ShaderResource));
             RHI::TextureDescription depth = color; depth.DebugName = "Vulkan Scene Viewport Depth"; depth.TextureFormat = RHI::Format::D32Float; depth.Usage = RHI::TextureUsage::DepthStencil;
             m_Color = m_Device->CreateTexture(color); m_Depth = m_Device->CreateTexture(depth);
             if (!m_Color || !m_Depth) return false;
@@ -112,7 +112,7 @@ namespace Engine
             list->BeginDebugMarker("Vulkan Scene Snapshot Raster"); list->SetGraphicsPipeline(*m_Pipeline); list->SetViewport({ 0.0f, 0.0f, static_cast<float>(width), static_cast<float>(height), 0.0f, 1.0f }); list->SetScissorRect({ 0, 0, static_cast<int>(width), static_cast<int>(height) }); list->SetVertexBuffer(0, *m_VertexBuffer); list->SetIndexBuffer(*m_IndexBuffer, RHI::IndexFormat::Uint16);
             for (const Scope<RHI::Buffer>& constant : constants) { list->SetGraphicsConstantBuffer(0, *constant); list->DrawIndexed(static_cast<u32>(kIndices.size()), 1, 0, 0, 0); ++frame.IssuedDrawCount; }
             list->EndDebugMarker();
-            const bool submitted = list->TransitionTexture(*m_Color, RHI::ResourceState::CopySource) && list->End() && m_Device->SubmitAndWait(*list);
+            const bool submitted = list->TransitionTexture(*m_Color, RHI::ResourceState::ShaderResource) && list->End() && m_Device->SubmitAndWait(*list);
             if (submitted) Renderer::PublishSceneRasterFrame(std::move(frame));
             return submitted;
         }
@@ -134,5 +134,11 @@ namespace Engine
     bool NVRHIVulkanViewportSceneRenderer::Render(const SceneRenderSnapshot& snapshot, u32 width, u32 height, const ClearColor& clearColor) { return m_Impl && m_Impl->Render(snapshot, width, height, clearColor); }
     bool NVRHIVulkanViewportSceneRenderer::ReadbackColor(RHI::TextureReadback& readback) const { return m_Impl && m_Impl->ReadbackColor(readback); }
     u64 NVRHIVulkanViewportSceneRenderer::GetOutputGeneration() const { return m_Impl ? m_Impl->m_OutputGeneration : 0; }
+    u32 NVRHIVulkanViewportSceneRenderer::GetOutputWidth() const { return m_Impl ? m_Impl->m_Width : 0; }
+    u32 NVRHIVulkanViewportSceneRenderer::GetOutputHeight() const { return m_Impl ? m_Impl->m_Height : 0; }
+    RHI::NVRHIVulkanTextureNativeHandles NVRHIVulkanViewportSceneRenderer::GetOutputNativeHandles() const
+    {
+        return m_Impl && m_Impl->m_Color ? RHI::GetNVRHIVulkanTextureNativeHandles(*m_Impl->m_Color) : RHI::NVRHIVulkanTextureNativeHandles {};
+    }
 #endif
 }

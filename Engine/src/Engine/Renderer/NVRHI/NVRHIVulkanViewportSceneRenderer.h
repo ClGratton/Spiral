@@ -2,6 +2,7 @@
 
 #include "Engine/Core/Base.h"
 #include "Engine/RHI/Device.h"
+#include "Engine/RHI/NVRHI/NVRHIVulkanDevice.h"
 #include "Engine/Renderer/Renderer.h"
 #include "Engine/Scene/SceneRenderSnapshot.h"
 
@@ -22,6 +23,9 @@ namespace Engine
         bool Render(const SceneRenderSnapshot& snapshot, u32 width, u32 height, const ClearColor& clearColor);
         bool ReadbackColor(RHI::TextureReadback& readback) const;
         u64 GetOutputGeneration() const;
+        u32 GetOutputWidth() const;
+        u32 GetOutputHeight() const;
+        RHI::NVRHIVulkanTextureNativeHandles GetOutputNativeHandles() const;
 
     private:
         struct Impl;

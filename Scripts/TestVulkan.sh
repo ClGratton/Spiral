@@ -87,6 +87,8 @@ REQUIRED_MARKERS=(
     "VulkanRHICoreV1"
     "lifecycle=pass, cpuMapNone=pass, markers=executed-balanced"
     "VulkanRHIIndexedDrawV1 package=pass reflection=pass pipeline=pass constants=pass draw=pass submit=pass readback=pass interior=pass background=pass"
+    "VulkanSceneOutputCaptureV1 outputGeneration="
+    "VulkanSceneOutputHandoffV1 producer=pass"
 )
 
 if [[ "$SYSTEM_DIR" == "macosx" ]]; then
@@ -128,6 +130,14 @@ for ((ATTEMPT = 1; ATTEMPT <= ITERATIONS; ++ATTEMPT)); do
     DIAGNOSTICS_PATTERN='Editor renderer capability diagnostics rendered: profile=Phase 3 Vulkan Bootstrap Presentation V1, adapter=.+, qualification=Bootstrap, formats=[1-9][0-9]*, features=9, groups=1, candidates=[1-9][0-9]*'
     if ! grep -Eq "$DIAGNOSTICS_PATTERN" "$LOG_FILE"; then
         echo "Vulkan render smoke did not emit a complete editor capability diagnostics marker on attempt $ATTEMPT/$ITERATIONS." >&2
+        exit 1
+    fi
+    if ! grep -Eq 'VulkanSceneOutputCaptureV1 outputGeneration=[2-9][0-9]* capture=pass' "$LOG_FILE"; then
+        echo "Vulkan render smoke did not capture the post-resize renderer-owned Scene output on attempt $ATTEMPT/$ITERATIONS." >&2
+        exit 1
+    fi
+    if ! grep -Eq 'VulkanSceneOutputHandoffV1 producer=pass outputGeneration=[2-9][0-9]* descriptor=registered descriptorGeneration=[2-9][0-9]* imgui=queued present=pass swapchainGeneration=2' "$LOG_FILE"; then
+        echo "Vulkan render smoke did not prove post-resize ImGui consumption and swapchain presentation on attempt $ATTEMPT/$ITERATIONS." >&2
         exit 1
     fi
 done

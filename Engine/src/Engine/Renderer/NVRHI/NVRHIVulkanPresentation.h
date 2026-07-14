@@ -2,6 +2,7 @@
 
 #include "Engine/Core/Base.h"
 #include "Engine/RHI/NVRHI/NVRHIVulkanContext.h"
+#include "Engine/RHI/NVRHI/NVRHIVulkanDevice.h"
 #include "Engine/Renderer/Renderer.h"
 
 struct ImDrawData;
@@ -21,6 +22,10 @@ namespace Engine
         void RenderImGuiDrawData(ImDrawData* drawData, const ClearColor& clearColor, u32 width, u32 height);
         const RendererPresentationTiming& GetTiming() const;
         u64 GetSuccessfulPresentCount() const;
+        bool RegisterViewportOutput(const RHI::NVRHIVulkanTextureNativeHandles& handles, u64 outputGeneration);
+        void ReleaseViewportOutput();
+        u64 GetViewportTextureId() const;
+        void MarkViewportTextureQueued(u64 textureId);
 
     private:
         struct Impl;

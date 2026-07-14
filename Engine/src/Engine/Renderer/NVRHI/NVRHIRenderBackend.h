@@ -29,6 +29,7 @@ namespace Engine
         void RenderImGuiDrawData(ImDrawData* drawData, const ClearColor& clearColor, u32 width, u32 height);
         bool PrepareViewportTexture(u32 width, u32 height);
         u64 GetViewportTextureId() const;
+        void MarkViewportTextureQueued(u64 textureId);
         bool CaptureViewportToFile(std::string_view path);
         bool RunVulkanRHICoreSmoke();
         bool RunVulkanRHIIndexedDrawSmoke();
@@ -47,6 +48,7 @@ namespace Engine
         Scope<RHI::NVRHIVulkanContext> m_VulkanContext;
         Scope<NVRHIVulkanPresentation> m_VulkanPresentation;
         Scope<NVRHIVulkanViewportSceneRenderer> m_VulkanSceneRenderer;
+        u64 m_VulkanOutputCaptureGeneration = 0;
         RHI::Backend m_RequestedBackend = RHI::Backend::None;
         RendererBackend m_RendererBackend = RendererBackend::NVRHICommon;
     };

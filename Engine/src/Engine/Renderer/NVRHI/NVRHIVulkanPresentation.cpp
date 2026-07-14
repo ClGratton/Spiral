@@ -124,6 +124,7 @@ namespace Engine
 #if defined(GE_HAS_NVRHI_VULKAN)
             if (m_Device)
                 VULKAN_HPP_DEFAULT_DISPATCHER.vkDeviceWaitIdle(m_Device);
+            ReleaseViewportOutput();
             if (m_ImGuiInitialized)
                 ImGui_ImplVulkan_Shutdown();
             if (m_Instance && m_Device && m_WindowData.Swapchain)
@@ -259,6 +260,13 @@ namespace Engine
                 m_LastSuccessfulPresentGeneration = m_SwapchainGeneration;
                 m_Timing.LastSuccessfulPresentGeneration = m_LastSuccessfulPresentGeneration;
                 ++m_SuccessfulPresentCount;
+                if (m_ViewportTextureQueued)
+                {
+                    Log::Info("VulkanSceneOutputHandoffV1 producer=pass outputGeneration=", m_ViewportOutputGeneration,
+                        " descriptor=registered descriptorGeneration=", m_ViewportDescriptorGeneration,
+                        " imgui=queued present=pass swapchainGeneration=", m_SwapchainGeneration);
+                    m_ViewportTextureQueued = false;
+                }
             }
             else
                 CheckVulkanResult(result);
@@ -287,6 +295,59 @@ namespace Engine
             poolInfo.poolSizeCount = static_cast<u32>(std::size(poolSizes));
             poolInfo.pPoolSizes = poolSizes;
             return VULKAN_HPP_DEFAULT_DISPATCHER.vkCreateDescriptorPool(m_Device, &poolInfo, nullptr, &m_DescriptorPool) == VK_SUCCESS;
+        }
+
+        bool RegisterViewportOutput(const RHI::NVRHIVulkanTextureNativeHandles& handles, u64 outputGeneration)
+        {
+            if (!m_Initialized || !m_ImGuiInitialized || !handles.Image || !handles.ImageView || outputGeneration == 0)
+                return false;
+            if (m_ViewportTextureId != 0 && m_ViewportOutputGeneration == outputGeneration)
+                return true;
+
+            ReleaseViewportOutput();
+            VkSamplerCreateInfo samplerInfo {};
+            samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+            samplerInfo.magFilter = VK_FILTER_LINEAR;
+            samplerInfo.minFilter = VK_FILTER_LINEAR;
+            samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+            samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+            samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+            samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+            samplerInfo.maxLod = 0.0f;
+            if (VULKAN_HPP_DEFAULT_DISPATCHER.vkCreateSampler(m_Device, &samplerInfo, nullptr, &m_ViewportSampler) != VK_SUCCESS)
+                return false;
+            m_ViewportImageView = static_cast<VkImageView>(handles.ImageView);
+            m_ViewportTextureId = reinterpret_cast<u64>(ImGui_ImplVulkan_AddTexture(m_ViewportSampler, m_ViewportImageView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL));
+            if (m_ViewportTextureId == 0)
+            {
+                VULKAN_HPP_DEFAULT_DISPATCHER.vkDestroySampler(m_Device, m_ViewportSampler, nullptr);
+                m_ViewportSampler = VK_NULL_HANDLE;
+                m_ViewportImageView = VK_NULL_HANDLE;
+                return false;
+            }
+            m_ViewportOutputGeneration = outputGeneration;
+            m_ViewportDescriptorGeneration = outputGeneration;
+            Log::Info("Vulkan Scene output registered for ImGui: outputGeneration=", outputGeneration, ", layout=shader-read-only");
+            return true;
+        }
+
+        void ReleaseViewportOutput()
+        {
+            if (m_ViewportTextureId != 0 && m_ImGuiInitialized)
+                ImGui_ImplVulkan_RemoveTexture(reinterpret_cast<VkDescriptorSet>(m_ViewportTextureId));
+            if (m_ViewportSampler != VK_NULL_HANDLE && m_Device)
+                VULKAN_HPP_DEFAULT_DISPATCHER.vkDestroySampler(m_Device, m_ViewportSampler, nullptr);
+            m_ViewportTextureId = 0;
+            m_ViewportOutputGeneration = 0;
+            m_ViewportDescriptorGeneration = 0;
+            m_ViewportImageView = VK_NULL_HANDLE;
+            m_ViewportSampler = VK_NULL_HANDLE;
+            m_ViewportTextureQueued = false;
+        }
+
+        void MarkViewportTextureQueued(u64 textureId)
+        {
+            m_ViewportTextureQueued = textureId != 0 && textureId == m_ViewportTextureId;
         }
 
         bool CreateOrResizeSwapchain(u32 width, u32 height)
@@ -324,9 +385,15 @@ namespace Engine
         VkQueue m_GraphicsQueue = VK_NULL_HANDLE;
         u32 m_QueueFamily = 0;
         VkDescriptorPool m_DescriptorPool = VK_NULL_HANDLE;
+        VkSampler m_ViewportSampler = VK_NULL_HANDLE;
+        VkImageView m_ViewportImageView = VK_NULL_HANDLE;
         ImGui_ImplVulkanH_Window m_WindowData;
         bool m_ImGuiInitialized = false;
         bool m_SwapchainInvalid = false;
+        u64 m_ViewportTextureId = 0;
+        u64 m_ViewportOutputGeneration = 0;
+        u64 m_ViewportDescriptorGeneration = 0;
+        bool m_ViewportTextureQueued = false;
 #endif
         RendererPresentationTiming m_Timing;
         u64 m_SuccessfulPresentCount = 0;
@@ -379,4 +446,9 @@ namespace Engine
     {
         return m_Impl->m_SuccessfulPresentCount;
     }
+
+    bool NVRHIVulkanPresentation::RegisterViewportOutput(const RHI::NVRHIVulkanTextureNativeHandles& handles, u64 outputGeneration) { return m_Impl->RegisterViewportOutput(handles, outputGeneration); }
+    void NVRHIVulkanPresentation::ReleaseViewportOutput() { m_Impl->ReleaseViewportOutput(); }
+    u64 NVRHIVulkanPresentation::GetViewportTextureId() const { return m_Impl->m_ViewportTextureId; }
+    void NVRHIVulkanPresentation::MarkViewportTextureQueued(u64 textureId) { m_Impl->MarkViewportTextureQueued(textureId); }
 }

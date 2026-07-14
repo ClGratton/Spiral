@@ -426,7 +426,20 @@ namespace Engine::RHI
     {
         return nativeDevice ? CreateScope<VulkanDevice>(std::move(description), capabilities, nativeDevice) : nullptr;
     }
+
+    NVRHIVulkanTextureNativeHandles GetNVRHIVulkanTextureNativeHandles(Texture& texture)
+    {
+        auto* nativeTexture = dynamic_cast<VulkanTexture*>(&texture);
+        if (!nativeTexture)
+            return {};
+
+        return {
+            nativeTexture->Native()->getNativeObject(nvrhi::ObjectTypes::VK_Image),
+            nativeTexture->Native()->getNativeView(nvrhi::ObjectTypes::VK_ImageView)
+        };
+    }
 #else
     Scope<Device> CreateNVRHIVulkanDevice(DeviceDescription, const DeviceCapabilities&, nvrhi::IDevice*) { return nullptr; }
+    NVRHIVulkanTextureNativeHandles GetNVRHIVulkanTextureNativeHandles(Texture&) { return {}; }
 #endif
 }

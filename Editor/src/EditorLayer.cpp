@@ -1140,7 +1140,10 @@ void EditorLayer::DrawViewportPanel()
     const Engine::u64 viewportTextureId = Engine::Renderer::GetViewportTextureId();
 
     if (hasNativeViewportTexture && viewportTextureId != 0)
+    {
         ImGui::Image(static_cast<ImTextureID>(viewportTextureId), size);
+        Engine::Renderer::MarkViewportTextureQueued(viewportTextureId);
+    }
     else
         ImGui::InvisibleButton("ViewportCanvas", size);
 

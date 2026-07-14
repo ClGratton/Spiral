@@ -482,6 +482,12 @@ namespace Engine
         return 0;
     }
 
+    void Renderer::MarkViewportTextureQueued(u64 textureId)
+    {
+        if (NVRHIRenderBackend* backend = GetNVRHIBackend())
+            backend->MarkViewportTextureQueued(textureId);
+    }
+
     bool Renderer::CaptureViewportToFile(std::string_view path)
     {
         if (NVRHIRenderBackend* backend = GetNVRHIBackend())
