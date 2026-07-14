@@ -27,4 +27,4 @@ The first core item remains unchecked until hosted Windows, Ubuntu lavapipe, and
 
 ## Working State
 
-Baseline includes documentation commit `842929f` on top of `3c1ac41`; preserve both. The current implementation change is not committed or pushed yet. It changes the Vulkan RHI/context/backend/smokes, contracts, dependencies, and this handoff; generated build output is untracked/ignored.
+Baseline includes documentation commit `842929f` on top of `3c1ac41`; preserve both. Implementation commit `7cd657b` is pushed to `main`. GitHub Actions run `29357129469` is queued for that push; it is the pending Windows/Ubuntu/macOS core-marker evidence. The working tree should otherwise be clean; generated build output is ignored.
