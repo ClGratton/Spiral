@@ -73,6 +73,18 @@ Review should begin with the idea and behavior:
 
 Generated source is inspected when risk warrants it, when behavior and explanation disagree, or when evidence is incomplete. Synchronization/lifetimes, unsafe or native API boundaries, serialization/migration, security/permissions, persistent data loss, and performance-critical allocation or scheduling deserve direct inspection proportionate to risk. Exhaustive line-by-line reading is not a universal acceptance gate, but neither is it prohibited.
 
+### Repository-agent cost control
+
+Model allowance is a finite project resource, not an invitation to maximize parallelism or keep a session alive. `AGENTS.md` owns the operational thresholds; this contract fixes the architectural intent:
+
+- one coherent vertical slice has one default Terra owner, with additional owners or reviewers only for disjoint work or a named risk;
+- the orchestrator exchanges milestone summaries and evidence, not file-by-file instructions, repeated reassurance reviews, or duplicate implementation analysis;
+- repository reads, patches, and verification are batched around behavioral milestones so growing conversation context is not replayed for hundreds of tiny operations;
+- unchanged agent or CI state is never polled repeatedly through model turns; use event-driven/process-level waiting, useful independent work, or a durable pending handoff;
+- when allowance becomes critically low, preserving objective, commits, evidence, blockers, dirty-tree state, and the next ordered action takes priority over continuing implementation.
+
+Cost control must not weaken required behavioral evidence. It removes duplicated reasoning and coordination churn; it does not convert compilation, agent reports, or log markers into substitutes for runtime verification.
+
 ### Contract challenge
 
 Accepted contracts remain authoritative during implementation, but they are not immutable. When evidence contradicts one:
