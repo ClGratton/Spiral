@@ -24,7 +24,7 @@ This is real Windows x86_64/MSVC D3D12 viewport-output evidence. It is not Vulka
 
 ## Limits And Next Work
 
-The Vulkan RHI core and isolated SPIR-V indexed-draw items are complete. The hosted Windows job remains D3D12-only; its Vulkan evidence is the labeled local run, while hosted Ubuntu/macOS exercise their Vulkan paths. The next implementation item integrates the Scene viewport and the narrow completed-NVRHI-output-to-native-presentation/ImGui handoff.
+The Vulkan RHI core and isolated SPIR-V indexed-draw items are complete. The hosted Windows job remains D3D12-only; its Vulkan evidence is the labeled local run, while hosted Ubuntu/macOS exercise their Vulkan paths. The former combined Scene viewport/handoff item proved too large for one bounded owner and is now split without changing its intent. The next implementation item consumes the immutable Scene snapshot and renders it through `Engine::RHI`/NVRHI into renderer-owned Vulkan color/depth outputs with deterministic readback; the immediately following item integrates that completed output into the existing native Vulkan ImGui/swapchain bridge.
 
 The shared viewport shader renders a visible checker on stable per-face UVs plus antialiased luminous face frames, inset lines, and corner accents. This replaces the initial object-position quantization, whose `floor` boundary on constant face coordinates caused triangle-dependent precision striping when rotated. The refinement preserves the constant-buffer-only binding layout and adds no texture or sampler. Local D3D12 capture, Vulkan indexed-draw smoke (including unchanged deterministic interior/background pixels), and style pass; exact-head run `29363501290` previously passed the base UV correction on Windows D3D12, Ubuntu Vulkan, macOS MoltenVK, portable tests, and style. This is deliberately not a real texture/material path: sampled-resource and sampler bindings, texture upload/ownership, and material descriptors remain future infrastructure.
 
@@ -36,4 +36,4 @@ Local Windows Debug evidence passes: `VulkanRHIIndexedDrawV1` reports every stag
 
 ## Working State
 
-Baseline through Vulkan core is `ee42695`; indexed-draw implementation and hosted corrections are `256a31a`, `813fd9b`, and `f89f9d3`. Exact-head run `29361689869` is green. The first unchecked roadmap item is Vulkan Scene viewport integration and the narrow completed-NVRHI-output-to-native-presentation/ImGui handoff; it has not started.
+Baseline through Vulkan core is `ee42695`; indexed-draw implementation and hosted corrections are `256a31a`, `813fd9b`, and `f89f9d3`. Exact-head run `29361689869` is green. The first unchecked roadmap item is the bounded Vulkan Scene snapshot-to-renderer-owned-output raster slice; it has not started. The native presentation/ImGui handoff remains the next separate item.
