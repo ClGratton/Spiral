@@ -16,6 +16,7 @@ Phase 3C's Windows D3D12 viewport-output prerequisite is complete. Vulkan is now
 - MSVC Debug build: passed with zero warnings/errors.
 - MSVC `EngineTests`: 35/35 passed.
 - Local Windows only: `Scripts/TestVulkan.ps1 -Configuration Debug -Action vs2022` passed on the selected Windows Vulkan device, including `lifecycle=pass`, `cpuMapNone=pass`, and `markers=executed-balanced` in `VulkanRHICoreV1`.
+- Exact-head GitHub Actions run `29357979246` passed Code Style, Windows D3D12 regression, Ubuntu lavapipe Vulkan presentation/core smoke, macOS Apple-Paravirtual/MoltenVK presentation/core smoke, and all portable tests on commit `9c9570f`.
 - `Scripts/TestRender.ps1 -Configuration Debug -Action vs2022`: passed. A/C captures were byte-identical; B shifted right by 196.24 pixels with a 13.20% non-background ratio.
 - `Scripts/CheckCodeStyle.ps1`: passed.
 
@@ -23,8 +24,8 @@ This is real Windows x86_64/MSVC D3D12 viewport-output evidence. It is not Vulka
 
 ## Limits And Next Work
 
-The first core item remains unchecked until a replacement exact-head hosted Linux lavapipe and macOS Apple-Paravirtual/MoltenVK runtime run succeeds with the new marker. The hosted Windows job is D3D12-only and provides no Vulkan marker evidence. The next implementation item consumes SPIR-V and adds reflected pipeline/binding/input-layout plus deterministic indexed offscreen draw; it must not claim Scene or ImGui integration.
+The Vulkan RHI core item is complete. The hosted Windows job remains D3D12-only and provides no Vulkan marker evidence; Windows Vulkan qualification is the labeled local run above. The next implementation item consumes SPIR-V and adds reflected pipeline/binding/input-layout plus deterministic indexed offscreen draw; it must not claim Scene or ImGui integration.
 
 ## Working State
 
-Baseline includes documentation commit `842929f` on top of `3c1ac41`; preserve both. Acceptance correction `bcb176a` passed the local Windows checks and is pushed to `main` as the replacement head. GitHub Actions run `29357156058` is already running for the prior head; do not modify or wait on it. A run triggered by the replacement head can provide only the Linux/macOS Vulkan smoke evidence named above, never Windows Vulkan evidence. The working tree should otherwise be clean; generated build output is ignored.
+Baseline includes documentation commit `842929f`, Vulkan core implementation `7cd657b`, acceptance hardening `bcb176a`, and scoped-unmap correction `9c9570f`. Exact-head run `29357979246` is green. The first unchecked `PLAN.md` item is now the medium SPIR-V/reflection/pipeline/indexed-offscreen-draw slice; preserve the no-Scene/no-ImGui boundary. The working tree should otherwise be clean; generated build output is ignored.
