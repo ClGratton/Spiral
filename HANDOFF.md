@@ -24,4 +24,4 @@ Vulkan scene resources/submission are not implemented. The current SPIR-V packag
 
 ## Working State
 
-The scoped change still needs style/diff/docs checks, commit, push, and one CI run recorded here. Inspect `git status --short` before continuing and preserve unrelated changes.
+Commit `293fb8e` (`Add D3D12 RHI viewport output recording`) is pushed to `main`. Style, Markdown-link, and diff checks passed locally. Its CI run is queued at <https://github.com/ClGratton/Spiral/actions/runs/29355459931>; it is not required to establish the checked D3D12-local behavior, but its result must be recorded if it completes. Inspect `git status --short` before continuing and preserve unrelated changes.
