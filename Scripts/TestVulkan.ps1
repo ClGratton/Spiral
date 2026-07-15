@@ -47,8 +47,8 @@ $RequiredMarkers = @(
     "RHIBufferTransitionSmokeV1 backend=Vulkan, invalid=rejected, lifecycle=pass, submission=pass, result=pass",
     "RHICompletionSmokeV1 backend=Vulkan, tokenValidation=pass, query=nonblocking-",
     "RHIQueueDependencySmokeV1 backend=Vulkan,",
-    "RHIBufferOwnershipSmokeV1 backend=Vulkan, mode=queue-local, sharedResources=deferred, transfer=rejected, pending=no, result=pass",
-    "RHITextureOwnershipSmokeV1 backend=Vulkan, mode=queue-local, sharedResources=deferred, transfer=rejected, pending=no, result=pass",
+    "RHIBufferOwnershipSmokeV1 backend=Vulkan,",
+    "RHITextureOwnershipSmokeV1 backend=Vulkan,",
     "RHIResourceOwnershipSmokeV1 backend=Vulkan, owned=pass, null=rejected, result=pass",
     "RHIResourceStateSmokeV1 backend=Vulkan, initial=pass, pending=hidden, invalid=rejected, submission=pass, final=pass, result=pass",
     "VulkanRHICoreV1",
@@ -71,6 +71,12 @@ if ($JoinedLog -notmatch 'RHICompletionSmokeV1 backend=Vulkan, tokenValidation=p
 }
 if ($JoinedLog -notmatch 'RHIQueueDependencySmokeV1 backend=Vulkan, copy=(independent|graphics-fallback), compute=(independent|graphics-fallback), copyToGraphics=(gpu-wait|ordered-elided), graphicsToCompute=(gpu-wait|ordered-elided), cpuWaitBetween=no, queueLocal=yes, sharedResources=(rejected|permitted-or-elided), retirement=pass, result=pass') {
     throw "Vulkan smoke did not prove topology-adaptive queue-local dependency retirement."
+}
+if ($JoinedLog -notmatch 'RHIBufferOwnershipSmokeV1 backend=Vulkan, mode=(independent, release=accepted, acquire=gpu-wait, cpuWaitBetween=no, bytes=pass, finalOwner=Copy, finalState=CopySource, recovery=pass, retirement=pass, result=pass|graphics-fallback, transfer=rejected, pending=no, result=pass)') {
+    throw "Vulkan smoke did not prove topology-adaptive buffer ownership transfer or truthful fallback rejection."
+}
+if ($JoinedLog -notmatch 'RHITextureOwnershipSmokeV1 backend=Vulkan, mode=(independent, release=accepted, acquire=gpu-wait, cpuWaitBetween=no, bytes=pass, finalOwner=Copy, finalState=CopySource, recovery=pass, retirement=pass, result=pass|graphics-fallback, transfer=rejected, pending=no, result=pass)') {
+    throw "Vulkan smoke did not prove topology-adaptive texture ownership transfer or truthful fallback rejection."
 }
 $DiagnosticsPattern = "Editor renderer capability diagnostics rendered: profile=Phase 3 Vulkan Bootstrap Presentation V1, adapter=.+, qualification=Bootstrap, formats=[1-9][0-9]*, features=9, groups=1, candidates=[1-9][0-9]*"
 if ($JoinedLog -notmatch $DiagnosticsPattern) {

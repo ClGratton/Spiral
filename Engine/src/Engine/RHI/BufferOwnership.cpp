@@ -141,6 +141,17 @@ namespace Engine::RHI
         return true;
     }
 
+    bool BufferOwnershipTracker::QueryPending(const Buffer* buffer, PendingBufferOwnershipTransfer& pending) const
+    {
+        const auto found = m_Buffers.find(buffer);
+        if (found == m_Buffers.end() || !found->second.Pending)
+            return false;
+        const PendingTransfer& transfer = *found->second.Pending;
+        pending = { buffer, transfer.Source, transfer.Destination,
+            transfer.Before, transfer.After, transfer.ReleaseToken };
+        return true;
+    }
+
     bool BufferOwnershipTracker::QueryOwner(const Buffer* buffer, QueueType& owner) const
     {
         const auto found = m_Buffers.find(buffer);

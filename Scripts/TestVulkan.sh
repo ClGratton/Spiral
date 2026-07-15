@@ -171,12 +171,12 @@ for ((ATTEMPT = 1; ATTEMPT <= ITERATIONS; ++ATTEMPT)); do
         echo "Vulkan smoke did not prove topology-adaptive queue-local dependency retirement on attempt $ATTEMPT/$ITERATIONS." >&2
         exit 1
     fi
-    if ! grep -Fq 'RHIBufferOwnershipSmokeV1 backend=Vulkan, mode=queue-local, sharedResources=deferred, transfer=rejected, pending=no, result=pass' "$LOG_FILE"; then
-        echo "Vulkan smoke did not retain queue-local buffer-ownership rejection evidence on attempt $ATTEMPT/$ITERATIONS." >&2
+    if ! grep -Eq 'RHIBufferOwnershipSmokeV1 backend=Vulkan, mode=(independent, release=accepted, acquire=gpu-wait, cpuWaitBetween=no, bytes=pass, finalOwner=Copy, finalState=CopySource, recovery=pass, retirement=pass, result=pass|graphics-fallback, transfer=rejected, pending=no, result=pass)' "$LOG_FILE"; then
+        echo "Vulkan smoke did not prove topology-adaptive buffer ownership transfer or truthful fallback rejection on attempt $ATTEMPT/$ITERATIONS." >&2
         exit 1
     fi
-    if ! grep -Fq 'RHITextureOwnershipSmokeV1 backend=Vulkan, mode=queue-local, sharedResources=deferred, transfer=rejected, pending=no, result=pass' "$LOG_FILE"; then
-        echo "Vulkan smoke did not retain queue-local texture-ownership rejection evidence on attempt $ATTEMPT/$ITERATIONS." >&2
+    if ! grep -Eq 'RHITextureOwnershipSmokeV1 backend=Vulkan, mode=(independent, release=accepted, acquire=gpu-wait, cpuWaitBetween=no, bytes=pass, finalOwner=Copy, finalState=CopySource, recovery=pass, retirement=pass, result=pass|graphics-fallback, transfer=rejected, pending=no, result=pass)' "$LOG_FILE"; then
+        echo "Vulkan smoke did not prove topology-adaptive texture ownership transfer or truthful fallback rejection on attempt $ATTEMPT/$ITERATIONS." >&2
         exit 1
     fi
     if ! grep -Eq 'VulkanSceneOutputCaptureV1 outputGeneration=[2-9][0-9]* capture=pass' "$LOG_FILE"; then

@@ -28,6 +28,13 @@ namespace Engine::RHI
         ResourceState Before = ResourceState::Unknown, After = ResourceState::Unknown;
         CompletionToken ReleaseToken;
     };
+    struct PendingTextureOwnershipTransfer
+    {
+        const Texture* Resource = nullptr;
+        QueueType Source = QueueType::Graphics, Destination = QueueType::Graphics;
+        ResourceState Before = ResourceState::Unknown, After = ResourceState::Unknown;
+        CompletionToken ReleaseToken;
+    };
 
     // Same accepted-submission authority as BufferOwnershipTracker. Textures
     // deliberately retain whole-resource/subresource-0 policy until a later
@@ -58,6 +65,8 @@ namespace Engine::RHI
         { auto i=m_Records.find(op.Resource); if(op.Type!=TextureOwnershipOperationType::Acquire || i==m_Records.end() || !i->second.Pending || !SamePair(*i->second.Pending,op.Source,op.Destination,op.Before,op.After) || !SameToken(i->second.Pending->Token,op.ReleaseToken)) return false; i->second.Owner=op.Destination; i->second.State=op.After; i->second.Pending.reset(); return true; }
         bool Recover(Texture& resource, const CompletionToken& token, CompletionStatus status)
         { auto i=m_Records.find(&resource); if(i==m_Records.end() || !i->second.Pending || status!=CompletionStatus::Complete || !SameToken(i->second.Pending->Token,token)) return false; i->second.Owner=i->second.Pending->Source; i->second.State=i->second.Pending->Before; i->second.Pending.reset(); return true; }
+        bool QueryPending(const Texture* resource, PendingTextureOwnershipTransfer& pending) const
+        { const auto i=m_Records.find(resource); if(i==m_Records.end() || !i->second.Pending) return false; const PendingTransfer& transfer=*i->second.Pending; pending={ resource, transfer.Source, transfer.Destination, transfer.Before, transfer.After, transfer.Token }; return true; }
         bool QueryOwner(const Texture* resource, QueueType& owner) const { const auto i=m_Records.find(resource); if(i==m_Records.end()||i->second.Pending) return false; owner=i->second.Owner; return true; }
         bool QueryState(const Texture* resource, ResourceState& state) const { const auto i=m_Records.find(resource); if(i==m_Records.end()||i->second.Pending||i->second.State==ResourceState::Unknown) return false; state=i->second.State; return true; }
         bool HasPending(const Texture* resource) const { const auto i=m_Records.find(resource); return i!=m_Records.end() && i->second.Pending.has_value(); }

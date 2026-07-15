@@ -654,25 +654,6 @@ namespace Engine
     {
         const RHI::QueueResolution graphics = device.ResolveQueue(RHI::QueueType::Graphics);
         const RHI::QueueResolution copy = device.ResolveQueue(RHI::QueueType::Copy);
-        if (backendName == "Vulkan")
-        {
-            RHI::BufferDescription description;
-            description.DebugName = "RHIBufferOwnershipDeferredV1";
-            description.SizeBytes = 16;
-            description.Usage = RHI::BufferUsage::CopyDest;
-            Scope<RHI::Buffer> buffer = device.CreateBuffer(description);
-            Scope<RHI::CommandList> release = buffer
-                ? device.CreateCommandList(RHI::QueueType::Graphics, "RHIBufferOwnershipDeferredV1") : nullptr;
-            const bool rejected = release && release->Begin()
-                && !release->ReleaseBufferOwnership({ buffer.get(), RHI::QueueType::Graphics, RHI::QueueType::Copy,
-                    RHI::ResourceState::CopyDest, RHI::ResourceState::CopySource }) && release->End();
-            const bool pending = buffer && device.HasPendingBufferOwnershipTransfer(buffer.get());
-            const bool passed = graphics.Independent && graphics.Effective == RHI::QueueType::Graphics
-                && (copy.Independent ? copy.Effective == RHI::QueueType::Copy : copy.Effective == RHI::QueueType::Graphics)
-                && rejected && !pending;
-            Log::Info("RHIBufferOwnershipSmokeV1 backend=Vulkan, mode=queue-local, sharedResources=deferred, transfer=rejected, pending=no, result=", passed ? "pass" : "fail");
-            return passed;
-        }
         RHI::BufferDescription description;
         description.DebugName = "RHIBufferOwnershipSmokeV1 Transfer";
         description.SizeBytes = 4096;
@@ -702,10 +683,12 @@ namespace Engine
         std::array<u32, 1024> expected {};
         for (u32 index = 0; index < expected.size(); ++index)
             expected[index] = 0x0B1E0000u ^ (index * 2246822519u);
-        RHI::BufferDescription readbackDescription;
+        RHI::BufferDescription validationDescription = description;
+        validationDescription.DebugName = "RHIBufferOwnershipSmokeV1 Validation";
+        validationDescription.Usage = RHI::BufferUsage::CopyDest;
+        Scope<RHI::Buffer> validation = device.CreateBuffer(validationDescription);
+        RHI::BufferDescription readbackDescription = validationDescription;
         readbackDescription.DebugName = "RHIBufferOwnershipSmokeV1 Readback";
-        readbackDescription.SizeBytes = sizeof(expected);
-        readbackDescription.Usage = RHI::BufferUsage::CopyDest;
         readbackDescription.CpuAccess = RHI::BufferCpuAccess::Read;
         Scope<RHI::Buffer> readback = device.CreateBuffer(readbackDescription);
         const bool uploaded = transfer && device.UploadBuffer(*transfer, expected.data(), sizeof(expected));
@@ -717,7 +700,28 @@ namespace Engine
                 RHI::ResourceState::CopyDest, RHI::ResourceState::CopySource })
             && release->End();
         const RHI::CompletionToken releaseToken = releaseClosed ? device.Submit(*release) : RHI::CompletionToken {};
+        release.reset();
         const bool pendingAfterRelease = releaseToken.IsValid() && device.HasPendingBufferOwnershipTransfer(transfer.get());
+
+        // CPU-visible buffers are intentionally ineligible for ownership transfer.
+        // The GPU-only validation target follows the paired lifecycle in both
+        // directions before its Graphics-owned result is copied to readback.
+        Scope<RHI::CommandList> validationRelease = uploaded && validation
+            ? device.CreateCommandList(RHI::QueueType::Graphics, "RHIBufferOwnershipValidationReleaseV1") : nullptr;
+        const bool validationReleaseClosed = validationRelease && validationRelease->Begin()
+            && validationRelease->ReleaseBufferOwnership({ validation.get(), RHI::QueueType::Graphics, RHI::QueueType::Copy,
+                RHI::ResourceState::CopyDest, RHI::ResourceState::CopyDest }) && validationRelease->End();
+        const RHI::CompletionToken validationReleaseToken = validationReleaseClosed ? device.Submit(*validationRelease) : RHI::CompletionToken {};
+        validationRelease.reset();
+        RHI::BufferOwnershipAcquire validationAcquireDescription;
+        validationAcquireDescription.Resource = validation.get(); validationAcquireDescription.SourceQueue = RHI::QueueType::Graphics;
+        validationAcquireDescription.DestinationQueue = RHI::QueueType::Copy; validationAcquireDescription.Before = RHI::ResourceState::CopyDest;
+        validationAcquireDescription.After = RHI::ResourceState::CopyDest; validationAcquireDescription.ReleaseToken = validationReleaseToken;
+        Scope<RHI::CommandList> validationAcquire = validationReleaseToken.IsValid()
+            ? device.CreateCommandList(RHI::QueueType::Copy, "RHIBufferOwnershipValidationAcquireV1") : nullptr;
+        const bool validationAcquireClosed = validationAcquire && validationAcquire->Begin()
+            && validationAcquire->AcquireBufferOwnership(validationAcquireDescription) && validationAcquire->End();
+        const RHI::CompletionToken validationAcquireToken = validationAcquireClosed ? device.Submit(*validationAcquire, { validationReleaseToken }) : RHI::CompletionToken {};
 
         Scope<RHI::CommandList> acquire = pendingAfterRelease
             ? device.CreateCommandList(RHI::QueueType::Copy, "RHIBufferOwnershipAcquireV1") : nullptr;
@@ -738,14 +742,43 @@ namespace Engine
             && device.QueryBufferQueueOwner(transfer.get(), finalOwner) && finalOwner == RHI::QueueType::Copy
             && device.QueryResourceState(transfer.get(), finalState) && finalState == RHI::ResourceState::CopySource;
 
-        Scope<RHI::CommandList> readbackCopy = acquired && readback
-            ? device.CreateCommandList(RHI::QueueType::Copy, "RHIBufferOwnershipReadbackV1") : nullptr;
+        Scope<RHI::CommandList> validationCopy = acquired && validationAcquireToken.IsValid()
+            ? device.CreateCommandList(RHI::QueueType::Copy, "RHIBufferOwnershipValidationCopyV1") : nullptr;
+        const bool validationCopyClosed = validationCopy && validationCopy->Begin()
+            && validationCopy->CopyBuffer(*validation, 0, *transfer, 0, sizeof(expected)) && validationCopy->End();
+        const RHI::CompletionToken validationCopyToken = validationCopyClosed
+            ? device.Submit(*validationCopy, { acquireToken, validationAcquireToken }) : RHI::CompletionToken {};
+        Scope<RHI::CommandList> validationReturnRelease = validationCopyToken.IsValid()
+            ? device.CreateCommandList(RHI::QueueType::Copy, "RHIBufferOwnershipValidationReturnReleaseV1") : nullptr;
+        const bool validationReturnReleaseClosed = validationReturnRelease && validationReturnRelease->Begin()
+            && validationReturnRelease->ReleaseBufferOwnership({ validation.get(), RHI::QueueType::Copy, RHI::QueueType::Graphics,
+                RHI::ResourceState::CopyDest, RHI::ResourceState::CopyDest }) && validationReturnRelease->End();
+        const RHI::CompletionToken validationReturnReleaseToken = validationReturnReleaseClosed
+            ? device.Submit(*validationReturnRelease, { validationCopyToken }) : RHI::CompletionToken {};
+        RHI::BufferOwnershipAcquire validationReturnAcquireDescription;
+        validationReturnAcquireDescription.Resource = validation.get(); validationReturnAcquireDescription.SourceQueue = RHI::QueueType::Copy;
+        validationReturnAcquireDescription.DestinationQueue = RHI::QueueType::Graphics; validationReturnAcquireDescription.Before = RHI::ResourceState::CopyDest;
+        validationReturnAcquireDescription.After = RHI::ResourceState::CopyDest; validationReturnAcquireDescription.ReleaseToken = validationReturnReleaseToken;
+        Scope<RHI::CommandList> validationReturnAcquire = validationReturnReleaseToken.IsValid()
+            ? device.CreateCommandList(RHI::QueueType::Graphics, "RHIBufferOwnershipValidationReturnAcquireV1") : nullptr;
+        const bool validationReturnAcquireClosed = validationReturnAcquire && validationReturnAcquire->Begin()
+            && validationReturnAcquire->AcquireBufferOwnership(validationReturnAcquireDescription) && validationReturnAcquire->End();
+        const RHI::CompletionToken validationReturnAcquireToken = validationReturnAcquireClosed
+            ? device.Submit(*validationReturnAcquire, { validationReturnReleaseToken }) : RHI::CompletionToken {};
+        Scope<RHI::CommandList> readbackCopy = validationReturnAcquireToken.IsValid()
+            ? device.CreateCommandList(RHI::QueueType::Graphics, "RHIBufferOwnershipReadbackV1") : nullptr;
         const bool readbackClosed = readbackCopy && readbackCopy->Begin()
-            && readbackCopy->CopyBuffer(*readback, 0, *transfer, 0, sizeof(expected)) && readbackCopy->End();
-        const RHI::CompletionToken readbackToken = readbackClosed ? device.Submit(*readbackCopy) : RHI::CompletionToken {};
+            && readbackCopy->CopyBuffer(*readback, 0, *validation, 0, sizeof(expected)) && readbackCopy->End();
+        const RHI::CompletionToken readbackToken = readbackClosed
+            ? device.Submit(*readbackCopy, { validationReturnAcquireToken }) : RHI::CompletionToken {};
         const bool retired = readbackToken.IsValid() && device.WaitForCompletion(readbackToken, 5000)
             && device.QueryCompletion(releaseToken) == RHI::CompletionStatus::Complete
-            && device.QueryCompletion(acquireToken) == RHI::CompletionStatus::Complete;
+            && device.QueryCompletion(acquireToken) == RHI::CompletionStatus::Complete
+            && device.QueryCompletion(validationReleaseToken) == RHI::CompletionStatus::Complete
+            && device.QueryCompletion(validationAcquireToken) == RHI::CompletionStatus::Complete
+            && device.QueryCompletion(validationCopyToken) == RHI::CompletionStatus::Complete
+            && device.QueryCompletion(validationReturnReleaseToken) == RHI::CompletionStatus::Complete
+            && device.QueryCompletion(validationReturnAcquireToken) == RHI::CompletionStatus::Complete;
         const void* mapped = retired ? readback->Map() : nullptr;
         const bool bytesMatch = mapped && std::memcmp(mapped, expected.data(), sizeof(expected)) == 0;
         if (mapped)
@@ -779,27 +812,6 @@ namespace Engine
     {
         const RHI::QueueResolution graphics = device.ResolveQueue(RHI::QueueType::Graphics);
         const RHI::QueueResolution copy = device.ResolveQueue(RHI::QueueType::Copy);
-        if (backendName == "Vulkan")
-        {
-            RHI::TextureDescription description;
-            description.DebugName = "RHITextureOwnershipDeferredV1";
-            description.Extent = { 1, 1 };
-            description.TextureFormat = RHI::Format::R8G8B8A8Unorm;
-            description.Usage = RHI::TextureUsage::CopySource;
-            description.InitialState = RHI::ResourceState::CopySource;
-            Scope<RHI::Texture> texture = device.CreateTexture(description);
-            Scope<RHI::CommandList> release = texture
-                ? device.CreateCommandList(RHI::QueueType::Graphics, "RHITextureOwnershipDeferredV1") : nullptr;
-            const bool rejected = release && release->Begin()
-                && !release->ReleaseTextureOwnership({ texture.get(), RHI::QueueType::Graphics, RHI::QueueType::Copy,
-                    RHI::ResourceState::CopySource, RHI::ResourceState::CopySource }) && release->End();
-            const bool pending = texture && device.HasPendingTextureOwnershipTransfer(texture.get());
-            const bool passed = graphics.Independent && graphics.Effective == RHI::QueueType::Graphics
-                && (copy.Independent ? copy.Effective == RHI::QueueType::Copy : copy.Effective == RHI::QueueType::Graphics)
-                && rejected && !pending;
-            Log::Info("RHITextureOwnershipSmokeV1 backend=Vulkan, mode=queue-local, sharedResources=deferred, transfer=rejected, pending=no, result=", passed ? "pass" : "fail");
-            return passed;
-        }
         RHI::TextureDescription description;
         description.DebugName = "RHITextureOwnershipSmokeV1 Transfer";
         description.Extent = { 3, 2 }; description.TextureFormat = RHI::Format::R8G8B8A8Unorm;

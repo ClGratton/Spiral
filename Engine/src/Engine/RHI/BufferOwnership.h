@@ -42,6 +42,18 @@ namespace Engine::RHI
         CompletionToken ReleaseToken;
     };
 
+    // Immutable observation for backend-private abandoned-release repair. It
+    // grants no mutation authority and deliberately exposes no native handle.
+    struct PendingBufferOwnershipTransfer
+    {
+        const Buffer* Resource = nullptr;
+        QueueType Source = QueueType::Graphics;
+        QueueType Destination = QueueType::Graphics;
+        ResourceState Before = ResourceState::Unknown;
+        ResourceState After = ResourceState::Unknown;
+        CompletionToken ReleaseToken;
+    };
+
     // Device-owned authority shared by the production command lists and the
     // deterministic contract harness. Recording is side-effect free; only an
     // accepted submission publishes a pending transfer or its destination.
@@ -64,6 +76,7 @@ namespace Engine::RHI
         bool PublishRelease(const RecordedBufferOwnershipOperation& operation, const CompletionToken& acceptedToken);
         bool PublishAcquire(const RecordedBufferOwnershipOperation& operation);
         bool Recover(Buffer& buffer, const CompletionToken& releaseToken, CompletionStatus completion);
+        bool QueryPending(const Buffer* buffer, PendingBufferOwnershipTransfer& pending) const;
 
         bool QueryOwner(const Buffer* buffer, QueueType& owner) const;
         bool QueryState(const Buffer* buffer, ResourceState& state) const;

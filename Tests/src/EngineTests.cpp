@@ -3009,6 +3009,12 @@ float4 main(VertexInput input) : SV_Position
         const bool pending = tracker.RecordRelease(firstRelease, QueueType::Graphics, QueueType::Graphics, QueueType::Copy, firstOperation)
             && tracker.RecordRelease(secondRelease, QueueType::Graphics, QueueType::Graphics, QueueType::Compute, secondOperation)
             && tracker.PublishRelease(firstOperation, firstToken) && tracker.PublishRelease(secondOperation, secondToken);
+        PendingBufferOwnershipTransfer pendingSnapshot;
+        const bool compensationPlan = tracker.QueryPending(&first, pendingSnapshot)
+            && pendingSnapshot.Resource == &first && pendingSnapshot.Source == QueueType::Graphics
+            && pendingSnapshot.Destination == QueueType::Copy && pendingSnapshot.Before == ResourceState::CopyDest
+            && pendingSnapshot.After == ResourceState::CopySource && pendingSnapshot.ReleaseToken.DeviceId == firstToken.DeviceId
+            && pendingSnapshot.ReleaseToken.SubmissionId == firstToken.SubmissionId;
         QueueType owner = QueueType::Copy;
         ResourceState state = ResourceState::Unknown;
         const bool exactRecovery = !tracker.Recover(first, secondToken, CompletionStatus::Complete)
@@ -3027,7 +3033,7 @@ float4 main(VertexInput input) : SV_Position
                 == NVRHID3D12BufferOwnershipBarrier::None
             && GetNVRHID3D12BufferOwnershipBarrier(BufferOwnershipOperationType::Acquire)
                 == NVRHID3D12BufferOwnershipBarrier::PortableStateTransition;
-        return Expect(pending && exactRecovery, "recovery requires exact completed release tokens and retires independent transfers separately")
+        return Expect(pending && compensationPlan && exactRecovery, "recovery snapshot preserves the exact token and reversible source destination state plan")
             && Expect(vulkanFallback && liveRemoval, "same-effective Vulkan-style graphics fallback never enters transfer state and dead wrappers unregister")
             && Expect(d3d12Policy, "D3D12 release emits no ownership barrier while acquire requires the portable state transition");
     }
@@ -3096,10 +3102,15 @@ float4 main(VertexInput input) : SV_Position
             && tracker.PublishAcquire(acquireOp) && !tracker.HasPending(&texture)
             && tracker.QueryOwner(&texture, owner) && owner == QueueType::Copy
             && tracker.QueryState(&texture, state) && state == ResourceState::CopySource;
+        PendingTextureOwnershipTransfer recoverySnapshot;
         const bool recoverySetup = tracker.PublishOrdinaryState(texture, ResourceState::CopyDest)
             && tracker.RecordRelease({ &texture, QueueType::Copy, QueueType::Graphics, ResourceState::CopyDest, ResourceState::CopySource },
                 QueueType::Copy, QueueType::Copy, QueueType::Graphics, op)
             && tracker.PublishRelease(op, { 73, 2 }) && tracker.HasPending(&texture)
+            && tracker.QueryPending(&texture, recoverySnapshot) && recoverySnapshot.Resource == &texture
+            && recoverySnapshot.Source == QueueType::Copy && recoverySnapshot.Destination == QueueType::Graphics
+            && recoverySnapshot.Before == ResourceState::CopyDest && recoverySnapshot.After == ResourceState::CopySource
+            && recoverySnapshot.ReleaseToken.DeviceId == 73 && recoverySnapshot.ReleaseToken.SubmissionId == 2
             && !tracker.Recover(texture, { 73, 1 }, CompletionStatus::Complete)
             && !tracker.Recover(texture, { 73, 2 }, CompletionStatus::Incomplete)
             && tracker.Recover(texture, { 73, 2 }, CompletionStatus::Complete)
