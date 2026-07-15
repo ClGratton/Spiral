@@ -20,8 +20,8 @@ This slice does not change RenderGraph execution, add Vulkan multi-queue admissi
 - `Scripts/TestRender.ps1 -Configuration Debug -Action vs2022 -SkipBuild` passed through the updated harness. On the local RTX 3080 Ti, normal D3D12 reported independent Copy and Compute, Copy-to-Graphics and Graphics-to-Compute `gpu-wait`, no CPU wait between submissions, exact 4 KiB output, committed `CopySource`, and retirement. Its second forced-fallback launch reported both classes as `graphics-fallback` and both dependencies `ordered-elided` with identical bytes/state.
 - `Scripts/TestVulkan.ps1 -Configuration Debug -Action vs2022` passed. Vulkan reported truthful Copy/Compute Graphics fallback, both dependencies `ordered-elided`, no CPU wait, and token retirement; buffer-copy bytes/state are explicitly not claimed.
 - `Scripts/CheckCodeStyle.ps1`, `git diff --check`, and tracked-Markdown link validation passed.
-- Hosted CI evidence is pending until the scoped implementation commit is pushed.
-- Cancelled run `29404884243` built successfully at 09:35:45Z but emitted no child output before cancellation at 10:44:06Z; it remains failed/cancelled evidence, not a pass. Local NVIDIA and WARP repetitions pass, so an engine deadlock is unproven.
+- Exact-head CI [run 29409715948](https://github.com/ClGratton/Spiral/actions/runs/29409715948) passed Windows D3D12, Ubuntu Vulkan/lavapipe, macOS MoltenVK, and code style for harness commit `373300e`, which contains queue-dependency implementation `556281b`; dependency submission [run 29409715908](https://github.com/ClGratton/Spiral/actions/runs/29409715908) passed.
+- Cancelled run `29404884243` built successfully at 09:35:45Z but emitted no child output before cancellation at 10:44:06Z; it remains failed/cancelled evidence, not a pass. The replacement completed Windows in 2m55s, and local NVIDIA/WARP repetitions pass, so an engine deadlock was not established. The bounded harness remains the permanent reliability correction.
 
 ## Next Ordered Work
 
@@ -29,4 +29,4 @@ The first unchecked `PLAN.md` item is Vulkan/NVRHI multi-queue admission: enumer
 
 ## Working State
 
-The scoped implementation is ready for commit and push after the final focused verification. After push, record the exact hosted harness run ID and outcome here. The working tree must be clean at handoff.
+Queue-dependency implementation `556281b` and bounded-harness correction `373300e` are on `origin/main` with completed hosted evidence. The next scoped change begins from the evidence documentation commit following them; the working tree must be clean at handoff.
