@@ -1,97 +1,36 @@
 # Current Handoff
 
-Updated 2026-07-15. This file is a recovery aid, not roadmap authority; `PLAN.md` remains authoritative.
+Updated 2026-07-15. This is a recovery aid; `PLAN.md` remains the sole roadmap and checkbox authority. A new agent must begin with `AGENTS.md`, `PLAN.md`, `Docs/README.md`, `Docs/ROADMAP_GOVERNANCE.md`, `Docs/VERIFICATION.md`, `Docs/Architecture/README.md`, and `Docs/Architecture/RENDER_GRAPH_ARCHITECTURE.md`.
 
-## Current Slice
+## Completed Slice
 
-### Complete Locally: Phase 3 Frame/Render-Graph Execution Core
+Phase 3's frame/render-graph execution core is implemented, checked, committed as `c8468e9`, and pushed to `main`. The backend-neutral graphics-only executor:
 
-The checked execution-core item adds a backend-neutral graphics-only executor. It validates every explicit physical binding's exact device ownership, kind, complete shape/size/usage description, and committed initial state before recording; emits compiled same-queue texture/buffer barriers; confines callbacks to declared handles and the assigned RHI list; stops on validation/callback/recording/submission/completion failure; commits imported final states only through a valid submission token; and manages a bounded three-context pool by exact-token retirement. Cross-queue execution, transient allocation/reuse, and viewport adoption remain later items.
+- validates every explicit physical texture/buffer binding for exact device ownership, kind, full description/usage/extent or size, and committed imported initial state before recording;
+- exposes only declared resources and the assigned `Engine::RHI::CommandList` through a restricted per-pass context;
+- records compiler-derived same-queue texture/buffer transitions and callbacks in deterministic compiled order;
+- stops before later callbacks or success on validation, access, callback, recording, submission, or completion failure;
+- publishes imported final states only after `Device::Submit` accepts the list and returns a valid completion token; and
+- manages a bounded three-context pool, reports exhaustion while every token is incomplete, and reuses only the exact context/list whose GPU token retired.
 
-Deterministic `EngineTests` prove rejection before recording, access confinement, failure propagation, compiled barrier/callback order, pending-versus-committed state timing, three-token exhaustion, completion failure, and reuse of only the exact retired context/list. Real `RenderGraphExecutionSmokeV1` runs two imported-texture clear/finalize passes twice on both local D3D12 and Vulkan/NVRHI, requires three graph-derived transitions, ordered callbacks, undeclared rejection, compact deterministic 3x2 RGBA8 bytes, a completed first token, and the same retired recording context on the second execution. Local Windows/MSVC Debug build, `EngineTests` 45/45, `TestRender.ps1`, `TestVulkan.ps1`, `CheckCodeStyle.ps1`, and `git diff --check` passed. Hosted CI is pending the implementation push; after it completes, record the exact run and resulting commits here and in `PLAN.md`.
-
-## Current Slice
-
-### Latest: Phase 3 Resource-State Query Prerequisite
-
-The checked graph-import prerequisite adds read-only `RHI::Device::QueryResourceState` overloads for texture and buffer wrappers. Queries require a live wrapper owned by that exact RHI device and return only portable `ResourceState`; null, foreign-backend, same-backend-other-device, and `Unknown` values fail. There is no external state adoption or native-state exposure.
-
-Device-owned command lists now retain transition state locally while recording. Their wrapper state is committed only after `Submit` accepts the closed list and returns a valid completion token; invalid recording, failed close, or failed submission cannot publish the requested new state. D3D12 commits matching native and portable wrapper state together; Vulkan/NVRHI commits the portable wrapper state after NVRHI accepts the list. The pre-existing D3D12 presentation bridge retains its explicit native-list behavior and is not an import/graph execution path.
-
-`RHIResourceStateSmokeV1`, required by both headed scripts, creates an owned CopyDest texture and buffer, observes their initial values, proves transitions are still hidden during recording and after an invalid `Unknown` attempt, submits valid CopySource transitions, observes both final values, and rejects null/unknown cases. Deterministic `EngineTests` covers foreign-backend and same-backend-other-device cases. Local Windows/MSVC Debug evidence passed: build with zero warnings/errors, 41/41 `EngineTests`, `TestRender.ps1`, `TestVulkan.ps1`, `CheckCodeStyle.ps1`, `git diff --check`, and Markdown-link audit. Implementation commit `d1ce337` is pushed to `main`; exact-head hosted CI [run 29377364744](https://github.com/ClGratton/Spiral/actions/runs/29377364744) passed Windows D3D12, Ubuntu Vulkan/lavapipe, macOS MoltenVK, and code style, while dependency submission `29377364769` succeeded. The next ordered `PLAN.md` item is the single-queue frame/render-graph execution core.
-
-## Current Slice
-
-### Latest: Phase 3C D3D12 Texture Readback Parity Prerequisite
-
-The D3D12 readback prerequisite is implemented and checked in `PLAN.md`. `RHI::Device::ReadbackTexture` accepts only a live texture created by the exact D3D12 RHI device with a nonzero single-mip/layer/sample RGBA8 extent, `CopySource` usage, and already-finalized `CopySource` state. It rejects foreign/wrong-wrapper, depth, unsupported format, invalid shape, invalid footprint arithmetic, and wrong-state input before recording. The device derives the native copy footprint internally, uses an RHI-owned D3D12 command list and CPU-readback buffer, submits through `CompletionToken`, waits with a finite 5000 ms deadline, leaves the source in `CopySource`, and compacts each aligned native row into initialized CPU bytes (`RowPitchBytes=width*4`). No presentation/swapchain/ImGui capture bridge is called or duplicated.
-
-Focused real-device evidence is `RHITextureReadbackSmokeV1`, now required by `TestRender.ps1`: it clears a 3x2 RGBA8 offscreen color target through RHI, rejects an unfinalized texture and an R8 CopySource texture, then checks exact RGBA clear pixels, `RowPitchBytes=12`, and 24 bytes. `TestVulkan.ps1` is unchanged and remains the Vulkan/NVRHI clear/readback regression. Local Windows x86_64/MSVC Debug evidence passed: direct D3D12 smoke, `EngineTests` 41/41, `TestRender.ps1`, `TestVulkan.ps1`, `CheckCodeStyle.ps1`, `git diff --check`, and the Markdown-link audit. Hosted CI is pending the resulting push. No graph execution, cross-queue scheduling, transient allocation, or viewport adoption is part of this slice.
-
-The next ordered `PLAN.md` item is the frame/render-graph execution core.
-
-### Latest: Phase 3C RHI Resource/Device Ownership Validation Prerequisite
-
-The ownership prerequisite is complete and checked in `PLAN.md`. `RHI::Device::OwnsResource` has texture and buffer overloads; D3D12 and Vulkan/NVRHI resource wrappers carry an immutable monotonic owner ID allocated per exact RHI device. Null, different-wrapper/backend, and same-backend different-device values return false without native handle exposure or graph policy. Wrapper lifetime is caller-owned: queries require a live resource and live device, and the monotonic identity never relies on native-pointer reuse.
-
-Local Windows/MSVC Debug evidence passed: `EngineTests` 41/41 (including deterministic owned/null/foreign/same-backend-other-device contract cases), `TestRender.ps1`, and `TestVulkan.ps1`; the headed smokes create real buffer/texture wrappers and require `RHIResourceOwnershipSmokeV1 owned=pass, null=rejected`. They create only one active device, so real same-backend-two-device evidence is unavailable and is not claimed. No graph execution, queue scheduling, transient allocation, or viewport adoption was added. The next ordered item is the frame/render-graph execution core.
-
-### Latest: Phase 3C Asynchronous Completion And Recording-Reuse Prerequisite
-
-The completion prerequisite is complete and checked in `PLAN.md`. `RHI::Device::Submit` maps accepted work to an opaque monotonic token, `QueryCompletion` is nonblocking, and `WaitForCompletion` has a caller-supplied finite deadline. D3D12 maps tokens to per-queue fence values; Vulkan/NVRHI maps them to NVRHI graphics timeline instances and polls NVRHI's completion counter. The existing `SubmitAndWait` helper calls the new primitives. A submitted owned list retains its own token and rejects `Begin` before retirement; invalid, cross-device, and unissued token identities are rejected.
-
-`RHICompletionSmokeV1` performs real graphics submission, token validation, nonblocking first query (allowing a legitimately fast completion), finite wait, and same-object re-record/re-submit after GPU retirement. Local Windows/MSVC Debug evidence passed: `EngineTests` 40/40, `TestRender.ps1`, `TestVulkan.ps1`, and `CheckCodeStyle.ps1`. Exact-head [CI run 29374369710](https://github.com/ClGratton/Spiral/actions/runs/29374369710) passed Code Style, Windows D3D12 render smoke, Ubuntu lavapipe Vulkan smoke, and macOS Intel MoltenVK smoke. The implementation adds no graph executor, cross-queue graph schedule, transient allocator, or viewport adoption. The next ordered item is the frame/render-graph execution core.
-
-### Previous: Phase 3C RHI Buffer Transition Prerequisite
-
-The buffer-transition execution prerequisite is complete and checked in `PLAN.md`: `RHI::CommandList::TransitionBuffer` records explicit whole-buffer transitions from backend-neutral `ResourceState` values. Graph compilation remains the state/dependency authority; this RHI operation only translates a supplied state and adds no graph execution, resource binding, callback, queue-synchronization, or transient-allocation policy.
-
-- `IsBufferStateCompatible` accepts GPU-only Common, declared CopySource/CopyDest, declared read-only ShaderResource, and Storage UnorderedAccess states; it rejects CPU-visible buffers, Unknown, and texture-only states. Vertex/index/constant buffers use the portable read-only state; D3D12 maps that state to `GENERIC_READ`.
-- D3D12 tracks the buffer's whole-resource native state and records `ResourceBarrier` only when it changes. Vulkan/NVRHI records `setBufferState` and `commitBarriers`, keeps the existing automatic tracking bootstrap mode, and suppresses wrapper-tracked no-op repeats. Existing copy/upload behavior remains intact and does not add a duplicate CopyDest barrier when the explicit state already matches.
-- `RHIBufferTransitionSmokeV1`, required by both headed smoke scripts, rejects transitions outside recording, incompatible state/usage, and post-close calls; it then records CopyDest, CopySource, and a no-op repeat before valid synchronous submission. The marker includes backend, invalid, lifecycle, submission, and result fields.
-
-Local Windows/MSVC Debug evidence: full rebuild (zero warnings/errors), `EngineTests` 39/39, `Scripts/TestRender.ps1 -Configuration Debug -Action vs2022`, and `Scripts/TestVulkan.ps1 -Configuration Debug -Action vs2022` all passed. Exact-head hosted CI run `29372850292` passed Windows D3D12, Ubuntu Vulkan/lavapipe, macOS MoltenVK, and code style. The next unchecked item is the single-queue frame/render-graph execution core.
-
-### Latest: Phase 3C Render-Graph Construction
-
-The first graph-construction roadmap item is implemented and checked. `RenderGraph` validates logical pass/resource declarations (read/write/read-write, queue/state/stage intent), derives RAW/WAR/WAW and explicit-order edges, rejects invalid handles/declarations, transient read-before-write, and cycles, and stable-topologically orders passes by registration index among ready peers. It calculates resource lifetimes in that compiled order and produces abstract state barriers plus cross-queue transition records only where an ordered resource dependency crosses queues.
-
-This is intentionally a compiler-only plan: there are no pass callbacks, physical/imported resource bindings, RHI barrier emission, command recording, queue signal/wait submission, transient allocation/reuse, GPU retirement, or viewport integration. The next ordered roadmap item owns those mechanisms.
-
-Focused local Windows MSVC Debug evidence: `EngineTests` builds and passes 38/38, including graph-order/lifetime, RAW/WAR/WAW/barrier/queue-transition, and invalid-declaration/cycle contract cases. Exact-head CI run `29371379723` passed Code Style, Windows D3D12 regression/`EngineTests`, Ubuntu portable build/tests plus lavapipe Vulkan smoke, and macOS portable build/tests plus MoltenVK smoke for commit `5921701`; dependency-submission run `29371379763` also passed.
-
-Phase 3C's Vulkan completed-output-to-native-ImGui/swapchain handoff is complete and checked with local Windows and exact-head hosted evidence.
-
-- The Vulkan context creates the one native device/queue and NVRHI device, then creates an `Engine::RHI::Device` wrapper around that NVRHI handle. It creates no second native device or raw Vulkan scene command path. Core supports NVRHI buffers, RGBA8/depth textures, output clear, explicit texture transitions, balanced debug markers, graphics command submission/wait/garbage collection, buffer update, and RGBA8 staging readback. Closed lists submit once only; open and previously submitted lists are rejected. Shader/pipeline/draw/query methods reject clearly.
-- `--vulkan-rhi-core-smoke`, enabled by both `TestVulkan` scripts, creates an upload buffer plus 16x12 RGBA8/depth targets, rejects open and duplicate submission, proves that close rejects an unbalanced marker, issues a balanced marker with an owned null-terminated name, clears through `Engine::RHI`, reads RGBA8 through an NVRHI staging texture, validates extent/row pitch/every pixel (one byte tolerance), and emits `VulkanRHICoreV1` with adapter class and submission status. The marker status means the calls executed; it is not GPU-capture evidence.
-- The D3D12 adapter creates texture-owned persistent CPU-only RTV/DSV descriptors at output-texture initialization. View binding validates usage, transitions texture state, and binds those existing non-shader-visible handles without per-frame descriptor-heap allocation; renderer-owned texture destruction releases the views. Scene marker lifetime is scope-bound, including output-bind/clear failure returns.
-- The scene renderer now receives only `RHI::CommandList` and `RHI::Texture` references. It retains snapshot/raster behavior, per-draw constant-buffer lifetime, and shader validation. Presentation retains native command-list, swapchain, SRV/ImGui, and capture/readback ownership.
-- `NVRHIVulkanViewportSceneRenderer` reuses the renderer-published immutable snapshot, `PrepareSceneRasterFrame`, and `EditorViewport.hlsl` SPIR-V package. It creates no native Vulkan object or command path. It owns RGBA8/depth output replacement after synchronous GPU retirement, records NVRHI/RHI output bind/clear/draw/transition commands, and its smoke readbacks the final 64x48 color after a 48x36-to-64x48 resize. `VulkanSceneViewportRasterV1` requires raster/readback/geometry/background/resize pass states, final row layout, the clear background, and a bounded cube foreground count. It does not expose a texture to ImGui or a swapchain.
-- The real Vulkan editor viewport now renders that same completed Scene output, leaves it in shader-resource/read-only layout, and exposes only a borrowed NVRHI image/view to `NVRHIVulkanPresentation`. Presentation owns its ImGui sampler/descriptor registration and removal. Before an output resize/replacement it waits for the one shared queue to retire, removes the descriptor, then the renderer replaces and rasterizes the target; shutdown follows the same retired removal order. `VulkanSceneOutputCaptureV1` validates actual post-resize renderer-output content, while `VulkanSceneOutputHandoffV1` is emitted only after Editor queued the matching descriptor and the native swapchain present succeeded. Local Windows output generations 3/4 and swapchain generation 2 passed; no raw Vulkan Scene command path or second device was added.
+The executor stays on `Engine::RHI`. It does not implement cross-queue graph signal/wait submission, transient resource allocation/reuse, or Scene viewport adoption.
 
 ## Evidence
 
-- MSVC Debug rebuild: passed with zero warnings/errors.
-- MSVC `EngineTests`: 35/35 passed.
-- Local Windows only: `Scripts/TestVulkan.ps1 -Configuration Debug -Action vs2022` passed on the selected Windows Vulkan device, including post-resize `VulkanSceneOutputCaptureV1 ... capture=pass` and `VulkanSceneOutputHandoffV1 ... imgui=queued present=pass swapchainGeneration=2`.
-- Exact-head GitHub Actions run `29369950355` passed Code Style, Windows D3D12 regression, Ubuntu lavapipe Vulkan Scene-output handoff smoke, macOS Intel Apple-Paravirtual/MoltenVK Scene-output handoff smoke across three launches, and all portable tests on commit `45878d0`.
-- `Scripts/TestRender.ps1 -Configuration Debug -Action vs2022`: passed. A/C captures were byte-identical; B shifted right by 196.24 pixels with a 13.20% non-background ratio.
-- `Scripts/CheckCodeStyle.ps1`: passed.
+- Windows/MSVC Debug build: passed with zero warnings/errors.
+- `EngineTests`: 45/45 passed. Focused cases cover binding/state rejection before recording, undeclared and wrong-kind access, callback/completion failure propagation, deterministic barriers/callbacks/final states, three-token exhaustion, and exact retired-context reuse.
+- `Scripts/TestRender.ps1 -Configuration Debug -Action vs2022`: passed real D3D12 `RenderGraphExecutionSmokeV1`.
+- `Scripts/TestVulkan.ps1 -Configuration Debug -Action vs2022`: passed real Vulkan/NVRHI `RenderGraphExecutionSmokeV1`.
+- Both real-device smokes execute two imported-texture clear/finalize passes twice, require three graph-derived transitions and ordered callbacks, reject undeclared access, validate compact deterministic 3x2 RGBA8 readback, observe token retirement, and reuse the same retired context.
+- `Scripts/CheckCodeStyle.ps1`, `git diff --check`, and Markdown-link validation passed.
+- Exact-head implementation CI [run 29378695587](https://github.com/ClGratton/Spiral/actions/runs/29378695587) passed Windows D3D12, Ubuntu Vulkan/lavapipe, macOS MoltenVK, and code style for `c8468e9`. Dependency submission [run 29378695596](https://github.com/ClGratton/Spiral/actions/runs/29378695596) passed.
 
-This is real local Windows x86_64/MSVC D3D12 regression and Vulkan Scene-offscreen evidence. It is not Vulkan ImGui/swapchain handoff, Linux/macOS Scene evidence, or physical-device breadth qualification.
+The immediate RHI prerequisites are also complete and documented in `PLAN.md` and `Docs/Architecture/RENDER_GRAPH_ARCHITECTURE.md`: portable buffer transitions, asynchronous completion tokens and recording reuse, exact resource/device ownership validation, D3D12 RHI texture-readback parity, and committed portable resource-state queries.
 
-## Limits And Next Work
+## Next Ordered Work
 
-The Vulkan RHI core, isolated SPIR-V indexed draw, Scene-output raster, output-to-ImGui/swapchain handoff, deterministic frame/render graph construction, portable RHI buffer transitions, asynchronous completion tokens, exact resource/device ownership validation, and D3D12 RHI texture-readback parity are complete. The hosted Windows job remains D3D12-only; Ubuntu lavapipe and macOS Intel Apple-Paravirtual/MoltenVK handoff evidence is exact-head CI `29369950355`, not physical-device breadth. Render-graph construction evidence is exact-head CI `29371818096` plus dependency submission `29371818107`; buffer-transition evidence is exact-head CI `29372850292`; completion-token evidence is exact-head CI `29374369710`; resource-ownership evidence is exact-head CI `29375133065` plus dependency submission `29375133081`; D3D12 readback evidence is exact-head CI `29376236937` plus dependency submission `29376236959`. Execution-core evaluation at `82d0bdc` found that immutable resource descriptions cannot validate an imported resource's actual pre-recording state. The new first unchecked prerequisite adds a read-only exact-owner query for wrapper-tracked texture/buffer state on D3D12 and Vulkan/NVRHI; it does not permit callers to adopt or overwrite external state. The executor follows after that gate; cross-queue submission, transient allocation/reuse, and viewport adoption remain later gates.
-
-The shared viewport shader renders a visible checker on stable per-face UVs plus antialiased luminous face frames, inset lines, and corner accents. This replaces the initial object-position quantization, whose `floor` boundary on constant face coordinates caused triangle-dependent precision striping when rotated. The refinement preserves the constant-buffer-only binding layout and adds no texture or sampler. Local D3D12 capture, Vulkan indexed-draw smoke (including unchanged deterministic interior/background pixels), and style pass; exact-head run `29363501290` previously passed the base UV correction on Windows D3D12, Ubuntu Vulkan, macOS MoltenVK, portable tests, and style. This is deliberately not a real texture/material path: sampled-resource and sampler bindings, texture upload/ownership, and material descriptors remain future infrastructure.
-
-### Completed Phase 3C Indexed Draw
-
-The scoped implementation adds SPIR-V-only RHI shader wrappers, reflected `ViewportConstants`/`POSITION0`/`COLOR0` pipeline validation, NVRHI framebuffer/binding/input-layout recording, and `--vulkan-rhi-indexed-draw-smoke`. It loads `Engine/Shaders/EditorViewport.hlsl` through `ShaderLibrary`, validates the existing package/reflection, and passes only SPIR-V to Vulkan. NVRHI graphics additionally gates and enables Vulkan 1.3 dynamic rendering/synchronization2, uses SPIR-V entry point `main`, and maps the current constant-buffer-only layout's HLSL `b0` to descriptor set 0/binding 0.
-
-Local Windows Debug evidence passes: `VulkanRHIIndexedDrawV1` reports every stage `pass`, interior RGBA `210,59,40,255`, and 172 foreground pixels; `EngineTests` remains 35/35 and code style passes. Exact-head run `29361689869` passed Ubuntu lavapipe, macOS MoltenVK, the Windows D3D12 regression, all portable tests, and code style. The roadmap item is complete. No Scene snapshot or ImGui handoff was added.
+The first unchecked `PLAN.md` item is frame/render-graph cross-queue execution. Before implementation, evaluate the current RHI queue/completion contracts against its exact requirements: compiled graphics/compute/copy dependencies must become explicit signal/wait submission and ownership transitions, imported initial/final states must remain authoritative, and unavailable queue classes need the documented single-queue fallback. Do not silently combine this with transient allocation or Scene viewport adoption; those remain separate later gates.
 
 ## Working State
 
-Baseline through Vulkan core is `ee42695`; indexed-draw implementation and hosted corrections are `256a31a`, `813fd9b`, and `f89f9d3`. Vulkan Scene raster/readback is committed as `f2ff2f6`; exact-head run `29368558656` passed Code Style, Windows D3D12 regression, Ubuntu lavapipe Vulkan, macOS MoltenVK, and all portable smoke/test steps. The raster checklist item is complete. The native completed-output-to-presentation/ImGui handoff is the first unchecked item.
+Implementation commit `c8468e9` is on `origin/main`. The evidence-only documentation commit made from this handoff should be the current head, and the working tree must be clean before further work.
