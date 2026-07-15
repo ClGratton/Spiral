@@ -4,35 +4,25 @@ Updated 2026-07-15. This is a recovery aid; `PLAN.md` remains the sole roadmap a
 
 ## Completed Slice
 
-Phase 3's frame/render-graph execution core is implemented, checked, committed as `c8468e9`, and pushed to `main`. The backend-neutral graphics-only executor:
+Phase 3's RHI queue-topology/GPU-dependency prerequisite is implemented and checked. `Engine::RHI` publishes requested/effective queue resolution plus independent/fallback identity and accepts an ordered list of prior opaque completion tokens on submission. The shared monotonic validator rejects zero, foreign, absent, duplicate, prospective-self, and forward identities before native submission; accepting only issued smaller identities makes cycles unrepresentable.
 
-- validates every explicit physical texture/buffer binding for exact device ownership, kind, full description/usage/extent or size, and committed imported initial state before recording;
-- exposes only declared resources and the assigned `Engine::RHI::CommandList` through a restricted per-pass context;
-- records compiler-derived same-queue texture/buffer transitions and callbacks in deterministic compiled order;
-- stops before later callbacks or success on validation, access, callback, recording, submission, or completion failure;
-- publishes imported final states only after `Device::Submit` accepts the list and returns a valid completion token; and
-- manages a bounded three-context pool, reports exhaustion while every token is incomplete, and reuses only the exact context/list whose GPU token retired.
+D3D12 creates command lists for the effective queue. Distinct enabled Copy/Compute queues use GPU queue fence waits against already-signaled producer values; same-effective Graphics fallback relies on ordered submission and emits no wait. Queue identity is based on distinct created objects rather than non-null aliases. The forced diagnostic mode suppresses independent queue creation and exercises the same portable command/dependency path through Graphics. Vulkan queue creation remains unchanged and resolves requested Copy/Compute work to the one enabled Graphics queue.
 
-The executor stays on `Engine::RHI`. It does not implement cross-queue graph signal/wait submission, transient resource allocation/reuse, or Scene viewport adoption.
+This slice does not change RenderGraph execution, add Vulkan multi-queue admission or ownership transfers, allocate transients, or migrate viewport work.
 
 ## Evidence
 
-- Windows/MSVC Debug build: passed with zero warnings/errors.
-- `EngineTests`: 45/45 passed. Focused cases cover binding/state rejection before recording, undeclared and wrong-kind access, callback/completion failure propagation, deterministic barriers/callbacks/final states, three-token exhaustion, and exact retired-context reuse.
-- `Scripts/TestRender.ps1 -Configuration Debug -Action vs2022`: passed real D3D12 `RenderGraphExecutionSmokeV1`.
-- `Scripts/TestVulkan.ps1 -Configuration Debug -Action vs2022`: passed real Vulkan/NVRHI `RenderGraphExecutionSmokeV1`.
-- Both real-device smokes execute two imported-texture clear/finalize passes twice, require three graph-derived transitions and ordered callbacks, reject undeclared access, validate compact deterministic 3x2 RGBA8 readback, observe token retirement, and reuse the same retired context.
-- `Scripts/CheckCodeStyle.ps1`, `git diff --check`, and Markdown-link validation passed.
-- Exact-head implementation CI [run 29378695587](https://github.com/ClGratton/Spiral/actions/runs/29378695587) passed Windows D3D12, Ubuntu Vulkan/lavapipe, macOS MoltenVK, and code style for `c8468e9`. Dependency submission [run 29378695596](https://github.com/ClGratton/Spiral/actions/runs/29378695596) passed.
-
-The immediate RHI prerequisites are also complete and documented in `PLAN.md` and `Docs/Architecture/RENDER_GRAPH_ARCHITECTURE.md`: portable buffer transitions, asynchronous completion tokens and recording reuse, exact resource/device ownership validation, D3D12 RHI texture-readback parity, and committed portable resource-state queries.
+- Windows/MSVC Debug solution build passed with zero warnings/errors.
+- `EngineTests`: 47/47 passed. The two added tests cover requested/effective/independent resolution; one and multiple dependencies in caller order; same-effective elision versus distinct-effective waits; zero, foreign, unissued, duplicate, forward/cycle-forming, and self rejection; no native acceptance/token/state publication after validation failure; valid later publication; and independent token retirement/queryability. The prior 45 tests remain.
+- `Scripts/TestRender.ps1 -Configuration Debug -Action vs2022 -SkipBuild` passed. On the local RTX 3080 Ti, normal D3D12 reported independent Copy and Compute, Copy-to-Graphics and Graphics-to-Compute `gpu-wait`, no CPU wait between submissions, exact 4 KiB output, committed `CopySource`, and retirement. Its second forced-fallback launch reported both classes as `graphics-fallback` and both dependencies `ordered-elided` with identical bytes/state.
+- `Scripts/TestVulkan.ps1 -Configuration Debug -Action vs2022` passed. Vulkan reported truthful Copy/Compute Graphics fallback, both dependencies `ordered-elided`, no CPU wait, and token retirement; buffer-copy bytes/state are explicitly not claimed.
+- `Scripts/CheckCodeStyle.ps1`, `git diff --check`, and tracked-Markdown link validation passed.
+- Hosted CI evidence is pending until the scoped implementation commit is pushed.
 
 ## Next Ordered Work
 
-The cross-queue item was evaluated after the single-queue executor completed and split into dependency-ordered gates. The first unchecked `PLAN.md` item is now the RHI queue-topology and GPU-dependency prerequisite: distinguish independent queues from graphics fallback and add same-device GPU-side submission dependencies, first exercised on D3D12 without changing RenderGraph execution. The following Vulkan/NVRHI admission gate enables and qualifies real compute/copy queues and same-family versus cross-family semantics while preserving graphics-only fallback. Only then does the graph consumer translate compiled dependencies into multi-queue submissions. Do not silently combine these gates with transient allocation or Scene viewport adoption.
-
-All 45 current deterministic `EngineTests` remain intentional. The render-graph/compiler/executor cases cover different ordering, declaration, binding, failure, state-publication, pool-exhaustion, and exact-retirement invariants; no touched test was found redundant. Add focused queue-resolution, dependency, fallback, partial-prefix, and multi-queue retirement coverage rather than weakening existing contracts.
+The first unchecked `PLAN.md` item is Vulkan/NVRHI multi-queue admission: enumerate and create selected Compute/Copy queues/families, retain Graphics fallback, distinguish same-family ordering from cross-family release/acquire ownership transfer, and qualify only exercised support. The following item translates compiled RenderGraph dependencies into multi-queue RHI submissions. Do not silently combine either gate with transient allocation or Scene viewport adoption.
 
 ## Working State
 
-Implementation commit `c8468e9` is on `origin/main`. The evidence-only documentation commit made from this handoff should be the current head, and the working tree must be clean before further work.
+The scoped implementation is ready for commit and push after the final focused test rebuild caused by the last assertion-only edit. After push, record the exact hosted implementation/dependency run IDs and outcomes here. The working tree must be clean at handoff.

@@ -1,6 +1,7 @@
 #include "Engine/RHI/NVRHI/NVRHID3D12Device.h"
 
 #include "Engine/Core/Log.h"
+#include "Engine/RHI/SubmissionDependency.h"
 
 #if defined(GE_HAS_NVRHI_D3D12)
     #ifndef WIN32_LEAN_AND_MEAN
@@ -1349,6 +1350,12 @@ namespace Engine::RHI
 
             const DeviceDescription& GetDescription() const override { return m_Description; }
             const DeviceCapabilities& GetCapabilities() const override { return m_Capabilities; }
+            QueueResolution ResolveQueue(QueueType requested) const override
+            {
+                const QueueType effective = requested == QueueType::Compute && !m_ComputeIndependent ? QueueType::Graphics
+                    : requested == QueueType::Copy && !m_CopyIndependent ? QueueType::Graphics : requested;
+                return { requested, effective, requested == QueueType::Graphics || effective == requested };
+            }
 
             Scope<Buffer> CreateBuffer(const BufferDescription& description) override
             {
@@ -1430,7 +1437,7 @@ namespace Engine::RHI
 
             Scope<CommandList> CreateCommandList(QueueType queueType, std::string_view debugName) override
             {
-                const D3D12_COMMAND_LIST_TYPE commandListType = ConvertCommandListType(queueType);
+                const D3D12_COMMAND_LIST_TYPE commandListType = ConvertCommandListType(ResolveQueue(queueType).Effective);
                 ComPtr<ID3D12CommandAllocator> allocator;
                 HRESULT result = m_Device->CreateCommandAllocator(commandListType, IID_PPV_ARGS(&allocator));
                 if (FAILED(result))
@@ -1609,6 +1616,11 @@ namespace Engine::RHI
 
             CompletionToken Submit(CommandList& commandList) override
             {
+                return Submit(commandList, {});
+            }
+
+            CompletionToken Submit(CommandList& commandList, const std::vector<CompletionToken>& dependencies) override
+            {
                 auto* nativeCommandList = dynamic_cast<NVRHID3D12CommandList*>(&commandList);
                 if (!nativeCommandList || !nativeCommandList->IsReadyToSubmit())
                 {
@@ -1616,7 +1628,8 @@ namespace Engine::RHI
                     return {};
                 }
 
-                ID3D12CommandQueue* queue = GetQueue(nativeCommandList->GetQueueType());
+                const QueueResolution consumer = ResolveQueue(nativeCommandList->GetQueueType());
+                ID3D12CommandQueue* queue = GetQueue(consumer.Effective);
                 ID3D12CommandList* nativeLists[] = { nativeCommandList->GetNativeCommandList() };
                 if (!queue || !nativeLists[0])
                 {
@@ -1624,8 +1637,28 @@ namespace Engine::RHI
                     return {};
                 }
 
+                const SubmissionDependencyError dependencyError = ValidateSubmissionDependencies(
+                    m_CompletionDeviceId, m_NextCompletionSubmissionId, dependencies,
+                    [this](const CompletionToken& dependency) { return FindCompletionEntry(dependency) != nullptr; });
+                if (dependencyError != SubmissionDependencyError::None)
+                {
+                    Log::Error("D3D12 RHI submission rejected dependency validation error ", static_cast<u32>(dependencyError));
+                    return {};
+                }
+                for (const CompletionToken& dependency : dependencies)
+                {
+                    const CompletionEntry* producer = FindCompletionEntry(dependency);
+                    if (producer->Queue == consumer.Effective)
+                        continue;
+                    ID3D12Fence* producerFence = GetSubmissionFence(producer->Queue);
+                    if (!producerFence || FAILED(queue->Wait(producerFence, producer->FenceValue)))
+                    {
+                        Log::Error("D3D12 RHI submission could not enqueue GPU dependency wait");
+                        return {};
+                    }
+                }
                 queue->ExecuteCommandLists(1, nativeLists);
-                const CompletionToken token = SignalQueueSubmission(nativeCommandList->GetQueueType(), queue);
+                const CompletionToken token = SignalQueueSubmission(consumer.Effective, queue);
                 return token.IsValid() && nativeCommandList->MarkSubmitted(token) ? token : CompletionToken {};
             }
 
@@ -2080,7 +2113,7 @@ namespace Engine::RHI
                 if (!CreateQueue(D3D12_COMMAND_LIST_TYPE_DIRECT, L"Spiral Graphics Queue", &m_GraphicsQueue))
                     return false;
 
-                if (m_SelectedAdapterCandidate.Queues.Compute)
+                if (m_SelectedAdapterCandidate.Queues.Compute && !m_Description.ForceGraphicsQueueFallback)
                 {
                     if (!CreateQueue(D3D12_COMMAND_LIST_TYPE_COMPUTE, L"Spiral Compute Queue", &m_ComputeQueue))
                         return false;
@@ -2089,8 +2122,9 @@ namespace Engine::RHI
                 {
                     m_ComputeQueue = m_GraphicsQueue;
                 }
+                m_ComputeIndependent = m_ComputeQueue.Get() != m_GraphicsQueue.Get();
 
-                if (m_SelectedAdapterCandidate.Queues.Copy)
+                if (m_SelectedAdapterCandidate.Queues.Copy && !m_Description.ForceGraphicsQueueFallback)
                 {
                     if (!CreateQueue(D3D12_COMMAND_LIST_TYPE_COPY, L"Spiral Copy Queue", &m_CopyQueue))
                         return false;
@@ -2099,6 +2133,7 @@ namespace Engine::RHI
                 {
                     m_CopyQueue = m_GraphicsQueue;
                 }
+                m_CopyIndependent = m_CopyQueue.Get() != m_GraphicsQueue.Get();
 
                 return true;
             }
@@ -2202,8 +2237,8 @@ namespace Engine::RHI
                 m_Capabilities.Queues.Compute = m_ComputeQueue.Get() != nullptr;
                 m_Capabilities.Queues.Copy = m_CopyQueue.Get() != nullptr;
                 m_Capabilities.Queues.Present = m_GraphicsQueue.Get() != nullptr;
-                m_Capabilities.Queues.DedicatedCompute = m_SelectedAdapterCandidate.Queues.Compute;
-                m_Capabilities.Queues.DedicatedCopy = m_SelectedAdapterCandidate.Queues.Copy;
+                m_Capabilities.Queues.DedicatedCompute = m_ComputeIndependent;
+                m_Capabilities.Queues.DedicatedCopy = m_CopyIndependent;
 
                 const bool rayTracingAdvertised =
                     m_NVRHIDevice->queryFeatureSupport(nvrhi::Feature::RayTracingAccelStruct)
@@ -2257,6 +2292,8 @@ namespace Engine::RHI
             ComPtr<ID3D12CommandQueue> m_GraphicsQueue;
             ComPtr<ID3D12CommandQueue> m_ComputeQueue;
             ComPtr<ID3D12CommandQueue> m_CopyQueue;
+            bool m_ComputeIndependent = false;
+            bool m_CopyIndependent = false;
             std::array<QueueCompletion, 3> m_QueueCompletions;
             u64 m_CompletionDeviceId = 0;
             const u64 m_ResourceOwnerId;

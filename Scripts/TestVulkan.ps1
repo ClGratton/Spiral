@@ -17,7 +17,7 @@ if (!(Test-Path $Executable)) {
     throw "Vulkan smoke executable was not found: $Executable"
 }
 
-$Output = & $Executable --vulkan-render-smoke --renderer-capability-smoke --vulkan-rhi-core-smoke --vulkan-rhi-indexed-draw-smoke --vulkan-scene-viewport-raster-smoke --rhi-buffer-transition-smoke --rhi-completion-smoke --rhi-resource-ownership-smoke --rhi-resource-state-smoke --render-graph-execution-smoke 2>&1 | Tee-Object -Variable VulkanLog
+$Output = & $Executable --vulkan-render-smoke --renderer-capability-smoke --vulkan-rhi-core-smoke --vulkan-rhi-indexed-draw-smoke --vulkan-scene-viewport-raster-smoke --rhi-buffer-transition-smoke --rhi-completion-smoke --rhi-queue-dependency-smoke --rhi-resource-ownership-smoke --rhi-resource-state-smoke --render-graph-execution-smoke 2>&1 | Tee-Object -Variable VulkanLog
 if ($LASTEXITCODE -ne 0) {
     throw "Vulkan render smoke failed with exit code $LASTEXITCODE."
 }
@@ -38,6 +38,7 @@ $RequiredMarkers = @(
     "Vulkan render smoke verified native ImGui presentation after resize",
     "RHIBufferTransitionSmokeV1 backend=Vulkan, invalid=rejected, lifecycle=pass, submission=pass, result=pass",
     "RHICompletionSmokeV1 backend=Vulkan, tokenValidation=pass, query=nonblocking-",
+    "RHIQueueDependencySmokeV1 backend=Vulkan,",
     "RHIResourceOwnershipSmokeV1 backend=Vulkan, owned=pass, null=rejected, result=pass",
     "RHIResourceStateSmokeV1 backend=Vulkan, initial=pass, pending=hidden, invalid=rejected, submission=pass, final=pass, result=pass",
     "VulkanRHICoreV1",
@@ -57,6 +58,9 @@ foreach ($Marker in $RequiredMarkers) {
 }
 if ($JoinedLog -notmatch 'RHICompletionSmokeV1 backend=Vulkan, tokenValidation=pass, query=nonblocking-(incomplete|complete), wait=pass, reuse=pass, result=pass') {
     throw "Vulkan render smoke did not prove completion-token retirement and recording reuse."
+}
+if ($JoinedLog -notmatch 'RHIQueueDependencySmokeV1 backend=Vulkan, copy=graphics-fallback, compute=graphics-fallback, copyToGraphics=ordered-elided, graphicsToCompute=ordered-elided, cpuWaitBetween=no, bytes=not-required, finalState=not-required, retirement=pass, result=pass') {
+    throw "Vulkan smoke did not prove truthful graphics fallback and same-effective ordered dependencies."
 }
 $DiagnosticsPattern = "Editor renderer capability diagnostics rendered: profile=Phase 3 Vulkan Bootstrap Presentation V1, adapter=.+, qualification=Bootstrap, formats=[1-9][0-9]*, features=9, groups=1, candidates=[1-9][0-9]*"
 if ($JoinedLog -notmatch $DiagnosticsPattern) {

@@ -1,6 +1,7 @@
 #include "Engine/RHI/NVRHI/NVRHIVulkanDevice.h"
 
 #include "Engine/Core/Log.h"
+#include "Engine/RHI/SubmissionDependency.h"
 
 #if defined(GE_HAS_NVRHI_VULKAN)
     #include <nvrhi/nvrhi.h>
@@ -382,6 +383,10 @@ namespace Engine::RHI
                 , m_ResourceOwnerId(s_NextResourceOwnerId.fetch_add(1)) {}
             const DeviceDescription& GetDescription() const override { return m_Description; }
             const DeviceCapabilities& GetCapabilities() const override { return m_Capabilities; }
+            QueueResolution ResolveQueue(QueueType requested) const override
+            {
+                return { requested, QueueType::Graphics, requested == QueueType::Graphics };
+            }
             Scope<Buffer> CreateBuffer(const BufferDescription& description) override
             {
                 if (!m_Device || !description.SizeBytes) return nullptr;
@@ -494,7 +499,7 @@ namespace Engine::RHI
             Scope<QueryPool> CreateQueryPool(const QueryPoolDescription&) override { Log::Error("Vulkan RHI query pools are not implemented"); return nullptr; }
             Scope<CommandList> CreateCommandList(QueueType type, std::string_view name) override
             {
-                if (!m_Device || type != QueueType::Graphics) return nullptr;
+                if (!m_Device) return nullptr;
                 nvrhi::CommandListHandle list = m_Device->createCommandList(); return list ? CreateScope<VulkanCommandList>(type, std::string(name), list, m_Device,
                     [this](const CompletionToken& token) { return QueryCompletion(token); }) : nullptr;
             }
@@ -534,8 +539,17 @@ namespace Engine::RHI
             }
             CompletionToken Submit(CommandList& commandList) override
             {
+                return Submit(commandList, {});
+            }
+            CompletionToken Submit(CommandList& commandList, const std::vector<CompletionToken>& dependencies) override
+            {
                 auto* list = dynamic_cast<VulkanCommandList*>(&commandList);
                 if (!m_Device || !m_CompletionDevice || !list || !list->Ready())
+                    return {};
+                const SubmissionDependencyError dependencyError = ValidateSubmissionDependencies(
+                    m_CompletionDeviceId, m_NextCompletionSubmissionId, dependencies,
+                    [this](const CompletionToken& dependency) { return FindCompletionEntry(dependency) != m_CompletionEntries.end(); });
+                if (dependencyError != SubmissionDependencyError::None)
                     return {};
                 const u64 nativeSubmissionId = m_Device->executeCommandList(list->Native());
                 if (nativeSubmissionId == 0)

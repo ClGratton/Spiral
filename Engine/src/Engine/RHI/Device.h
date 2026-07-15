@@ -81,6 +81,13 @@ namespace Engine::RHI
         }
     };
 
+    struct QueueResolution
+    {
+        QueueType Requested = QueueType::Graphics;
+        QueueType Effective = QueueType::Graphics;
+        bool Independent = false;
+    };
+
     class Device
     {
     public:
@@ -88,6 +95,7 @@ namespace Engine::RHI
 
         virtual const DeviceDescription& GetDescription() const = 0;
         virtual const DeviceCapabilities& GetCapabilities() const = 0;
+        virtual QueueResolution ResolveQueue(QueueType requested) const { return { requested, QueueType::Graphics, requested == QueueType::Graphics }; }
 
         virtual Scope<Buffer> CreateBuffer(const BufferDescription& description) = 0;
         virtual Scope<Texture> CreateTexture(const TextureDescription& description) = 0;
@@ -108,6 +116,10 @@ namespace Engine::RHI
         // Returns after the queue accepts closed work. The opaque token is
         // subsequently owned by this Device for query/wait/reuse decisions.
         virtual CompletionToken Submit(CommandList& commandList) = 0;
+        virtual CompletionToken Submit(CommandList& commandList, const std::vector<CompletionToken>& dependencies)
+        {
+            (void)commandList; (void)dependencies; return {};
+        }
         virtual CompletionStatus QueryCompletion(const CompletionToken& token) = 0;
         // A finite timeout is required; false reports invalid/stale/cross-device
         // tokens, device failure, or an incomplete timeout.

@@ -107,6 +107,7 @@ namespace Engine::RHI
         bool EnableValidation = true;
         bool EnableRayTracing = false;
         bool EnableWorkGraphs = false;
+        bool ForceGraphicsQueueFallback = false;
         std::string PreferredAdapterName;
         bool RequirePreferredAdapter = false;
     };

@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 
 namespace Engine
 {
@@ -40,6 +41,7 @@ namespace Engine
         const ApplicationCommandLineArgs& args = Application::Get().GetSpecification().CommandLineArgs;
         description.PreferredAdapterName = args.GetOptionValue("--renderer-adapter");
         description.RequirePreferredAdapter = args.HasFlag("--renderer-adapter-strict");
+        description.ForceGraphicsQueueFallback = args.HasFlag("--rhi-force-graphics-queue-fallback");
         if (description.RequirePreferredAdapter && description.PreferredAdapterName.empty())
         {
             Log::Error("--renderer-adapter-strict requires --renderer-adapter=<exact adapter name>");
@@ -78,6 +80,14 @@ namespace Engine
                 && !RunRHICompletionSmoke(*m_VulkanContext->GetRHIDevice(), "Vulkan"))
             {
                 Log::Error("Vulkan RHI completion smoke failed");
+                m_VulkanContext->Shutdown();
+                m_VulkanContext.reset();
+                return false;
+            }
+            if (args.HasFlag("--rhi-queue-dependency-smoke")
+                && !RunRHIQueueDependencySmoke(*m_VulkanContext->GetRHIDevice(), "Vulkan"))
+            {
+                Log::Error("Vulkan RHI queue-dependency smoke failed");
                 m_VulkanContext->Shutdown();
                 m_VulkanContext.reset();
                 return false;
@@ -146,6 +156,12 @@ namespace Engine
             if (args.HasFlag("--rhi-completion-smoke") && !RunRHICompletionSmoke(*m_Device, "D3D12"))
             {
                 Log::Error("D3D12 RHI completion smoke failed");
+                m_Device.reset();
+                return false;
+            }
+            if (args.HasFlag("--rhi-queue-dependency-smoke") && !RunRHIQueueDependencySmoke(*m_Device, "D3D12"))
+            {
+                Log::Error("D3D12 RHI queue-dependency smoke failed");
                 m_Device.reset();
                 return false;
             }
@@ -489,6 +505,114 @@ namespace Engine
             ", wait=", finalComplete ? "pass" : "fail",
             ", reuse=", (incompleteReuseRejected && reuseRetired) ? "pass" : "fail",
             ", result=", passed ? "pass" : "fail");
+        return passed;
+    }
+
+    bool NVRHIRenderBackend::RunRHIQueueDependencySmoke(RHI::Device& device, std::string_view backendName)
+    {
+        const RHI::QueueResolution copy = device.ResolveQueue(RHI::QueueType::Copy);
+        const RHI::QueueResolution graphics = device.ResolveQueue(RHI::QueueType::Graphics);
+        const RHI::QueueResolution compute = device.ResolveQueue(RHI::QueueType::Compute);
+        if (backendName == "Vulkan")
+        {
+            Scope<RHI::CommandList> copyList = device.CreateCommandList(RHI::QueueType::Copy, "RHIQueueDependencyCopyV1");
+            const bool copyClosed = copyList && copyList->Begin() && copyList->End();
+            const RHI::CompletionToken copyToken = copyClosed ? device.Submit(*copyList) : RHI::CompletionToken {};
+            Scope<RHI::CommandList> graphicsList = copyToken.IsValid()
+                ? device.CreateCommandList(RHI::QueueType::Graphics, "RHIQueueDependencyGraphicsV1") : nullptr;
+            const bool graphicsClosed = graphicsList && graphicsList->Begin() && graphicsList->End();
+            const RHI::CompletionToken graphicsToken = graphicsClosed
+                ? device.Submit(*graphicsList, { copyToken }) : RHI::CompletionToken {};
+            Scope<RHI::CommandList> computeList = graphicsToken.IsValid()
+                ? device.CreateCommandList(RHI::QueueType::Compute, "RHIQueueDependencyComputeV1") : nullptr;
+            const bool computeClosed = computeList && computeList->Begin() && computeList->End();
+            const RHI::CompletionToken computeToken = computeClosed
+                ? device.Submit(*computeList, { graphicsToken }) : RHI::CompletionToken {};
+            const bool retired = computeToken.IsValid() && device.WaitForCompletion(computeToken, 5000)
+                && device.QueryCompletion(copyToken) == RHI::CompletionStatus::Complete
+                && device.QueryCompletion(graphicsToken) == RHI::CompletionStatus::Complete;
+            const bool passed = copy.Requested == RHI::QueueType::Copy && copy.Effective == RHI::QueueType::Graphics && !copy.Independent
+                && compute.Requested == RHI::QueueType::Compute && compute.Effective == RHI::QueueType::Graphics && !compute.Independent
+                && retired;
+            Log::Info("RHIQueueDependencySmokeV1 backend=Vulkan, copy=graphics-fallback, compute=graphics-fallback, "
+                "copyToGraphics=ordered-elided, graphicsToCompute=ordered-elided, cpuWaitBetween=no, bytes=not-required, "
+                "finalState=not-required, retirement=", retired ? "pass" : "fail", ", result=", passed ? "pass" : "fail");
+            return passed;
+        }
+        constexpr u32 valueCount = 1024;
+        constexpr u64 byteCount = valueCount * sizeof(u32);
+        std::array<u32, valueCount> expected {};
+        for (u32 index = 0; index < valueCount; ++index)
+            expected[index] = 0x51A70000u ^ (index * 2654435761u);
+
+        RHI::BufferDescription uploadDescription;
+        uploadDescription.DebugName = "RHIQueueDependencyV1 Upload";
+        uploadDescription.SizeBytes = byteCount;
+        uploadDescription.Usage = RHI::BufferUsage::CopySource;
+        uploadDescription.CpuAccess = RHI::BufferCpuAccess::Write;
+        RHI::BufferDescription intermediateDescription;
+        intermediateDescription.DebugName = "RHIQueueDependencyV1 Intermediate";
+        intermediateDescription.SizeBytes = byteCount;
+        intermediateDescription.Usage = static_cast<RHI::BufferUsage>(
+            static_cast<u32>(RHI::BufferUsage::CopySource) | static_cast<u32>(RHI::BufferUsage::CopyDest));
+        intermediateDescription.InitialState = RHI::ResourceState::CopyDest;
+        RHI::BufferDescription readbackDescription;
+        readbackDescription.DebugName = "RHIQueueDependencyV1 Readback";
+        readbackDescription.SizeBytes = byteCount;
+        readbackDescription.Usage = RHI::BufferUsage::CopyDest;
+        readbackDescription.CpuAccess = RHI::BufferCpuAccess::Read;
+        Scope<RHI::Buffer> upload = device.CreateBuffer(uploadDescription);
+        Scope<RHI::Buffer> intermediate = device.CreateBuffer(intermediateDescription);
+        Scope<RHI::Buffer> readback = device.CreateBuffer(readbackDescription);
+        void* uploadData = upload ? upload->Map() : nullptr;
+        if (uploadData)
+        {
+            std::memcpy(uploadData, expected.data(), static_cast<size_t>(byteCount));
+            upload->Unmap();
+        }
+
+        Scope<RHI::CommandList> copyList = uploadData && intermediate && readback
+            ? device.CreateCommandList(RHI::QueueType::Copy, "RHIQueueDependencyCopyV1") : nullptr;
+        const bool copyClosed = copyList && copyList->Begin()
+            && copyList->CopyBuffer(*intermediate, 0, *upload, 0, byteCount)
+            && copyList->TransitionBuffer(*intermediate, RHI::ResourceState::CopySource)
+            && copyList->End();
+        const RHI::CompletionToken copyToken = copyClosed ? device.Submit(*copyList) : RHI::CompletionToken {};
+        RHI::ResourceState finalState = RHI::ResourceState::Unknown;
+        const bool statePublished = copyToken.IsValid()
+            && device.QueryResourceState(intermediate.get(), finalState) && finalState == RHI::ResourceState::CopySource;
+
+        Scope<RHI::CommandList> graphicsList = statePublished
+            ? device.CreateCommandList(RHI::QueueType::Graphics, "RHIQueueDependencyGraphicsV1") : nullptr;
+        const bool graphicsClosed = graphicsList && graphicsList->Begin()
+            && graphicsList->CopyBuffer(*readback, 0, *intermediate, 0, byteCount) && graphicsList->End();
+        const RHI::CompletionToken graphicsToken = graphicsClosed
+            ? device.Submit(*graphicsList, { copyToken }) : RHI::CompletionToken {};
+
+        Scope<RHI::CommandList> computeList = graphicsToken.IsValid()
+            ? device.CreateCommandList(RHI::QueueType::Compute, "RHIQueueDependencyComputeV1") : nullptr;
+        const bool computeClosed = computeList && computeList->Begin() && computeList->End();
+        const RHI::CompletionToken computeToken = computeClosed
+            ? device.Submit(*computeList, { graphicsToken }) : RHI::CompletionToken {};
+        const bool retired = computeToken.IsValid() && device.WaitForCompletion(computeToken, 5000)
+            && device.QueryCompletion(copyToken) == RHI::CompletionStatus::Complete
+            && device.QueryCompletion(graphicsToken) == RHI::CompletionStatus::Complete;
+        const void* readbackData = retired ? readback->Map() : nullptr;
+        const bool bytesMatch = readbackData && std::memcmp(readbackData, expected.data(), static_cast<size_t>(byteCount)) == 0;
+        if (readbackData)
+            readback->Unmap();
+        const bool topology = graphics.Effective == RHI::QueueType::Graphics && graphics.Independent
+            && (!copy.Independent ? copy.Effective == RHI::QueueType::Graphics : copy.Effective == RHI::QueueType::Copy)
+            && (!compute.Independent ? compute.Effective == RHI::QueueType::Graphics : compute.Effective == RHI::QueueType::Compute);
+        const bool passed = topology && statePublished && graphicsToken.IsValid() && computeToken.IsValid() && retired && bytesMatch;
+        Log::Info("RHIQueueDependencySmokeV1 backend=", backendName,
+            ", copy=", copy.Independent ? "independent" : "graphics-fallback",
+            ", compute=", compute.Independent ? "independent" : "graphics-fallback",
+            ", copyToGraphics=", copy.Effective == graphics.Effective ? "ordered-elided" : "gpu-wait",
+            ", graphicsToCompute=", graphics.Effective == compute.Effective ? "ordered-elided" : "gpu-wait",
+            ", cpuWaitBetween=no, bytes=", bytesMatch ? "pass" : "fail",
+            ", finalState=", statePublished ? "CopySource" : "fail",
+            ", retirement=", retired ? "pass" : "fail", ", result=", passed ? "pass" : "fail");
         return passed;
     }
 

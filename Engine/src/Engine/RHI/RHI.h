@@ -8,5 +8,6 @@
 #include "Engine/RHI/Query.h"
 #include "Engine/RHI/RHICommon.h"
 #include "Engine/RHI/Shader.h"
+#include "Engine/RHI/SubmissionDependency.h"
 #include "Engine/RHI/Swapchain.h"
 #include "Engine/RHI/Texture.h"

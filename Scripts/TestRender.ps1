@@ -38,9 +38,14 @@ foreach ($Path in @($ResolvedCapturePath) + $SceneOriginCapturePaths) {
     }
 }
 
-$Output = & $Editor --capture-viewport --smoke-test --renderer-capability-smoke --scene-origin-raster-smoke --rhi-buffer-transition-smoke --rhi-completion-smoke --rhi-resource-ownership-smoke --rhi-resource-state-smoke --rhi-texture-readback-smoke --render-graph-execution-smoke 2>&1 | Tee-Object -Variable RenderLog
+$Output = & $Editor --capture-viewport --smoke-test --renderer-capability-smoke --scene-origin-raster-smoke --rhi-buffer-transition-smoke --rhi-completion-smoke --rhi-queue-dependency-smoke --rhi-resource-ownership-smoke --rhi-resource-state-smoke --rhi-texture-readback-smoke --render-graph-execution-smoke 2>&1 | Tee-Object -Variable RenderLog
 if ($LASTEXITCODE -ne 0) {
     throw "Editor render smoke run failed with exit code $LASTEXITCODE."
+}
+
+$FallbackOutput = & $Editor --smoke-test --rhi-queue-dependency-smoke --rhi-force-graphics-queue-fallback 2>&1 | Tee-Object -Variable FallbackLog
+if ($LASTEXITCODE -ne 0) {
+    throw "Editor forced graphics-queue fallback smoke failed with exit code $LASTEXITCODE."
 }
 
 $RequiredMarkers = @(
@@ -58,6 +63,7 @@ $RequiredMarkers = @(
     "D3D12 scene origin raster smoke passed",
     "RHIBufferTransitionSmokeV1 backend=D3D12, invalid=rejected, lifecycle=pass, submission=pass, result=pass"
     "RHICompletionSmokeV1 backend=D3D12, tokenValidation=pass, query=nonblocking-"
+    "RHIQueueDependencySmokeV1 backend=D3D12,"
     "RHIResourceOwnershipSmokeV1 backend=D3D12, owned=pass, null=rejected, result=pass"
     "RHIResourceStateSmokeV1 backend=D3D12, initial=pass, pending=hidden, invalid=rejected, submission=pass, final=pass, result=pass"
     "RHITextureReadbackSmokeV1 backend=D3D12, invalidState=rejected, unsupportedFormat=rejected, submit=pass, readback=pass, layout=tight, result=pass"
@@ -71,6 +77,20 @@ foreach ($Marker in $RequiredMarkers) {
 }
 if ($JoinedLog -notmatch 'RHICompletionSmokeV1 backend=D3D12, tokenValidation=pass, query=nonblocking-(incomplete|complete), wait=pass, reuse=pass, result=pass') {
     throw "D3D12 render smoke did not prove completion-token retirement and recording reuse."
+}
+$QueueDependencyPattern = 'RHIQueueDependencySmokeV1 backend=D3D12, copy=(?<copy>independent|graphics-fallback), compute=(?<compute>independent|graphics-fallback), copyToGraphics=(?<copyMode>gpu-wait|ordered-elided), graphicsToCompute=(?<computeMode>gpu-wait|ordered-elided), cpuWaitBetween=no, bytes=pass, finalState=CopySource, retirement=pass, result=pass'
+$QueueDependencyMatch = [regex]::Match($JoinedLog, $QueueDependencyPattern)
+if (!$QueueDependencyMatch.Success) {
+    throw "D3D12 render smoke did not prove deterministic GPU dependency output and retirement."
+}
+$CopyTopologyMatchesMode = ($QueueDependencyMatch.Groups['copy'].Value -eq 'independent') -eq ($QueueDependencyMatch.Groups['copyMode'].Value -eq 'gpu-wait')
+$ComputeTopologyMatchesMode = ($QueueDependencyMatch.Groups['compute'].Value -eq 'independent') -eq ($QueueDependencyMatch.Groups['computeMode'].Value -eq 'gpu-wait')
+if (!$CopyTopologyMatchesMode -or !$ComputeTopologyMatchesMode) {
+    throw "D3D12 queue topology and wait/elision evidence disagree."
+}
+$FallbackJoinedLog = $FallbackLog -join "`n"
+if ($FallbackJoinedLog -notmatch 'RHIQueueDependencySmokeV1 backend=D3D12, copy=graphics-fallback, compute=graphics-fallback, copyToGraphics=ordered-elided, graphicsToCompute=ordered-elided, cpuWaitBetween=no, bytes=pass, finalState=CopySource, retirement=pass, result=pass') {
+    throw "D3D12 forced fallback smoke did not prove same-effective-graphics ordered dependencies."
 }
 
 $ConventionEvidence = "schema=1\|matrix=row-major\|d3dClipDepth=zero-to-one\|spirvY=inverted\|frontFace=clockwise\|binding=D3DRegisterSpace"

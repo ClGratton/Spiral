@@ -4,6 +4,7 @@
 #include "Engine/Math/WorldGrid.h"
 #include "Engine/RenderGraph/RenderGraph.h"
 #include "Engine/RHI/Device.h"
+#include "Engine/RHI/SubmissionDependency.h"
 #include "Engine/Renderer/CapabilityDiagnostics.h"
 #include "Engine/Renderer/AsyncShaderPackageService.h"
 #include "Engine/Renderer/PortableShaderContract.h"
@@ -2193,11 +2194,11 @@ float4 main(VertexInput input) : SV_Position
     class RenderGraphTestCommandList final : public Engine::RHI::CommandList
     {
     public:
-        RenderGraphTestCommandList(Engine::u32 id, int& beginCount, std::vector<Engine::u32>& begunIds,
+        RenderGraphTestCommandList(Engine::u32 id, Engine::RHI::QueueType queue, int& beginCount, std::vector<Engine::u32>& begunIds,
             std::vector<std::string>& events)
-            : m_Id(id), m_BeginCount(beginCount), m_BegunIds(begunIds), m_Events(events) {}
+            : m_Id(id), m_Queue(queue), m_BeginCount(beginCount), m_BegunIds(begunIds), m_Events(events) {}
 
-        Engine::RHI::QueueType GetQueueType() const override { return Engine::RHI::QueueType::Graphics; }
+        Engine::RHI::QueueType GetQueueType() const override { return m_Queue; }
         bool Begin() override
         {
             if (m_Recording) return false;
@@ -2262,6 +2263,7 @@ float4 main(VertexInput input) : SV_Position
         struct TextureTransition { RenderGraphTestTexture* Resource = nullptr; Engine::RHI::ResourceState State = Engine::RHI::ResourceState::Unknown; };
         struct BufferTransition { RenderGraphTestBuffer* Resource = nullptr; Engine::RHI::ResourceState State = Engine::RHI::ResourceState::Unknown; };
         Engine::u32 m_Id = 0;
+        Engine::RHI::QueueType m_Queue = Engine::RHI::QueueType::Graphics;
         int& m_BeginCount;
         std::vector<Engine::u32>& m_BegunIds;
         std::vector<std::string>& m_Events;
@@ -2274,13 +2276,21 @@ float4 main(VertexInput input) : SV_Position
     class RenderGraphTestDevice final : public Engine::RHI::Device
     {
     public:
-        explicit RenderGraphTestDevice(Engine::u64 ownerId = 7001) : m_OwnerId(ownerId)
+        explicit RenderGraphTestDevice(Engine::u64 ownerId = 7001, bool computeIndependent = false, bool copyIndependent = false)
+            : m_OwnerId(ownerId), m_ComputeIndependent(computeIndependent), m_CopyIndependent(copyIndependent)
         {
             m_Completions.push_back(Engine::RHI::CompletionStatus::Invalid);
         }
 
         const Engine::RHI::DeviceDescription& GetDescription() const override { return m_Description; }
         const Engine::RHI::DeviceCapabilities& GetCapabilities() const override { return m_Capabilities; }
+        Engine::RHI::QueueResolution ResolveQueue(Engine::RHI::QueueType requested) const override
+        {
+            const Engine::RHI::QueueType effective = requested == Engine::RHI::QueueType::Compute && !m_ComputeIndependent
+                ? Engine::RHI::QueueType::Graphics
+                : requested == Engine::RHI::QueueType::Copy && !m_CopyIndependent ? Engine::RHI::QueueType::Graphics : requested;
+            return { requested, effective, requested == Engine::RHI::QueueType::Graphics || requested == effective };
+        }
         Engine::Scope<Engine::RHI::Buffer> CreateBuffer(const Engine::RHI::BufferDescription& description) override
         {
             return Engine::CreateScope<RenderGraphTestBuffer>(m_OwnerId, description, description.InitialState);
@@ -2318,19 +2328,42 @@ float4 main(VertexInput input) : SV_Position
         Engine::Scope<Engine::RHI::QueryPool> CreateQueryPool(const Engine::RHI::QueryPoolDescription&) override { return nullptr; }
         Engine::Scope<Engine::RHI::CommandList> CreateCommandList(Engine::RHI::QueueType queue, std::string_view) override
         {
-            if (queue != Engine::RHI::QueueType::Graphics) return nullptr;
             const Engine::u32 id = ++CreatedCommandListCount;
-            return Engine::CreateScope<RenderGraphTestCommandList>(id, BeginCount, BegunCommandListIds, Events);
+            return Engine::CreateScope<RenderGraphTestCommandList>(id, queue, BeginCount, BegunCommandListIds, Events);
         }
         bool UploadBuffer(Engine::RHI::Buffer&, const void*, Engine::u64, Engine::u64) override { return false; }
         bool ReadbackTexture(Engine::RHI::Texture&, Engine::RHI::TextureReadback&) override { return false; }
         Engine::RHI::CompletionToken Submit(Engine::RHI::CommandList& commandList) override
         {
+            return Submit(commandList, {});
+        }
+        Engine::RHI::CompletionToken Submit(Engine::RHI::CommandList& commandList,
+            const std::vector<Engine::RHI::CompletionToken>& dependencies) override
+        {
             auto* list = dynamic_cast<RenderGraphTestCommandList*>(&commandList);
-            if (!list || !list->Commit()) return {};
             const Engine::u64 submissionId = m_Completions.size();
+            const Engine::RHI::SubmissionDependencyError dependencyError = Engine::RHI::ValidateSubmissionDependencies(
+                m_OwnerId, submissionId, dependencies,
+                [this](const Engine::RHI::CompletionToken& dependency)
+                {
+                    return dependency.SubmissionId > 0 && dependency.SubmissionId < m_Completions.size();
+                });
+            if (!list || dependencyError != Engine::RHI::SubmissionDependencyError::None)
+                return {};
+            for (const Engine::RHI::CompletionToken& dependency : dependencies)
+            {
+                DependencyOrder.push_back(dependency);
+                if (ResolveQueue(list->GetQueueType()).Effective
+                    == m_SubmissionQueues[static_cast<size_t>(dependency.SubmissionId)])
+                    ++ElidedDependencyCount;
+                else
+                    ++GpuWaitDependencyCount;
+            }
+            if (!list->Commit()) return {};
             m_Completions.push_back(Engine::RHI::CompletionStatus::Incomplete);
+            m_SubmissionQueues.push_back(ResolveQueue(list->GetQueueType()).Effective);
             ++SubmitCount;
+            ++NativeSubmissionCount;
             SubmittedCommandListIds.push_back(list->GetId());
             return { m_OwnerId, submissionId };
         }
@@ -2360,17 +2393,117 @@ float4 main(VertexInput input) : SV_Position
 
         int BeginCount = 0;
         int SubmitCount = 0;
+        int NativeSubmissionCount = 0;
+        int ElidedDependencyCount = 0;
+        int GpuWaitDependencyCount = 0;
         Engine::u32 CreatedCommandListCount = 0;
         std::vector<Engine::u32> BegunCommandListIds;
         std::vector<Engine::u32> SubmittedCommandListIds;
+        std::vector<Engine::RHI::CompletionToken> DependencyOrder;
         std::vector<std::string> Events;
 
     private:
         Engine::u64 m_OwnerId = 0;
+        bool m_ComputeIndependent = false;
+        bool m_CopyIndependent = false;
         Engine::RHI::DeviceDescription m_Description;
         Engine::RHI::DeviceCapabilities m_Capabilities;
         std::vector<Engine::RHI::CompletionStatus> m_Completions;
+        std::vector<Engine::RHI::QueueType> m_SubmissionQueues { Engine::RHI::QueueType::Graphics };
     };
+
+    bool TestRhiSubmissionDependencyValidation()
+    {
+        using namespace Engine::RHI;
+        const Engine::u64 deviceId = 91;
+        const Engine::u64 prospectiveSubmissionId = 10;
+        const auto issued = [](const CompletionToken& token)
+        {
+            return token.SubmissionId == 1 || token.SubmissionId == 2 || token.SubmissionId == 4;
+        };
+        return Expect(ValidateSubmissionDependencies(deviceId, prospectiveSubmissionId, { { deviceId, 1 } }, issued)
+                == SubmissionDependencyError::None, "one prior issued dependency is accepted")
+            && Expect(ValidateSubmissionDependencies(deviceId, prospectiveSubmissionId, { { deviceId, 1 }, { deviceId, 4 } }, issued)
+                == SubmissionDependencyError::None, "multiple prior dependencies retain input order and are accepted")
+            && Expect(ValidateSubmissionDependencies(deviceId, prospectiveSubmissionId, { {} }, issued)
+                == SubmissionDependencyError::Zero, "zero dependency is rejected")
+            && Expect(ValidateSubmissionDependencies(deviceId, prospectiveSubmissionId, { { deviceId + 1, 1 } }, issued)
+                == SubmissionDependencyError::ForeignDevice, "foreign-device dependency is rejected")
+            && Expect(ValidateSubmissionDependencies(deviceId, prospectiveSubmissionId, { { deviceId, 3 } }, issued)
+                == SubmissionDependencyError::Unissued, "unissued prior identity is rejected")
+            && Expect(ValidateSubmissionDependencies(deviceId, prospectiveSubmissionId, { { deviceId, 1 }, { deviceId, 1 } }, issued)
+                == SubmissionDependencyError::Duplicate, "duplicate dependency is rejected")
+            && Expect(ValidateSubmissionDependencies(deviceId, prospectiveSubmissionId, { { deviceId, 11 } }, issued)
+                == SubmissionDependencyError::Forward, "forward dependency is rejected")
+            && Expect(ValidateSubmissionDependencies(deviceId, prospectiveSubmissionId, { { deviceId, 10 } }, issued)
+                == SubmissionDependencyError::ImpossibleSelf, "prospective self dependency is rejected")
+            && Expect(ValidateSubmissionDependencies(deviceId, prospectiveSubmissionId, { { deviceId, 10 }, { deviceId, 1 } }, issued)
+                != SubmissionDependencyError::None, "the prior-only token model rejects a cycle-forming edge");
+    }
+
+    bool TestRhiQueueTopologyDependencySubmissionContract()
+    {
+        using namespace Engine::RHI;
+        constexpr Engine::u64 ownerId = 8101;
+        RenderGraphTestDevice device(ownerId, true, false);
+        const QueueResolution graphics = device.ResolveQueue(QueueType::Graphics);
+        const QueueResolution compute = device.ResolveQueue(QueueType::Compute);
+        const QueueResolution copy = device.ResolveQueue(QueueType::Copy);
+
+        Engine::Scope<CommandList> copyList = device.CreateCommandList(QueueType::Copy, "dependency-copy");
+        Engine::Scope<CommandList> graphicsList = device.CreateCommandList(QueueType::Graphics, "dependency-graphics");
+        Engine::Scope<CommandList> computeList = device.CreateCommandList(QueueType::Compute, "dependency-compute");
+        const bool closed = copyList && graphicsList && computeList && copyList->Begin() && copyList->End()
+            && graphicsList->Begin() && graphicsList->End() && computeList->Begin() && computeList->End();
+        const CompletionToken copyToken = closed ? device.Submit(*copyList) : CompletionToken {};
+        const CompletionToken graphicsToken = copyToken.IsValid() ? device.Submit(*graphicsList, { copyToken }) : CompletionToken {};
+        const CompletionToken computeToken = graphicsToken.IsValid() ? device.Submit(*computeList, { copyToken, graphicsToken }) : CompletionToken {};
+
+        BufferDescription description;
+        description.DebugName = "dependency-state-publication";
+        description.SizeBytes = sizeof(Engine::u32);
+        description.Usage = static_cast<BufferUsage>(static_cast<Engine::u32>(BufferUsage::CopySource) | static_cast<Engine::u32>(BufferUsage::CopyDest));
+        description.InitialState = ResourceState::CopyDest;
+        Engine::Scope<Buffer> buffer = device.CreateBuffer(description);
+        Engine::Scope<CommandList> failureList = device.CreateCommandList(QueueType::Graphics, "dependency-validation-failure");
+        const bool pending = buffer && failureList && failureList->Begin()
+            && failureList->TransitionBuffer(*buffer, ResourceState::CopySource) && failureList->End();
+        ResourceState observed = ResourceState::Unknown;
+        const int submissionsBeforeFailure = device.NativeSubmissionCount;
+        const bool invalidRejected = pending
+            && !device.Submit(*failureList, { {} }).IsValid()
+            && !device.Submit(*failureList, { { ownerId + 1, 1 } }).IsValid()
+            && !device.Submit(*failureList, { { ownerId, 99 } }).IsValid()
+            && !device.Submit(*failureList, { copyToken, copyToken }).IsValid()
+            && !device.Submit(*failureList, { { ownerId, 4 } }).IsValid();
+        const bool unpublished = invalidRejected && device.NativeSubmissionCount == submissionsBeforeFailure
+            && device.QueryResourceState(buffer.get(), observed) && observed == ResourceState::CopyDest;
+        const CompletionToken accepted = unpublished ? device.Submit(*failureList, { graphicsToken }) : CompletionToken {};
+        const bool published = accepted.IsValid() && device.QueryResourceState(buffer.get(), observed) && observed == ResourceState::CopySource;
+
+        device.SetCompletion(copyToken, CompletionStatus::Complete);
+        const bool independentRetirement = device.QueryCompletion(copyToken) == CompletionStatus::Complete
+            && device.QueryCompletion(graphicsToken) == CompletionStatus::Incomplete
+            && device.QueryCompletion(computeToken) == CompletionStatus::Incomplete;
+        device.SetCompletion(graphicsToken, CompletionStatus::Complete);
+        const bool queryableAfterRetirement = device.QueryCompletion(copyToken) == CompletionStatus::Complete
+            && device.QueryCompletion(graphicsToken) == CompletionStatus::Complete;
+
+        return Expect(graphics.Requested == QueueType::Graphics && graphics.Effective == QueueType::Graphics && graphics.Independent,
+                "graphics resolves to its enabled independent queue")
+            && Expect(compute.Requested == QueueType::Compute && compute.Effective == QueueType::Compute && compute.Independent,
+                "enabled compute resolves independently")
+            && Expect(copy.Requested == QueueType::Copy && copy.Effective == QueueType::Graphics && !copy.Independent,
+                "unavailable copy resolves to explicit graphics fallback")
+            && Expect(copyToken.IsValid() && graphicsToken.IsValid() && computeToken.IsValid(), "one and multiple prior dependencies submit")
+            && Expect(device.DependencyOrder.size() == 4 && device.DependencyOrder[1].SubmissionId == copyToken.SubmissionId
+                && device.DependencyOrder[2].SubmissionId == graphicsToken.SubmissionId, "multiple dependencies preserve caller order")
+            && Expect(device.ElidedDependencyCount == 2, "same-effective-queue dependencies are elided")
+            && Expect(device.GpuWaitDependencyCount == 2, "distinct-effective-queue dependencies enqueue GPU waits in input order")
+            && Expect(unpublished, "dependency failure issues no native submission and publishes no pending state")
+            && Expect(published, "a later valid dependency publishes pending state exactly at accepted submission")
+            && Expect(independentRetirement && queryableAfterRetirement, "producer and consumer tokens retire independently and remain queryable");
+    }
 
     Engine::RHI::TextureDescription MakeExecutionTexture(std::string name,
         Engine::RHI::ResourceState initialState = Engine::RHI::ResourceState::CopyDest)
@@ -2711,6 +2844,8 @@ int main()
         { "Render graph executor exhausts and reuses exact retired contexts", TestRenderGraphExecutorPoolExhaustionAndExactRetirement },
         { "RHI buffer transition contract rejects incompatible states", TestRhiBufferTransitionContract },
         { "RHI completion token contract rejects unissued identities", TestRhiCompletionTokenContract },
+        { "RHI submission dependencies reject invalid token graphs", TestRhiSubmissionDependencyValidation },
+        { "RHI queue topology submits dependencies without premature publication", TestRhiQueueTopologyDependencySubmissionContract },
         { "RHI resource-state query rejects null foreign and unknown resources", TestRhiResourceOwnershipContract },
         { "JobSystem contains worker exceptions", TestJobSystemContainsWorkerExceptions },
         { "JobSystem inline fallback is reentrant", TestJobSystemInlineFallbackIsReentrant },
