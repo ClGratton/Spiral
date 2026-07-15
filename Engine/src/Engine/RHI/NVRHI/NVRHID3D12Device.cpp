@@ -417,6 +417,15 @@ namespace Engine::RHI
             {
             }
 
+            ~NVRHID3D12Texture() override
+            {
+                if (m_OwnershipTracker && !m_OwnershipTracker->Unregister(*this))
+                {
+                    Log::Error("D3D12 RHI texture destruction rejected while queue ownership is pending: ", m_Description.DebugName);
+                    std::terminate();
+                }
+            }
+
             bool Initialize(ID3D12Device* device)
             {
                 if (!device || m_Description.Extent.Width == 0 || m_Description.Extent.Height == 0)
@@ -515,6 +524,7 @@ namespace Engine::RHI
             ResourceState GetTrackedState() const { return m_TrackedState; }
             void SetTrackedState(ResourceState state) { m_TrackedState = state; }
             u64 GetOwnerId() const { return m_OwnerId; }
+            void SetOwnershipTracker(TextureOwnershipTracker* tracker) { m_OwnershipTracker = tracker; }
 
         private:
             bool CreateOutputView(ID3D12Device* device, D3D12_DESCRIPTOR_HEAP_TYPE type)
@@ -554,6 +564,7 @@ namespace Engine::RHI
             D3D12_CPU_DESCRIPTOR_HANDLE m_DepthStencilView {};
             D3D12_RESOURCE_STATES m_CurrentState = D3D12_RESOURCE_STATE_COMMON;
             ResourceState m_TrackedState = ResourceState::Common;
+            TextureOwnershipTracker* m_OwnershipTracker = nullptr;
         };
 
         class NVRHID3D12Shader final : public Shader
@@ -811,6 +822,7 @@ namespace Engine::RHI
                 std::string debugName,
                 std::function<CompletionStatus(const CompletionToken&)> queryCompletion,
                 BufferOwnershipTracker* ownershipTracker,
+                TextureOwnershipTracker* textureOwnershipTracker,
                 std::function<QueueType(QueueType)> resolveQueue)
                 : m_QueueType(queueType)
                 , m_EffectiveQueueType(effectiveQueueType)
@@ -821,6 +833,7 @@ namespace Engine::RHI
                 , m_DebugName(std::move(debugName))
                 , m_QueryCompletion(std::move(queryCompletion))
                 , m_OwnershipTracker(ownershipTracker)
+                , m_TextureOwnershipTracker(textureOwnershipTracker)
                 , m_ResolveQueue(std::move(resolveQueue))
             {
             }
@@ -860,6 +873,7 @@ namespace Engine::RHI
                 m_BufferStates.clear();
                 m_UsedBuffers.clear();
                 m_OwnershipOperation.reset();
+                m_TextureOwnershipOperation.reset();
                 return true;
             }
 
@@ -950,7 +964,8 @@ namespace Engine::RHI
             {
                 auto* nativeTexture = dynamic_cast<NVRHID3D12Texture*>(&texture);
                 if ((m_OwnedCommandList && m_State != State::Recording) || !m_CommandList || !nativeTexture || !nativeTexture->GetResource()
-                    || destinationState == ResourceState::Unknown)
+                    || destinationState == ResourceState::Unknown
+                    || (m_TextureOwnershipTracker && !m_AllowPendingTexture && !m_TextureOwnershipTracker->CanUse(&texture)))
                     return false;
                 const D3D12_RESOURCE_STATES destination = ConvertResourceState(destinationState);
                 const D3D12_RESOURCE_STATES source = GetTextureState(*nativeTexture);
@@ -972,6 +987,31 @@ namespace Engine::RHI
                     }
                 }
                 return true;
+            }
+
+            bool ReleaseTextureOwnership(const TextureOwnershipRelease& release) override
+            {
+                if (m_State != State::Recording || !m_TextureOwnershipTracker || m_TextureOwnershipOperation
+                    || std::find(m_UsedTextures.begin(), m_UsedTextures.end(), release.Resource) != m_UsedTextures.end()) return false;
+                RecordedTextureOwnershipOperation operation;
+                if (!m_TextureOwnershipTracker->RecordRelease(release, m_EffectiveQueueType, m_ResolveQueue(release.SourceQueue),
+                    m_ResolveQueue(release.DestinationQueue), operation)
+                    || GetNVRHID3D12TextureOwnershipBarrier(operation.Type) != NVRHID3D12TextureOwnershipBarrier::None) return false;
+                m_TextureOwnershipOperation = operation; return true;
+            }
+            bool AcquireTextureOwnership(const TextureOwnershipAcquire& acquire) override
+            {
+                if (m_State != State::Recording || !m_TextureOwnershipTracker || m_TextureOwnershipOperation
+                    || std::find(m_UsedTextures.begin(), m_UsedTextures.end(), acquire.Resource) != m_UsedTextures.end()) return false;
+                RecordedTextureOwnershipOperation operation;
+                if (!m_TextureOwnershipTracker->RecordAcquire(acquire, m_EffectiveQueueType, m_ResolveQueue(acquire.SourceQueue),
+                    m_ResolveQueue(acquire.DestinationQueue), operation) || !acquire.Resource
+                    || GetNVRHID3D12TextureOwnershipBarrier(operation.Type) != NVRHID3D12TextureOwnershipBarrier::PortableStateTransition) return false;
+                m_AllowPendingTexture = true;
+                const bool transitioned = TransitionTexture(*acquire.Resource, acquire.After);
+                m_AllowPendingTexture = false;
+                if (!transitioned) return false;
+                m_TextureOwnershipOperation = operation; return true;
             }
 
             bool TransitionBuffer(Buffer& buffer, ResourceState destinationState) override
@@ -1013,6 +1053,7 @@ namespace Engine::RHI
             {
                 return m_OwnershipOperation;
             }
+            const std::optional<RecordedTextureOwnershipOperation>& GetTextureOwnershipOperation() const { return m_TextureOwnershipOperation; }
 
         private:
             bool TransitionBufferInternal(Buffer& buffer, ResourceState destinationState, bool allowPending)
@@ -1277,6 +1318,7 @@ namespace Engine::RHI
                 for (TextureState& state : m_TextureStates)
                     if (state.Resource == &resource) { state.Native = native; state.Tracked = tracked; return; }
                 m_TextureStates.push_back({ &resource, native, tracked });
+                m_UsedTextures.push_back(&resource);
             }
 
             void StageBufferState(NVRHID3D12Buffer& resource, D3D12_RESOURCE_STATES native, ResourceState tracked)
@@ -1292,6 +1334,7 @@ namespace Engine::RHI
                 {
                     state.Resource->SetCurrentState(state.Native);
                     state.Resource->SetTrackedState(state.Tracked);
+                    if (m_TextureOwnershipTracker) m_TextureOwnershipTracker->PublishOrdinaryState(*state.Resource, state.Tracked);
                 }
                 for (const BufferState& state : m_BufferStates)
                 {
@@ -1323,11 +1366,15 @@ namespace Engine::RHI
             std::function<CompletionStatus(const CompletionToken&)> m_QueryCompletion;
             std::function<QueueType(QueueType)> m_ResolveQueue;
             BufferOwnershipTracker* m_OwnershipTracker = nullptr;
+            TextureOwnershipTracker* m_TextureOwnershipTracker = nullptr;
             CompletionToken m_LastSubmission;
             std::vector<TextureState> m_TextureStates;
             std::vector<BufferState> m_BufferStates;
             std::vector<Buffer*> m_UsedBuffers;
+            std::vector<Texture*> m_UsedTextures;
             std::optional<RecordedBufferOwnershipOperation> m_OwnershipOperation;
+            std::optional<RecordedTextureOwnershipOperation> m_TextureOwnershipOperation;
+            bool m_AllowPendingTexture = false;
             State m_State = State::Initial;
         };
 
@@ -1448,8 +1495,9 @@ namespace Engine::RHI
             Scope<Texture> CreateTexture(const TextureDescription& description) override
             {
                 Scope<NVRHID3D12Texture> texture = CreateScope<NVRHID3D12Texture>(description, m_ResourceOwnerId);
-                if (!texture->Initialize(m_Device.Get()))
+                if (!texture->Initialize(m_Device.Get()) || !m_TextureOwnership.Register(*texture, QueueType::Graphics, texture->GetTrackedState()))
                     return nullptr;
+                texture->SetOwnershipTracker(&m_TextureOwnership);
 
                 return texture;
             }
@@ -1463,7 +1511,7 @@ namespace Engine::RHI
             bool OwnsResource(const Texture* resource) const override
             {
                 const auto* texture = dynamic_cast<const NVRHID3D12Texture*>(resource);
-                return texture && texture->GetOwnerId() == m_ResourceOwnerId;
+                return texture && texture->GetOwnerId() == m_ResourceOwnerId && m_TextureOwnership.IsLive(resource);
             }
 
             bool QueryResourceState(const Buffer* resource, ResourceState& state) const override
@@ -1498,11 +1546,12 @@ namespace Engine::RHI
             bool QueryResourceState(const Texture* resource, ResourceState& state) const override
             {
                 const auto* texture = dynamic_cast<const NVRHID3D12Texture*>(resource);
-                if (!texture || !OwnsResource(resource) || texture->GetTrackedState() == ResourceState::Unknown)
-                    return false;
-                state = texture->GetTrackedState();
-                return true;
+                return texture && OwnsResource(resource) && m_TextureOwnership.QueryState(resource, state);
             }
+            bool QueryTextureQueueOwner(const Texture* resource, QueueType& owner) const override { return OwnsResource(resource) && m_TextureOwnership.QueryOwner(resource, owner); }
+            bool HasPendingTextureOwnershipTransfer(const Texture* resource) const override { return OwnsResource(resource) && m_TextureOwnership.HasPending(resource); }
+            bool CanDestroyTexture(const Texture* resource) const override { return OwnsResource(resource) && m_TextureOwnership.CanDestroy(resource); }
+            bool RecoverAbandonedTextureOwnershipTransfer(Texture& resource, const CompletionToken& token) override { return OwnsResource(&resource) && m_TextureOwnership.Recover(resource, token, QueryCompletion(token)); }
 
             Scope<Shader> CreateShader(const ShaderDescription& description) override
             {
@@ -1570,7 +1619,7 @@ namespace Engine::RHI
                 const QueueType effectiveQueue = ResolveQueue(queueType).Effective;
                 return CreateScope<NVRHID3D12CommandList>(queueType, effectiveQueue, std::move(allocator), std::move(commandList),
                     m_Device.Get(), std::string(debugName), [this](const CompletionToken& token) { return QueryCompletion(token); },
-                    &m_BufferOwnership, [this](QueueType requested) { return ResolveQueue(requested).Effective; });
+                    &m_BufferOwnership, &m_TextureOwnership, [this](QueueType requested) { return ResolveQueue(requested).Effective; });
             }
 
             bool UploadBuffer(Buffer& destination, const void* sourceData, u64 sizeBytes, u64 destinationOffset) override
@@ -1617,6 +1666,7 @@ namespace Engine::RHI
                 auto* texture = dynamic_cast<NVRHID3D12Texture*>(&source);
                 const TextureDescription& description = source.GetDescription();
                 if (!texture || !OwnsResource(&source)
+                    || !m_TextureOwnership.CanUse(&source)
                     || description.TextureFormat != Format::R8G8B8A8Unorm
                     || !HasTextureUsage(description.Usage, TextureUsage::CopySource)
                     || HasTextureUsage(description.Usage, TextureUsage::DepthStencil)
@@ -1750,6 +1800,8 @@ namespace Engine::RHI
                 if (nativeCommandList->GetOwnershipOperation()
                     && !m_BufferOwnership.ValidateSubmission(*nativeCommandList->GetOwnershipOperation(), dependencies))
                     return {};
+                if (nativeCommandList->GetTextureOwnershipOperation()
+                    && !m_TextureOwnership.ValidateSubmission(*nativeCommandList->GetTextureOwnershipOperation(), dependencies)) return {};
                 for (const CompletionToken& dependency : dependencies)
                 {
                     const CompletionEntry* producer = FindCompletionEntry(dependency);
@@ -1773,6 +1825,12 @@ namespace Engine::RHI
                         : m_BufferOwnership.PublishAcquire(*ownership);
                     if (!published)
                         return {};
+                }
+                if (const auto& ownership = nativeCommandList->GetTextureOwnershipOperation())
+                {
+                    const bool published = ownership->Type == TextureOwnershipOperationType::Release
+                        ? m_TextureOwnership.PublishRelease(*ownership, token) : m_TextureOwnership.PublishAcquire(*ownership);
+                    if (!published) return {};
                 }
                 return token;
             }
@@ -2415,6 +2473,7 @@ namespace Engine::RHI
             u64 m_NextCompletionSubmissionId = 1;
             std::unordered_map<u64, CompletionEntry> m_CompletionEntries;
             BufferOwnershipTracker m_BufferOwnership;
+            TextureOwnershipTracker m_TextureOwnership;
             nvrhi::DeviceHandle m_NVRHIDevice;
         };
     }

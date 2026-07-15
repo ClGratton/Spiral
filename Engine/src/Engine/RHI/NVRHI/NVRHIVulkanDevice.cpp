@@ -126,16 +126,26 @@ namespace Engine::RHI
         public:
             VulkanTexture(TextureDescription description, nvrhi::TextureHandle texture, u64 ownerId)
                 : m_Description(std::move(description)), m_Texture(std::move(texture)), m_OwnerId(ownerId) {}
+            ~VulkanTexture() override
+            {
+                if (m_OwnershipTracker && !m_OwnershipTracker->Unregister(*this))
+                {
+                    Log::Error("Vulkan RHI texture destruction rejected while queue ownership is pending: ", m_Description.DebugName);
+                    std::terminate();
+                }
+            }
             const TextureDescription& GetDescription() const override { return m_Description; }
             nvrhi::ITexture* Native() const { return m_Texture; }
             ResourceState GetCurrentState() const { return m_CurrentState; }
             void SetCurrentState(ResourceState state) { m_CurrentState = state; }
             u64 GetOwnerId() const { return m_OwnerId; }
+            void SetOwnershipTracker(TextureOwnershipTracker* tracker) { m_OwnershipTracker = tracker; }
         private:
             TextureDescription m_Description;
             nvrhi::TextureHandle m_Texture;
             const u64 m_OwnerId;
             ResourceState m_CurrentState = ResourceState::Common;
+            TextureOwnershipTracker* m_OwnershipTracker = nullptr;
         };
 
         class VulkanShader final : public Shader
@@ -191,9 +201,10 @@ namespace Engine::RHI
         public:
             VulkanCommandList(QueueType queueType, std::string name, nvrhi::CommandListHandle list, nvrhi::IDevice* device,
                 std::function<CompletionStatus(const CompletionToken&)> queryCompletion, BufferOwnershipTracker* ownershipTracker,
+                TextureOwnershipTracker* textureOwnershipTracker,
                 std::function<QueueType(QueueType)> resolveQueue)
                 : m_QueueType(queueType), m_Name(std::move(name)), m_List(std::move(list)), m_Device(device),
-                m_QueryCompletion(std::move(queryCompletion)), m_OwnershipTracker(ownershipTracker), m_ResolveQueue(std::move(resolveQueue)) {}
+                m_QueryCompletion(std::move(queryCompletion)), m_OwnershipTracker(ownershipTracker), m_TextureOwnershipTracker(textureOwnershipTracker), m_ResolveQueue(std::move(resolveQueue)) {}
             QueueType GetQueueType() const override { return m_QueueType; }
             bool Begin() override
             {
@@ -209,6 +220,8 @@ namespace Engine::RHI
                 m_BufferStates.clear();
                 m_UsedBuffers.clear();
                 m_OwnershipOperation.reset();
+                m_UsedTextures.clear();
+                m_TextureOwnershipOperation.reset();
                 m_State = State::Recording;
                 return true;
             }
@@ -238,7 +251,9 @@ namespace Engine::RHI
             {
                 m_Color = dynamic_cast<VulkanTexture*>(&color); m_Depth = depth ? dynamic_cast<VulkanTexture*>(depth) : nullptr;
                 if (!m_Color || !m_Depth || !HasTextureUsage(color.GetDescription().Usage, TextureUsage::RenderTarget)
-                    || !HasTextureUsage(depth->GetDescription().Usage, TextureUsage::DepthStencil)) return false;
+                    || !HasTextureUsage(depth->GetDescription().Usage, TextureUsage::DepthStencil)
+                    || !m_TextureOwnershipTracker || !m_TextureOwnershipTracker->CanUse(&color)
+                    || !m_TextureOwnershipTracker->CanUse(depth)) return false;
                 nvrhi::FramebufferDesc framebuffer;
                 framebuffer.addColorAttachment(m_Color->Native()).setDepthAttachment(m_Depth->Native());
                 m_Framebuffer = m_Device->createFramebuffer(framebuffer);
@@ -246,7 +261,9 @@ namespace Engine::RHI
             }
             bool ClearViewportOutputs(const ViewportClear& clear) override
             {
-                if (m_State != State::Recording || !m_Color) return false;
+                if (m_State != State::Recording || !m_Color || !m_TextureOwnershipTracker
+                    || !m_TextureOwnershipTracker->CanUse(m_Color)
+                    || (m_Depth && !m_TextureOwnershipTracker->CanUse(m_Depth))) return false;
                 if (clear.ClearColor) m_List->clearTextureFloat(m_Color->Native(), nvrhi::AllSubresources, nvrhi::Color(clear.Color[0], clear.Color[1], clear.Color[2], clear.Color[3]));
                 if (clear.ClearDepth && m_Depth) m_List->clearDepthStencilTexture(m_Depth->Native(), nvrhi::AllSubresources, true, clear.Depth, false, clear.Stencil);
                 return true;
@@ -254,12 +271,33 @@ namespace Engine::RHI
             bool TransitionTexture(Texture& texture, ResourceState state) override
             {
                 auto* native = dynamic_cast<VulkanTexture*>(&texture);
-                if (m_State != State::Recording || !native || state == ResourceState::Unknown) return false;
+                if (m_State != State::Recording || !native || state == ResourceState::Unknown
+                    || (m_TextureOwnershipTracker && !m_AllowPendingTexture && !m_TextureOwnershipTracker->CanUse(&texture))) return false;
                 if (GetTextureState(*native) == state) return true;
                 m_List->setTextureState(native->Native(), nvrhi::AllSubresources, ConvertState(state));
                 m_List->commitBarriers();
                 StageTextureState(*native, state);
                 return true;
+            }
+            bool ReleaseTextureOwnership(const TextureOwnershipRelease& release) override
+            {
+                if (m_State != State::Recording || !m_TextureOwnershipTracker || m_TextureOwnershipOperation
+                    || std::find(m_UsedTextures.begin(), m_UsedTextures.end(), release.Resource) != m_UsedTextures.end()) return false;
+                RecordedTextureOwnershipOperation operation;
+                if (!m_TextureOwnershipTracker->RecordRelease(release, m_ResolveQueue(m_QueueType), m_ResolveQueue(release.SourceQueue),
+                    m_ResolveQueue(release.DestinationQueue), operation)) return false;
+                // Current Vulkan resolves all queues to Graphics. This remains a
+                // rejection seam until multi-queue/family translation is admitted.
+                return false;
+            }
+            bool AcquireTextureOwnership(const TextureOwnershipAcquire& acquire) override
+            {
+                if (m_State != State::Recording || !m_TextureOwnershipTracker || m_TextureOwnershipOperation
+                    || std::find(m_UsedTextures.begin(), m_UsedTextures.end(), acquire.Resource) != m_UsedTextures.end()) return false;
+                RecordedTextureOwnershipOperation operation;
+                if (!m_TextureOwnershipTracker->RecordAcquire(acquire, m_ResolveQueue(m_QueueType), m_ResolveQueue(acquire.SourceQueue),
+                    m_ResolveQueue(acquire.DestinationQueue), operation)) return false;
+                return false;
             }
             bool TransitionBuffer(Buffer& buffer, ResourceState state) override
             {
@@ -353,6 +391,7 @@ namespace Engine::RHI
             }
             nvrhi::ICommandList* Native() const { return m_List; }
             const std::optional<RecordedBufferOwnershipOperation>& GetOwnershipOperation() const { return m_OwnershipOperation; }
+            const std::optional<RecordedTextureOwnershipOperation>& GetTextureOwnershipOperation() const { return m_TextureOwnershipOperation; }
         private:
             struct TextureState { VulkanTexture* Resource = nullptr; ResourceState State = ResourceState::Common; };
             struct BufferState { VulkanBuffer* Resource = nullptr; ResourceState State = ResourceState::Common; };
@@ -376,6 +415,7 @@ namespace Engine::RHI
                 for (TextureState& pending : m_TextureStates)
                     if (pending.Resource == &resource) { pending.State = state; return; }
                 m_TextureStates.push_back({ &resource, state });
+                m_UsedTextures.push_back(&resource);
             }
 
             void StageBufferState(VulkanBuffer& resource, ResourceState state)
@@ -387,7 +427,11 @@ namespace Engine::RHI
 
             void CommitTrackedStates()
             {
-                for (const TextureState& state : m_TextureStates) state.Resource->SetCurrentState(state.State);
+                for (const TextureState& state : m_TextureStates)
+                {
+                    state.Resource->SetCurrentState(state.State);
+                    if (m_TextureOwnershipTracker) m_TextureOwnershipTracker->PublishOrdinaryState(*state.Resource, state.State);
+                }
                 for (const BufferState& state : m_BufferStates)
                 {
                     state.Resource->SetCurrentState(state.State);
@@ -420,12 +464,16 @@ namespace Engine::RHI
             std::vector<std::string> m_DebugMarkerNames;
             std::function<CompletionStatus(const CompletionToken&)> m_QueryCompletion;
             BufferOwnershipTracker* m_OwnershipTracker = nullptr;
+            TextureOwnershipTracker* m_TextureOwnershipTracker = nullptr;
             std::function<QueueType(QueueType)> m_ResolveQueue;
             CompletionToken m_LastSubmission;
             std::vector<TextureState> m_TextureStates;
             std::vector<BufferState> m_BufferStates;
             std::vector<Buffer*> m_UsedBuffers;
+            std::vector<Texture*> m_UsedTextures;
             std::optional<RecordedBufferOwnershipOperation> m_OwnershipOperation;
+            std::optional<RecordedTextureOwnershipOperation> m_TextureOwnershipOperation;
+            bool m_AllowPendingTexture = false;
             State m_State = State::Ready;
         };
 
@@ -494,6 +542,9 @@ namespace Engine::RHI
                         : HasTextureUsage(description.Usage, TextureUsage::CopyDest) ? ResourceState::CopyDest : ResourceState::CopySource
                     : description.InitialState;
                 result->SetCurrentState(trackedInitialState);
+                if (!m_TextureOwnership.Register(*result, QueueType::Graphics, trackedInitialState))
+                    return nullptr;
+                result->SetOwnershipTracker(&m_TextureOwnership);
                 return result;
             }
             bool OwnsResource(const Buffer* resource) const override
@@ -504,7 +555,7 @@ namespace Engine::RHI
             bool OwnsResource(const Texture* resource) const override
             {
                 const auto* texture = dynamic_cast<const VulkanTexture*>(resource);
-                return texture && texture->GetOwnerId() == m_ResourceOwnerId;
+                return texture && texture->GetOwnerId() == m_ResourceOwnerId && m_TextureOwnership.IsLive(resource);
             }
             bool QueryResourceState(const Buffer* resource, ResourceState& state) const override
             {
@@ -530,10 +581,12 @@ namespace Engine::RHI
             bool QueryResourceState(const Texture* resource, ResourceState& state) const override
             {
                 const auto* texture = dynamic_cast<const VulkanTexture*>(resource);
-                if (!texture || !OwnsResource(resource) || texture->GetCurrentState() == ResourceState::Unknown) return false;
-                state = texture->GetCurrentState();
-                return true;
+                return texture && OwnsResource(resource) && m_TextureOwnership.QueryState(resource, state);
             }
+            bool QueryTextureQueueOwner(const Texture* resource, QueueType& owner) const override { return OwnsResource(resource) && m_TextureOwnership.QueryOwner(resource, owner); }
+            bool HasPendingTextureOwnershipTransfer(const Texture* resource) const override { return OwnsResource(resource) && m_TextureOwnership.HasPending(resource); }
+            bool CanDestroyTexture(const Texture* resource) const override { return OwnsResource(resource) && m_TextureOwnership.CanDestroy(resource); }
+            bool RecoverAbandonedTextureOwnershipTransfer(Texture& resource, const CompletionToken& token) override { return OwnsResource(&resource) && m_TextureOwnership.Recover(resource, token, QueryCompletion(token)); }
             Scope<Shader> CreateShader(const ShaderDescription& description) override
             {
                 if (!m_Device || description.BinaryFormat != ShaderBinaryFormat::Spirv || description.Binary.empty() || ConvertShaderStage(description.Stage) == nvrhi::ShaderType::None)
@@ -575,7 +628,7 @@ namespace Engine::RHI
             {
                 if (!m_Device) return nullptr;
                 nvrhi::CommandListHandle list = m_Device->createCommandList(); return list ? CreateScope<VulkanCommandList>(type, std::string(name), list, m_Device,
-                    [this](const CompletionToken& token) { return QueryCompletion(token); }, &m_BufferOwnership,
+                    [this](const CompletionToken& token) { return QueryCompletion(token); }, &m_BufferOwnership, &m_TextureOwnership,
                     [this](QueueType requested) { return ResolveQueue(requested).Effective; }) : nullptr;
             }
             bool UploadBuffer(Buffer& destination, const void* data, u64 size, u64 offset) override
@@ -588,7 +641,7 @@ namespace Engine::RHI
             }
             bool ReadbackTexture(Texture& source, TextureReadback& out) override
             {
-                auto* texture = dynamic_cast<VulkanTexture*>(&source); const auto& d = source.GetDescription(); if (!texture || d.TextureFormat != Format::R8G8B8A8Unorm || !HasTextureUsage(d.Usage, TextureUsage::CopySource)) return false;
+                auto* texture = dynamic_cast<VulkanTexture*>(&source); const auto& d = source.GetDescription(); if (!texture || !OwnsResource(&source) || !m_TextureOwnership.CanUse(&source) || d.TextureFormat != Format::R8G8B8A8Unorm || !HasTextureUsage(d.Usage, TextureUsage::CopySource)) return false;
                 nvrhi::StagingTextureHandle staging = m_Device->createStagingTexture(texture->Native()->getDesc(), nvrhi::CpuAccessMode::Read); if (!staging) return false;
                 Scope<CommandList> list = CreateCommandList(QueueType::Graphics, "Vulkan RHI Texture Readback"); if (!list || !list->Begin()) return false;
                 static_cast<VulkanCommandList*>(list.get())->Native()->copyTexture(staging, nvrhi::TextureSlice(), texture->Native(), nvrhi::TextureSlice()); if (!list->End() || !SubmitAndWait(*list)) return false;
@@ -630,6 +683,8 @@ namespace Engine::RHI
                     return {};
                 if (list->GetOwnershipOperation() && !m_BufferOwnership.ValidateSubmission(*list->GetOwnershipOperation(), dependencies))
                     return {};
+                if (list->GetTextureOwnershipOperation() && !m_TextureOwnership.ValidateSubmission(*list->GetTextureOwnershipOperation(), dependencies))
+                    return {};
                 const u64 nativeSubmissionId = m_Device->executeCommandList(list->Native());
                 if (nativeSubmissionId == 0)
                     return {};
@@ -641,6 +696,12 @@ namespace Engine::RHI
                 {
                     const bool published = ownership->Type == BufferOwnershipOperationType::Release
                         ? m_BufferOwnership.PublishRelease(*ownership, token) : m_BufferOwnership.PublishAcquire(*ownership);
+                    if (!published) return {};
+                }
+                if (const auto& ownership = list->GetTextureOwnershipOperation())
+                {
+                    const bool published = ownership->Type == TextureOwnershipOperationType::Release
+                        ? m_TextureOwnership.PublishRelease(*ownership, token) : m_TextureOwnership.PublishAcquire(*ownership);
                     if (!published) return {};
                 }
                 return token;
@@ -688,6 +749,7 @@ namespace Engine::RHI
             u64 m_NextCompletionSubmissionId = 1;
             std::unordered_map<u64, u64> m_CompletionEntries;
             BufferOwnershipTracker m_BufferOwnership;
+            TextureOwnershipTracker m_TextureOwnership;
 
             std::unordered_map<u64, u64>::const_iterator FindCompletionEntry(const CompletionToken& token) const
             {

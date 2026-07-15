@@ -6,6 +6,7 @@
 #include "Engine/RHI/Device.h"
 #include "Engine/RHI/SubmissionDependency.h"
 #include "Engine/RHI/BufferOwnership.h"
+#include "Engine/RHI/TextureOwnership.h"
 #include "Engine/RHI/NVRHI/NVRHID3D12Device.h"
 #include "Engine/Renderer/CapabilityDiagnostics.h"
 #include "Engine/Renderer/AsyncShaderPackageService.h"
@@ -3030,6 +3031,83 @@ float4 main(VertexInput input) : SV_Position
             && Expect(d3d12Policy, "D3D12 release emits no ownership barrier while acquire requires the portable state transition");
     }
 
+    class TextureOwnershipTestTexture final : public Engine::RHI::Texture
+    {
+    public:
+        explicit TextureOwnershipTestTexture(Engine::RHI::TextureDescription description = {})
+        {
+            if (description.Extent.Width == 0)
+            {
+                description.Extent = { 4, 4 };
+                description.TextureFormat = Engine::RHI::Format::R8G8B8A8Unorm;
+                description.Usage = static_cast<Engine::RHI::TextureUsage>(static_cast<Engine::u32>(Engine::RHI::TextureUsage::CopyDest) | static_cast<Engine::u32>(Engine::RHI::TextureUsage::CopySource));
+            }
+            m_Description = std::move(description);
+        }
+        const Engine::RHI::TextureDescription& GetDescription() const override { return m_Description; }
+    private: Engine::RHI::TextureDescription m_Description;
+    };
+
+    bool TestRhiTextureOwnershipLifecycleContract()
+    {
+        using namespace Engine::RHI;
+        TextureOwnershipTracker tracker;
+        TextureOwnershipTestTexture texture, foreign;
+        TextureDescription unsupportedDescription = texture.GetDescription();
+        unsupportedDescription.MipLevels = 2;
+        TextureOwnershipTestTexture unsupported(unsupportedDescription);
+        TextureDescription unsupportedLayerDescription = texture.GetDescription();
+        unsupportedLayerDescription.ArrayLayers = 2;
+        TextureOwnershipTestTexture unsupportedLayer(unsupportedLayerDescription);
+        TextureDescription unsupportedSampleDescription = texture.GetDescription();
+        unsupportedSampleDescription.SampleCount = 2;
+        TextureOwnershipTestTexture unsupportedSample(unsupportedSampleDescription);
+        TextureDescription incompatibleDescription = texture.GetDescription();
+        incompatibleDescription.Usage = TextureUsage::CopyDest;
+        TextureOwnershipTestTexture incompatible(incompatibleDescription);
+        TextureOwnershipTestTexture common;
+        const TextureOwnershipRelease release { &texture, QueueType::Graphics, QueueType::Copy, ResourceState::CopyDest, ResourceState::CopySource };
+        RecordedTextureOwnershipOperation op;
+        const CompletionToken releaseToken { 73, 1 };
+        TextureOwnershipAcquire acquire; static_cast<TextureOwnershipRelease&>(acquire) = release; acquire.ReleaseToken = releaseToken;
+        QueueType owner = QueueType::Copy; ResourceState state = ResourceState::Unknown;
+        const bool rejected = !tracker.Register(unsupported, QueueType::Graphics, ResourceState::CopyDest)
+            && !tracker.Register(unsupportedLayer, QueueType::Graphics, ResourceState::CopyDest)
+            && !tracker.Register(unsupportedSample, QueueType::Graphics, ResourceState::CopyDest)
+            && !tracker.Register(foreign, QueueType::Graphics, ResourceState::Unknown)
+            && tracker.Register(common, QueueType::Graphics, ResourceState::Common)
+            && !tracker.RecordRelease(release, QueueType::Graphics, QueueType::Graphics, QueueType::Graphics, op)
+            && !tracker.RecordRelease({ &foreign, QueueType::Graphics, QueueType::Copy, ResourceState::CopyDest, ResourceState::CopySource }, QueueType::Graphics, QueueType::Graphics, QueueType::Copy, op)
+            && !tracker.Register(incompatible, QueueType::Graphics, ResourceState::CopySource)
+            && tracker.Register(incompatible, QueueType::Graphics, ResourceState::CopyDest)
+            && !tracker.RecordRelease({ &incompatible, QueueType::Graphics, QueueType::Copy, ResourceState::CopyDest, ResourceState::CopySource }, QueueType::Graphics, QueueType::Graphics, QueueType::Copy, op);
+        const bool released = tracker.Register(texture, QueueType::Graphics, ResourceState::CopyDest)
+            && tracker.RecordRelease(release, QueueType::Graphics, QueueType::Graphics, QueueType::Copy, op)
+            && tracker.ValidateSubmission(op, {}) && tracker.PublishRelease(op, releaseToken)
+            && tracker.HasPending(&texture) && !tracker.CanUse(&texture) && !tracker.CanDestroy(&texture)
+            && !tracker.QueryOwner(&texture, owner) && !tracker.QueryState(&texture, state)
+            && !tracker.PublishOrdinaryState(texture, ResourceState::CopySource);
+        RecordedTextureOwnershipOperation acquireOp;
+        const bool acquired = tracker.RecordAcquire(acquire, QueueType::Copy, QueueType::Graphics, QueueType::Copy, acquireOp)
+            && !tracker.RecordAcquire({ &texture, QueueType::Graphics, QueueType::Copy, ResourceState::CopyDest, ResourceState::CopySource, { 73, 2 } }, QueueType::Copy, QueueType::Graphics, QueueType::Copy, op)
+            && !tracker.ValidateSubmission(acquireOp, {}) && !tracker.ValidateSubmission(acquireOp, { releaseToken, releaseToken })
+            && tracker.ValidateSubmission(acquireOp, { releaseToken })
+            && tracker.PublishAcquire(acquireOp) && !tracker.HasPending(&texture)
+            && tracker.QueryOwner(&texture, owner) && owner == QueueType::Copy
+            && tracker.QueryState(&texture, state) && state == ResourceState::CopySource;
+        const bool recoverySetup = tracker.PublishOrdinaryState(texture, ResourceState::CopyDest)
+            && tracker.RecordRelease({ &texture, QueueType::Copy, QueueType::Graphics, ResourceState::CopyDest, ResourceState::CopySource },
+                QueueType::Copy, QueueType::Copy, QueueType::Graphics, op)
+            && tracker.PublishRelease(op, { 73, 2 }) && tracker.HasPending(&texture)
+            && !tracker.Recover(texture, { 73, 1 }, CompletionStatus::Complete)
+            && !tracker.Recover(texture, { 73, 2 }, CompletionStatus::Incomplete)
+            && tracker.Recover(texture, { 73, 2 }, CompletionStatus::Complete)
+            && tracker.QueryOwner(&texture, owner) && owner == QueueType::Copy
+            && tracker.QueryState(&texture, state) && state == ResourceState::CopyDest;
+        const bool passed = rejected && released && acquired && recoverySetup;
+        return passed;
+    }
+
 }
 
 int main()
@@ -3054,6 +3132,7 @@ int main()
         { "RHI resource-state query rejects null foreign and unknown resources", TestRhiResourceOwnershipContract },
         { "RHI buffer ownership lifecycle publishes only accepted exact-token pairs", TestRhiBufferOwnershipLifecycleContract },
         { "RHI buffer ownership recovery and adapter seams preserve fallback semantics", TestRhiBufferOwnershipRecoveryAndAdapterSeams },
+        { "RHI texture ownership tracker preserves accepted-token pending publication", TestRhiTextureOwnershipLifecycleContract },
         { "JobSystem contains worker exceptions", TestJobSystemContainsWorkerExceptions },
         { "JobSystem inline fallback is reentrant", TestJobSystemInlineFallbackIsReentrant },
         { "JobSystem steals nested worker jobs", TestJobSystemStealsNestedWorkerJobs },

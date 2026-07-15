@@ -42,7 +42,7 @@ foreach ($Path in @($ResolvedCapturePath) + $SceneOriginCapturePaths) {
     }
 }
 
-$RenderResult = Invoke-BoundedProcess -FilePath $Editor -Arguments @("--capture-viewport", "--smoke-test", "--renderer-capability-smoke", "--scene-origin-raster-smoke", "--rhi-buffer-transition-smoke", "--rhi-completion-smoke", "--rhi-queue-dependency-smoke", "--rhi-buffer-ownership-smoke", "--rhi-resource-ownership-smoke", "--rhi-resource-state-smoke", "--rhi-texture-readback-smoke", "--render-graph-execution-smoke") -Label "Editor render smoke" -TimeoutSeconds $ChildTimeoutSeconds
+$RenderResult = Invoke-BoundedProcess -FilePath $Editor -Arguments @("--capture-viewport", "--smoke-test", "--renderer-capability-smoke", "--scene-origin-raster-smoke", "--rhi-buffer-transition-smoke", "--rhi-completion-smoke", "--rhi-queue-dependency-smoke", "--rhi-buffer-ownership-smoke", "--rhi-texture-ownership-smoke", "--rhi-resource-ownership-smoke", "--rhi-resource-state-smoke", "--rhi-texture-readback-smoke", "--render-graph-execution-smoke") -Label "Editor render smoke" -TimeoutSeconds $ChildTimeoutSeconds
 $Output = $RenderLog = $RenderResult.Output
 if ($RenderResult.TimedOut) {
     throw "Editor render smoke timed out after $ChildTimeoutSeconds seconds."
@@ -51,7 +51,7 @@ if ($RenderResult.ExitCode -ne 0) {
     throw "Editor render smoke run failed with exit code $($RenderResult.ExitCode)."
 }
 
-$FallbackResult = Invoke-BoundedProcess -FilePath $Editor -Arguments @("--smoke-test", "--rhi-queue-dependency-smoke", "--rhi-buffer-ownership-smoke", "--rhi-force-graphics-queue-fallback") -Label "Editor forced graphics-queue fallback smoke" -TimeoutSeconds $ChildTimeoutSeconds
+$FallbackResult = Invoke-BoundedProcess -FilePath $Editor -Arguments @("--smoke-test", "--rhi-queue-dependency-smoke", "--rhi-buffer-ownership-smoke", "--rhi-texture-ownership-smoke", "--rhi-force-graphics-queue-fallback") -Label "Editor forced graphics-queue fallback smoke" -TimeoutSeconds $ChildTimeoutSeconds
 $FallbackOutput = $FallbackLog = $FallbackResult.Output
 if ($FallbackResult.TimedOut) {
     throw "Editor forced graphics-queue fallback smoke timed out after $ChildTimeoutSeconds seconds."
@@ -77,6 +77,7 @@ $RequiredMarkers = @(
     "RHICompletionSmokeV1 backend=D3D12, tokenValidation=pass, query=nonblocking-"
     "RHIQueueDependencySmokeV1 backend=D3D12,"
     "RHIBufferOwnershipSmokeV1 backend=D3D12,"
+    "RHITextureOwnershipSmokeV1 backend=D3D12,"
     "RHIResourceOwnershipSmokeV1 backend=D3D12, owned=pass, null=rejected, result=pass"
     "RHIResourceStateSmokeV1 backend=D3D12, initial=pass, pending=hidden, invalid=rejected, submission=pass, final=pass, result=pass"
     "RHITextureReadbackSmokeV1 backend=D3D12, invalidState=rejected, unsupportedFormat=rejected, submit=pass, readback=pass, layout=tight, result=pass"
@@ -104,6 +105,7 @@ if (!$CopyTopologyMatchesMode -or !$ComputeTopologyMatchesMode) {
 if ($JoinedLog -notmatch 'RHIBufferOwnershipSmokeV1 backend=D3D12, mode=independent, release=accepted, acquire=gpu-wait, cpuWaitBetween=no, bytes=pass, finalOwner=Copy, finalState=CopySource, recovery=pass, retirement=pass, result=pass') {
     throw "D3D12 render smoke did not prove real independent-queue buffer ownership transfer, recovery, and retirement."
 }
+if ($JoinedLog -notmatch 'RHITextureOwnershipSmokeV1 backend=D3D12, mode=independent, release=accepted, acquire=gpu-wait, cpuWaitBetween=no, bytes=pass, finalOwner=Copy, finalState=CopySource, recovery=pass, retirement=pass, result=pass') { throw "D3D12 texture ownership smoke failed." }
 $FallbackJoinedLog = $FallbackLog -join "`n"
 if ($FallbackJoinedLog -notmatch 'RHIQueueDependencySmokeV1 backend=D3D12, copy=graphics-fallback, compute=graphics-fallback, copyToGraphics=ordered-elided, graphicsToCompute=ordered-elided, cpuWaitBetween=no, bytes=pass, finalState=CopySource, retirement=pass, result=pass') {
     throw "D3D12 forced fallback smoke did not prove same-effective-graphics ordered dependencies."
@@ -111,6 +113,7 @@ if ($FallbackJoinedLog -notmatch 'RHIQueueDependencySmokeV1 backend=D3D12, copy=
 if ($FallbackJoinedLog -notmatch 'RHIBufferOwnershipSmokeV1 backend=D3D12, mode=graphics-fallback, transfer=rejected, pending=no, result=pass') {
     throw "D3D12 forced fallback smoke did not reject buffer ownership transfer without publishing pending state."
 }
+if ($FallbackJoinedLog -notmatch 'RHITextureOwnershipSmokeV1 backend=D3D12, mode=graphics-fallback, transfer=rejected, pending=no, result=pass') { throw "D3D12 forced fallback texture ownership smoke failed." }
 
 $ConventionEvidence = "schema=1\|matrix=row-major\|d3dClipDepth=zero-to-one\|spirvY=inverted\|frontFace=clockwise\|binding=D3DRegisterSpace"
 $TerminalPattern = "PortableShaderTerminalV1 status=(?<status>success|cache-hit) request=[1-9][0-9]* stage=(?<stage>vertex|pixel) cacheMode=(?<cacheMode>compiled|cache-hit) cacheSource=(?<cacheSource>compiler|disk|service) compiler=Slang-2026\.13\.1 backend=Slang targets=DXIL\+SPIR-V key=(?<key>[0-9a-f]{64}) bindings=(?<bindings>[1-9][0-9]*) vertexInputs=(?<vertexInputs>[0-9]+) conventions=$ConventionEvidence legacySourceCompile=false"

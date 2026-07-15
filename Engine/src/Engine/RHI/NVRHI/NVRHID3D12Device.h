@@ -18,6 +18,13 @@ namespace Engine::RHI
             ? NVRHID3D12BufferOwnershipBarrier::None
             : NVRHID3D12BufferOwnershipBarrier::PortableStateTransition;
     }
+    using NVRHID3D12TextureOwnershipBarrier = NVRHID3D12BufferOwnershipBarrier;
+    constexpr NVRHID3D12TextureOwnershipBarrier GetNVRHID3D12TextureOwnershipBarrier(TextureOwnershipOperationType operation)
+    {
+        return operation == TextureOwnershipOperationType::Release
+            ? NVRHID3D12TextureOwnershipBarrier::None
+            : NVRHID3D12TextureOwnershipBarrier::PortableStateTransition;
+    }
 
     struct NVRHID3D12NativeHandles
     {

@@ -2,6 +2,7 @@
 
 #include "Engine/RHI/Buffer.h"
 #include "Engine/RHI/BufferOwnership.h"
+#include "Engine/RHI/TextureOwnership.h"
 #include "Engine/RHI/Pipeline.h"
 #include "Engine/RHI/Query.h"
 #include "Engine/RHI/RHICommon.h"
@@ -63,6 +64,8 @@ namespace Engine::RHI
         virtual bool TransitionBuffer(Buffer& buffer, ResourceState destinationState) = 0;
         virtual bool ReleaseBufferOwnership(const BufferOwnershipRelease& release) { (void)release; return false; }
         virtual bool AcquireBufferOwnership(const BufferOwnershipAcquire& acquire) { (void)acquire; return false; }
+        virtual bool ReleaseTextureOwnership(const TextureOwnershipRelease& release) { (void)release; return false; }
+        virtual bool AcquireTextureOwnership(const TextureOwnershipAcquire& acquire) { (void)acquire; return false; }
         virtual void SetGraphicsPipeline(Pipeline& pipeline) = 0;
         virtual void SetGraphicsConstantBuffer(u32 rootParameterIndex, Buffer& buffer) = 0;
         virtual void SetViewport(const Viewport& viewport) = 0;

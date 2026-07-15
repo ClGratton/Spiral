@@ -100,6 +100,8 @@ namespace Engine
                 m_VulkanContext.reset();
                 return false;
             }
+            if (args.HasFlag("--rhi-texture-ownership-smoke") && !RunRHITextureOwnershipSmoke(*m_VulkanContext->GetRHIDevice(), "Vulkan"))
+            { Log::Error("Vulkan RHI texture-ownership smoke failed"); m_VulkanContext->Shutdown(); m_VulkanContext.reset(); return false; }
             if (args.HasFlag("--rhi-resource-ownership-smoke")
                 && !RunRHIResourceOwnershipSmoke(*m_VulkanContext->GetRHIDevice(), "Vulkan"))
             {
@@ -179,6 +181,8 @@ namespace Engine
                 m_Device.reset();
                 return false;
             }
+            if (args.HasFlag("--rhi-texture-ownership-smoke") && !RunRHITextureOwnershipSmoke(*m_Device, "D3D12"))
+            { Log::Error("D3D12 RHI texture-ownership smoke failed"); m_Device.reset(); return false; }
             if (args.HasFlag("--rhi-resource-ownership-smoke") && !RunRHIResourceOwnershipSmoke(*m_Device, "D3D12"))
             {
                 Log::Error("D3D12 RHI resource-ownership smoke failed");
@@ -736,6 +740,81 @@ namespace Engine
         return passed;
     }
 
+    bool NVRHIRenderBackend::RunRHITextureOwnershipSmoke(RHI::Device& device, std::string_view backendName)
+    {
+        const RHI::QueueResolution graphics = device.ResolveQueue(RHI::QueueType::Graphics);
+        const RHI::QueueResolution copy = device.ResolveQueue(RHI::QueueType::Copy);
+        RHI::TextureDescription description;
+        description.DebugName = "RHITextureOwnershipSmokeV1 Transfer";
+        description.Extent = { 3, 2 }; description.TextureFormat = RHI::Format::R8G8B8A8Unorm;
+        description.Usage = static_cast<RHI::TextureUsage>(static_cast<u32>(RHI::TextureUsage::RenderTarget) | static_cast<u32>(RHI::TextureUsage::CopySource));
+        description.InitialState = RHI::ResourceState::CopySource;
+        Scope<RHI::Texture> transfer = device.CreateTexture(description);
+        const bool fallback = backendName == "Vulkan" || !copy.Independent;
+        if (fallback)
+        {
+            Scope<RHI::CommandList> release = transfer ? device.CreateCommandList(RHI::QueueType::Graphics, "RHITextureOwnershipFallbackReleaseV1") : nullptr;
+            const bool rejected = release && release->Begin() && !release->ReleaseTextureOwnership({ transfer.get(), RHI::QueueType::Graphics, RHI::QueueType::Copy, RHI::ResourceState::CopySource, RHI::ResourceState::CopySource }) && release->End();
+            const bool pending = transfer && device.HasPendingTextureOwnershipTransfer(transfer.get());
+            const bool passed = graphics.Effective == RHI::QueueType::Graphics && copy.Effective == RHI::QueueType::Graphics && !copy.Independent && rejected && !pending;
+            Log::Info("RHITextureOwnershipSmokeV1 backend=", backendName, ", mode=graphics-fallback, transfer=rejected, pending=", pending ? "yes" : "no", ", result=", passed ? "pass" : "fail");
+            return passed;
+        }
+        RHI::TextureDescription depthDescription;
+        depthDescription.DebugName = "RHITextureOwnershipSmokeV1 Depth";
+        depthDescription.Extent = description.Extent;
+        depthDescription.TextureFormat = RHI::Format::D32Float;
+        depthDescription.Usage = RHI::TextureUsage::DepthStencil;
+        Scope<RHI::Texture> depth = transfer ? device.CreateTexture(depthDescription) : nullptr;
+        Scope<RHI::CommandList> clear = depth ? device.CreateCommandList(RHI::QueueType::Graphics, "RHITextureOwnershipClearV1") : nullptr;
+        RHI::ViewportClear clearValue;
+        clearValue.Color[0] = 0.25f; clearValue.Color[1] = 0.5f; clearValue.Color[2] = 0.75f; clearValue.Color[3] = 1.0f;
+        clearValue.ClearDepth = false;
+        const bool initialized = clear && clear->Begin() && clear->BindViewportOutputs(*transfer, depth.get())
+            && clear->TransitionTexture(*transfer, RHI::ResourceState::RenderTarget) && clear->ClearViewportOutputs(clearValue)
+            && clear->TransitionTexture(*transfer, RHI::ResourceState::CopySource) && clear->End() && device.SubmitAndWait(*clear);
+        Scope<RHI::CommandList> release = initialized ? device.CreateCommandList(RHI::QueueType::Graphics, "RHITextureOwnershipReleaseV1") : nullptr;
+        const bool releaseClosed = release && release->Begin() && release->ReleaseTextureOwnership({ transfer.get(), RHI::QueueType::Graphics, RHI::QueueType::Copy, RHI::ResourceState::CopySource, RHI::ResourceState::CopySource }) && release->End();
+        const RHI::CompletionToken releaseToken = releaseClosed ? device.Submit(*release) : RHI::CompletionToken {};
+        RHI::TextureOwnershipAcquire acquire; acquire.Resource = transfer.get(); acquire.SourceQueue = RHI::QueueType::Graphics; acquire.DestinationQueue = RHI::QueueType::Copy; acquire.Before = RHI::ResourceState::CopySource; acquire.After = RHI::ResourceState::CopySource; acquire.ReleaseToken = releaseToken;
+        Scope<RHI::CommandList> acquireList = releaseToken.IsValid() ? device.CreateCommandList(RHI::QueueType::Copy, "RHITextureOwnershipAcquireV1") : nullptr;
+        const bool acquireClosed = acquireList && acquireList->Begin() && acquireList->AcquireTextureOwnership(acquire) && acquireList->End();
+        const RHI::CompletionToken acquireToken = acquireClosed ? device.Submit(*acquireList, { releaseToken }) : RHI::CompletionToken {};
+        RHI::QueueType owner = RHI::QueueType::Graphics; RHI::ResourceState state = RHI::ResourceState::Unknown;
+        const bool acquired = acquireToken.IsValid() && !device.HasPendingTextureOwnershipTransfer(transfer.get()) && device.QueryTextureQueueOwner(transfer.get(), owner) && owner == RHI::QueueType::Copy && device.QueryResourceState(transfer.get(), state) && state == RHI::ResourceState::CopySource;
+        // The only CPU wait occurs after the paired submissions. Readback uses
+        // the established RHI path and must not mutate the ownership authority.
+        const bool acquireRetired = acquired && device.WaitForCompletion(acquireToken, 5000);
+        RHI::TextureReadback readback;
+        const bool readbackOk = acquireRetired && device.ReadbackTexture(*transfer, readback);
+        const std::array<u8, 4> expected { 64u, 128u, 191u, 255u };
+        bool bytesMatch = readbackOk && readback.Extent.Width == description.Extent.Width && readback.Extent.Height == description.Extent.Height
+            && readback.TextureFormat == description.TextureFormat && readback.RowPitchBytes == description.Extent.Width * 4
+            && readback.Data.size() == static_cast<size_t>(readback.RowPitchBytes) * description.Extent.Height;
+        for (u32 y = 0; bytesMatch && y < description.Extent.Height; ++y)
+            for (u32 x = 0; bytesMatch && x < description.Extent.Width; ++x)
+                for (u32 channel = 0; channel < expected.size(); ++channel)
+                    if (std::abs(static_cast<int>(readback.Data[static_cast<size_t>(y) * readback.RowPitchBytes + x * 4 + channel]) - expected[channel]) > 1) bytesMatch = false;
+        const bool finalState = bytesMatch && device.QueryTextureQueueOwner(transfer.get(), owner) && owner == RHI::QueueType::Copy
+            && device.QueryResourceState(transfer.get(), state) && state == RHI::ResourceState::CopySource;
+        const bool retired = acquireRetired && device.QueryCompletion(releaseToken) == RHI::CompletionStatus::Complete
+            && device.QueryCompletion(acquireToken) == RHI::CompletionStatus::Complete;
+        Scope<RHI::Texture> abandoned = device.CreateTexture(description);
+        Scope<RHI::CommandList> abandonedRelease = abandoned ? device.CreateCommandList(RHI::QueueType::Graphics, "RHITextureOwnershipRecoveryReleaseV1") : nullptr;
+        const bool abandonedClosed = abandonedRelease && abandonedRelease->Begin() && abandonedRelease->ReleaseTextureOwnership({ abandoned.get(), RHI::QueueType::Graphics, RHI::QueueType::Copy, RHI::ResourceState::CopySource, RHI::ResourceState::CopySource }) && abandonedRelease->End();
+        const RHI::CompletionToken abandonedToken = abandonedClosed ? device.Submit(*abandonedRelease) : RHI::CompletionToken {};
+        const bool recovery = abandonedToken.IsValid() && device.HasPendingTextureOwnershipTransfer(abandoned.get())
+            && device.WaitForCompletion(abandonedToken, 5000)
+            && device.QueryCompletion(abandonedToken) == RHI::CompletionStatus::Complete
+            && device.RecoverAbandonedTextureOwnershipTransfer(*abandoned, abandonedToken)
+            && !device.HasPendingTextureOwnershipTransfer(abandoned.get())
+            && device.QueryTextureQueueOwner(abandoned.get(), owner) && owner == RHI::QueueType::Graphics
+            && device.QueryResourceState(abandoned.get(), state) && state == RHI::ResourceState::CopySource;
+        const bool passed = graphics.Independent && copy.Independent && initialized && acquired && bytesMatch && finalState && retired && recovery;
+        Log::Info("RHITextureOwnershipSmokeV1 backend=", backendName, ", mode=independent, release=accepted, acquire=gpu-wait, cpuWaitBetween=no, bytes=", bytesMatch ? "pass" : "fail", ", finalOwner=Copy, finalState=CopySource, recovery=", recovery ? "pass" : "fail", ", retirement=", retired ? "pass" : "fail", ", result=", passed ? "pass" : "fail");
+        return passed;
+    }
+
     bool NVRHIRenderBackend::RunRHIResourceOwnershipSmoke(RHI::Device& device, std::string_view backendName)
     {
         RHI::BufferDescription bufferDescription;
@@ -798,7 +877,7 @@ namespace Engine
         Scope<RHI::Texture> unknownTexture = device.CreateTexture(unknownDescription);
         const bool invalid = !device.QueryResourceState(static_cast<const RHI::Buffer*>(nullptr), observed)
             && !device.QueryResourceState(static_cast<const RHI::Texture*>(nullptr), observed)
-            && unknownTexture && !device.QueryResourceState(unknownTexture.get(), observed);
+            && !unknownTexture;
         const bool passed = initial && rejectedInvalidRecord && pendingInvisible && final && invalid;
         Log::Info("RHIResourceStateSmokeV1 backend=", backendName,
             ", initial=pass", initial ? "" : "-failed",

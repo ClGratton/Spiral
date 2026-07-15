@@ -124,6 +124,11 @@ namespace Engine::RHI
         {
             (void)resource; (void)releaseToken; return false;
         }
+        virtual bool QueryTextureQueueOwner(const Texture* resource, QueueType& owner) const { (void)resource; (void)owner; return false; }
+        virtual bool HasPendingTextureOwnershipTransfer(const Texture* resource) const { (void)resource; return false; }
+        virtual bool CanDestroyTexture(const Texture* resource) const { (void)resource; return false; }
+        virtual bool RecoverAbandonedTextureOwnershipTransfer(Texture& resource, const CompletionToken& releaseToken)
+        { (void)resource; (void)releaseToken; return false; }
         virtual Scope<Shader> CreateShader(const ShaderDescription& description) = 0;
         virtual Scope<Pipeline> CreatePipeline(const PipelineDescription& description) = 0;
         virtual Scope<QueryPool> CreateQueryPool(const QueryPoolDescription& description) = 0;

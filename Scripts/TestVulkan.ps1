@@ -21,7 +21,7 @@ if (!(Test-Path $Executable)) {
     throw "Vulkan smoke executable was not found: $Executable"
 }
 
-$VulkanResult = Invoke-BoundedProcess -FilePath $Executable -Arguments @("--vulkan-render-smoke", "--renderer-capability-smoke", "--vulkan-rhi-core-smoke", "--vulkan-rhi-indexed-draw-smoke", "--vulkan-scene-viewport-raster-smoke", "--rhi-buffer-transition-smoke", "--rhi-completion-smoke", "--rhi-queue-dependency-smoke", "--rhi-buffer-ownership-smoke", "--rhi-resource-ownership-smoke", "--rhi-resource-state-smoke", "--render-graph-execution-smoke") -Label "Editor Vulkan render smoke" -TimeoutSeconds $ChildTimeoutSeconds
+$VulkanResult = Invoke-BoundedProcess -FilePath $Executable -Arguments @("--vulkan-render-smoke", "--renderer-capability-smoke", "--vulkan-rhi-core-smoke", "--vulkan-rhi-indexed-draw-smoke", "--vulkan-scene-viewport-raster-smoke", "--rhi-buffer-transition-smoke", "--rhi-completion-smoke", "--rhi-queue-dependency-smoke", "--rhi-buffer-ownership-smoke", "--rhi-texture-ownership-smoke", "--rhi-resource-ownership-smoke", "--rhi-resource-state-smoke", "--render-graph-execution-smoke") -Label "Editor Vulkan render smoke" -TimeoutSeconds $ChildTimeoutSeconds
 $Output = $VulkanLog = $VulkanResult.Output
 if ($VulkanResult.TimedOut) {
     throw "Vulkan render smoke timed out after $ChildTimeoutSeconds seconds."
@@ -48,6 +48,7 @@ $RequiredMarkers = @(
     "RHICompletionSmokeV1 backend=Vulkan, tokenValidation=pass, query=nonblocking-",
     "RHIQueueDependencySmokeV1 backend=Vulkan,",
     "RHIBufferOwnershipSmokeV1 backend=Vulkan, mode=graphics-fallback, transfer=rejected, pending=no, result=pass",
+    "RHITextureOwnershipSmokeV1 backend=Vulkan, mode=graphics-fallback, transfer=rejected, pending=no, result=pass",
     "RHIResourceOwnershipSmokeV1 backend=Vulkan, owned=pass, null=rejected, result=pass",
     "RHIResourceStateSmokeV1 backend=Vulkan, initial=pass, pending=hidden, invalid=rejected, submission=pass, final=pass, result=pass",
     "VulkanRHICoreV1",
