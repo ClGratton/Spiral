@@ -25,7 +25,7 @@ This slice does not change RenderGraph execution, add Vulkan multi-queue admissi
 
 ## Next Ordered Work
 
-Vulkan multi-queue evaluation found that vendored NVRHI's Vulkan state tracker always uses ignored queue-family indices, so shared-resource ownership across families cannot be delegated to it. The work is split into three bounded gates. First is the portable RHI paired release/acquire state machine with deterministic and real D3D12 global-resource evidence. Second admits selected Vulkan Compute/Copy queues for queue-local work and same-family/graphics-fallback shared work. Third translates the portable pair to native Vulkan different-family barriers and qualifies actual shared-resource movement. RenderGraph translation follows all three; transient allocation and viewport adoption remain separate.
+Vulkan multi-queue evaluation found that vendored NVRHI's Vulkan state tracker always uses ignored queue-family indices, so shared-resource ownership across families cannot be delegated to it. The first unchecked gate is now a real buffer consumer of the portable paired release/acquire lifecycle, including pending-transfer recovery and D3D12 independent/fallback evidence. Texture parity follows using that same authority. Vulkan admission then enables selected queues for queue-local and same-family/graphics-fallback shared work; the subsequent native-family gate qualifies actual cross-family texture/buffer movement. RenderGraph translation follows all four gates.
 
 ## Working State
 
