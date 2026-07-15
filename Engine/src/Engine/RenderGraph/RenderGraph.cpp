@@ -95,16 +95,23 @@ namespace Engine
     bool RenderGraph::BindTexture(ResourceHandle resource, RHI::Texture& texture)
     {
         if (!IsValid(resource) || m_Resources[resource.Index].Kind != ResourceKind::Texture || !Matches(m_Resources[resource.Index].Texture, texture.GetDescription())) return false;
-        if (m_BoundTextures.size() != m_Resources.size()) { m_BoundTextures.resize(m_Resources.size()); m_BoundBuffers.resize(m_Resources.size()); }
+        if (m_BoundTextures.size() != m_Resources.size())
+        {
+            m_BoundTextures.resize(m_Resources.size());
+            m_BoundBuffers.resize(m_Resources.size());
+            m_AutoTransientBindings.resize(m_Resources.size());
+        }
         m_BoundTextures[resource.Index] = &texture;
+        m_AutoTransientBindings[resource.Index] = false;
         return true;
     }
 
     bool RenderGraph::BindBuffer(ResourceHandle resource, RHI::Buffer& buffer)
     {
         if (!IsValid(resource) || m_Resources[resource.Index].Kind != ResourceKind::Buffer || !Matches(m_Resources[resource.Index].Buffer, buffer.GetDescription())) return false;
-        if (m_BoundTextures.size() != m_Resources.size()) { m_BoundTextures.resize(m_Resources.size()); m_BoundBuffers.resize(m_Resources.size()); }
+        if (m_BoundTextures.size() != m_Resources.size()) { m_BoundTextures.resize(m_Resources.size()); m_BoundBuffers.resize(m_Resources.size()); m_AutoTransientBindings.resize(m_Resources.size()); }
         m_BoundBuffers[resource.Index] = &buffer;
+        m_AutoTransientBindings[resource.Index] = false;
         return true;
     }
 
@@ -150,6 +157,7 @@ namespace Engine
         m_Callbacks.clear();
         m_BoundTextures.clear();
         m_BoundBuffers.clear();
+        m_AutoTransientBindings.clear();
     }
 
     RenderGraph::ExecuteResult RenderGraph::Execute(RHI::Device& device, const CompileResult& compiled)
@@ -158,7 +166,168 @@ namespace Engine
         if (!compiled.Success) { result.Error = "Cannot execute an unsuccessful render-graph compilation."; return result; }
         if (m_RecordingDevice && m_RecordingDevice != &device) { result.Error = "Render graph recording contexts belong to another RHI device."; return result; }
         if (compiled.Passes.size() != m_Passes.size() || m_Callbacks.size() != m_Passes.size()) { result.Error = "Compiled passes do not match this render graph."; return result; }
-        if (m_BoundTextures.size() != m_Resources.size() || m_BoundBuffers.size() != m_Resources.size()) { result.Error = "Render graph resources are not all explicitly bound."; return result; }
+        if (compiled.ResourceLifetimes.size() != m_Resources.size()) { result.Error = "Compiled resource lifetimes do not match this render graph."; return result; }
+        for (u32 index = 0; index < compiled.ResourceLifetimes.size(); ++index)
+            if (!IsValid(compiled.ResourceLifetimes[index].Resource) || compiled.ResourceLifetimes[index].Resource.Index != index)
+            { result.Error = "A compiled resource lifetime has an invalid handle."; return result; }
+        const RHI::CapabilityGroupState allocationGroup = BuildTransientResourceCapabilityGroup(device.GetCapabilities());
+        result.TransientAllocationMode = allocationGroup.SelectedPath;
+        if (allocationGroup.SelectedPath != RHI::CapabilityPath::NonAliasedGpuRetiredPool)
+        {
+            result.Error = "The selected placed/aliased transient path has no RHI resource or alias-barrier implementation.";
+            return result;
+        }
+        if (m_BoundTextures.size() != m_Resources.size()) { m_BoundTextures.resize(m_Resources.size()); m_BoundBuffers.resize(m_Resources.size()); m_AutoTransientBindings.resize(m_Resources.size()); }
+        for (u32 index = 0; index < m_Resources.size(); ++index)
+            if (m_Resources[index].Lifetime == ResourceLifetimeKind::Transient && m_AutoTransientBindings[index])
+            {
+                m_BoundTextures[index] = nullptr;
+                m_BoundBuffers[index] = nullptr;
+                m_AutoTransientBindings[index] = false;
+            }
+        std::vector<u32> allocationForResource(m_Resources.size(), InvalidIndex);
+        std::vector<bool> allocationClaimed(m_TransientAllocations.size(), false);
+        std::vector<bool> allocationUsed(m_TransientAllocations.size(), false);
+        std::vector<u32> allocationLastResource(m_TransientAllocations.size(), InvalidIndex);
+        const auto lifetimeFor = [&](u32 resourceIndex) -> const ResourceLifetime*
+        {
+            return resourceIndex < compiled.ResourceLifetimes.size() ? &compiled.ResourceLifetimes[resourceIndex] : nullptr;
+        };
+        const auto finalStateFor = [&](u32 resourceIndex)
+        {
+            RHI::ResourceState state = m_Resources[resourceIndex].InitialState;
+            for (const Barrier& barrier : compiled.Barriers) if (barrier.Resource.Index == resourceIndex) state = barrier.After;
+            return state;
+        };
+        const auto singleEffectiveQueueFor = [&](u32 resourceIndex, RHI::QueueType& queue)
+        {
+            bool found = false;
+            for (const CompiledPass& pass : compiled.Passes)
+            {
+                const bool used = std::any_of(m_Passes[pass.Pass.Index].Uses.begin(), m_Passes[pass.Pass.Index].Uses.end(),
+                    [&](const ResourceUse& use) { return use.Resource.Index == resourceIndex; });
+                if (!used) continue;
+                const RHI::QueueType effective = device.ResolveQueue(pass.Queue).Effective;
+                if (found && queue != effective) return false;
+                queue = effective;
+                found = true;
+            }
+            return found;
+        };
+        for (u32 index = 0; index < m_Resources.size(); ++index)
+        {
+            const ResourceDescription& resource = m_Resources[index];
+            const ResourceLifetime& lifetime = compiled.ResourceLifetimes[index];
+            if (resource.Lifetime == ResourceLifetimeKind::Imported)
+            {
+                if ((resource.Kind == ResourceKind::Texture && (!m_BoundTextures[index] || m_BoundBuffers[index]))
+                    || (resource.Kind == ResourceKind::Buffer && (!m_BoundBuffers[index] || m_BoundTextures[index])))
+                { result.Error = "An imported graph resource is not explicitly bound."; return result; }
+                continue;
+            }
+            if (!lifetime.Used) continue;
+
+            // Explicit bindings remain caller-owned. Unbound transients are
+            // supplied from the selected RenderGraph pool.
+            if ((resource.Kind == ResourceKind::Texture && m_BoundTextures[index] && !m_BoundBuffers[index])
+                || (resource.Kind == ResourceKind::Buffer && m_BoundBuffers[index] && !m_BoundTextures[index]))
+                continue;
+            if ((resource.Kind == ResourceKind::Texture && m_BoundBuffers[index])
+                || (resource.Kind == ResourceKind::Buffer && m_BoundTextures[index]))
+            { result.Error = "A transient graph resource has an incompatible explicit binding."; return result; }
+
+            const auto compatible = [&](const TransientAllocation& allocation)
+            {
+                return allocation.Kind == resource.Kind && (resource.Kind == ResourceKind::Texture
+                    ? allocation.TextureResource && Matches(resource.Texture, allocation.Texture)
+                    : allocation.BufferResource && Matches(resource.Buffer, allocation.Buffer));
+            };
+            bool selected = false;
+            for (u32 allocationIndex = 0; allocationIndex < m_TransientAllocations.size(); ++allocationIndex)
+            {
+                TransientAllocation& allocation = m_TransientAllocations[allocationIndex];
+                if (!compatible(allocation)) continue;
+                if (allocationClaimed[allocationIndex])
+                {
+                    // The fallback has no native aliasing path. A single RHI
+                    // object can nevertheless represent sequential logical
+                    // lifetimes when they stay ordered on one effective queue
+                    // and preserve the same declared state at the hand-off.
+                    const u32 previousResource = allocationLastResource[allocationIndex];
+                    const ResourceLifetime* previousLifetime = lifetimeFor(previousResource);
+                    const ResourceLifetime* nextLifetime = lifetimeFor(index);
+                    RHI::QueueType previousQueue = RHI::QueueType::Graphics;
+                    RHI::QueueType nextQueue = RHI::QueueType::Graphics;
+                    const bool sequential = previousLifetime && nextLifetime && previousLifetime->Used && nextLifetime->Used
+                        && previousLifetime->LastPass < nextLifetime->FirstPass
+                        && singleEffectiveQueueFor(previousResource, previousQueue) && singleEffectiveQueueFor(index, nextQueue)
+                        && previousQueue == nextQueue && m_Resources[previousResource].InitialState == resource.InitialState
+                        && finalStateFor(previousResource) == resource.InitialState;
+                    if (!sequential) continue;
+                    allocationLastResource[allocationIndex] = index;
+                    allocationForResource[index] = allocationIndex;
+                    allocationUsed[allocationIndex] = true;
+                    m_AutoTransientBindings[index] = true;
+                    if (resource.Kind == ResourceKind::Texture) m_BoundTextures[index] = allocation.TextureResource.get();
+                    else m_BoundBuffers[index] = allocation.BufferResource.get();
+                    selected = true;
+                    break;
+                }
+                bool retired = true;
+                for (const RHI::CompletionToken& token : allocation.RetirementTokens)
+                {
+                    const RHI::CompletionStatus completion = device.QueryCompletion(token);
+                    if (completion == RHI::CompletionStatus::Invalid || completion == RHI::CompletionStatus::Failed)
+                    { result.Error = "A pooled transient resource has an invalid or failed exact retirement token."; return result; }
+                    if (completion != RHI::CompletionStatus::Complete) { retired = false; break; }
+                }
+                RHI::ResourceState state = RHI::ResourceState::Unknown;
+                const bool stateMatches = resource.Kind == ResourceKind::Texture
+                    ? device.QueryResourceState(allocation.TextureResource.get(), state) && state == resource.InitialState
+                    : device.QueryResourceState(allocation.BufferResource.get(), state) && state == resource.InitialState;
+                if (!retired || !stateMatches) continue;
+                // The prior tokens were all observed complete and the object
+                // still has the required state, so they no longer need to
+                // grow the retirement history for this new use.
+                allocation.RetirementTokens.clear();
+                allocationClaimed[allocationIndex] = true;
+                allocationLastResource[allocationIndex] = index;
+                allocationForResource[index] = allocationIndex;
+                allocationUsed[allocationIndex] = true;
+                m_AutoTransientBindings[index] = true;
+                if (resource.Kind == ResourceKind::Texture) m_BoundTextures[index] = allocation.TextureResource.get();
+                else m_BoundBuffers[index] = allocation.BufferResource.get();
+                ++result.ReusedRetiredTransientCount;
+                selected = true;
+                break;
+            }
+            if (selected) continue;
+
+            TransientAllocation allocation;
+            allocation.Kind = resource.Kind;
+            allocation.Texture = resource.Texture;
+            allocation.Buffer = resource.Buffer;
+            allocation.EstimatedLogicalBytes = resource.Kind == ResourceKind::Texture ? EstimateLogicalBytes(resource.Texture) : EstimateLogicalBytes(resource.Buffer);
+            if (!allocation.EstimatedLogicalBytes) { result.Error = "A transient graph resource has an unsupported, zero, or overflowing logical memory estimate."; return result; }
+            if (resource.Kind == ResourceKind::Texture) allocation.TextureResource = device.CreateTexture(resource.Texture);
+            else allocation.BufferResource = device.CreateBuffer(resource.Buffer);
+            if ((resource.Kind == ResourceKind::Texture && !allocation.TextureResource)
+                || (resource.Kind == ResourceKind::Buffer && !allocation.BufferResource))
+            { result.Error = "Could not allocate a non-aliased transient graph resource."; return result; }
+            m_TransientAllocations.emplace_back(std::move(allocation));
+            allocationClaimed.emplace_back(true);
+            allocationUsed.emplace_back(true);
+            allocationLastResource.emplace_back(index);
+            allocationForResource[index] = static_cast<u32>(m_TransientAllocations.size() - 1);
+            m_AutoTransientBindings[index] = true;
+            if (resource.Kind == ResourceKind::Texture) m_BoundTextures[index] = m_TransientAllocations.back().TextureResource.get();
+            else m_BoundBuffers[index] = m_TransientAllocations.back().BufferResource.get();
+            result.EstimatedTransientAllocatedBytes += m_TransientAllocations.back().EstimatedLogicalBytes;
+        }
+        for (const TransientAllocation& allocation : m_TransientAllocations) result.EstimatedTransientPooledBytes += allocation.EstimatedLogicalBytes;
+        for (u32 index = 0; index < m_Resources.size(); ++index)
+            if (m_Resources[index].Lifetime == ResourceLifetimeKind::Transient && allocationForResource[index] != InvalidIndex)
+                ++result.TransientResourceCount;
         for (const CompiledPass& pass : compiled.Passes)
         {
             if (!IsValid(pass.Pass) || pass.DebugName != m_Passes[pass.Pass.Index].DebugName || pass.Queue != m_Passes[pass.Pass.Index].Queue) { result.Error = "A compiled pass does not match this render graph."; return result; }
@@ -173,6 +342,7 @@ namespace Engine
         for (u32 index = 0; index < m_Resources.size(); ++index)
         {
             const ResourceDescription& resource = m_Resources[index];
+            if (resource.Lifetime == ResourceLifetimeKind::Transient && !compiled.ResourceLifetimes[index].Used) continue;
             RHI::ResourceState observed = RHI::ResourceState::Unknown;
             const bool valid = resource.Kind == ResourceKind::Texture
                 ? m_BoundTextures[index] && !m_BoundBuffers[index] && Matches(resource.Texture, m_BoundTextures[index]->GetDescription())
@@ -299,6 +469,18 @@ namespace Engine
             if (!token.IsValid()) { result.Error = "Could not submit graph recording for pass '" + compiledPass.DebugName + "'."; discardContext(); return result; }
             context->Completion = token;
             passTokens[compiledPass.Pass.Index] = token;
+            // Publish retirement at the accepted-submission boundary. A later
+            // graph failure must retain this exact token on every transient
+            // physical object touched by the accepted pass.
+            for (const ResourceUse& use : m_Passes[compiledPass.Pass.Index].Uses)
+            {
+                const u32 allocationIndex = allocationForResource[use.Resource.Index];
+                if (allocationIndex == InvalidIndex) continue;
+                std::vector<RHI::CompletionToken>& retirement = m_TransientAllocations[allocationIndex].RetirementTokens;
+                if (std::find_if(retirement.begin(), retirement.end(), [&](const RHI::CompletionToken& prior)
+                    { return prior.DeviceId == token.DeviceId && prior.SubmissionId == token.SubmissionId; }) == retirement.end())
+                    retirement.push_back(token);
+            }
             result.Completions.push_back(token);
             result.Completion = token;
             ++result.AcceptedPassCount;
@@ -325,6 +507,9 @@ namespace Engine
                 return result;
             }
         }
+        for (u32 allocationIndex = 0; allocationIndex < m_TransientAllocations.size(); ++allocationIndex)
+            if (allocationUsed[allocationIndex] && m_TransientAllocations[allocationIndex].RetirementTokens.empty())
+            { result.Error = "A transient graph allocation has no accepted lifetime token."; return result; }
         result.Success = true;
         return result;
     }
@@ -538,6 +723,53 @@ namespace Engine
     {
         return expected.SizeBytes == actual.SizeBytes && expected.StrideBytes == actual.StrideBytes
             && expected.Usage == actual.Usage && expected.CpuAccess == actual.CpuAccess;
+    }
+
+    u64 RenderGraph::EstimateLogicalBytes(const RHI::TextureDescription& description)
+    {
+        u64 bytesPerTexel = 0;
+        switch (description.TextureFormat)
+        {
+            case RHI::Format::R8Unorm: bytesPerTexel = 1; break;
+            case RHI::Format::R8G8B8A8Unorm:
+            case RHI::Format::R8G8B8A8UnormSrgb:
+            case RHI::Format::R11G11B10Float:
+            case RHI::Format::R32Uint:
+            case RHI::Format::D24UnormS8Uint:
+            case RHI::Format::D32Float: bytesPerTexel = 4; break;
+            case RHI::Format::R32G32Float:
+            case RHI::Format::R16G16B16A16Float:
+                bytesPerTexel = 8; break;
+            case RHI::Format::R32G32B32Float: bytesPerTexel = 12; break;
+            case RHI::Format::R32G32B32A32Float: bytesPerTexel = 16; break;
+            case RHI::Format::Unknown: return 0;
+        }
+        const auto multiply = [](u64 left, u64 right, u64& product)
+        {
+            if (!left || !right) { product = 0; return false; }
+            if (left > std::numeric_limits<u64>::max() / right) return false;
+            product = left * right;
+            return true;
+        };
+        if (!description.Extent.Width || !description.Extent.Height || !description.MipLevels || !description.ArrayLayers || !description.SampleCount) return 0;
+        u64 total = 0;
+        u64 width = description.Extent.Width, height = description.Extent.Height;
+        for (u32 mip = 0; mip < description.MipLevels; ++mip)
+        {
+            u64 level = 0, texels = 0;
+            if (!multiply(width, height, texels) || !multiply(texels, bytesPerTexel, level)
+                || total > std::numeric_limits<u64>::max() - level) return 0;
+            total += level;
+            width = std::max<u64>(1, width / 2);
+            height = std::max<u64>(1, height / 2);
+        }
+        u64 layered = 0, sampled = 0;
+        return multiply(total, description.ArrayLayers, layered) && multiply(layered, description.SampleCount, sampled) ? sampled : 0;
+    }
+
+    u64 RenderGraph::EstimateLogicalBytes(const RHI::BufferDescription& description)
+    {
+        return description.CpuAccess == RHI::BufferCpuAccess::None ? description.SizeBytes : 0;
     }
 
     RenderGraph::ResourceUse RenderGraph::Read(ResourceHandle resource, RHI::ResourceState state, RHI::ShaderStage stages)

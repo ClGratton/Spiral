@@ -116,6 +116,14 @@ namespace Engine
             std::vector<RHI::CompletionToken> Completions;
             u32 RecordingContextIndex = InvalidIndex;
             bool ReusedRetiredContext = false;
+            // Allocation accounting is intentionally RenderGraph policy. The
+            // current adapters select the non-aliased pool; a placed/aliased
+            // result is rejected until RHI can create it and emit its barriers.
+            RHI::CapabilityPath TransientAllocationMode = RHI::CapabilityPath::NonAliasedGpuRetiredPool;
+            u64 EstimatedTransientAllocatedBytes = 0;
+            u64 EstimatedTransientPooledBytes = 0;
+            u32 TransientResourceCount = 0;
+            u32 ReusedRetiredTransientCount = 0;
             u32 AcceptedPassCount = 0;
         };
 
@@ -212,10 +220,22 @@ namespace Engine
             RHI::QueueType EffectiveQueue = RHI::QueueType::Graphics;
             u32 PassIndex = InvalidIndex;
         };
+        struct TransientAllocation
+        {
+            ResourceKind Kind = ResourceKind::Texture;
+            RHI::TextureDescription Texture;
+            RHI::BufferDescription Buffer;
+            Scope<RHI::Texture> TextureResource;
+            Scope<RHI::Buffer> BufferResource;
+            std::vector<RHI::CompletionToken> RetirementTokens;
+            u64 EstimatedLogicalBytes = 0;
+        };
         ResourceHandle AddResource(ResourceDescription description);
         static CompileResult Fail(std::string_view message);
         static bool Matches(const RHI::TextureDescription& expected, const RHI::TextureDescription& actual);
         static bool Matches(const RHI::BufferDescription& expected, const RHI::BufferDescription& actual);
+        static u64 EstimateLogicalBytes(const RHI::TextureDescription& description);
+        static u64 EstimateLogicalBytes(const RHI::BufferDescription& description);
 
     private:
         std::vector<ResourceDescription> m_Resources;
@@ -225,7 +245,9 @@ namespace Engine
         std::vector<PassCallback> m_Callbacks;
         std::vector<RHI::Texture*> m_BoundTextures;
         std::vector<RHI::Buffer*> m_BoundBuffers;
+        std::vector<bool> m_AutoTransientBindings;
         std::vector<RecordingContext> m_RecordingContexts;
+        std::vector<TransientAllocation> m_TransientAllocations;
         RHI::Device* m_RecordingDevice = nullptr;
     };
 }

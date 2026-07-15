@@ -74,6 +74,9 @@ if ($JoinedLog -notmatch 'RHICompletionSmokeV1 backend=Vulkan, tokenValidation=p
 if ($JoinedLog -notmatch 'RenderGraphExecutionSmokeV1 backend=Vulkan, barriers=3, callbacks=ordered-pass, undeclared=rejected, submission=pass, topology=(independent-copy|graphics-fallback), dependency=(gpu-wait|ordered-elided), readback=pass, reuse=retired-same-context, result=pass') {
     throw "Vulkan render smoke did not prove topology-adaptive RenderGraph queue execution, readback, and aggregate retirement."
 }
+if ($JoinedLog -notmatch 'RenderGraphTransientAllocationSmokeV1 backend=Vulkan, mode=NonAliasedGpuRetiredPool, lifetime=compatible-sequential-pass, estimatedLogicalAllocatedBytes=64, estimatedLogicalPooledBytes=64, retirement=exact-token-pass, reuse=retired-pass, result=pass') {
+    throw "Vulkan render smoke did not prove transient lifetime allocation, exact-token retirement, and pooled reuse."
+}
 if ($JoinedLog -notmatch 'RHIQueueDependencySmokeV1 backend=Vulkan, copy=(independent|graphics-fallback), compute=(independent|graphics-fallback), copyToGraphics=(gpu-wait|ordered-elided), graphicsToCompute=(gpu-wait|ordered-elided), cpuWaitBetween=no, queueLocal=yes, sharedResources=(rejected|permitted-or-elided), retirement=pass, result=pass') {
     throw "Vulkan smoke did not prove topology-adaptive queue-local dependency retirement."
 }

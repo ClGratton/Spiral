@@ -2918,6 +2918,115 @@ float4 main(VertexInput input) : SV_Position
                 "four pass identities record while earlier tokens are incomplete, then only exact same-pass retired contexts reuse after the three-context bound");
     }
 
+    bool TestRenderGraphTransientAllocationReuseAndExactRetirement()
+    {
+        using namespace Engine;
+        using namespace Engine::RHI;
+        BufferDescription description = MakeExecutionBuffer("transient-pool");
+        description.SizeBytes = 64;
+        description.InitialState = ResourceState::CopyDest;
+        RenderGraph graph;
+        const auto first = graph.AddBuffer(description);
+        const auto second = graph.AddBuffer(description);
+        const auto firstPass = graph.AddPass("Transient First");
+        const auto secondPass = graph.AddPass("Transient Second");
+        graph.AddWrite(firstPass, first, ResourceState::CopyDest);
+        graph.AddWrite(secondPass, second, ResourceState::CopyDest);
+        Buffer* firstPhysical = nullptr;
+        Buffer* secondPhysical = nullptr;
+        graph.SetPassCallback(firstPass, [&](RenderGraph::ExecutionContext& context) { firstPhysical = context.GetBuffer(first); return firstPhysical != nullptr; });
+        graph.SetPassCallback(secondPass, [&](RenderGraph::ExecutionContext& context) { secondPhysical = context.GetBuffer(second); return secondPhysical != nullptr; });
+        RenderGraphTestDevice device(8501);
+        const RenderGraph::CompileResult compiled = graph.Compile();
+        const RenderGraph::ExecuteResult initial = graph.Execute(device, compiled);
+        const bool lifetimeReuse = initial.Success && firstPhysical == secondPhysical
+            && initial.TransientAllocationMode == CapabilityPath::NonAliasedGpuRetiredPool
+            && initial.TransientResourceCount == 2 && initial.EstimatedTransientAllocatedBytes == 64 && initial.EstimatedTransientPooledBytes == 64;
+
+        // Completing only the final token is insufficient: the pool records
+        // every pass token that touched this physical allocation.
+        device.SetCompletion(initial.Completion, CompletionStatus::Complete);
+        const RenderGraph::ExecuteResult incompleteReuse = graph.Execute(device, compiled);
+        const bool blockedByExactToken = incompleteReuse.Success && incompleteReuse.EstimatedTransientAllocatedBytes == 64
+            && incompleteReuse.ReusedRetiredTransientCount == 0 && incompleteReuse.EstimatedTransientPooledBytes == 128;
+        for (const CompletionToken& token : initial.Completions)
+            device.SetCompletion(token, CompletionStatus::Complete);
+        const RenderGraph::ExecuteResult retiredReuse = graph.Execute(device, compiled);
+        const bool exactTokenRetired = retiredReuse.Success && retiredReuse.EstimatedTransientAllocatedBytes == 0
+            && retiredReuse.ReusedRetiredTransientCount == 1 && retiredReuse.EstimatedTransientPooledBytes == 128;
+        for (const CompletionToken& token : retiredReuse.Completions)
+            device.SetCompletion(token, CompletionStatus::Complete);
+        const RenderGraph::ExecuteResult repeatedRetiredReuse = graph.Execute(device, compiled);
+        const bool repeatedReuse = repeatedRetiredReuse.Success && repeatedRetiredReuse.EstimatedTransientAllocatedBytes == 0
+            && repeatedRetiredReuse.ReusedRetiredTransientCount == 1 && repeatedRetiredReuse.EstimatedTransientPooledBytes == 128;
+        return Expect(compiled.Success && lifetimeReuse, "transient lifetimes bind compatible sequential resources to one peak-cost physical allocation")
+            && Expect(blockedByExactToken, "an incomplete exact transient completion token prevents physical resource reuse")
+            && Expect(exactTokenRetired && repeatedReuse, "a transient physical resource becomes repeatedly reusable only after every exact token retires");
+    }
+
+    bool TestRenderGraphTransientAcceptedPrefixRetainsRetirement()
+    {
+        using namespace Engine;
+        using namespace Engine::RHI;
+        const BufferDescription description = MakeExecutionBuffer("transient-accepted-prefix");
+        RenderGraph graph;
+        const auto resource = graph.AddBuffer(description);
+        const auto accepted = graph.AddPass("Accepted transient pass");
+        const auto failing = graph.AddPass("Failing suffix");
+        graph.AddWrite(accepted, resource, ResourceState::CopyDest);
+        graph.AddDependency(accepted, failing);
+        std::vector<Buffer*> physicals;
+        graph.SetPassCallback(accepted, [&](RenderGraph::ExecutionContext& context) { physicals.push_back(context.GetBuffer(resource)); return physicals.back() != nullptr; });
+        graph.SetPassCallback(failing, [](RenderGraph::ExecutionContext&) { return false; });
+        RenderGraphTestDevice device(8502);
+        const RenderGraph::CompileResult compiled = graph.Compile();
+        const RenderGraph::ExecuteResult firstFailure = graph.Execute(device, compiled);
+        const RenderGraph::ExecuteResult blockedRetry = graph.Execute(device, compiled);
+        const bool retainedPrefix = !firstFailure.Success && firstFailure.AcceptedPassCount == 1 && firstFailure.Completions.size() == 1
+            && !blockedRetry.Success && blockedRetry.AcceptedPassCount == 1 && blockedRetry.EstimatedTransientAllocatedBytes == description.SizeBytes
+            && blockedRetry.ReusedRetiredTransientCount == 0 && physicals.size() >= 2 && physicals[0] != physicals[1];
+        device.SetCompletion(firstFailure.Completion, CompletionStatus::Complete);
+        const RenderGraph::ExecuteResult retiredRetry = graph.Execute(device, compiled);
+        const bool retiredReuse = !retiredRetry.Success && retiredRetry.AcceptedPassCount == 1
+            && retiredRetry.EstimatedTransientAllocatedBytes == 0 && retiredRetry.ReusedRetiredTransientCount == 1
+            && physicals.size() >= 3 && physicals[2] == physicals[0];
+        return Expect(compiled.Success && retainedPrefix, "an accepted transient prefix retains its incomplete exact token after a later graph failure")
+            && Expect(retiredReuse, "a failed accepted prefix transient allocation is reusable only after its exact token retires");
+    }
+
+    bool TestRenderGraphTransientLogicalTextureCost()
+    {
+        using namespace Engine;
+        using namespace Engine::RHI;
+        TextureDescription rg32;
+        rg32.DebugName = "logical-rg32";
+        rg32.Extent = { 4, 4 };
+        rg32.TextureFormat = Format::R32G32Float;
+        rg32.Usage = TextureUsage::CopyDest;
+        rg32.InitialState = ResourceState::CopyDest;
+        rg32.MipLevels = 3;
+        TextureDescription rgb32 = rg32;
+        rgb32.DebugName = "logical-rgb32";
+        rgb32.Extent = { 2, 1 };
+        rgb32.TextureFormat = Format::R32G32B32Float;
+        rgb32.MipLevels = 2;
+        RenderGraph graph;
+        const auto first = graph.AddTexture(rg32);
+        const auto second = graph.AddTexture(rgb32);
+        BufferDescription unusedDescription = MakeExecutionBuffer("unused-transient");
+        const auto unused = graph.AddBuffer(unusedDescription);
+        const auto firstPass = graph.AddPass("logical-rg32-pass");
+        const auto secondPass = graph.AddPass("logical-rgb32-pass");
+        graph.AddWrite(firstPass, first, ResourceState::CopyDest);
+        graph.AddWrite(secondPass, second, ResourceState::CopyDest);
+        graph.SetPassCallback(firstPass, [](RenderGraph::ExecutionContext& context) { return context.GetTexture({ 0 }) != nullptr; });
+        graph.SetPassCallback(secondPass, [](RenderGraph::ExecutionContext& context) { return context.GetTexture({ 1 }) != nullptr; });
+        RenderGraphTestDevice device(8503);
+        const RenderGraph::ExecuteResult result = graph.Execute(device, graph.Compile());
+        return Expect(result.Success && result.TransientResourceCount == 2 && result.EstimatedTransientAllocatedBytes == 204 && result.EstimatedTransientPooledBytes == 204,
+            "unused transient declarations contribute no allocation or token failure while texture estimates sum mip extents and use correct R32G32/R32G32B32 byte sizes");
+    }
+
     bool TestRenderGraphExecutorCrossQueueOwnershipAndFallback()
     {
         using namespace Engine;
@@ -3464,6 +3573,9 @@ int main()
         { "Render graph executor stops after callback failure", TestRenderGraphExecutorStopsAfterCallbackFailure },
         { "Render graph executor orders barriers and restricts context", TestRenderGraphExecutorOrdersBarriersAndRestrictsContext },
         { "Render graph executor exhausts and reuses exact retired contexts", TestRenderGraphExecutorPoolExhaustionAndExactRetirement },
+        { "Render graph transient allocation reuses compatible lifetimes after exact retirement", TestRenderGraphTransientAllocationReuseAndExactRetirement },
+        { "Render graph transient accepted prefixes retain exact retirement", TestRenderGraphTransientAcceptedPrefixRetainsRetirement },
+        { "Render graph transient logical texture estimates cover mips and formats", TestRenderGraphTransientLogicalTextureCost },
         { "Render graph executor translates cross-queue ownership and fallback", TestRenderGraphExecutorCrossQueueOwnershipAndFallback },
         { "Render graph executor preserves accepted prefix on missing producer token", TestRenderGraphExecutorRejectsMissingProducerTokenBeforeConsumer },
         { "RHI buffer transition contract rejects incompatible states", TestRhiBufferTransitionContract },

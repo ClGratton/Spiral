@@ -97,6 +97,9 @@ if ($JoinedLog -notmatch 'RHICompletionSmokeV1 backend=D3D12, tokenValidation=pa
 if ($JoinedLog -notmatch 'RenderGraphExecutionSmokeV1 backend=D3D12, barriers=3, callbacks=ordered-pass, undeclared=rejected, submission=pass, topology=(independent-copy|graphics-fallback), dependency=(gpu-wait|ordered-elided), readback=pass, reuse=retired-same-context, result=pass') {
     throw "D3D12 render smoke did not prove topology-adaptive RenderGraph queue execution, readback, and aggregate retirement."
 }
+if ($JoinedLog -notmatch 'RenderGraphTransientAllocationSmokeV1 backend=D3D12, mode=NonAliasedGpuRetiredPool, lifetime=compatible-sequential-pass, estimatedLogicalAllocatedBytes=64, estimatedLogicalPooledBytes=64, retirement=exact-token-pass, reuse=retired-pass, result=pass') {
+    throw "D3D12 render smoke did not prove transient lifetime allocation, exact-token retirement, and pooled reuse."
+}
 $QueueDependencyPattern = 'RHIQueueDependencySmokeV1 backend=D3D12, copy=(?<copy>independent|graphics-fallback), compute=(?<compute>independent|graphics-fallback), copyToGraphics=(?<copyMode>gpu-wait|ordered-elided), graphicsToCompute=(?<computeMode>gpu-wait|ordered-elided), cpuWaitBetween=no, bytes=pass, finalState=CopySource, retirement=pass, result=pass'
 $QueueDependencyMatch = [regex]::Match($JoinedLog, $QueueDependencyPattern)
 if (!$QueueDependencyMatch.Success) {

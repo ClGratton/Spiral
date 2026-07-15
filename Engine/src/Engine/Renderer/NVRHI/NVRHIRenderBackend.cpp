@@ -1090,8 +1090,46 @@ namespace Engine
         const bool reusedPixels = reusedReadbackOk && pixelsMatch(reusedReadback);
         const bool sameRetiredContext = reused.Success && reused.ReusedRetiredContext
             && reused.RecordingContextIndex == executed.RecordingContextIndex;
+        RHI::BufferDescription transientDescription;
+        transientDescription.DebugName = "RenderGraphTransientAllocationSmokeV1 Buffer";
+        transientDescription.SizeBytes = 64;
+        transientDescription.Usage = RHI::BufferUsage::CopyDest;
+        transientDescription.InitialState = RHI::ResourceState::CopyDest;
+        RenderGraph transientGraph;
+        const auto transientFirst = transientGraph.AddBuffer(transientDescription);
+        const auto transientSecond = transientGraph.AddBuffer(transientDescription);
+        const auto transientFirstPass = transientGraph.AddPass("Transient Allocation First");
+        const auto transientSecondPass = transientGraph.AddPass("Transient Allocation Second");
+        transientGraph.AddWrite(transientFirstPass, transientFirst, RHI::ResourceState::CopyDest);
+        transientGraph.AddWrite(transientSecondPass, transientSecond, RHI::ResourceState::CopyDest);
+        RHI::Buffer* transientFirstPhysical = nullptr;
+        RHI::Buffer* transientSecondPhysical = nullptr;
+        transientGraph.SetPassCallback(transientFirstPass, [&](RenderGraph::ExecutionContext& context)
+        { transientFirstPhysical = context.GetBuffer(transientFirst); return transientFirstPhysical != nullptr; });
+        transientGraph.SetPassCallback(transientSecondPass, [&](RenderGraph::ExecutionContext& context)
+        { transientSecondPhysical = context.GetBuffer(transientSecond); return transientSecondPhysical != nullptr; });
+        const RenderGraph::CompileResult transientCompiled = transientGraph.Compile();
+        const RenderGraph::ExecuteResult transientInitial = transientGraph.Execute(device, transientCompiled);
+        bool transientRetired = transientInitial.Success;
+        for (const RHI::CompletionToken& token : transientInitial.Completions)
+            transientRetired = transientRetired && device.WaitForCompletion(token, 5000);
+        const RenderGraph::ExecuteResult transientReused = transientRetired ? transientGraph.Execute(device, transientCompiled) : RenderGraph::ExecuteResult {};
+        const bool transientPassed = transientCompiled.Success && transientInitial.Success && transientRetired && transientReused.Success
+            && transientFirstPhysical == transientSecondPhysical
+            && transientInitial.TransientAllocationMode == RHI::CapabilityPath::NonAliasedGpuRetiredPool
+            && transientInitial.TransientResourceCount == 2 && transientInitial.EstimatedTransientAllocatedBytes == 64
+            && transientInitial.EstimatedTransientPooledBytes == 64 && transientReused.EstimatedTransientAllocatedBytes == 0
+            && transientReused.ReusedRetiredTransientCount == 1;
+        Log::Info("RenderGraphTransientAllocationSmokeV1 backend=", backendName,
+            ", mode=", transientInitial.TransientAllocationMode == RHI::CapabilityPath::NonAliasedGpuRetiredPool ? "NonAliasedGpuRetiredPool" : "unexpected",
+            ", lifetime=compatible-sequential-", transientFirstPhysical == transientSecondPhysical ? "pass" : "fail",
+            ", estimatedLogicalAllocatedBytes=", transientInitial.EstimatedTransientAllocatedBytes,
+            ", estimatedLogicalPooledBytes=", transientInitial.EstimatedTransientPooledBytes,
+            ", retirement=exact-token-", transientRetired ? "pass" : "fail",
+            ", reuse=", transientReused.ReusedRetiredTransientCount == 1 ? "retired-pass" : "fail",
+            ", result=", transientPassed ? "pass" : "fail");
         const bool passed = compiled.Success && ordered && callbackStep == 4u && executed.Success && firstPixels
-            && firstRetired && rebound && sameRetiredContext && reusedPixels;
+            && firstRetired && rebound && sameRetiredContext && reusedPixels && transientPassed;
         Log::Info("RenderGraphExecutionSmokeV1 backend=", backendName,
             ", barriers=", compiled.Barriers.size(),
             ", callbacks=ordered-", ordered && callbackStep == 4u ? "pass" : "fail",
