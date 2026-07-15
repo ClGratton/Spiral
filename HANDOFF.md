@@ -4,7 +4,7 @@ Updated 2026-07-15. This is a recovery aid; `PLAN.md` remains the sole roadmap a
 
 ## Objective And Stop Condition
 
-Transient allocation/reuse and the split Phase 3A worker-safe Scene preparation prerequisite are implemented and locally accepted in the current root task. The user lowered the hard weekly-allowance floor to 15%; the last reliable user-reported starting value was 29%, but this surface exposes no current weekly percentage, so do not invent a precise remaining value. Phase 3B worker-safe command recording is the next ordered item and is a large synchronization slice; do not begin it unless it can finish coherently above that floor. Continuation must remain in this main task and rely on Codex Desktop's transparent same-task compaction; never create, fork, or message another task for rollover.
+Transient allocation/reuse and the split Phase 3C-P1 worker-safe Scene preparation prerequisite are implemented and locally accepted in the current root task. The user lowered the hard weekly-allowance floor to 15%; the last reliable user-reported starting value was 29%, but this surface exposes no current weekly percentage, so do not invent a precise remaining value. Phase 3C-P2 worker-safe command recording is the next ordered item and is a large synchronization slice; do not begin it unless it can finish coherently above that floor. Continuation must remain in this main task and rely on Codex Desktop's transparent same-task compaction; never create, fork, or message another task for rollover.
 
 ## Token-Efficiency Baseline And Required Next-Session Audit (2026-07-15)
 
@@ -34,9 +34,9 @@ One exact native `terra_medium` owner implemented commit `8634c8e` in one persis
 
 The owner unnecessarily reran both full D3D12/Vulkan smoke scripts after the second narrow correction despite being asked to run only focused tests unless the marker path changed. Future assignments should make the no-rerun boundary explicit as a required deliverable and treat owner-provided passing backend evidence as retained when untouched. Root independently ran the final 58/58 deterministic executable plus style/diff checks; it did not duplicate a third headed smoke run. Exact role routing is confirmed by the native `terra_medium` agent type used for the one owner session. Current weekly percentage is unavailable from this surface, so only the user-reported 29% starting point and 15% floor are durable facts; do not convert raw token telemetry into a fabricated quota percentage.
 
-### Scene-Preparation 3A Slice Audit (2026-07-15)
+### Scene-Preparation Phase 3C-P1 Slice Audit (2026-07-15)
 
-One exact native `terra_medium` owner classified the original multithreaded-render line as two independently reviewable mechanisms and implemented only prerequisite 3A in one persistent session. One initial long wait returned a decision-relevant transient `Editor.exe` linker lock; root performed one read-only process/target check, found no owner and an absent target, and the same running owner succeeded on exactly one retry. One same-owner correction removed a real Vulkan production bypass by moving synchronous preparation exclusively into the named standalone smoke. No replacement owner, optional reviewer, CI polling, or duplicate D3D12 rerun was used.
+One exact native `terra_medium` owner classified the original Phase 3C multithreaded-render line as two independently reviewable mechanisms and implemented only prerequisite P1 in one persistent session. One initial long wait returned a decision-relevant transient `Editor.exe` linker lock; root performed one read-only process/target check, found no owner and an absent target, and the same running owner succeeded on exactly one retry. One same-owner correction removed a real Vulkan production bypass by moving synchronous preparation exclusively into the named standalone smoke. No replacement owner, optional reviewer, CI polling, or duplicate D3D12 rerun was used.
 
 The OpenAI goal measured 41,345 tokens and 549 seconds from goal creation through pre-commit acceptance; this is scoped goal telemetry, not a weekly-quota percentage. Root ran the final 58/58 deterministic regression, style, and diff check. The owner retained D3D12 evidence after the Vulkan-only correction and reran only Vulkan parallel/inline paths, matching the requested evidence boundary. This slice therefore improved the prior orchestration pattern: one owner, two waits before correction, one correction, and no broad repeated verification.
 
@@ -86,7 +86,7 @@ Local Windows/MSVC Debug evidence on an RTX 3080 Ti:
 - `SceneViewportRenderGraphV1` passed exact-byte D3D12 comparison at 1560x822 (5,129,280 bytes) and 850x613 (2,084,200 bytes), while the existing Scene A/C identity and B centroid-shift captures remained green.
 - The same marker passed Vulkan comparison at 48x36 (6,912 bytes), 64x48 (12,288 bytes), and the live/resized viewport outputs before native ImGui handoff.
 - Final `EngineTests` passed 58/58, including compatible lifetime reuse, incomplete-token blocking, accepted-prefix failure retention, repeated retired reuse, unused-lifetime elision, and mip/format logical-cost coverage. Local D3D12 and Vulkan scripts emitted `RenderGraphTransientAllocationSmokeV1 ... estimatedLogicalAllocatedBytes=64 ... retirement=exact-token-pass, reuse=retired-pass, result=pass`. No native placement/alias-barrier, native heap-footprint, hosted, or macOS claim is made for this slice.
-- Phase 3A local RTX 3080 Ti D3D12 and Vulkan runs passed in parallel and deterministic-inline modes. `SceneRasterPreparationV1` reported a real worker index versus `worker=caller`, and every run retained `SceneViewportRenderGraphV1 ... comparator=exact-byte-pass`. Root's final 58/58 regression, code style, and diff check passed. This is CPU preparation evidence only, not overlapping command-list recording or changed GPU submission.
+- Phase 3C-P1 local RTX 3080 Ti D3D12 and Vulkan runs passed in parallel and deterministic-inline modes. `SceneRasterPreparationV1` reported a real worker index versus `worker=caller`, and every run retained `SceneViewportRenderGraphV1 ... comparator=exact-byte-pass`. Root's final 58/58 regression, code style, and diff check passed. This is CPU preparation evidence only, not overlapping command-list recording or changed GPU submission.
 
 Hosted evidence for behavior/harness head `7e5e80b`:
 
@@ -101,11 +101,11 @@ Exact-head CI run `29430304670` passed real Windows D3D12, Ubuntu Vulkan/lavapip
 
 ## Next Ordered Work
 
-The first unchecked `PLAN.md` item is prerequisite 3B:
+The first unchecked `PLAN.md` item is Phase 3C prerequisite P2:
 
 > Worker-safe graph recording contract: make pass-level worker-recording eligibility explicit and safe-by-default, then prove independent eligible render-graph preparation/recording overlaps on CPU workers while callbacks without that declaration remain caller-affine.
 
-The following original end-to-end multithreaded-render line remains present and unchecked after 3B. This is a large concurrency/synchronization slice: it must use separate bounded RHI contexts, preserve deterministic compiled-order submission and accepted-prefix publication, retain cross-queue/transient exact-token authority, and run the identical declared work inline as the oracle. Do not infer arbitrary callback capture safety. With no current weekly-percentage telemetry and the 15% floor, stop here rather than leave 3B half-built.
+The following original end-to-end multithreaded-render line remains present and unchecked after Phase 3C-P2. This is a large concurrency/synchronization slice: it must use separate bounded RHI contexts, preserve deterministic compiled-order submission and accepted-prefix publication, retain cross-queue/transient exact-token authority, and run the identical declared work inline as the oracle. Do not infer arbitrary callback capture safety. With no current weekly-percentage telemetry and the 15% floor, stop here rather than leave P2 half-built.
 
 ## Working State
 

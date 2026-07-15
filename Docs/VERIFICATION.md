@@ -122,7 +122,7 @@ For the entity Inspector, select a camera-bearing entity and confirm Transform e
 
 Both commands must publish the frame input, complete every caller-affine layer task, emit one terminal profile event per task, and print the matching `CPU frame task graph smoke passed` marker. These tests do not prove future workerized simulation, visibility/render preparation, translated-origin/raster snapshot consumption, command recording, priorities/cancellation, or Profiler-panel lane visualization.
 
-## Phase 3A Scene Raster Preparation
+## Phase 3C Prerequisite P1 Scene Raster Preparation
 
 The current real viewport consumer proves the first split multithreaded-render prerequisite with the same Application frame task in both modes:
 
