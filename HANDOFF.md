@@ -25,7 +25,7 @@ This slice does not change RenderGraph execution, add Vulkan multi-queue admissi
 
 ## Next Ordered Work
 
-The first unchecked `PLAN.md` item is Vulkan/NVRHI multi-queue admission: enumerate and create selected Compute/Copy queues/families, retain Graphics fallback, distinguish same-family ordering from cross-family release/acquire ownership transfer, and qualify only exercised support. The following item translates compiled RenderGraph dependencies into multi-queue RHI submissions. Do not silently combine either gate with transient allocation or Scene viewport adoption.
+Vulkan multi-queue evaluation found that vendored NVRHI's Vulkan state tracker always uses ignored queue-family indices, so it cannot express shared-resource ownership transfer across families. The first unchecked `PLAN.md` item is now the backend-neutral RHI queue-ownership transfer prerequisite: paired release/acquire texture and buffer transitions, exact state/owner/dependency validation, same-family elision, D3D12 global-resource semantics, and Vulkan family barriers confined to the RHI adapter. The following Vulkan/NVRHI admission gate may enable selected Compute/Copy queues only after that boundary is exercised or may qualify truthful same-family/graphics fallback without a cross-family claim. RenderGraph translation remains after both gates.
 
 ## Working State
 
