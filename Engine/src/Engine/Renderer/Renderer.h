@@ -143,6 +143,10 @@ namespace Engine
         static const RendererFrameTiming& GetLastFrameTiming();
         static void PublishSceneRenderSnapshot(SceneRenderSnapshot snapshot);
         static std::shared_ptr<const SceneRenderSnapshot> GetSceneRenderSnapshot();
+        // CPU-only preparation is safe on a FrameTaskGraph worker: it consumes only
+        // the immutable scene snapshot and publishes one immutable raster frame.
+        static bool PrepareCurrentSceneRasterFrame();
+        static std::shared_ptr<const SceneRasterFrame> GetPreparedSceneRasterFrame();
         static void PublishSceneRasterFrame(SceneRasterFrame frame);
         static std::shared_ptr<const SceneRasterFrame> GetLastSceneRasterFrame();
     };

@@ -1234,6 +1234,8 @@ namespace Engine
         mesh.Transform.Position = view.Camera.TranslationOriginPosition;
         snapshot.Meshes.push_back(mesh);
         Renderer::PublishSceneRenderSnapshot(std::move(snapshot));
+        if (!Renderer::PrepareCurrentSceneRasterFrame())
+            return false;
         const ClearColor background { 0.04f, 0.05f, 0.06f, 1.0f };
         const bool firstRaster = m_VulkanSceneRenderer->RenderCurrentSnapshot(48, 36, background);
         const u64 firstGeneration = m_VulkanSceneRenderer->GetOutputGeneration();

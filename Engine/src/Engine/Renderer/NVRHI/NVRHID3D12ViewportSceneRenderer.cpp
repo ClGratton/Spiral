@@ -225,8 +225,13 @@ namespace Engine
             std::vector<ConstantBufferAllocation>* constantBuffers = nullptr;
             size_t drawCount = 0;
             const std::shared_ptr<const SceneRenderSnapshot> snapshot = Renderer::GetSceneRenderSnapshot();
+            const std::shared_ptr<const SceneRasterFrame> prepared = Renderer::GetPreparedSceneRasterFrame();
             if (snapshot)
-                rasterFrame = PrepareSceneRasterFrame(*snapshot);
+            {
+                if (!prepared || prepared->SnapshotFrameIndex != snapshot->FrameIndex)
+                    return false;
+                rasterFrame = *prepared;
+            }
             if (!m_Pipeline)
             {
                 rasterFrame.RasterAvailability = m_ShaderPipelineTerminalFailure

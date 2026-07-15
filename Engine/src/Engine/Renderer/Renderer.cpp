@@ -55,6 +55,7 @@ namespace Engine
         RendererBuildInfo s_BuildInfo;
         RendererFrameTiming s_FrameTiming;
         AtomicSharedPointer<SceneRenderSnapshot> s_SceneRenderSnapshot;
+        AtomicSharedPointer<SceneRasterFrame> s_PreparedSceneRasterFrame;
         AtomicSharedPointer<SceneRasterFrame> s_SceneRasterFrame;
         Scope<RenderBackend> s_Backend;
         std::vector<RendererBackendOption> s_BackendOptions;
@@ -382,6 +383,7 @@ namespace Engine
     void Renderer::Shutdown()
     {
         s_SceneRenderSnapshot.Store({});
+        s_PreparedSceneRasterFrame.Store({});
         s_SceneRasterFrame.Store({});
         if (!s_Initialized)
             return;
@@ -591,6 +593,26 @@ namespace Engine
     std::shared_ptr<const SceneRenderSnapshot> Renderer::GetSceneRenderSnapshot()
     {
         return s_SceneRenderSnapshot.Load();
+    }
+
+    bool Renderer::PrepareCurrentSceneRasterFrame()
+    {
+        const std::shared_ptr<const SceneRenderSnapshot> snapshot = s_SceneRenderSnapshot.Load();
+        if (!snapshot)
+        {
+            s_PreparedSceneRasterFrame.Store({});
+            return true;
+        }
+
+        std::shared_ptr<const SceneRasterFrame> prepared =
+            std::make_shared<const SceneRasterFrame>(PrepareSceneRasterFrame(*snapshot));
+        s_PreparedSceneRasterFrame.Store(std::move(prepared));
+        return true;
+    }
+
+    std::shared_ptr<const SceneRasterFrame> Renderer::GetPreparedSceneRasterFrame()
+    {
+        return s_PreparedSceneRasterFrame.Load();
     }
 
     void Renderer::PublishSceneRasterFrame(SceneRasterFrame frame)

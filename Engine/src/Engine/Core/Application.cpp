@@ -7,6 +7,7 @@
 
 #include <chrono>
 #include <filesystem>
+#include <optional>
 #include <stdexcept>
 
 namespace Engine
@@ -147,10 +148,21 @@ namespace Engine
                 };
                 const FrameTaskId updateTask = frameTasks.AddTask(std::move(updateLayers));
 
+                FrameTaskDescription prepareSceneRaster;
+                prepareSceneRaster.Name = "Frame.PrepareSceneRaster";
+                prepareSceneRaster.Dependencies = { updateTask };
+                prepareSceneRaster.Lane = FrameTaskLane::Worker;
+                prepareSceneRaster.Execute = []()
+                {
+                    if (!Renderer::PrepareCurrentSceneRasterFrame())
+                        throw std::logic_error("scene raster preparation did not receive a scene snapshot");
+                };
+                const FrameTaskId prepareSceneRasterTask = frameTasks.AddTask(std::move(prepareSceneRaster));
+
                 FrameTaskDescription renderLayers;
                 renderLayers.Name = "Frame.RenderLayers";
                 renderLayers.Lane = FrameTaskLane::CallingThread;
-                renderLayers.Dependencies = { updateTask };
+                renderLayers.Dependencies = { prepareSceneRasterTask };
                 renderLayers.Execute = [&]()
                 {
                     for (auto& layer : m_LayerStack)
@@ -164,12 +176,16 @@ namespace Engine
                 taskOptions.Mode = m_Specification.CommandLineArgs.HasFlag("--frame-task-single-thread")
                     ? FrameTaskExecutionMode::DeterministicSingleThread
                     : FrameTaskExecutionMode::Parallel;
-                if (m_Specification.CommandLineArgs.HasFlag("--frame-task-graph-smoke"))
+                const bool sceneRasterPreparationSmoke = m_Specification.CommandLineArgs.HasFlag("--scene-raster-preparation-smoke");
+                std::optional<FrameTaskProfileEvent> sceneRasterPreparationEvent;
+                if (m_Specification.CommandLineArgs.HasFlag("--frame-task-graph-smoke") || sceneRasterPreparationSmoke)
                 {
                     taskOptions.ProfileHook = [&](const FrameTaskProfileEvent& event)
                     {
                         if (event.Phase == FrameTaskProfilePhase::End)
                             ++completedProfileEvents;
+                        if (event.Phase == FrameTaskProfilePhase::End && event.Task == prepareSceneRasterTask)
+                            sceneRasterPreparationEvent = event;
                     };
                 }
 
@@ -184,6 +200,26 @@ namespace Engine
                     Log::Info("CPU frame task graph smoke passed: frame=", m_FrameIndex,
                         ", tasks=", frameTasks.GetTaskCount(),
                         ", mode=", taskOptions.Mode == FrameTaskExecutionMode::DeterministicSingleThread ? "single-thread" : "parallel");
+                }
+                if (sceneRasterPreparationSmoke && m_FrameIndex == 0)
+                {
+                    const std::shared_ptr<const SceneRenderSnapshot> snapshot = Renderer::GetSceneRenderSnapshot();
+                    const std::shared_ptr<const SceneRasterFrame> prepared = Renderer::GetPreparedSceneRasterFrame();
+                    const bool expectedWorker = taskOptions.Mode == FrameTaskExecutionMode::Parallel;
+                    if (!snapshot || !prepared || !sceneRasterPreparationEvent
+                        || prepared->SnapshotFrameIndex != snapshot->FrameIndex
+                        || (expectedWorker && sceneRasterPreparationEvent->WorkerIndex == kInvalidJobWorkerIndex)
+                        || (!expectedWorker && sceneRasterPreparationEvent->WorkerIndex != kInvalidJobWorkerIndex))
+                    {
+                        throw std::runtime_error("scene raster preparation smoke did not use the declared task lane or publish its immutable frame");
+                    }
+                    Log::Info("SceneRasterPreparationV1 mode=",
+                        expectedWorker ? "parallel" : "single-thread",
+                        " task=Frame.PrepareSceneRaster worker=",
+                        sceneRasterPreparationEvent->WorkerIndex == kInvalidJobWorkerIndex ? "caller" : std::to_string(sceneRasterPreparationEvent->WorkerIndex),
+                        " snapshot=", prepared->SnapshotFrameIndex,
+                        " instances=", prepared->Instances.size(),
+                        " result=pass");
                 }
 
                 Renderer::EndFrame();

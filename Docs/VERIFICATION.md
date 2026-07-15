@@ -122,6 +122,17 @@ For the entity Inspector, select a camera-bearing entity and confirm Transform e
 
 Both commands must publish the frame input, complete every caller-affine layer task, emit one terminal profile event per task, and print the matching `CPU frame task graph smoke passed` marker. These tests do not prove future workerized simulation, visibility/render preparation, translated-origin/raster snapshot consumption, command recording, priorities/cancellation, or Profiler-panel lane visualization.
 
+## Phase 3A Scene Raster Preparation
+
+The current real viewport consumer proves the first split multithreaded-render prerequisite with the same Application frame task in both modes:
+
+```powershell
+.\bin\Debug-windows-x86_64\Editor\Editor.exe --headless --scene-raster-preparation-smoke --scene-viewport-render-graph-smoke
+.\bin\Debug-windows-x86_64\Editor\Editor.exe --headless --frame-task-single-thread --scene-raster-preparation-smoke --scene-viewport-render-graph-smoke
+```
+
+`SceneRasterPreparationV1` must report `Frame.PrepareSceneRaster`, the current snapshot frame, immutable instance count, and `worker=<index>` in parallel versus `worker=caller` in deterministic mode. Both runs must also emit the backend's existing `SceneViewportRenderGraphV1 ... comparator=exact-byte-pass` marker: the graph consumes the prepared frame and still matches the direct recorder byte-for-byte. This proves one real worker-safe CPU preparation consumer and its inline oracle; it does not claim simultaneous preparation/recording, worker-safe callbacks, parallel RHI command-list recording, or changed GPU submission/retirement policy.
+
 Exercise real Editor-to-Renderer scene snapshot publication and retained epoch lifetime in both frame-task modes:
 
 ```powershell

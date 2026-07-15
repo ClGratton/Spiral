@@ -139,7 +139,9 @@ namespace Engine
         bool Render(const SceneRenderSnapshot& snapshot, u32 width, u32 height, const ClearColor& clearColor)
         {
             if (!m_Device || width == 0 || height == 0 || !EnsureOutputs(width, height)) return false;
-            SceneRasterFrame frame = PrepareSceneRasterFrame(snapshot);
+            const std::shared_ptr<const SceneRasterFrame> prepared = Renderer::GetPreparedSceneRasterFrame();
+            if (!prepared || prepared->SnapshotFrameIndex != snapshot.FrameIndex) return false;
+            SceneRasterFrame frame = *prepared;
             if (!frame.HasValidView || frame.Instances.empty()) return false;
             std::vector<Scope<RHI::Buffer>> constants; constants.reserve(frame.Instances.size());
             for (const SceneRasterInstance& instance : frame.Instances) { RHI::BufferDescription d; d.DebugName = "Vulkan Scene Viewport Instance Constants"; d.SizeBytes = kConstantBufferSize; d.Usage = WithUsage(RHI::BufferUsage::Constant, RHI::BufferUsage::CopyDest); Scope<RHI::Buffer> b = m_Device->CreateBuffer(d); Constants c {}; std::memcpy(c.ViewProjection, instance.ModelViewProjection.Values, sizeof(c.ViewProjection)); if (!b || !m_Device->UploadBuffer(*b, &c, sizeof(c))) return false; constants.push_back(std::move(b)); }
@@ -210,7 +212,9 @@ namespace Engine
     bool NVRHIVulkanViewportSceneRenderer::RenderCurrentSnapshot(u32 width, u32 height, const ClearColor& clearColor)
     {
         const std::shared_ptr<const SceneRenderSnapshot> snapshot = Renderer::GetSceneRenderSnapshot();
-        return snapshot && Render(*snapshot, width, height, clearColor);
+        const std::shared_ptr<const SceneRasterFrame> prepared = Renderer::GetPreparedSceneRasterFrame();
+        if (!snapshot || !prepared || prepared->SnapshotFrameIndex != snapshot->FrameIndex) return false;
+        return Render(*snapshot, width, height, clearColor);
     }
     bool NVRHIVulkanViewportSceneRenderer::Render(const SceneRenderSnapshot& snapshot, u32 width, u32 height, const ClearColor& clearColor) { return m_Impl && m_Impl->Render(snapshot, width, height, clearColor); }
     bool NVRHIVulkanViewportSceneRenderer::ReadbackColor(RHI::TextureReadback& readback) const { return m_Impl && m_Impl->ReadbackColor(readback); }
