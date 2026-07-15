@@ -4,7 +4,7 @@ Updated 2026-07-15. This is a recovery aid; `PLAN.md` remains the sole roadmap a
 
 ## Objective And Stop Condition
 
-The latest continuation began at 58% weekly allowance used with a user-set floor of 23% remaining. One exact persistent `terra_medium` owner implemented the representative Scene-viewport RenderGraph slice and the root performed targeted synchronization/lifetime review plus one consolidated local acceptance pass. Implementation commit `e950d21` is pushed, but `PLAN.md` line 261 intentionally remains unchecked until exact-head hosted macOS Vulkan evidence completes. The audit snapshot ended at 64% used / 36% remaining. Do not start another feature in this root context: its measured input exceeded the 100k safe-compaction threshold, so continue from this handoff in a fresh/compacted task after resolving the pending CI gate.
+The latest continuation began at 58% weekly allowance used with a user-set floor of 23% remaining. One exact persistent `terra_medium` owner implemented the representative Scene-viewport RenderGraph slice and the root performed targeted synchronization/lifetime review plus one consolidated local acceptance pass. Implementation commit `e950d21` is pushed, but `PLAN.md` line 261 intentionally remains unchecked until exact-head hosted macOS Vulkan evidence completes. The audit snapshot ended at 64% used / 36% remaining. The measured context exceeded the 100k transition threshold: after resolving the genuine pending CI gate, the agent must use supported safe compaction or create/continue a same-goal fresh first-class task, reread the mandatory repository state, and continue automatically while remaining above the 23% floor.
 
 ## Token-Efficiency Baseline And Required Next-Session Audit (2026-07-15)
 
@@ -84,7 +84,7 @@ The first unchecked `PLAN.md` item is still:
 
 Do not reimplement or rerun local evidence first. Check exact-head CI run `29430304670` once. If all real Windows, Ubuntu Vulkan, and macOS Intel MoltenVK jobs pass and the hosted Vulkan logs contain the required `SceneViewportRenderGraphV1 ... comparator=exact-byte-pass` marker, change line 261 to `[x]`, replace its pending sentence with the exact run evidence, refresh this handoff, run style/diff checks, and commit/push the documentation-only acceptance. If CI failed, inspect only the failed log and fix the scoped cause before checking the item.
 
-After line 261 is honestly accepted, the next implementation item is the Phase 3 transient-resource capability group at line 262. Start that feature only from a fresh/compacted root context and after rechecking allowance; do not continue from this 132k-maximum root context.
+After line 261 is honestly accepted, the next implementation item is the Phase 3 transient-resource capability group at line 262. The agent that resolves the gate must perform the supported safe-compaction or same-goal fresh-task transition itself, reread the mandatory state, recheck allowance, and continue automatically. Return control only if no supported transition exists, a genuine CI/user decision blocks progress, or the 23%-remaining floor has been reached.
 
 ## Working State
 
