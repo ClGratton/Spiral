@@ -29,7 +29,9 @@ The immediate RHI prerequisites are also complete and documented in `PLAN.md` an
 
 ## Next Ordered Work
 
-The first unchecked `PLAN.md` item is frame/render-graph cross-queue execution. Before implementation, evaluate the current RHI queue/completion contracts against its exact requirements: compiled graphics/compute/copy dependencies must become explicit signal/wait submission and ownership transitions, imported initial/final states must remain authoritative, and unavailable queue classes need the documented single-queue fallback. Do not silently combine this with transient allocation or Scene viewport adoption; those remain separate later gates.
+The cross-queue item was evaluated after the single-queue executor completed and split into dependency-ordered gates. The first unchecked `PLAN.md` item is now the RHI queue-topology and GPU-dependency prerequisite: distinguish independent queues from graphics fallback and add same-device GPU-side submission dependencies, first exercised on D3D12 without changing RenderGraph execution. The following Vulkan/NVRHI admission gate enables and qualifies real compute/copy queues and same-family versus cross-family semantics while preserving graphics-only fallback. Only then does the graph consumer translate compiled dependencies into multi-queue submissions. Do not silently combine these gates with transient allocation or Scene viewport adoption.
+
+All 45 current deterministic `EngineTests` remain intentional. The render-graph/compiler/executor cases cover different ordering, declaration, binding, failure, state-publication, pool-exhaustion, and exact-retirement invariants; no touched test was found redundant. Add focused queue-resolution, dependency, fallback, partial-prefix, and multi-queue retirement coverage rather than weakening existing contracts.
 
 ## Working State
 
