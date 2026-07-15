@@ -5,6 +5,8 @@
 #include "Engine/RenderGraph/RenderGraph.h"
 #include "Engine/RHI/Device.h"
 #include "Engine/RHI/SubmissionDependency.h"
+#include "Engine/RHI/BufferOwnership.h"
+#include "Engine/RHI/NVRHI/NVRHID3D12Device.h"
 #include "Engine/Renderer/CapabilityDiagnostics.h"
 #include "Engine/Renderer/AsyncShaderPackageService.h"
 #include "Engine/Renderer/PortableShaderContract.h"
@@ -2825,6 +2827,209 @@ float4 main(VertexInput input) : SV_Position
             && Expect(!first.QueryResourceState(&unknownBuffer, observed) && !first.QueryResourceState(&unknownTexture, observed), "unknown states are rejected");
     }
 
+    class BufferOwnershipTestBuffer final : public Engine::RHI::Buffer
+    {
+    public:
+        explicit BufferOwnershipTestBuffer(std::string name = "ownership")
+        {
+            m_Description.DebugName = std::move(name);
+            m_Description.SizeBytes = 4096;
+            m_Description.Usage = static_cast<Engine::RHI::BufferUsage>(
+                static_cast<Engine::u32>(Engine::RHI::BufferUsage::CopySource)
+                | static_cast<Engine::u32>(Engine::RHI::BufferUsage::CopyDest));
+            m_Description.InitialState = Engine::RHI::ResourceState::CopyDest;
+        }
+        const Engine::RHI::BufferDescription& GetDescription() const override { return m_Description; }
+        void* Map() override { return nullptr; }
+        void Unmap() override {}
+    private:
+        Engine::RHI::BufferDescription m_Description;
+    };
+
+    class BufferOwnershipContractList final : public Engine::RHI::CommandList
+    {
+    public:
+        BufferOwnershipContractList(Engine::RHI::BufferOwnershipTracker& tracker, Engine::RHI::QueueType requested,
+            bool copyIndependent, bool computeIndependent)
+            : m_Tracker(tracker), m_Requested(requested), m_CopyIndependent(copyIndependent), m_ComputeIndependent(computeIndependent) {}
+
+        Engine::RHI::QueueType GetQueueType() const override { return m_Requested; }
+        bool Begin() override { if (m_Recording) return false; m_Recording = true; m_Operation.reset(); return true; }
+        bool End() override { if (!m_Recording) return false; m_Recording = false; return true; }
+        void BeginDebugMarker(std::string_view) override {}
+        void EndDebugMarker() override {}
+        bool BindViewportOutputs(Engine::RHI::Texture&, Engine::RHI::Texture*) override { return false; }
+        bool ClearViewportOutputs(const Engine::RHI::ViewportClear&) override { return false; }
+        bool TransitionTexture(Engine::RHI::Texture&, Engine::RHI::ResourceState) override { return false; }
+        bool TransitionBuffer(Engine::RHI::Buffer& buffer, Engine::RHI::ResourceState state) override
+        {
+            return m_Recording && m_Tracker.CanUse(&buffer)
+                && Engine::RHI::IsBufferStateCompatible(buffer.GetDescription().Usage, buffer.GetDescription().CpuAccess, state);
+        }
+        bool ReleaseBufferOwnership(const Engine::RHI::BufferOwnershipRelease& release) override
+        {
+            if (!m_Recording || m_Operation) return false;
+            Engine::RHI::RecordedBufferOwnershipOperation operation;
+            if (!m_Tracker.RecordRelease(release, Resolve(m_Requested), Resolve(release.SourceQueue),
+                Resolve(release.DestinationQueue), operation)) return false;
+            m_Operation = operation;
+            return true;
+        }
+        bool AcquireBufferOwnership(const Engine::RHI::BufferOwnershipAcquire& acquire) override
+        {
+            if (!m_Recording || m_Operation) return false;
+            Engine::RHI::RecordedBufferOwnershipOperation operation;
+            if (!m_Tracker.RecordAcquire(acquire, Resolve(m_Requested), Resolve(acquire.SourceQueue),
+                Resolve(acquire.DestinationQueue), operation)) return false;
+            m_Operation = operation;
+            ++AcquireTransitionCount;
+            return true;
+        }
+        void SetGraphicsPipeline(Engine::RHI::Pipeline&) override {}
+        void SetGraphicsConstantBuffer(Engine::u32, Engine::RHI::Buffer&) override {}
+        void SetViewport(const Engine::RHI::Viewport&) override {}
+        void SetScissorRect(const Engine::RHI::ScissorRect&) override {}
+        void SetVertexBuffer(Engine::u32, Engine::RHI::Buffer&) override {}
+        void SetIndexBuffer(Engine::RHI::Buffer&, Engine::RHI::IndexFormat) override {}
+        bool CopyBuffer(Engine::RHI::Buffer& destination, Engine::u64, Engine::RHI::Buffer& source, Engine::u64, Engine::u64) override
+        {
+            return m_Recording && m_Tracker.CanUse(&destination) && m_Tracker.CanUse(&source);
+        }
+        void DrawIndexed(Engine::u32, Engine::u32, Engine::u32, int, Engine::u32) override {}
+        void ResetQueryPool(Engine::RHI::QueryPool&, Engine::u32, Engine::u32) override {}
+        void WriteTimestamp(Engine::RHI::QueryPool&, Engine::u32) override {}
+        void ResolveQueryPool(Engine::RHI::QueryPool&, Engine::u32, Engine::u32) override {}
+
+        const std::optional<Engine::RHI::RecordedBufferOwnershipOperation>& Operation() const { return m_Operation; }
+        int AcquireTransitionCount = 0;
+
+    private:
+        Engine::RHI::QueueType Resolve(Engine::RHI::QueueType requested) const
+        {
+            if (requested == Engine::RHI::QueueType::Copy && !m_CopyIndependent) return Engine::RHI::QueueType::Graphics;
+            if (requested == Engine::RHI::QueueType::Compute && !m_ComputeIndependent) return Engine::RHI::QueueType::Graphics;
+            return requested;
+        }
+
+        Engine::RHI::BufferOwnershipTracker& m_Tracker;
+        Engine::RHI::QueueType m_Requested;
+        bool m_CopyIndependent;
+        bool m_ComputeIndependent;
+        bool m_Recording = false;
+        std::optional<Engine::RHI::RecordedBufferOwnershipOperation> m_Operation;
+    };
+
+    bool TestRhiBufferOwnershipLifecycleContract()
+    {
+        using namespace Engine::RHI;
+        BufferOwnershipTracker tracker;
+        BufferOwnershipTestBuffer buffer, foreign("foreign"), second("second");
+        const bool registered = tracker.Register(buffer, QueueType::Graphics, ResourceState::CopyDest)
+            && tracker.Register(second, QueueType::Graphics, ResourceState::CopyDest);
+        BufferOwnershipRelease release { &buffer, QueueType::Graphics, QueueType::Copy,
+            ResourceState::CopyDest, ResourceState::CopySource };
+        BufferOwnershipContractList source(tracker, QueueType::Graphics, true, true);
+        QueueType owner = QueueType::Copy;
+        ResourceState state = ResourceState::Unknown;
+
+        const bool invalidRecording = source.Begin()
+            && !source.ReleaseBufferOwnership({ nullptr, QueueType::Graphics, QueueType::Copy, ResourceState::CopyDest, ResourceState::CopySource })
+            && !source.ReleaseBufferOwnership({ &foreign, QueueType::Graphics, QueueType::Copy, ResourceState::CopyDest, ResourceState::CopySource })
+            && !source.ReleaseBufferOwnership({ &buffer, QueueType::Graphics, QueueType::Graphics, ResourceState::CopyDest, ResourceState::CopySource })
+            && !source.ReleaseBufferOwnership({ &buffer, QueueType::Copy, QueueType::Graphics, ResourceState::CopyDest, ResourceState::CopySource })
+            && !source.ReleaseBufferOwnership({ &buffer, QueueType::Graphics, QueueType::Copy, ResourceState::Common, ResourceState::CopySource })
+            && !source.ReleaseBufferOwnership({ &buffer, QueueType::Graphics, QueueType::Copy, ResourceState::CopyDest, ResourceState::RenderTarget });
+        const bool privateRecording = source.ReleaseBufferOwnership(release)
+            && !source.ReleaseBufferOwnership(release)
+            && tracker.QueryOwner(&buffer, owner) && owner == QueueType::Graphics
+            && tracker.QueryState(&buffer, state) && state == ResourceState::CopyDest
+            && !tracker.HasPending(&buffer) && source.End();
+        const bool releaseValidated = source.Operation() && tracker.ValidateSubmission(*source.Operation(), {});
+        const bool failedReleasePrivate = releaseValidated && !tracker.PublishRelease(*source.Operation(), {})
+            && !tracker.HasPending(&buffer) && tracker.CanUse(&buffer);
+        const CompletionToken releaseToken { 71, 5 };
+        const bool releaseAccepted = tracker.PublishRelease(*source.Operation(), releaseToken)
+            && tracker.HasPending(&buffer) && !tracker.CanUse(&buffer) && !tracker.CanDestroy(&buffer)
+            && !tracker.QueryOwner(&buffer, owner) && !tracker.QueryState(&buffer, state)
+            && !tracker.PublishOrdinaryState(buffer, ResourceState::Common);
+
+        BufferOwnershipContractList blockedSource(tracker, QueueType::Graphics, true, true);
+        BufferOwnershipContractList destination(tracker, QueueType::Copy, true, true);
+        BufferOwnershipAcquire acquire;
+        static_cast<BufferOwnershipRelease&>(acquire) = release;
+        acquire.ReleaseToken = releaseToken;
+        BufferOwnershipAcquire wrongToken = acquire;
+        wrongToken.ReleaseToken = { 72, 5 };
+        BufferOwnershipAcquire zeroToken = acquire;
+        zeroToken.ReleaseToken = {};
+        BufferOwnershipAcquire mismatch = acquire;
+        mismatch.After = ResourceState::Common;
+        BufferOwnershipContractList wrongDestination(tracker, QueueType::Graphics, true, true);
+        const bool pendingGuards = blockedSource.Begin() && !blockedSource.TransitionBuffer(buffer, ResourceState::Common)
+            && !blockedSource.CopyBuffer(second, 0, buffer, 0, 4) && !blockedSource.ReleaseBufferOwnership(release)
+            && blockedSource.End() && wrongDestination.Begin() && !wrongDestination.AcquireBufferOwnership(acquire)
+            && wrongDestination.End() && destination.Begin() && !destination.AcquireBufferOwnership(zeroToken)
+            && !destination.AcquireBufferOwnership(wrongToken) && !destination.AcquireBufferOwnership(mismatch)
+            && destination.AcquireBufferOwnership(acquire) && !destination.AcquireBufferOwnership(acquire) && destination.End();
+        const bool failedAcquirePersistent = destination.Operation()
+            && !tracker.ValidateSubmission(*destination.Operation(), {})
+            && !tracker.ValidateSubmission(*destination.Operation(), { { 72, 5 } })
+            && !tracker.ValidateSubmission(*destination.Operation(), { releaseToken, releaseToken })
+            && tracker.HasPending(&buffer) && !tracker.CanUse(&buffer);
+        const bool acquireAccepted = tracker.ValidateSubmission(*destination.Operation(), { releaseToken })
+            && tracker.PublishAcquire(*destination.Operation()) && !tracker.HasPending(&buffer)
+            && tracker.QueryOwner(&buffer, owner) && owner == QueueType::Copy
+            && tracker.QueryState(&buffer, state) && state == ResourceState::CopySource
+            && tracker.CanUse(&buffer) && tracker.CanDestroy(&buffer) && destination.AcquireTransitionCount == 1;
+
+        return Expect(registered && invalidRecording, "ownership release rejects null foreign same-effective wrong-queue state and usage inputs")
+            && Expect(privateRecording && failedReleasePrivate, "release recording and failed acceptance publish no owner state or pending transfer")
+            && Expect(releaseAccepted, "accepted release publishes only a token-bound pending transfer")
+            && Expect(pendingGuards, "pending transfer blocks ordinary transition copy second release and duplicate acquire recording")
+            && Expect(failedAcquirePersistent, "missing foreign and duplicate release-token dependencies preserve pending state")
+            && Expect(acquireAccepted, "accepted exact-token acquire publishes destination owner and state exactly once");
+    }
+
+    bool TestRhiBufferOwnershipRecoveryAndAdapterSeams()
+    {
+        using namespace Engine::RHI;
+        BufferOwnershipTracker tracker;
+        BufferOwnershipTestBuffer first("recover-first"), second("recover-second"), fallback("fallback");
+        tracker.Register(first, QueueType::Graphics, ResourceState::CopyDest);
+        tracker.Register(second, QueueType::Graphics, ResourceState::CopyDest);
+        tracker.Register(fallback, QueueType::Graphics, ResourceState::CopyDest);
+        const BufferOwnershipRelease firstRelease { &first, QueueType::Graphics, QueueType::Copy,
+            ResourceState::CopyDest, ResourceState::CopySource };
+        const BufferOwnershipRelease secondRelease { &second, QueueType::Graphics, QueueType::Compute,
+            ResourceState::CopyDest, ResourceState::Common };
+        RecordedBufferOwnershipOperation firstOperation, secondOperation, fallbackOperation;
+        const CompletionToken firstToken { 81, 7 }, secondToken { 81, 8 };
+        const bool pending = tracker.RecordRelease(firstRelease, QueueType::Graphics, QueueType::Graphics, QueueType::Copy, firstOperation)
+            && tracker.RecordRelease(secondRelease, QueueType::Graphics, QueueType::Graphics, QueueType::Compute, secondOperation)
+            && tracker.PublishRelease(firstOperation, firstToken) && tracker.PublishRelease(secondOperation, secondToken);
+        QueueType owner = QueueType::Copy;
+        ResourceState state = ResourceState::Unknown;
+        const bool exactRecovery = !tracker.Recover(first, secondToken, CompletionStatus::Complete)
+            && !tracker.Recover(first, firstToken, CompletionStatus::Incomplete)
+            && tracker.Recover(first, firstToken, CompletionStatus::Complete)
+            && tracker.QueryOwner(&first, owner) && owner == QueueType::Graphics
+            && tracker.QueryState(&first, state) && state == ResourceState::CopyDest
+            && !tracker.HasPending(&first) && tracker.HasPending(&second)
+            && tracker.Recover(second, secondToken, CompletionStatus::Complete) && !tracker.HasPending(&second);
+        const BufferOwnershipRelease fallbackRelease { &fallback, QueueType::Graphics, QueueType::Copy,
+            ResourceState::CopyDest, ResourceState::CopySource };
+        const bool vulkanFallback = !tracker.RecordRelease(fallbackRelease, QueueType::Graphics,
+            QueueType::Graphics, QueueType::Graphics, fallbackOperation) && !tracker.HasPending(&fallback);
+        const bool liveRemoval = tracker.Unregister(fallback) && !tracker.IsLive(&fallback) && !tracker.CanUse(&fallback);
+        const bool d3d12Policy = GetNVRHID3D12BufferOwnershipBarrier(BufferOwnershipOperationType::Release)
+                == NVRHID3D12BufferOwnershipBarrier::None
+            && GetNVRHID3D12BufferOwnershipBarrier(BufferOwnershipOperationType::Acquire)
+                == NVRHID3D12BufferOwnershipBarrier::PortableStateTransition;
+        return Expect(pending && exactRecovery, "recovery requires exact completed release tokens and retires independent transfers separately")
+            && Expect(vulkanFallback && liveRemoval, "same-effective Vulkan-style graphics fallback never enters transfer state and dead wrappers unregister")
+            && Expect(d3d12Policy, "D3D12 release emits no ownership barrier while acquire requires the portable state transition");
+    }
+
 }
 
 int main()
@@ -2847,6 +3052,8 @@ int main()
         { "RHI submission dependencies reject invalid token graphs", TestRhiSubmissionDependencyValidation },
         { "RHI queue topology submits dependencies without premature publication", TestRhiQueueTopologyDependencySubmissionContract },
         { "RHI resource-state query rejects null foreign and unknown resources", TestRhiResourceOwnershipContract },
+        { "RHI buffer ownership lifecycle publishes only accepted exact-token pairs", TestRhiBufferOwnershipLifecycleContract },
+        { "RHI buffer ownership recovery and adapter seams preserve fallback semantics", TestRhiBufferOwnershipRecoveryAndAdapterSeams },
         { "JobSystem contains worker exceptions", TestJobSystemContainsWorkerExceptions },
         { "JobSystem inline fallback is reentrant", TestJobSystemInlineFallbackIsReentrant },
         { "JobSystem steals nested worker jobs", TestJobSystemStealsNestedWorkerJobs },

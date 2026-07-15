@@ -25,11 +25,13 @@
     #endif
 
     #include <cstring>
+    #include <algorithm>
     #include <atomic>
     #include <array>
     #include <functional>
     #include <iomanip>
     #include <limits>
+    #include <optional>
     #include <sstream>
     #include <string>
     #include <unordered_map>
@@ -258,7 +260,14 @@ namespace Engine::RHI
             {
                 if (m_MappedData)
                     Unmap();
+                if (m_OwnershipTracker && !m_OwnershipTracker->Unregister(*this))
+                {
+                    Log::Error("D3D12 RHI buffer destruction rejected while queue ownership is pending: ", m_Description.DebugName);
+                    std::terminate();
+                }
             }
+
+            void SetOwnershipTracker(BufferOwnershipTracker* tracker) { m_OwnershipTracker = tracker; }
 
             bool Initialize(ID3D12Device* device)
             {
@@ -397,6 +406,7 @@ namespace Engine::RHI
             void* m_MappedData = nullptr;
             D3D12_RESOURCE_STATES m_CurrentState = D3D12_RESOURCE_STATE_COMMON;
             ResourceState m_TrackedState = ResourceState::Common;
+            BufferOwnershipTracker* m_OwnershipTracker = nullptr;
         };
 
         class NVRHID3D12Texture final : public Texture
@@ -784,26 +794,34 @@ namespace Engine::RHI
 
             NVRHID3D12CommandList(QueueType queueType, ID3D12GraphicsCommandList* commandList, ID3D12Device* device, std::string debugName)
                 : m_QueueType(queueType)
+                , m_EffectiveQueueType(queueType)
                 , m_CommandList(commandList)
                 , m_Device(device)
                 , m_DebugName(std::move(debugName))
+                , m_ResolveQueue([](QueueType queue) { return queue; })
             {
             }
 
             NVRHID3D12CommandList(
                 QueueType queueType,
+                QueueType effectiveQueueType,
                 ComPtr<ID3D12CommandAllocator> commandAllocator,
                 ComPtr<ID3D12GraphicsCommandList> commandList,
                 ID3D12Device* device,
                 std::string debugName,
-                std::function<CompletionStatus(const CompletionToken&)> queryCompletion)
+                std::function<CompletionStatus(const CompletionToken&)> queryCompletion,
+                BufferOwnershipTracker* ownershipTracker,
+                std::function<QueueType(QueueType)> resolveQueue)
                 : m_QueueType(queueType)
+                , m_EffectiveQueueType(effectiveQueueType)
                 , m_CommandAllocator(std::move(commandAllocator))
                 , m_OwnedCommandList(std::move(commandList))
                 , m_CommandList(m_OwnedCommandList.Get())
                 , m_Device(device)
                 , m_DebugName(std::move(debugName))
                 , m_QueryCompletion(std::move(queryCompletion))
+                , m_OwnershipTracker(ownershipTracker)
+                , m_ResolveQueue(std::move(resolveQueue))
             {
             }
 
@@ -840,6 +858,8 @@ namespace Engine::RHI
                 m_State = State::Recording;
                 m_TextureStates.clear();
                 m_BufferStates.clear();
+                m_UsedBuffers.clear();
+                m_OwnershipOperation.reset();
                 return true;
             }
 
@@ -956,11 +976,55 @@ namespace Engine::RHI
 
             bool TransitionBuffer(Buffer& buffer, ResourceState destinationState) override
             {
+                return TransitionBufferInternal(buffer, destinationState, false);
+            }
+
+            bool ReleaseBufferOwnership(const BufferOwnershipRelease& release) override
+            {
+                if (m_State != State::Recording || !m_OwnershipTracker || m_OwnershipOperation
+                    || std::find(m_UsedBuffers.begin(), m_UsedBuffers.end(), release.Resource) != m_UsedBuffers.end())
+                    return false;
+                RecordedBufferOwnershipOperation operation;
+                if (!m_OwnershipTracker->RecordRelease(release, m_EffectiveQueueType, m_ResolveQueue(release.SourceQueue),
+                    m_ResolveQueue(release.DestinationQueue), operation)
+                    || GetNVRHID3D12BufferOwnershipBarrier(operation.Type) != NVRHID3D12BufferOwnershipBarrier::None)
+                    return false;
+                m_OwnershipOperation = operation;
+                return true;
+            }
+
+            bool AcquireBufferOwnership(const BufferOwnershipAcquire& acquire) override
+            {
+                if (m_State != State::Recording || !m_OwnershipTracker || m_OwnershipOperation
+                    || std::find(m_UsedBuffers.begin(), m_UsedBuffers.end(), acquire.Resource) != m_UsedBuffers.end())
+                    return false;
+                RecordedBufferOwnershipOperation operation;
+                const QueueType effectiveSource = m_ResolveQueue(acquire.SourceQueue);
+                if (!m_OwnershipTracker->RecordAcquire(acquire, m_EffectiveQueueType, effectiveSource,
+                    m_ResolveQueue(acquire.DestinationQueue), operation) || !acquire.Resource
+                    || GetNVRHID3D12BufferOwnershipBarrier(operation.Type) != NVRHID3D12BufferOwnershipBarrier::PortableStateTransition
+                    || !TransitionBufferInternal(*acquire.Resource, acquire.After, true))
+                    return false;
+                m_OwnershipOperation = operation;
+                return true;
+            }
+
+            const std::optional<RecordedBufferOwnershipOperation>& GetOwnershipOperation() const
+            {
+                return m_OwnershipOperation;
+            }
+
+        private:
+            bool TransitionBufferInternal(Buffer& buffer, ResourceState destinationState, bool allowPending)
+            {
                 auto* nativeBuffer = dynamic_cast<NVRHID3D12Buffer*>(&buffer);
                 if (m_State != State::Recording || !m_CommandList || !nativeBuffer || !nativeBuffer->GetResource())
                     return false;
+                if (!m_OwnershipTracker || (!allowPending && !m_OwnershipTracker->CanUse(&buffer)))
+                    return false;
                 if (!IsBufferStateCompatible(buffer.GetDescription().Usage, buffer.GetDescription().CpuAccess, destinationState))
                     return false;
+                m_UsedBuffers.push_back(&buffer);
 
                 D3D12_RESOURCE_STATES destination = D3D12_RESOURCE_STATE_COMMON;
                 if (destinationState == ResourceState::ShaderResource)
@@ -991,6 +1055,8 @@ namespace Engine::RHI
                 StageBufferState(*nativeBuffer, destination, destinationState);
                 return true;
             }
+
+        public:
 
             void SetGraphicsPipeline(Pipeline& pipeline) override
             {
@@ -1087,6 +1153,8 @@ namespace Engine::RHI
             {
                 if (!m_CommandList || m_State != State::Recording || sizeBytes == 0)
                     return false;
+                if (!m_OwnershipTracker || !m_OwnershipTracker->CanUse(&destination) || !m_OwnershipTracker->CanUse(&source))
+                    return false;
 
                 auto* nativeDestination = dynamic_cast<NVRHID3D12Buffer*>(&destination);
                 auto* nativeSource = dynamic_cast<NVRHID3D12Buffer*>(&source);
@@ -1130,6 +1198,8 @@ namespace Engine::RHI
                     sourceResource,
                     sourceOffset,
                     sizeBytes);
+                m_UsedBuffers.push_back(&destination);
+                m_UsedBuffers.push_back(&source);
 
                 if (previousState != D3D12_RESOURCE_STATE_COPY_DEST)
                 {
@@ -1227,6 +1297,8 @@ namespace Engine::RHI
                 {
                     state.Resource->SetCurrentState(state.Native);
                     state.Resource->SetTrackedState(state.Tracked);
+                    if (m_OwnershipTracker)
+                        m_OwnershipTracker->PublishOrdinaryState(*state.Resource, state.Tracked);
                 }
             }
 
@@ -1240,6 +1312,7 @@ namespace Engine::RHI
             }
 
             QueueType m_QueueType = QueueType::Graphics;
+            QueueType m_EffectiveQueueType = QueueType::Graphics;
             ComPtr<ID3D12CommandAllocator> m_CommandAllocator;
             ComPtr<ID3D12GraphicsCommandList> m_OwnedCommandList;
             ID3D12GraphicsCommandList* m_CommandList = nullptr;
@@ -1248,9 +1321,13 @@ namespace Engine::RHI
             D3D12_CPU_DESCRIPTOR_HANDLE m_BoundDepthDsv {};
             std::string m_DebugName;
             std::function<CompletionStatus(const CompletionToken&)> m_QueryCompletion;
+            std::function<QueueType(QueueType)> m_ResolveQueue;
+            BufferOwnershipTracker* m_OwnershipTracker = nullptr;
             CompletionToken m_LastSubmission;
             std::vector<TextureState> m_TextureStates;
             std::vector<BufferState> m_BufferStates;
+            std::vector<Buffer*> m_UsedBuffers;
+            std::optional<RecordedBufferOwnershipOperation> m_OwnershipOperation;
             State m_State = State::Initial;
         };
 
@@ -1360,8 +1437,10 @@ namespace Engine::RHI
             Scope<Buffer> CreateBuffer(const BufferDescription& description) override
             {
                 Scope<NVRHID3D12Buffer> buffer = CreateScope<NVRHID3D12Buffer>(description, m_ResourceOwnerId);
-                if (!buffer->Initialize(m_Device.Get()))
+                if (!buffer->Initialize(m_Device.Get())
+                    || !m_BufferOwnership.Register(*buffer, QueueType::Graphics, buffer->GetTrackedState()))
                     return nullptr;
+                buffer->SetOwnershipTracker(&m_BufferOwnership);
 
                 return buffer;
             }
@@ -1378,7 +1457,7 @@ namespace Engine::RHI
             bool OwnsResource(const Buffer* resource) const override
             {
                 const auto* buffer = dynamic_cast<const NVRHID3D12Buffer*>(resource);
-                return buffer && buffer->GetOwnerId() == m_ResourceOwnerId;
+                return buffer && buffer->GetOwnerId() == m_ResourceOwnerId && m_BufferOwnership.IsLive(resource);
             }
 
             bool OwnsResource(const Texture* resource) const override
@@ -1390,10 +1469,30 @@ namespace Engine::RHI
             bool QueryResourceState(const Buffer* resource, ResourceState& state) const override
             {
                 const auto* buffer = dynamic_cast<const NVRHID3D12Buffer*>(resource);
-                if (!buffer || !OwnsResource(resource) || buffer->GetTrackedState() == ResourceState::Unknown)
+                if (!buffer || !OwnsResource(resource) || !m_BufferOwnership.QueryState(resource, state))
                     return false;
-                state = buffer->GetTrackedState();
                 return true;
+            }
+
+            bool QueryBufferQueueOwner(const Buffer* resource, QueueType& owner) const override
+            {
+                return OwnsResource(resource) && m_BufferOwnership.QueryOwner(resource, owner);
+            }
+
+            bool HasPendingBufferOwnershipTransfer(const Buffer* resource) const override
+            {
+                return OwnsResource(resource) && m_BufferOwnership.HasPending(resource);
+            }
+
+            bool CanDestroyBuffer(const Buffer* resource) const override
+            {
+                return OwnsResource(resource) && m_BufferOwnership.CanDestroy(resource);
+            }
+
+            bool RecoverAbandonedBufferOwnershipTransfer(Buffer& resource, const CompletionToken& releaseToken) override
+            {
+                return OwnsResource(&resource)
+                    && m_BufferOwnership.Recover(resource, releaseToken, QueryCompletion(releaseToken));
             }
 
             bool QueryResourceState(const Texture* resource, ResourceState& state) const override
@@ -1468,14 +1567,17 @@ namespace Engine::RHI
                     return nullptr;
                 }
 
-                return CreateScope<NVRHID3D12CommandList>(queueType, std::move(allocator), std::move(commandList), m_Device.Get(), std::string(debugName),
-                    [this](const CompletionToken& token) { return QueryCompletion(token); });
+                const QueueType effectiveQueue = ResolveQueue(queueType).Effective;
+                return CreateScope<NVRHID3D12CommandList>(queueType, effectiveQueue, std::move(allocator), std::move(commandList),
+                    m_Device.Get(), std::string(debugName), [this](const CompletionToken& token) { return QueryCompletion(token); },
+                    &m_BufferOwnership, [this](QueueType requested) { return ResolveQueue(requested).Effective; });
             }
 
             bool UploadBuffer(Buffer& destination, const void* sourceData, u64 sizeBytes, u64 destinationOffset) override
             {
                 if (!sourceData || sizeBytes == 0 || destination.GetDescription().CpuAccess != BufferCpuAccess::None
-                    || !HasBufferUsage(destination.GetDescription().Usage, BufferUsage::CopyDest))
+                    || !HasBufferUsage(destination.GetDescription().Usage, BufferUsage::CopyDest)
+                    || !OwnsResource(&destination) || !m_BufferOwnership.CanUse(&destination))
                     return false;
 
                 if (destinationOffset > destination.GetDescription().SizeBytes
@@ -1645,6 +1747,9 @@ namespace Engine::RHI
                     Log::Error("D3D12 RHI submission rejected dependency validation error ", static_cast<u32>(dependencyError));
                     return {};
                 }
+                if (nativeCommandList->GetOwnershipOperation()
+                    && !m_BufferOwnership.ValidateSubmission(*nativeCommandList->GetOwnershipOperation(), dependencies))
+                    return {};
                 for (const CompletionToken& dependency : dependencies)
                 {
                     const CompletionEntry* producer = FindCompletionEntry(dependency);
@@ -1659,7 +1764,17 @@ namespace Engine::RHI
                 }
                 queue->ExecuteCommandLists(1, nativeLists);
                 const CompletionToken token = SignalQueueSubmission(consumer.Effective, queue);
-                return token.IsValid() && nativeCommandList->MarkSubmitted(token) ? token : CompletionToken {};
+                if (!token.IsValid() || !nativeCommandList->MarkSubmitted(token))
+                    return {};
+                if (const auto& ownership = nativeCommandList->GetOwnershipOperation())
+                {
+                    const bool published = ownership->Type == BufferOwnershipOperationType::Release
+                        ? m_BufferOwnership.PublishRelease(*ownership, token)
+                        : m_BufferOwnership.PublishAcquire(*ownership);
+                    if (!published)
+                        return {};
+                }
+                return token;
             }
 
             CompletionStatus QueryCompletion(const CompletionToken& token) override
@@ -2299,6 +2414,7 @@ namespace Engine::RHI
             const u64 m_ResourceOwnerId;
             u64 m_NextCompletionSubmissionId = 1;
             std::unordered_map<u64, CompletionEntry> m_CompletionEntries;
+            BufferOwnershipTracker m_BufferOwnership;
             nvrhi::DeviceHandle m_NVRHIDevice;
         };
     }

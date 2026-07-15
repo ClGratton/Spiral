@@ -107,6 +107,23 @@ namespace Engine::RHI
         // wrapper. It never exposes native state values or adopts caller state.
         virtual bool QueryResourceState(const Buffer* resource, ResourceState& state) const = 0;
         virtual bool QueryResourceState(const Texture* resource, ResourceState& state) const = 0;
+        // Owner/state are intentionally unavailable while a release is pending.
+        virtual bool QueryBufferQueueOwner(const Buffer* resource, QueueType& owner) const
+        {
+            (void)resource; (void)owner; return false;
+        }
+        virtual bool HasPendingBufferOwnershipTransfer(const Buffer* resource) const
+        {
+            (void)resource; return false;
+        }
+        virtual bool CanDestroyBuffer(const Buffer* resource) const
+        {
+            (void)resource; return false;
+        }
+        virtual bool RecoverAbandonedBufferOwnershipTransfer(Buffer& resource, const CompletionToken& releaseToken)
+        {
+            (void)resource; (void)releaseToken; return false;
+        }
         virtual Scope<Shader> CreateShader(const ShaderDescription& description) = 0;
         virtual Scope<Pipeline> CreatePipeline(const PipelineDescription& description) = 0;
         virtual Scope<QueryPool> CreateQueryPool(const QueryPoolDescription& description) = 0;

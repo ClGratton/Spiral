@@ -7,10 +7,12 @@
     #include <nvrhi/nvrhi.h>
     #include <nvrhi/vulkan.h>
     #include <atomic>
+    #include <algorithm>
     #include <chrono>
     #include <cstring>
     #include <limits>
     #include <functional>
+    #include <optional>
     #include <unordered_map>
     #include <thread>
     #include <vector>
@@ -76,6 +78,14 @@ namespace Engine::RHI
         public:
             VulkanBuffer(BufferDescription description, nvrhi::BufferHandle buffer, u64 ownerId)
                 : m_Description(std::move(description)), m_Buffer(std::move(buffer)), m_OwnerId(ownerId) {}
+            ~VulkanBuffer() override
+            {
+                if (m_OwnershipTracker && !m_OwnershipTracker->Unregister(*this))
+                {
+                    Log::Error("Vulkan RHI buffer destruction rejected while queue ownership is pending: ", m_Description.DebugName);
+                    std::terminate();
+                }
+            }
             const BufferDescription& GetDescription() const override { return m_Description; }
             void* Map() override
             {
@@ -96,6 +106,7 @@ namespace Engine::RHI
                 }
             }
             void SetDevice(nvrhi::IDevice* device) { m_Device = device; }
+            void SetOwnershipTracker(BufferOwnershipTracker* tracker) { m_OwnershipTracker = tracker; }
             nvrhi::IBuffer* Native() const { return m_Buffer; }
             ResourceState GetCurrentState() const { return m_CurrentState; }
             void SetCurrentState(ResourceState state) { m_CurrentState = state; }
@@ -107,6 +118,7 @@ namespace Engine::RHI
             nvrhi::IDevice* m_Device = nullptr;
             bool m_Mapped = false;
             ResourceState m_CurrentState = ResourceState::Common;
+            BufferOwnershipTracker* m_OwnershipTracker = nullptr;
         };
 
         class VulkanTexture final : public Texture
@@ -178,8 +190,10 @@ namespace Engine::RHI
         {
         public:
             VulkanCommandList(QueueType queueType, std::string name, nvrhi::CommandListHandle list, nvrhi::IDevice* device,
-                std::function<CompletionStatus(const CompletionToken&)> queryCompletion)
-                : m_QueueType(queueType), m_Name(std::move(name)), m_List(std::move(list)), m_Device(device), m_QueryCompletion(std::move(queryCompletion)) {}
+                std::function<CompletionStatus(const CompletionToken&)> queryCompletion, BufferOwnershipTracker* ownershipTracker,
+                std::function<QueueType(QueueType)> resolveQueue)
+                : m_QueueType(queueType), m_Name(std::move(name)), m_List(std::move(list)), m_Device(device),
+                m_QueryCompletion(std::move(queryCompletion)), m_OwnershipTracker(ownershipTracker), m_ResolveQueue(std::move(resolveQueue)) {}
             QueueType GetQueueType() const override { return m_QueueType; }
             bool Begin() override
             {
@@ -193,6 +207,8 @@ namespace Engine::RHI
                 m_Depth = nullptr;
                 m_TextureStates.clear();
                 m_BufferStates.clear();
+                m_UsedBuffers.clear();
+                m_OwnershipOperation.reset();
                 m_State = State::Recording;
                 return true;
             }
@@ -249,14 +265,41 @@ namespace Engine::RHI
             {
                 auto* native = dynamic_cast<VulkanBuffer*>(&buffer);
                 if (m_State != State::Recording || !native
+                    || !m_OwnershipTracker || !m_OwnershipTracker->CanUse(&buffer)
                     || !IsBufferStateCompatible(buffer.GetDescription().Usage, buffer.GetDescription().CpuAccess, state))
                     return false;
+                m_UsedBuffers.push_back(&buffer);
                 if (GetBufferState(*native) == state)
                     return true;
                 m_List->setBufferState(native->Native(), ConvertState(state));
                 m_List->commitBarriers();
                 StageBufferState(*native, state);
                 return true;
+            }
+            bool ReleaseBufferOwnership(const BufferOwnershipRelease& release) override
+            {
+                if (m_State != State::Recording || !m_OwnershipTracker || m_OwnershipOperation
+                    || std::find(m_UsedBuffers.begin(), m_UsedBuffers.end(), release.Resource) != m_UsedBuffers.end())
+                    return false;
+                RecordedBufferOwnershipOperation operation;
+                if (!m_OwnershipTracker->RecordRelease(release, m_ResolveQueue(m_QueueType), m_ResolveQueue(release.SourceQueue),
+                    m_ResolveQueue(release.DestinationQueue), operation))
+                    return false;
+                m_OwnershipOperation = operation;
+                return true;
+            }
+            bool AcquireBufferOwnership(const BufferOwnershipAcquire& acquire) override
+            {
+                if (m_State != State::Recording || !m_OwnershipTracker || m_OwnershipOperation
+                    || std::find(m_UsedBuffers.begin(), m_UsedBuffers.end(), acquire.Resource) != m_UsedBuffers.end())
+                    return false;
+                RecordedBufferOwnershipOperation operation;
+                if (!m_OwnershipTracker->RecordAcquire(acquire, m_ResolveQueue(m_QueueType), m_ResolveQueue(acquire.SourceQueue),
+                    m_ResolveQueue(acquire.DestinationQueue), operation))
+                    return false;
+                // Current Vulkan resolves every request to Graphics, so the
+                // tracker rejects before this future translation point.
+                return false;
             }
             void SetGraphicsPipeline(Pipeline& pipeline) override { m_Pipeline = dynamic_cast<VulkanPipeline*>(&pipeline); }
             void SetGraphicsConstantBuffer(u32 rootParameterIndex, Buffer& buffer) override
@@ -271,7 +314,12 @@ namespace Engine::RHI
             void SetScissorRect(const ScissorRect& rect) override { m_Scissor = rect; }
             void SetVertexBuffer(u32 slot, Buffer& buffer) override { if (slot == 0) m_Vertex = dynamic_cast<VulkanBuffer*>(&buffer); }
             void SetIndexBuffer(Buffer& buffer, IndexFormat format) override { m_Index = dynamic_cast<VulkanBuffer*>(&buffer); m_IndexFormat = format; }
-            bool CopyBuffer(Buffer&, u64, Buffer&, u64, u64) override { Log::Error("Vulkan RHI buffer copy recording is not implemented"); return false; }
+            bool CopyBuffer(Buffer& destination, u64, Buffer& source, u64, u64) override
+            {
+                if (!m_OwnershipTracker || !m_OwnershipTracker->CanUse(&destination) || !m_OwnershipTracker->CanUse(&source))
+                    return false;
+                Log::Error("Vulkan RHI buffer copy recording is not implemented"); return false;
+            }
             void DrawIndexed(u32 indexCount, u32 instanceCount, u32 startIndex, int baseVertex, u32 startInstance) override
             {
                 if (m_State != State::Recording || !m_Pipeline || !m_Framebuffer || !m_BindingSet || !m_Vertex || !m_Index || baseVertex != 0)
@@ -304,6 +352,7 @@ namespace Engine::RHI
                 return true;
             }
             nvrhi::ICommandList* Native() const { return m_List; }
+            const std::optional<RecordedBufferOwnershipOperation>& GetOwnershipOperation() const { return m_OwnershipOperation; }
         private:
             struct TextureState { VulkanTexture* Resource = nullptr; ResourceState State = ResourceState::Common; };
             struct BufferState { VulkanBuffer* Resource = nullptr; ResourceState State = ResourceState::Common; };
@@ -339,7 +388,11 @@ namespace Engine::RHI
             void CommitTrackedStates()
             {
                 for (const TextureState& state : m_TextureStates) state.Resource->SetCurrentState(state.State);
-                for (const BufferState& state : m_BufferStates) state.Resource->SetCurrentState(state.State);
+                for (const BufferState& state : m_BufferStates)
+                {
+                    state.Resource->SetCurrentState(state.State);
+                    if (m_OwnershipTracker) m_OwnershipTracker->PublishOrdinaryState(*state.Resource, state.State);
+                }
             }
 
             enum class State
@@ -366,9 +419,13 @@ namespace Engine::RHI
             ScissorRect m_Scissor;
             std::vector<std::string> m_DebugMarkerNames;
             std::function<CompletionStatus(const CompletionToken&)> m_QueryCompletion;
+            BufferOwnershipTracker* m_OwnershipTracker = nullptr;
+            std::function<QueueType(QueueType)> m_ResolveQueue;
             CompletionToken m_LastSubmission;
             std::vector<TextureState> m_TextureStates;
             std::vector<BufferState> m_BufferStates;
+            std::vector<Buffer*> m_UsedBuffers;
+            std::optional<RecordedBufferOwnershipOperation> m_OwnershipOperation;
             State m_State = State::Ready;
         };
 
@@ -404,6 +461,9 @@ namespace Engine::RHI
                 auto result = CreateScope<VulkanBuffer>(description, native, m_ResourceOwnerId);
                 result->SetDevice(m_Device);
                 result->SetCurrentState(trackedInitialState);
+                if (!m_BufferOwnership.Register(*result, QueueType::Graphics, trackedInitialState))
+                    return nullptr;
+                result->SetOwnershipTracker(&m_BufferOwnership);
                 return result;
             }
             Scope<Texture> CreateTexture(const TextureDescription& description) override
@@ -439,7 +499,7 @@ namespace Engine::RHI
             bool OwnsResource(const Buffer* resource) const override
             {
                 const auto* buffer = dynamic_cast<const VulkanBuffer*>(resource);
-                return buffer && buffer->GetOwnerId() == m_ResourceOwnerId;
+                return buffer && buffer->GetOwnerId() == m_ResourceOwnerId && m_BufferOwnership.IsLive(resource);
             }
             bool OwnsResource(const Texture* resource) const override
             {
@@ -449,9 +509,23 @@ namespace Engine::RHI
             bool QueryResourceState(const Buffer* resource, ResourceState& state) const override
             {
                 const auto* buffer = dynamic_cast<const VulkanBuffer*>(resource);
-                if (!buffer || !OwnsResource(resource) || buffer->GetCurrentState() == ResourceState::Unknown) return false;
-                state = buffer->GetCurrentState();
-                return true;
+                return buffer && OwnsResource(resource) && m_BufferOwnership.QueryState(resource, state);
+            }
+            bool QueryBufferQueueOwner(const Buffer* resource, QueueType& owner) const override
+            {
+                return OwnsResource(resource) && m_BufferOwnership.QueryOwner(resource, owner);
+            }
+            bool HasPendingBufferOwnershipTransfer(const Buffer* resource) const override
+            {
+                return OwnsResource(resource) && m_BufferOwnership.HasPending(resource);
+            }
+            bool CanDestroyBuffer(const Buffer* resource) const override
+            {
+                return OwnsResource(resource) && m_BufferOwnership.CanDestroy(resource);
+            }
+            bool RecoverAbandonedBufferOwnershipTransfer(Buffer& resource, const CompletionToken& releaseToken) override
+            {
+                return OwnsResource(&resource) && m_BufferOwnership.Recover(resource, releaseToken, QueryCompletion(releaseToken));
             }
             bool QueryResourceState(const Texture* resource, ResourceState& state) const override
             {
@@ -501,11 +575,14 @@ namespace Engine::RHI
             {
                 if (!m_Device) return nullptr;
                 nvrhi::CommandListHandle list = m_Device->createCommandList(); return list ? CreateScope<VulkanCommandList>(type, std::string(name), list, m_Device,
-                    [this](const CompletionToken& token) { return QueryCompletion(token); }) : nullptr;
+                    [this](const CompletionToken& token) { return QueryCompletion(token); }, &m_BufferOwnership,
+                    [this](QueueType requested) { return ResolveQueue(requested).Effective; }) : nullptr;
             }
             bool UploadBuffer(Buffer& destination, const void* data, u64 size, u64 offset) override
             {
-                auto* buffer = dynamic_cast<VulkanBuffer*>(&destination); if (!buffer || !data || !size || offset > destination.GetDescription().SizeBytes || size > destination.GetDescription().SizeBytes - offset) return false;
+                auto* buffer = dynamic_cast<VulkanBuffer*>(&destination); if (!buffer || !OwnsResource(&destination)
+                    || !m_BufferOwnership.CanUse(&destination) || !data || !size || offset > destination.GetDescription().SizeBytes
+                    || size > destination.GetDescription().SizeBytes - offset) return false;
                 Scope<CommandList> list = CreateCommandList(QueueType::Graphics, "Vulkan RHI Buffer Upload"); if (!list || !list->Begin()) return false;
                 static_cast<VulkanCommandList*>(list.get())->Native()->writeBuffer(buffer->Native(), data, size, offset); return list->End() && SubmitAndWait(*list);
             }
@@ -551,12 +628,22 @@ namespace Engine::RHI
                     [this](const CompletionToken& dependency) { return FindCompletionEntry(dependency) != m_CompletionEntries.end(); });
                 if (dependencyError != SubmissionDependencyError::None)
                     return {};
+                if (list->GetOwnershipOperation() && !m_BufferOwnership.ValidateSubmission(*list->GetOwnershipOperation(), dependencies))
+                    return {};
                 const u64 nativeSubmissionId = m_Device->executeCommandList(list->Native());
                 if (nativeSubmissionId == 0)
                     return {};
                 const CompletionToken token { m_CompletionDeviceId, m_NextCompletionSubmissionId++ };
                 m_CompletionEntries.emplace(token.SubmissionId, nativeSubmissionId);
-                return list->MarkSubmitted(token) ? token : CompletionToken {};
+                if (!list->MarkSubmitted(token))
+                    return {};
+                if (const auto& ownership = list->GetOwnershipOperation())
+                {
+                    const bool published = ownership->Type == BufferOwnershipOperationType::Release
+                        ? m_BufferOwnership.PublishRelease(*ownership, token) : m_BufferOwnership.PublishAcquire(*ownership);
+                    if (!published) return {};
+                }
+                return token;
             }
             CompletionStatus QueryCompletion(const CompletionToken& token) override
             {
@@ -600,6 +687,7 @@ namespace Engine::RHI
             const u64 m_ResourceOwnerId;
             u64 m_NextCompletionSubmissionId = 1;
             std::unordered_map<u64, u64> m_CompletionEntries;
+            BufferOwnershipTracker m_BufferOwnership;
 
             std::unordered_map<u64, u64>::const_iterator FindCompletionEntry(const CompletionToken& token) const
             {

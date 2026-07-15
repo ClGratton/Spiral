@@ -6,6 +6,19 @@
 
 namespace Engine::RHI
 {
+    enum class NVRHID3D12BufferOwnershipBarrier
+    {
+        None,
+        PortableStateTransition
+    };
+
+    constexpr NVRHID3D12BufferOwnershipBarrier GetNVRHID3D12BufferOwnershipBarrier(BufferOwnershipOperationType operation)
+    {
+        return operation == BufferOwnershipOperationType::Release
+            ? NVRHID3D12BufferOwnershipBarrier::None
+            : NVRHID3D12BufferOwnershipBarrier::PortableStateTransition;
+    }
+
     struct NVRHID3D12NativeHandles
     {
         void* Factory = nullptr;
