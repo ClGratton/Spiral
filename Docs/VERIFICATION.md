@@ -5,6 +5,8 @@ Date: 2026-07-15
 
 Verification must exercise the behavior claimed by the change. Compilation proves build compatibility; it does not prove a runtime or editor workflow.
 
+Headed child processes launched by a verification script must stream stdout/stderr to the active console while retaining the lines needed for assertions, and each launch must have a finite runtime-only timeout. Timeout diagnostics must name the invocation, elapsed time, PID, recent useful output, dump availability/capture result, and successful process-tree cleanup. A cancelled or timed-out hosted run is failure evidence, never a passing qualification.
+
 ## Baseline Checks
 
 Run for every scoped change:

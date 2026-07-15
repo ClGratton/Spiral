@@ -6,12 +6,16 @@ param(
 
     [string]$CapturePath = "output/captures/editor-viewport.bmp",
 
+    [ValidateRange(1, 3600)]
+    [int]$ChildTimeoutSeconds = 180,
+
     [switch]$SkipBuild
 )
 
 $ErrorActionPreference = "Stop"
 
 $Root = Resolve-Path (Join-Path $PSScriptRoot "..")
+. (Join-Path $PSScriptRoot "InvokeBoundedProcess.ps1")
 $ResolvedCapturePath = Join-Path $Root $CapturePath
 $SceneOriginCapturePaths = @(
     (Join-Path $Root "output/captures/scene-origin-a.bmp"),
@@ -38,14 +42,22 @@ foreach ($Path in @($ResolvedCapturePath) + $SceneOriginCapturePaths) {
     }
 }
 
-$Output = & $Editor --capture-viewport --smoke-test --renderer-capability-smoke --scene-origin-raster-smoke --rhi-buffer-transition-smoke --rhi-completion-smoke --rhi-queue-dependency-smoke --rhi-resource-ownership-smoke --rhi-resource-state-smoke --rhi-texture-readback-smoke --render-graph-execution-smoke 2>&1 | Tee-Object -Variable RenderLog
-if ($LASTEXITCODE -ne 0) {
-    throw "Editor render smoke run failed with exit code $LASTEXITCODE."
+$RenderResult = Invoke-BoundedProcess -FilePath $Editor -Arguments @("--capture-viewport", "--smoke-test", "--renderer-capability-smoke", "--scene-origin-raster-smoke", "--rhi-buffer-transition-smoke", "--rhi-completion-smoke", "--rhi-queue-dependency-smoke", "--rhi-resource-ownership-smoke", "--rhi-resource-state-smoke", "--rhi-texture-readback-smoke", "--render-graph-execution-smoke") -Label "Editor render smoke" -TimeoutSeconds $ChildTimeoutSeconds
+$Output = $RenderLog = $RenderResult.Output
+if ($RenderResult.TimedOut) {
+    throw "Editor render smoke timed out after $ChildTimeoutSeconds seconds."
+}
+if ($RenderResult.ExitCode -ne 0) {
+    throw "Editor render smoke run failed with exit code $($RenderResult.ExitCode)."
 }
 
-$FallbackOutput = & $Editor --smoke-test --rhi-queue-dependency-smoke --rhi-force-graphics-queue-fallback 2>&1 | Tee-Object -Variable FallbackLog
-if ($LASTEXITCODE -ne 0) {
-    throw "Editor forced graphics-queue fallback smoke failed with exit code $LASTEXITCODE."
+$FallbackResult = Invoke-BoundedProcess -FilePath $Editor -Arguments @("--smoke-test", "--rhi-queue-dependency-smoke", "--rhi-force-graphics-queue-fallback") -Label "Editor forced graphics-queue fallback smoke" -TimeoutSeconds $ChildTimeoutSeconds
+$FallbackOutput = $FallbackLog = $FallbackResult.Output
+if ($FallbackResult.TimedOut) {
+    throw "Editor forced graphics-queue fallback smoke timed out after $ChildTimeoutSeconds seconds."
+}
+if ($FallbackResult.ExitCode -ne 0) {
+    throw "Editor forced graphics-queue fallback smoke failed with exit code $($FallbackResult.ExitCode)."
 }
 
 $RequiredMarkers = @(
