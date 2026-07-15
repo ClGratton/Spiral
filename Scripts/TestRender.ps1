@@ -81,7 +81,6 @@ $RequiredMarkers = @(
     "RHIResourceOwnershipSmokeV1 backend=D3D12, owned=pass, null=rejected, result=pass"
     "RHIResourceStateSmokeV1 backend=D3D12, initial=pass, pending=hidden, invalid=rejected, submission=pass, final=pass, result=pass"
     "RHITextureReadbackSmokeV1 backend=D3D12, invalidState=rejected, unsupportedFormat=rejected, submit=pass, readback=pass, layout=tight, result=pass"
-    "RenderGraphExecutionSmokeV1 backend=D3D12, barriers=3, callbacks=ordered-pass, undeclared=rejected, submission=pass, readback=pass, reuse=retired-same-context, result=pass"
 )
 $JoinedLog = $RenderLog -join "`n"
 foreach ($Marker in $RequiredMarkers) {
@@ -91,6 +90,9 @@ foreach ($Marker in $RequiredMarkers) {
 }
 if ($JoinedLog -notmatch 'RHICompletionSmokeV1 backend=D3D12, tokenValidation=pass, query=nonblocking-(incomplete|complete), wait=pass, reuse=pass, result=pass') {
     throw "D3D12 render smoke did not prove completion-token retirement and recording reuse."
+}
+if ($JoinedLog -notmatch 'RenderGraphExecutionSmokeV1 backend=D3D12, barriers=3, callbacks=ordered-pass, undeclared=rejected, submission=pass, topology=(independent-copy|graphics-fallback), dependency=(gpu-wait|ordered-elided), readback=pass, reuse=retired-same-context, result=pass') {
+    throw "D3D12 render smoke did not prove topology-adaptive RenderGraph queue execution, readback, and aggregate retirement."
 }
 $QueueDependencyPattern = 'RHIQueueDependencySmokeV1 backend=D3D12, copy=(?<copy>independent|graphics-fallback), compute=(?<compute>independent|graphics-fallback), copyToGraphics=(?<copyMode>gpu-wait|ordered-elided), graphicsToCompute=(?<computeMode>gpu-wait|ordered-elided), cpuWaitBetween=no, bytes=pass, finalState=CopySource, retirement=pass, result=pass'
 $QueueDependencyMatch = [regex]::Match($JoinedLog, $QueueDependencyPattern)

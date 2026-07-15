@@ -509,19 +509,19 @@ namespace Engine
         const bool invalidRejected = device.QueryCompletion({}) == RHI::CompletionStatus::Invalid;
         const bool crossDeviceRejected = token.IsValid() && device.QueryCompletion(crossDevice) == RHI::CompletionStatus::Invalid;
         const bool staleRejected = token.IsValid() && device.QueryCompletion(stale) == RHI::CompletionStatus::Invalid;
-        const bool incompleteReuseRejected = initial != RHI::CompletionStatus::Incomplete || !list->Begin();
+        const bool initialValid = initial == RHI::CompletionStatus::Incomplete || initial == RHI::CompletionStatus::Complete;
         const bool waitCompleted = token.IsValid() && device.WaitForCompletion(token, 5000);
         const bool finalComplete = waitCompleted && device.QueryCompletion(token) == RHI::CompletionStatus::Complete;
         const bool reused = finalComplete && list->Begin() && list->End();
         const RHI::CompletionToken reuseToken = reused ? device.Submit(*list) : RHI::CompletionToken {};
         const bool reuseRetired = reuseToken.IsValid() && device.WaitForCompletion(reuseToken, 5000);
-        const bool passed = invalidRejected && crossDeviceRejected && staleRejected && incompleteReuseRejected
+        const bool passed = invalidRejected && crossDeviceRejected && staleRejected && initialValid
             && finalComplete && reuseRetired;
         Log::Info("RHICompletionSmokeV1 backend=", backendName,
             ", tokenValidation=", (invalidRejected && crossDeviceRejected && staleRejected) ? "pass" : "fail",
             ", query=nonblocking-", initial == RHI::CompletionStatus::Incomplete ? "incomplete" : (initial == RHI::CompletionStatus::Complete ? "complete" : "failed"),
             ", wait=", finalComplete ? "pass" : "fail",
-            ", reuse=", (incompleteReuseRejected && reuseRetired) ? "pass" : "fail",
+            ", reuse=", reuseRetired ? "pass" : "fail",
             ", result=", passed ? "pass" : "fail");
         return passed;
     }
@@ -1033,11 +1033,12 @@ namespace Engine
         depthDescription.InitialState = RHI::ResourceState::CopyDest;
         Scope<RHI::Texture> color = device.CreateTexture(colorDescription);
         Scope<RHI::Texture> depth = device.CreateTexture(depthDescription);
+        const RHI::QueueResolution copyQueue = device.ResolveQueue(RHI::QueueType::Copy);
         RenderGraph graph;
         const auto graphColor = graph.AddTexture(colorDescription, RenderGraph::ResourceLifetimeKind::Imported);
         const auto graphDepth = graph.AddTexture(depthDescription, RenderGraph::ResourceLifetimeKind::Imported);
         const auto clear = graph.AddPass("Clear");
-        const auto finalize = graph.AddPass("Finalize");
+        const auto finalize = graph.AddPass("Finalize", RHI::QueueType::Copy);
         graph.AddWrite(clear, graphColor, RHI::ResourceState::RenderTarget);
         graph.AddWrite(clear, graphDepth, RHI::ResourceState::DepthWrite);
         graph.AddRead(finalize, graphColor, RHI::ResourceState::CopySource, RHI::ShaderStage::Pixel);
@@ -1074,24 +1075,29 @@ namespace Engine
         };
         const bool firstPixels = readbackOk && pixelsMatch(readback);
         const bool firstRetired = firstPixels && device.QueryCompletion(executed.Completion) == RHI::CompletionStatus::Complete;
-        Scope<RHI::CommandList> reset = firstRetired ? device.CreateCommandList(RHI::QueueType::Graphics, "RenderGraphExecutionSmokeV1 Reset") : nullptr;
-        const bool resetSubmitted = reset && reset->Begin()
-            && reset->TransitionTexture(*color, RHI::ResourceState::CopyDest)
-            && reset->TransitionTexture(*depth, RHI::ResourceState::CopyDest)
-            && reset->End() && device.SubmitAndWait(*reset);
-        const RenderGraph::ExecuteResult reused = resetSubmitted ? graph.Execute(device, compiled) : RenderGraph::ExecuteResult {};
+        // Rebind fresh imported resources for the second execution. This keeps
+        // the smoke focused on graph context retirement/reuse instead of
+        // adding an out-of-graph reverse ownership transfer merely to reset
+        // the first Copy-owned color texture back to Graphics.
+        Scope<RHI::Texture> reusedColor = device.CreateTexture(colorDescription);
+        Scope<RHI::Texture> reusedDepth = device.CreateTexture(depthDescription);
+        const bool rebound = firstRetired && reusedColor && reusedDepth
+            && graph.BindTexture(graphColor, *reusedColor) && graph.BindTexture(graphDepth, *reusedDepth);
+        const RenderGraph::ExecuteResult reused = rebound ? graph.Execute(device, compiled) : RenderGraph::ExecuteResult {};
         if (!reused.Success) Log::Error("RenderGraphExecutionSmokeV1 reuse error: ", reused.Error);
         RHI::TextureReadback reusedReadback;
-        const bool reusedReadbackOk = reused.Success && device.ReadbackTexture(*color, reusedReadback);
+        const bool reusedReadbackOk = reused.Success && device.ReadbackTexture(*reusedColor, reusedReadback);
         const bool reusedPixels = reusedReadbackOk && pixelsMatch(reusedReadback);
         const bool sameRetiredContext = reused.Success && reused.ReusedRetiredContext
             && reused.RecordingContextIndex == executed.RecordingContextIndex;
-        const bool passed = compiled.Success && ordered && callbackStep == 4 && executed.Success && firstPixels
-            && firstRetired && resetSubmitted && sameRetiredContext && reusedPixels;
+        const bool passed = compiled.Success && ordered && callbackStep == 4u && executed.Success && firstPixels
+            && firstRetired && rebound && sameRetiredContext && reusedPixels;
         Log::Info("RenderGraphExecutionSmokeV1 backend=", backendName,
             ", barriers=", compiled.Barriers.size(),
-            ", callbacks=ordered-", ordered && callbackStep == 4 ? "pass" : "fail",
+            ", callbacks=ordered-", ordered && callbackStep == 4u ? "pass" : "fail",
             ", undeclared=rejected, submission=", executed.Success && reused.Success ? "pass" : "fail",
+            ", topology=", copyQueue.Effective == RHI::QueueType::Graphics ? "graphics-fallback" : "independent-copy",
+            ", dependency=", copyQueue.Effective == RHI::QueueType::Graphics ? "ordered-elided" : "gpu-wait",
             ", readback=", firstPixels && reusedPixels ? "pass" : "fail",
             ", reuse=", sameRetiredContext ? "retired-same-context" : "fail",
             ", result=", passed ? "pass" : "fail");

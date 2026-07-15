@@ -40,6 +40,7 @@ namespace Engine::RHI
         ResourceState Before = ResourceState::Unknown;
         ResourceState After = ResourceState::Unknown;
         CompletionToken ReleaseToken;
+        ResourceState CommittedBaseline = ResourceState::Unknown;
     };
 
     // Immutable observation for backend-private abandoned-release repair. It
@@ -68,7 +69,10 @@ namespace Engine::RHI
         bool PublishOrdinaryState(Buffer& buffer, ResourceState state);
 
         bool RecordRelease(const BufferOwnershipRelease& release, QueueType listQueue,
-            QueueType effectiveSource, QueueType effectiveDestination, RecordedBufferOwnershipOperation& operation) const;
+            QueueType effectiveSource, QueueType effectiveDestination, ResourceState committedBaseline, RecordedBufferOwnershipOperation& operation) const;
+        bool RecordRelease(const BufferOwnershipRelease& release, QueueType listQueue,
+            QueueType effectiveSource, QueueType effectiveDestination, RecordedBufferOwnershipOperation& operation) const
+        { return RecordRelease(release, listQueue, effectiveSource, effectiveDestination, release.Before, operation); }
         bool RecordAcquire(const BufferOwnershipAcquire& acquire, QueueType listQueue,
             QueueType effectiveSource, QueueType effectiveDestination, RecordedBufferOwnershipOperation& operation) const;
         bool ValidateSubmission(const RecordedBufferOwnershipOperation& operation,

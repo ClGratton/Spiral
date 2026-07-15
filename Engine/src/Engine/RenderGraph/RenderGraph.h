@@ -104,8 +104,10 @@ namespace Engine
             bool Success = false;
             std::string Error;
             RHI::CompletionToken Completion;
+            std::vector<RHI::CompletionToken> Completions;
             u32 RecordingContextIndex = InvalidIndex;
             bool ReusedRetiredContext = false;
+            u32 AcceptedPassCount = 0;
         };
 
         struct ResourceLifetime
@@ -198,6 +200,8 @@ namespace Engine
         {
             Scope<RHI::CommandList> CommandList;
             RHI::CompletionToken Completion;
+            RHI::QueueType EffectiveQueue = RHI::QueueType::Graphics;
+            u32 PassIndex = InvalidIndex;
         };
         ResourceHandle AddResource(ResourceDescription description);
         static CompileResult Fail(std::string_view message);

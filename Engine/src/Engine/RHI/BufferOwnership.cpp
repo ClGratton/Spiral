@@ -60,16 +60,17 @@ namespace Engine::RHI
     }
 
     bool BufferOwnershipTracker::RecordRelease(const BufferOwnershipRelease& release, QueueType listQueue,
-        QueueType effectiveSource, QueueType effectiveDestination, RecordedBufferOwnershipOperation& operation) const
+        QueueType effectiveSource, QueueType effectiveDestination, ResourceState committedBaseline, RecordedBufferOwnershipOperation& operation) const
     {
         const auto found = m_Buffers.find(release.Resource);
         if (found == m_Buffers.end() || found->second.Pending || effectiveSource == effectiveDestination
-            || listQueue != effectiveSource || found->second.Owner != effectiveSource || found->second.State != release.Before
+            || listQueue != effectiveSource || found->second.Owner != effectiveSource || found->second.State != committedBaseline
             || !IsBufferStateCompatible(release.Resource->GetDescription().Usage, release.Resource->GetDescription().CpuAccess, release.Before)
             || !IsBufferStateCompatible(release.Resource->GetDescription().Usage, release.Resource->GetDescription().CpuAccess, release.After))
             return false;
         operation = { BufferOwnershipOperationType::Release, release.Resource, effectiveSource, effectiveDestination,
             release.Before, release.After, {} };
+        operation.CommittedBaseline = committedBaseline;
         return true;
     }
 
@@ -94,7 +95,7 @@ namespace Engine::RHI
         if (found == m_Buffers.end())
             return false;
         if (operation.Type == BufferOwnershipOperationType::Release)
-            return !found->second.Pending && found->second.Owner == operation.Source && found->second.State == operation.Before;
+            return !found->second.Pending && found->second.Owner == operation.Source && found->second.State == operation.CommittedBaseline;
         if (!found->second.Pending || !SamePair(*found->second.Pending, operation.Source, operation.Destination,
             operation.Before, operation.After) || !SameToken(found->second.Pending->ReleaseToken, operation.ReleaseToken))
             return false;
@@ -109,7 +110,7 @@ namespace Engine::RHI
         auto found = m_Buffers.find(operation.Resource);
         if (operation.Type != BufferOwnershipOperationType::Release || !acceptedToken.IsValid()
             || found == m_Buffers.end() || found->second.Pending || found->second.Owner != operation.Source
-            || found->second.State != operation.Before)
+            || (found->second.State != operation.CommittedBaseline && found->second.State != operation.Before && found->second.State != operation.After))
             return false;
         found->second.Pending = PendingTransfer { operation.Source, operation.Destination,
             operation.Before, operation.After, acceptedToken };

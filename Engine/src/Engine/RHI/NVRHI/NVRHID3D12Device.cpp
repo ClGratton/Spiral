@@ -872,8 +872,8 @@ namespace Engine::RHI
                 m_TextureStates.clear();
                 m_BufferStates.clear();
                 m_UsedBuffers.clear();
-                m_OwnershipOperation.reset();
-                m_TextureOwnershipOperation.reset();
+                m_OwnershipOperations.clear();
+                m_TextureOwnershipOperations.clear();
                 return true;
             }
 
@@ -991,27 +991,36 @@ namespace Engine::RHI
 
             bool ReleaseTextureOwnership(const TextureOwnershipRelease& release) override
             {
-                if (m_State != State::Recording || !m_TextureOwnershipTracker || m_TextureOwnershipOperation
-                    || std::find(m_UsedTextures.begin(), m_UsedTextures.end(), release.Resource) != m_UsedTextures.end()) return false;
+                if (m_State != State::Recording || !m_TextureOwnershipTracker
+                    || !release.Resource) return false;
+                if (std::any_of(m_TextureOwnershipOperations.begin(), m_TextureOwnershipOperations.end(), [&](const auto& item) { return item.Resource == release.Resource; })) return false;
                 RecordedTextureOwnershipOperation operation;
+                ResourceState baseline = ResourceState::Unknown;
+                if (!m_TextureOwnershipTracker->QueryState(release.Resource, baseline)) return false;
                 if (!m_TextureOwnershipTracker->RecordRelease(release, m_EffectiveQueueType, m_ResolveQueue(release.SourceQueue),
-                    m_ResolveQueue(release.DestinationQueue), operation)
+                    m_ResolveQueue(release.DestinationQueue), baseline, operation)
                     || GetNVRHID3D12TextureOwnershipBarrier(operation.Type) != NVRHID3D12TextureOwnershipBarrier::None) return false;
-                m_TextureOwnershipOperation = operation; return true;
+                // A Copy list cannot transition from a graphics-only state;
+                // move to the destination portable state on the source list
+                // before publishing the accepted release.
+                if (!TransitionTexture(*release.Resource, release.After)) return false;
+                m_TextureOwnershipOperations.push_back(operation); return true;
             }
             bool AcquireTextureOwnership(const TextureOwnershipAcquire& acquire) override
             {
-                if (m_State != State::Recording || !m_TextureOwnershipTracker || m_TextureOwnershipOperation
+                if (m_State != State::Recording || !m_TextureOwnershipTracker
+                    || !acquire.Resource
                     || std::find(m_UsedTextures.begin(), m_UsedTextures.end(), acquire.Resource) != m_UsedTextures.end()) return false;
+                if (std::any_of(m_TextureOwnershipOperations.begin(), m_TextureOwnershipOperations.end(), [&](const auto& item) { return item.Resource == acquire.Resource; })) return false;
                 RecordedTextureOwnershipOperation operation;
                 if (!m_TextureOwnershipTracker->RecordAcquire(acquire, m_EffectiveQueueType, m_ResolveQueue(acquire.SourceQueue),
-                    m_ResolveQueue(acquire.DestinationQueue), operation) || !acquire.Resource
+                    m_ResolveQueue(acquire.DestinationQueue), operation)
                     || GetNVRHID3D12TextureOwnershipBarrier(operation.Type) != NVRHID3D12TextureOwnershipBarrier::PortableStateTransition) return false;
                 m_AllowPendingTexture = true;
                 const bool transitioned = TransitionTexture(*acquire.Resource, acquire.After);
                 m_AllowPendingTexture = false;
                 if (!transitioned) return false;
-                m_TextureOwnershipOperation = operation; return true;
+                m_TextureOwnershipOperations.push_back(operation); return true;
             }
 
             bool TransitionBuffer(Buffer& buffer, ResourceState destinationState) override
@@ -1021,39 +1030,42 @@ namespace Engine::RHI
 
             bool ReleaseBufferOwnership(const BufferOwnershipRelease& release) override
             {
-                if (m_State != State::Recording || !m_OwnershipTracker || m_OwnershipOperation
-                    || std::find(m_UsedBuffers.begin(), m_UsedBuffers.end(), release.Resource) != m_UsedBuffers.end())
+                if (m_State != State::Recording || !m_OwnershipTracker
+                    || !release.Resource)
                     return false;
+                if (std::any_of(m_OwnershipOperations.begin(), m_OwnershipOperations.end(), [&](const auto& item) { return item.Resource == release.Resource; })) return false;
                 RecordedBufferOwnershipOperation operation;
+                ResourceState baseline = ResourceState::Unknown;
+                if (!m_OwnershipTracker->QueryState(release.Resource, baseline)) return false;
                 if (!m_OwnershipTracker->RecordRelease(release, m_EffectiveQueueType, m_ResolveQueue(release.SourceQueue),
-                    m_ResolveQueue(release.DestinationQueue), operation)
+                    m_ResolveQueue(release.DestinationQueue), baseline, operation)
                     || GetNVRHID3D12BufferOwnershipBarrier(operation.Type) != NVRHID3D12BufferOwnershipBarrier::None)
                     return false;
-                m_OwnershipOperation = operation;
+                if (!TransitionBufferInternal(*release.Resource, release.After, false)) return false;
+                m_OwnershipOperations.push_back(operation);
                 return true;
             }
 
             bool AcquireBufferOwnership(const BufferOwnershipAcquire& acquire) override
             {
-                if (m_State != State::Recording || !m_OwnershipTracker || m_OwnershipOperation
+                if (m_State != State::Recording || !m_OwnershipTracker
+                    || !acquire.Resource
                     || std::find(m_UsedBuffers.begin(), m_UsedBuffers.end(), acquire.Resource) != m_UsedBuffers.end())
                     return false;
+                if (std::any_of(m_OwnershipOperations.begin(), m_OwnershipOperations.end(), [&](const auto& item) { return item.Resource == acquire.Resource; })) return false;
                 RecordedBufferOwnershipOperation operation;
                 const QueueType effectiveSource = m_ResolveQueue(acquire.SourceQueue);
                 if (!m_OwnershipTracker->RecordAcquire(acquire, m_EffectiveQueueType, effectiveSource,
-                    m_ResolveQueue(acquire.DestinationQueue), operation) || !acquire.Resource
+                    m_ResolveQueue(acquire.DestinationQueue), operation)
                     || GetNVRHID3D12BufferOwnershipBarrier(operation.Type) != NVRHID3D12BufferOwnershipBarrier::PortableStateTransition
                     || !TransitionBufferInternal(*acquire.Resource, acquire.After, true))
                     return false;
-                m_OwnershipOperation = operation;
+                m_OwnershipOperations.push_back(operation);
                 return true;
             }
 
-            const std::optional<RecordedBufferOwnershipOperation>& GetOwnershipOperation() const
-            {
-                return m_OwnershipOperation;
-            }
-            const std::optional<RecordedTextureOwnershipOperation>& GetTextureOwnershipOperation() const { return m_TextureOwnershipOperation; }
+            const std::vector<RecordedBufferOwnershipOperation>& GetOwnershipOperations() const { return m_OwnershipOperations; }
+            const std::vector<RecordedTextureOwnershipOperation>& GetTextureOwnershipOperations() const { return m_TextureOwnershipOperations; }
 
         private:
             bool TransitionBufferInternal(Buffer& buffer, ResourceState destinationState, bool allowPending)
@@ -1372,8 +1384,8 @@ namespace Engine::RHI
             std::vector<BufferState> m_BufferStates;
             std::vector<Buffer*> m_UsedBuffers;
             std::vector<Texture*> m_UsedTextures;
-            std::optional<RecordedBufferOwnershipOperation> m_OwnershipOperation;
-            std::optional<RecordedTextureOwnershipOperation> m_TextureOwnershipOperation;
+            std::vector<RecordedBufferOwnershipOperation> m_OwnershipOperations;
+            std::vector<RecordedTextureOwnershipOperation> m_TextureOwnershipOperations;
             bool m_AllowPendingTexture = false;
             State m_State = State::Initial;
         };
@@ -1798,11 +1810,18 @@ namespace Engine::RHI
                     Log::Error("D3D12 RHI submission rejected dependency validation error ", static_cast<u32>(dependencyError));
                     return {};
                 }
-                if (nativeCommandList->GetOwnershipOperation()
-                    && !m_BufferOwnership.ValidateSubmission(*nativeCommandList->GetOwnershipOperation(), dependencies))
+                if (std::any_of(nativeCommandList->GetOwnershipOperations().begin(), nativeCommandList->GetOwnershipOperations().end(),
+                    [&](const auto& operation) { return !m_BufferOwnership.ValidateSubmission(operation, dependencies); }))
+                {
+                    Log::Error("D3D12 RHI submission rejected buffer ownership validation");
                     return {};
-                if (nativeCommandList->GetTextureOwnershipOperation()
-                    && !m_TextureOwnership.ValidateSubmission(*nativeCommandList->GetTextureOwnershipOperation(), dependencies)) return {};
+                }
+                if (std::any_of(nativeCommandList->GetTextureOwnershipOperations().begin(), nativeCommandList->GetTextureOwnershipOperations().end(),
+                    [&](const auto& operation) { return !m_TextureOwnership.ValidateSubmission(operation, dependencies); }))
+                {
+                    Log::Error("D3D12 RHI submission rejected texture ownership validation");
+                    return {};
+                }
                 for (const CompletionToken& dependency : dependencies)
                 {
                     const CompletionEntry* producer = FindCompletionEntry(dependency);
@@ -1818,20 +1837,26 @@ namespace Engine::RHI
                 queue->ExecuteCommandLists(1, nativeLists);
                 const CompletionToken token = SignalQueueSubmission(consumer.Effective, queue);
                 if (!token.IsValid() || !nativeCommandList->MarkSubmitted(token))
+                {
+                    Log::Error("D3D12 RHI submission could not publish command-list state");
                     return {};
-                if (const auto& ownership = nativeCommandList->GetOwnershipOperation())
-                {
-                    const bool published = ownership->Type == BufferOwnershipOperationType::Release
-                        ? m_BufferOwnership.PublishRelease(*ownership, token)
-                        : m_BufferOwnership.PublishAcquire(*ownership);
-                    if (!published)
-                        return {};
                 }
-                if (const auto& ownership = nativeCommandList->GetTextureOwnershipOperation())
+                for (const auto& ownership : nativeCommandList->GetOwnershipOperations())
                 {
-                    const bool published = ownership->Type == TextureOwnershipOperationType::Release
-                        ? m_TextureOwnership.PublishRelease(*ownership, token) : m_TextureOwnership.PublishAcquire(*ownership);
-                    if (!published) return {};
+                    const bool published = ownership.Type == BufferOwnershipOperationType::Release
+                        ? m_BufferOwnership.PublishRelease(ownership, token)
+                        : m_BufferOwnership.PublishAcquire(ownership);
+                    if (!published)
+                    {
+                        Log::Error("D3D12 RHI submission could not publish buffer ownership");
+                        return {};
+                    }
+                }
+                for (const auto& ownership : nativeCommandList->GetTextureOwnershipOperations())
+                {
+                    const bool published = ownership.Type == TextureOwnershipOperationType::Release
+                        ? m_TextureOwnership.PublishRelease(ownership, token) : m_TextureOwnership.PublishAcquire(ownership);
+                    if (!published) { Log::Error("D3D12 RHI submission could not publish texture ownership"); return {}; }
                 }
                 return token;
             }

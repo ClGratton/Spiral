@@ -2168,11 +2168,14 @@ float4 main(VertexInput input) : SV_Position
         Engine::u64 GetOwnerId() const { return m_OwnerId; }
         Engine::RHI::ResourceState GetState() const { return m_State; }
         void SetState(Engine::RHI::ResourceState state) { m_State = state; }
+        Engine::RHI::QueueType GetQueueOwner() const { return m_QueueOwner; }
+        void SetQueueOwner(Engine::RHI::QueueType owner) { m_QueueOwner = owner; }
 
     private:
         Engine::u64 m_OwnerId = 0;
         Engine::RHI::TextureDescription m_Description;
         Engine::RHI::ResourceState m_State = Engine::RHI::ResourceState::Unknown;
+        Engine::RHI::QueueType m_QueueOwner = Engine::RHI::QueueType::Graphics;
     };
 
     class RenderGraphTestBuffer final : public Engine::RHI::Buffer
@@ -2188,11 +2191,14 @@ float4 main(VertexInput input) : SV_Position
         Engine::u64 GetOwnerId() const { return m_OwnerId; }
         Engine::RHI::ResourceState GetState() const { return m_State; }
         void SetState(Engine::RHI::ResourceState state) { m_State = state; }
+        Engine::RHI::QueueType GetQueueOwner() const { return m_QueueOwner; }
+        void SetQueueOwner(Engine::RHI::QueueType owner) { m_QueueOwner = owner; }
 
     private:
         Engine::u64 m_OwnerId = 0;
         Engine::RHI::BufferDescription m_Description;
         Engine::RHI::ResourceState m_State = Engine::RHI::ResourceState::Unknown;
+        Engine::RHI::QueueType m_QueueOwner = Engine::RHI::QueueType::Graphics;
     };
 
     class RenderGraphTestCommandList final : public Engine::RHI::CommandList
@@ -2210,6 +2216,8 @@ float4 main(VertexInput input) : SV_Position
             m_Closed = false;
             m_TextureTransitions.clear();
             m_BufferTransitions.clear();
+            m_BufferOwnershipOperations.clear();
+            m_TextureOwnershipOperations.clear();
             ++m_BeginCount;
             m_BegunIds.push_back(m_Id);
             return true;
@@ -2241,6 +2249,34 @@ float4 main(VertexInput input) : SV_Position
             m_Events.push_back("buffer:" + resource->GetDescription().DebugName + ":" + Engine::RenderGraph::ToString(state));
             return true;
         }
+        bool ReleaseBufferOwnership(const Engine::RHI::BufferOwnershipRelease& release) override
+        {
+            if (!m_Recording || !release.Resource || std::any_of(m_BufferOwnershipOperations.begin(), m_BufferOwnershipOperations.end(),
+                [&](const auto& operation) { return operation.Resource == release.Resource; })) return false;
+            m_BufferOwnershipOperations.push_back({ BufferOwnershipOperationKind::Release, release, {} });
+            return true;
+        }
+        bool AcquireBufferOwnership(const Engine::RHI::BufferOwnershipAcquire& acquire) override
+        {
+            if (!m_Recording || !acquire.Resource || std::any_of(m_BufferOwnershipOperations.begin(), m_BufferOwnershipOperations.end(),
+                [&](const auto& operation) { return operation.Resource == acquire.Resource; })) return false;
+            m_BufferOwnershipOperations.push_back({ BufferOwnershipOperationKind::Acquire, {}, acquire });
+            return true;
+        }
+        bool ReleaseTextureOwnership(const Engine::RHI::TextureOwnershipRelease& release) override
+        {
+            if (!m_Recording || !release.Resource || std::any_of(m_TextureOwnershipOperations.begin(), m_TextureOwnershipOperations.end(),
+                [&](const auto& operation) { return operation.Resource == release.Resource; })) return false;
+            m_TextureOwnershipOperations.push_back({ TextureOwnershipOperationKind::Release, release, {} });
+            return true;
+        }
+        bool AcquireTextureOwnership(const Engine::RHI::TextureOwnershipAcquire& acquire) override
+        {
+            if (!m_Recording || !acquire.Resource || std::any_of(m_TextureOwnershipOperations.begin(), m_TextureOwnershipOperations.end(),
+                [&](const auto& operation) { return operation.Resource == acquire.Resource; })) return false;
+            m_TextureOwnershipOperations.push_back({ TextureOwnershipOperationKind::Acquire, {}, acquire });
+            return true;
+        }
         void SetGraphicsPipeline(Engine::RHI::Pipeline&) override {}
         void SetGraphicsConstantBuffer(Engine::u32, Engine::RHI::Buffer&) override {}
         void SetViewport(const Engine::RHI::Viewport&) override {}
@@ -2262,6 +2298,30 @@ float4 main(VertexInput input) : SV_Position
             m_Closed = false;
             return true;
         }
+        enum class BufferOwnershipOperationKind { Release, Acquire };
+        struct BufferOwnershipOperation
+        {
+            BufferOwnershipOperationKind Kind;
+            Engine::RHI::BufferOwnershipRelease Release;
+            Engine::RHI::BufferOwnershipAcquire Acquire;
+            Engine::RHI::Buffer* Resource = nullptr;
+            BufferOwnershipOperation(BufferOwnershipOperationKind kind, Engine::RHI::BufferOwnershipRelease release,
+                Engine::RHI::BufferOwnershipAcquire acquire)
+                : Kind(kind), Release(release), Acquire(acquire), Resource(kind == BufferOwnershipOperationKind::Release ? release.Resource : acquire.Resource) {}
+        };
+        enum class TextureOwnershipOperationKind { Release, Acquire };
+        struct TextureOwnershipOperation
+        {
+            TextureOwnershipOperationKind Kind;
+            Engine::RHI::TextureOwnershipRelease Release;
+            Engine::RHI::TextureOwnershipAcquire Acquire;
+            Engine::RHI::Texture* Resource = nullptr;
+            TextureOwnershipOperation(TextureOwnershipOperationKind kind, Engine::RHI::TextureOwnershipRelease release,
+                Engine::RHI::TextureOwnershipAcquire acquire)
+                : Kind(kind), Release(release), Acquire(acquire), Resource(kind == TextureOwnershipOperationKind::Release ? release.Resource : acquire.Resource) {}
+        };
+        const std::vector<BufferOwnershipOperation>& BufferOwnershipOperations() const { return m_BufferOwnershipOperations; }
+        const std::vector<TextureOwnershipOperation>& TextureOwnershipOperations() const { return m_TextureOwnershipOperations; }
 
     private:
         struct TextureTransition { RenderGraphTestTexture* Resource = nullptr; Engine::RHI::ResourceState State = Engine::RHI::ResourceState::Unknown; };
@@ -2275,6 +2335,8 @@ float4 main(VertexInput input) : SV_Position
         bool m_Closed = false;
         std::vector<TextureTransition> m_TextureTransitions;
         std::vector<BufferTransition> m_BufferTransitions;
+        std::vector<BufferOwnershipOperation> m_BufferOwnershipOperations;
+        std::vector<TextureOwnershipOperation> m_TextureOwnershipOperations;
     };
 
     class RenderGraphTestDevice final : public Engine::RHI::Device
@@ -2327,6 +2389,10 @@ float4 main(VertexInput input) : SV_Position
             state = texture->GetState();
             return true;
         }
+        bool QueryBufferQueueOwner(const Engine::RHI::Buffer* resource, Engine::RHI::QueueType& owner) const override
+        { const auto* buffer = dynamic_cast<const RenderGraphTestBuffer*>(resource); if (!OwnsResource(resource) || !buffer) return false; owner = buffer->GetQueueOwner(); return true; }
+        bool QueryTextureQueueOwner(const Engine::RHI::Texture* resource, Engine::RHI::QueueType& owner) const override
+        { const auto* texture = dynamic_cast<const RenderGraphTestTexture*>(resource); if (!OwnsResource(resource) || !texture) return false; owner = texture->GetQueueOwner(); return true; }
         Engine::Scope<Engine::RHI::Shader> CreateShader(const Engine::RHI::ShaderDescription&) override { return nullptr; }
         Engine::Scope<Engine::RHI::Pipeline> CreatePipeline(const Engine::RHI::PipelineDescription&) override { return nullptr; }
         Engine::Scope<Engine::RHI::QueryPool> CreateQueryPool(const Engine::RHI::QueryPoolDescription&) override { return nullptr; }
@@ -2354,6 +2420,23 @@ float4 main(VertexInput input) : SV_Position
                 });
             if (!list || dependencyError != Engine::RHI::SubmissionDependencyError::None)
                 return {};
+            const auto hasDependency = [&](const Engine::RHI::CompletionToken& token) { return std::any_of(dependencies.begin(), dependencies.end(), [&](const auto& item) { return item.DeviceId == token.DeviceId && item.SubmissionId == token.SubmissionId; }); };
+            const auto bufferOperationValid = [&](const RenderGraphTestCommandList::BufferOwnershipOperation& operation)
+            {
+                return operation.Resource && (operation.Kind == RenderGraphTestCommandList::BufferOwnershipOperationKind::Release
+                    ? operation.Release.SourceQueue == list->GetQueueType()
+                    : hasDependency(operation.Acquire.ReleaseToken) && operation.Acquire.DestinationQueue == list->GetQueueType());
+            };
+            const auto textureOperationValid = [&](const RenderGraphTestCommandList::TextureOwnershipOperation& operation)
+            {
+                return operation.Resource && (operation.Kind == RenderGraphTestCommandList::TextureOwnershipOperationKind::Release
+                    ? operation.Release.SourceQueue == list->GetQueueType()
+                    : hasDependency(operation.Acquire.ReleaseToken) && operation.Acquire.DestinationQueue == list->GetQueueType());
+            };
+            if (std::any_of(list->BufferOwnershipOperations().begin(), list->BufferOwnershipOperations().end(),
+                [&](const auto& operation) { return !bufferOperationValid(operation); })
+                || std::any_of(list->TextureOwnershipOperations().begin(), list->TextureOwnershipOperations().end(),
+                    [&](const auto& operation) { return !textureOperationValid(operation); })) return {};
             for (const Engine::RHI::CompletionToken& dependency : dependencies)
             {
                 DependencyOrder.push_back(dependency);
@@ -2366,6 +2449,26 @@ float4 main(VertexInput input) : SV_Position
             if (!list->Commit()) return {};
             m_Completions.push_back(Engine::RHI::CompletionStatus::Incomplete);
             m_SubmissionQueues.push_back(ResolveQueue(list->GetQueueType()).Effective);
+            for (const auto& operation : list->BufferOwnershipOperations())
+            {
+                PublishedBufferOwnershipOperations.push_back(operation.Resource);
+                if (operation.Kind == RenderGraphTestCommandList::BufferOwnershipOperationKind::Acquire)
+                    if (auto* buffer = dynamic_cast<RenderGraphTestBuffer*>(operation.Resource))
+                    {
+                        buffer->SetState(operation.Acquire.After);
+                        buffer->SetQueueOwner(ResolveQueue(operation.Acquire.DestinationQueue).Effective);
+                    }
+            }
+            for (const auto& operation : list->TextureOwnershipOperations())
+            {
+                PublishedTextureOwnershipOperations.push_back(operation.Resource);
+                if (operation.Kind == RenderGraphTestCommandList::TextureOwnershipOperationKind::Acquire)
+                    if (auto* texture = dynamic_cast<RenderGraphTestTexture*>(operation.Resource))
+                    {
+                        texture->SetState(operation.Acquire.After);
+                        texture->SetQueueOwner(ResolveQueue(operation.Acquire.DestinationQueue).Effective);
+                    }
+            }
             ++SubmitCount;
             ++NativeSubmissionCount;
             SubmittedCommandListIds.push_back(list->GetId());
@@ -2405,6 +2508,8 @@ float4 main(VertexInput input) : SV_Position
         std::vector<Engine::u32> SubmittedCommandListIds;
         std::vector<Engine::RHI::CompletionToken> DependencyOrder;
         std::vector<std::string> Events;
+        std::vector<Engine::RHI::Buffer*> PublishedBufferOwnershipOperations;
+        std::vector<Engine::RHI::Texture*> PublishedTextureOwnershipOperations;
 
     private:
         Engine::u64 m_OwnerId = 0;
@@ -2636,7 +2741,7 @@ float4 main(VertexInput input) : SV_Position
         RenderGraphTestBuffer dataBuffer(8201, bufferDescription, ResourceState::CopyDest);
         RenderGraphTestTexture hiddenTexture(8201, hiddenDescription, ResourceState::CopyDest);
         bool restricted = false;
-        bool pendingHidden = false;
+        bool acceptedPrefixVisible = false;
         graph.SetPassCallback(writer, [&](RenderGraph::ExecutionContext& context)
         {
             restricted = context.GetTexture(color) == &colorTexture && context.GetBuffer(data) == &dataBuffer
@@ -2649,10 +2754,10 @@ float4 main(VertexInput input) : SV_Position
         {
             ResourceState textureState = ResourceState::Unknown;
             ResourceState bufferState = ResourceState::Unknown;
-            pendingHidden = device.QueryResourceState(&colorTexture, textureState) && textureState == ResourceState::CopyDest
+            acceptedPrefixVisible = device.QueryResourceState(&colorTexture, textureState) && textureState == ResourceState::RenderTarget
                 && device.QueryResourceState(&dataBuffer, bufferState) && bufferState == ResourceState::CopyDest;
             device.Events.push_back("callback:Reader");
-            return pendingHidden;
+            return acceptedPrefixVisible;
         });
         const bool bound = graph.BindTexture(color, colorTexture) && graph.BindBuffer(data, dataBuffer) && graph.BindTexture(hidden, hiddenTexture);
         const RenderGraph::CompileResult compiled = graph.Compile();
@@ -2667,9 +2772,9 @@ float4 main(VertexInput input) : SV_Position
             && device.QueryResourceState(&dataBuffer, finalBuffer) && finalBuffer == ResourceState::CopySource;
         return Expect(bound && compiled.Success && compiled.Barriers.size() == 3 && result.Success, "compiled two-pass texture and buffer graph executes successfully")
             && Expect(restricted, "execution context rejects undeclared and wrong-kind resource access")
-            && Expect(pendingHidden, "recorded transitions remain hidden until successful submission")
+            && Expect(acceptedPrefixVisible, "each accepted pass publishes its prefix state before dependent recording")
             && Expect(device.Events == expectedEvents, "barriers and callbacks execute in deterministic compiled order")
-            && Expect(device.SubmitCount == 1 && result.Completion.IsValid(), "successful execution submits exactly once")
+            && Expect(device.SubmitCount == 2 && result.Completions.size() == 2 && result.Completion.IsValid(), "successful execution submits each compiled pass deterministically")
             && Expect(finalStates, "successful submission publishes the compiled final texture and buffer states");
     }
 
@@ -2709,6 +2814,43 @@ float4 main(VertexInput input) : SV_Position
         completionDevice.SetCompletion(completionFirst.Completion, CompletionStatus::Failed);
         const RenderGraph::ExecuteResult completionFailed = completionFailureGraph.Execute(completionDevice, completionCompiled);
 
+        RenderGraph perPassGraph;
+        const auto perPassResource = perPassGraph.AddTexture(description, RenderGraph::ResourceLifetimeKind::Imported);
+        int perPassCallbacks = 0;
+        for (int index = 0; index < 4; ++index)
+        {
+            const auto perPass = perPassGraph.AddPass("PerPass" + std::to_string(index));
+            perPassGraph.AddRead(perPass, perPassResource, ResourceState::Common, ShaderStage::Pixel);
+            perPassGraph.SetPassCallback(perPass, [&perPassCallbacks](RenderGraph::ExecutionContext&) { ++perPassCallbacks; return true; });
+        }
+        RenderGraphTestTexture perPassTexture(8303, description, ResourceState::Common);
+        RenderGraphTestDevice perPassDevice(8303);
+        const bool perPassBound = perPassGraph.BindTexture(perPassResource, perPassTexture);
+        const RenderGraph::CompileResult perPassCompiled = perPassGraph.Compile();
+        const RenderGraph::ExecuteResult perPassFirst = perPassBound ? perPassGraph.Execute(perPassDevice, perPassCompiled) : RenderGraph::ExecuteResult {};
+        const RenderGraph::ExecuteResult perPassSecond = perPassFirst.Success ? perPassGraph.Execute(perPassDevice, perPassCompiled) : RenderGraph::ExecuteResult {};
+        const RenderGraph::ExecuteResult perPassThird = perPassSecond.Success ? perPassGraph.Execute(perPassDevice, perPassCompiled) : RenderGraph::ExecuteResult {};
+        const RenderGraph::ExecuteResult perPassExhausted = perPassThird.Success ? perPassGraph.Execute(perPassDevice, perPassCompiled) : RenderGraph::ExecuteResult {};
+        for (const CompletionToken& token : perPassSecond.Completions)
+            perPassDevice.SetCompletion(token, CompletionStatus::Complete);
+        const RenderGraph::ExecuteResult perPassReused = !perPassExhausted.Success ? perPassGraph.Execute(perPassDevice, perPassCompiled) : RenderGraph::ExecuteResult {};
+        const bool perPassContexts = perPassFirst.Success && perPassSecond.Success && perPassThird.Success
+            && perPassFirst.Completions.size() == 4 && perPassSecond.Completions.size() == 4 && perPassThird.Completions.size() == 4
+            && !perPassExhausted.Success && perPassExhausted.AcceptedPassCount == 0
+            && perPassReused.Success && perPassReused.ReusedRetiredContext
+            && perPassDevice.CreatedCommandListCount == 12 && perPassDevice.SubmitCount == 16 && perPassCallbacks == 16
+            && perPassDevice.SubmittedCommandListIds.size() == 16
+            && perPassDevice.SubmittedCommandListIds[0] != perPassDevice.SubmittedCommandListIds[1]
+            && perPassDevice.SubmittedCommandListIds[1] != perPassDevice.SubmittedCommandListIds[2]
+            && perPassDevice.SubmittedCommandListIds[2] != perPassDevice.SubmittedCommandListIds[3]
+            && perPassDevice.SubmittedCommandListIds[4] != perPassDevice.SubmittedCommandListIds[5]
+            && perPassDevice.SubmittedCommandListIds[5] != perPassDevice.SubmittedCommandListIds[6]
+            && perPassDevice.SubmittedCommandListIds[6] != perPassDevice.SubmittedCommandListIds[7]
+            && perPassDevice.SubmittedCommandListIds[12] == perPassDevice.SubmittedCommandListIds[4]
+            && perPassDevice.SubmittedCommandListIds[13] == perPassDevice.SubmittedCommandListIds[5]
+            && perPassDevice.SubmittedCommandListIds[14] == perPassDevice.SubmittedCommandListIds[6]
+            && perPassDevice.SubmittedCommandListIds[15] == perPassDevice.SubmittedCommandListIds[7];
+
         return Expect(bound && first.Success && second.Success && third.Success, "three bounded recording contexts accept three in-flight submissions")
             && Expect(first.RecordingContextIndex == 0 && second.RecordingContextIndex == 1 && third.RecordingContextIndex == 2,
                 "in-flight submissions occupy distinct bounded contexts")
@@ -2721,7 +2863,122 @@ float4 main(VertexInput input) : SV_Position
                 "retired reuse re-records the same command-list object")
             && Expect(completionFirst.Success && !completionFailed.Success && completionCallbacks == 1
                 && completionDevice.BeginCount == 1 && completionDevice.SubmitCount == 1,
-                "completion failure prevents later callbacks, recording, submission, and success");
+                "completion failure prevents later callbacks, recording, submission, and success")
+            && Expect(perPassContexts,
+                "four pass identities record while earlier tokens are incomplete, then only exact same-pass retired contexts reuse after the three-context bound");
+    }
+
+    bool TestRenderGraphExecutorCrossQueueOwnershipAndFallback()
+    {
+        using namespace Engine;
+        using namespace Engine::RHI;
+        const TextureDescription textureDescription = MakeExecutionTexture("cross-texture", ResourceState::CopyDest);
+        const BufferDescription firstBufferDescription = MakeExecutionBuffer("cross-buffer-a", ResourceState::CopyDest);
+        const BufferDescription secondBufferDescription = MakeExecutionBuffer("cross-buffer-b", ResourceState::CopyDest);
+        auto execute = [&](bool independent)
+        {
+            RenderGraph graph;
+            const auto texture = graph.AddTexture(textureDescription, RenderGraph::ResourceLifetimeKind::Imported);
+            const auto firstBuffer = graph.AddBuffer(firstBufferDescription, RenderGraph::ResourceLifetimeKind::Imported);
+            const auto secondBuffer = graph.AddBuffer(secondBufferDescription, RenderGraph::ResourceLifetimeKind::Imported);
+            const auto graphics = graph.AddPass("Graphics", QueueType::Graphics);
+            const auto copy = graph.AddPass("Copy", QueueType::Copy);
+            graph.AddWrite(graphics, texture, ResourceState::CopyDest);
+            graph.AddWrite(graphics, firstBuffer, ResourceState::CopyDest);
+            graph.AddWrite(graphics, secondBuffer, ResourceState::CopyDest);
+            graph.AddRead(copy, texture, ResourceState::CopySource, ShaderStage::Compute);
+            graph.AddRead(copy, firstBuffer, ResourceState::CopySource, ShaderStage::Compute);
+            graph.AddRead(copy, secondBuffer, ResourceState::CopySource, ShaderStage::Compute);
+            int callbacks = 0;
+            graph.SetPassCallback(graphics, [&](RenderGraph::ExecutionContext&) { ++callbacks; return true; });
+            graph.SetPassCallback(copy, [&](RenderGraph::ExecutionContext&) { ++callbacks; return true; });
+            RenderGraphTestDevice device(8401 + independent, false, independent);
+            RenderGraphTestTexture physicalTexture(8401 + independent, textureDescription, ResourceState::CopyDest);
+            RenderGraphTestBuffer firstPhysicalBuffer(8401 + independent, firstBufferDescription, ResourceState::CopyDest);
+            RenderGraphTestBuffer secondPhysicalBuffer(8401 + independent, secondBufferDescription, ResourceState::CopyDest);
+            const bool bound = graph.BindTexture(texture, physicalTexture) && graph.BindBuffer(firstBuffer, firstPhysicalBuffer)
+                && graph.BindBuffer(secondBuffer, secondPhysicalBuffer);
+            const RenderGraph::ExecuteResult result = bound ? graph.Execute(device, graph.Compile()) : RenderGraph::ExecuteResult {};
+            QueueType textureOwner = QueueType::Graphics, firstBufferOwner = QueueType::Graphics, secondBufferOwner = QueueType::Graphics;
+            ResourceState textureState = ResourceState::Unknown, firstBufferState = ResourceState::Unknown, secondBufferState = ResourceState::Unknown;
+            const bool owners = device.QueryTextureQueueOwner(&physicalTexture, textureOwner)
+                && device.QueryBufferQueueOwner(&firstPhysicalBuffer, firstBufferOwner)
+                && device.QueryBufferQueueOwner(&secondPhysicalBuffer, secondBufferOwner)
+                && device.QueryResourceState(&physicalTexture, textureState)
+                && device.QueryResourceState(&firstPhysicalBuffer, firstBufferState)
+                && device.QueryResourceState(&secondPhysicalBuffer, secondBufferState);
+            return Expect(result.Success && result.AcceptedPassCount == 2 && result.Completions.size() == 2 && callbacks == 2,
+                    independent ? "independent graphics-to-copy graph accepts both queue submissions" : "graphics fallback graph accepts both ordered submissions")
+                && Expect(device.GpuWaitDependencyCount == (independent ? 1 : 0) && device.ElidedDependencyCount == (independent ? 0 : 1),
+                    "resolved queue topology selects GPU wait only for an independent effective queue")
+                && Expect(owners && textureOwner == (independent ? QueueType::Copy : QueueType::Graphics)
+                    && firstBufferOwner == (independent ? QueueType::Copy : QueueType::Graphics)
+                    && secondBufferOwner == (independent ? QueueType::Copy : QueueType::Graphics)
+                    && textureState == ResourceState::CopySource && firstBufferState == ResourceState::CopySource
+                    && secondBufferState == ResourceState::CopySource,
+                    "texture and both buffers publish the exact accepted acquire state and owner")
+                && Expect(independent ? device.DependencyOrder.size() == 1
+                        && device.PublishedBufferOwnershipOperations.size() == 4
+                        && device.PublishedTextureOwnershipOperations.size() == 2
+                        && device.PublishedBufferOwnershipOperations[0] == &firstPhysicalBuffer
+                        && device.PublishedBufferOwnershipOperations[1] == &secondPhysicalBuffer
+                        && device.PublishedBufferOwnershipOperations[2] == &firstPhysicalBuffer
+                        && device.PublishedBufferOwnershipOperations[3] == &secondPhysicalBuffer
+                        && device.PublishedTextureOwnershipOperations[0] == &physicalTexture
+                        && device.PublishedTextureOwnershipOperations[1] == &physicalTexture
+                    : device.PublishedBufferOwnershipOperations.empty() && device.PublishedTextureOwnershipOperations.empty(),
+                    "cross-queue releases and acquires publish in recorded order with one deduplicated producer token");
+        };
+        RenderGraphTestDevice invalidDevice(8403, false, true);
+        RenderGraphTestBuffer firstInvalidBuffer(8403, firstBufferDescription, ResourceState::CopyDest);
+        RenderGraphTestBuffer secondInvalidBuffer(8403, secondBufferDescription, ResourceState::CopyDest);
+        Engine::Scope<CommandList> invalidList = invalidDevice.CreateCommandList(QueueType::Graphics, "invalid-ownership-batch");
+        const bool recordedInvalidBatch = invalidList && invalidList->Begin()
+            && invalidList->ReleaseBufferOwnership({ &firstInvalidBuffer, QueueType::Graphics, QueueType::Copy, ResourceState::CopyDest, ResourceState::CopySource })
+            && invalidList->ReleaseBufferOwnership({ &secondInvalidBuffer, QueueType::Copy, QueueType::Graphics, ResourceState::CopyDest, ResourceState::CopySource })
+            && invalidList->End();
+        ResourceState firstInvalidState = ResourceState::Unknown, secondInvalidState = ResourceState::Unknown;
+        const bool noPartialPublication = recordedInvalidBatch && !invalidDevice.Submit(*invalidList).IsValid()
+            && invalidDevice.NativeSubmissionCount == 0 && invalidDevice.PublishedBufferOwnershipOperations.empty()
+            && invalidDevice.QueryResourceState(&firstInvalidBuffer, firstInvalidState)
+            && invalidDevice.QueryResourceState(&secondInvalidBuffer, secondInvalidState)
+            && firstInvalidState == ResourceState::CopyDest && secondInvalidState == ResourceState::CopyDest;
+        return execute(true) && execute(false)
+            && Expect(noPartialPublication, "one invalid ownership operation rejects the complete batch before native acceptance or publication");
+    }
+
+    bool TestRenderGraphExecutorRejectsMissingProducerTokenBeforeConsumer()
+    {
+        using namespace Engine;
+        using namespace Engine::RHI;
+        const TextureDescription description = MakeExecutionTexture("missing-producer", ResourceState::Common);
+        RenderGraph graph;
+        const auto resource = graph.AddTexture(description, RenderGraph::ResourceLifetimeKind::Imported);
+        const auto prefix = graph.AddPass("Prefix");
+        const auto consumer = graph.AddPass("Consumer");
+        const auto absentProducer = graph.AddPass("AbsentProducer");
+        graph.AddRead(prefix, resource, ResourceState::Common, ShaderStage::Pixel);
+        graph.AddRead(consumer, resource, ResourceState::Common, ShaderStage::Pixel);
+        graph.AddRead(absentProducer, resource, ResourceState::Common, ShaderStage::Pixel);
+        graph.AddDependency(prefix, consumer);
+        int prefixCallbacks = 0, consumerCallbacks = 0, absentCallbacks = 0;
+        graph.SetPassCallback(prefix, [&prefixCallbacks](RenderGraph::ExecutionContext&) { ++prefixCallbacks; return true; });
+        graph.SetPassCallback(consumer, [&consumerCallbacks](RenderGraph::ExecutionContext&) { ++consumerCallbacks; return true; });
+        graph.SetPassCallback(absentProducer, [&absentCallbacks](RenderGraph::ExecutionContext&) { ++absentCallbacks; return true; });
+        RenderGraph::CompileResult compiled = graph.Compile();
+        compiled.Dependencies.push_back({ absentProducer, consumer, resource });
+        RenderGraphTestTexture texture(8404, description, ResourceState::Common);
+        RenderGraphTestDevice device(8404);
+        const bool bound = graph.BindTexture(resource, texture);
+        const RenderGraph::ExecuteResult result = bound ? graph.Execute(device, compiled) : RenderGraph::ExecuteResult {};
+        ResourceState observed = ResourceState::Unknown;
+        return Expect(compiled.Success && !result.Success && result.Error.find("no accepted producer token") != std::string::npos,
+                "a declared dependency without an accepted producer token fails before the consumer")
+            && Expect(prefixCallbacks == 1 && consumerCallbacks == 0 && absentCallbacks == 0,
+                "missing producer-token failure invokes neither consumer nor later callback")
+            && Expect(result.AcceptedPassCount == 1 && result.Completions.size() == 1 && device.SubmitCount == 1
+                && device.QueryResourceState(&texture, observed) && observed == ResourceState::Common,
+                "missing producer-token failure preserves the already accepted prefix without later submission");
     }
 
     class OwnershipTestBuffer final : public Engine::RHI::Buffer
@@ -3157,6 +3414,8 @@ int main()
         { "Render graph executor stops after callback failure", TestRenderGraphExecutorStopsAfterCallbackFailure },
         { "Render graph executor orders barriers and restricts context", TestRenderGraphExecutorOrdersBarriersAndRestrictsContext },
         { "Render graph executor exhausts and reuses exact retired contexts", TestRenderGraphExecutorPoolExhaustionAndExactRetirement },
+        { "Render graph executor translates cross-queue ownership and fallback", TestRenderGraphExecutorCrossQueueOwnershipAndFallback },
+        { "Render graph executor preserves accepted prefix on missing producer token", TestRenderGraphExecutorRejectsMissingProducerTokenBeforeConsumer },
         { "RHI buffer transition contract rejects incompatible states", TestRhiBufferTransitionContract },
         { "RHI completion token contract rejects unissued identities", TestRhiCompletionTokenContract },
         { "RHI submission dependencies reject invalid token graphs", TestRhiSubmissionDependencyValidation },

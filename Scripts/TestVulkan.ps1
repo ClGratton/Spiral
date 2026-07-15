@@ -57,7 +57,6 @@ $RequiredMarkers = @(
     "VulkanSceneViewportRasterV1 snapshot=pass pipeline=pass raster=pass readback=pass geometry=pass background=pass resize=pass"
     "VulkanSceneOutputCaptureV1 outputGeneration="
     "VulkanSceneOutputHandoffV1 producer=pass"
-    "RenderGraphExecutionSmokeV1 backend=Vulkan, barriers=3, callbacks=ordered-pass, undeclared=rejected, submission=pass, readback=pass, reuse=retired-same-context, result=pass"
 )
 
 $JoinedLog = $VulkanLog -join "`n"
@@ -68,6 +67,9 @@ foreach ($Marker in $RequiredMarkers) {
 }
 if ($JoinedLog -notmatch 'RHICompletionSmokeV1 backend=Vulkan, tokenValidation=pass, query=nonblocking-(incomplete|complete), wait=pass, reuse=pass, result=pass') {
     throw "Vulkan render smoke did not prove completion-token retirement and recording reuse."
+}
+if ($JoinedLog -notmatch 'RenderGraphExecutionSmokeV1 backend=Vulkan, barriers=3, callbacks=ordered-pass, undeclared=rejected, submission=pass, topology=(independent-copy|graphics-fallback), dependency=(gpu-wait|ordered-elided), readback=pass, reuse=retired-same-context, result=pass') {
+    throw "Vulkan render smoke did not prove topology-adaptive RenderGraph queue execution, readback, and aggregate retirement."
 }
 if ($JoinedLog -notmatch 'RHIQueueDependencySmokeV1 backend=Vulkan, copy=(independent|graphics-fallback), compute=(independent|graphics-fallback), copyToGraphics=(gpu-wait|ordered-elided), graphicsToCompute=(gpu-wait|ordered-elided), cpuWaitBetween=no, queueLocal=yes, sharedResources=(rejected|permitted-or-elided), retirement=pass, result=pass') {
     throw "Vulkan smoke did not prove topology-adaptive queue-local dependency retirement."

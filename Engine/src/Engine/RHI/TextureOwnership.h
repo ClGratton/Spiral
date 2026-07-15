@@ -27,6 +27,7 @@ namespace Engine::RHI
         QueueType Source = QueueType::Graphics, Destination = QueueType::Graphics;
         ResourceState Before = ResourceState::Unknown, After = ResourceState::Unknown;
         CompletionToken ReleaseToken;
+        ResourceState CommittedBaseline = ResourceState::Unknown;
     };
     struct PendingTextureOwnershipTransfer
     {
@@ -53,14 +54,16 @@ namespace Engine::RHI
         bool CanDestroy(const Texture* resource) const { return CanUse(resource); }
         bool PublishOrdinaryState(Texture& resource, ResourceState state)
         { auto i = m_Records.find(&resource); if (i == m_Records.end() || i->second.Pending || !Compatible(resource, state)) return false; i->second.State = state; return true; }
+        bool RecordRelease(const TextureOwnershipRelease& release, QueueType list, QueueType source, QueueType destination, ResourceState baseline, RecordedTextureOwnershipOperation& operation) const
+        { const auto i=m_Records.find(release.Resource); if (i==m_Records.end() || !SupportsWholeResource(*release.Resource) || i->second.Pending || source==destination || list!=source || i->second.Owner!=source || i->second.State!=baseline || !Compatible(*release.Resource,release.Before) || !Compatible(*release.Resource,release.After)) return false; operation={TextureOwnershipOperationType::Release,release.Resource,source,destination,release.Before,release.After,{}}; operation.CommittedBaseline=baseline; return true; }
         bool RecordRelease(const TextureOwnershipRelease& release, QueueType list, QueueType source, QueueType destination, RecordedTextureOwnershipOperation& operation) const
-        { const auto i=m_Records.find(release.Resource); if (i==m_Records.end() || !SupportsWholeResource(*release.Resource) || i->second.Pending || source==destination || list!=source || i->second.Owner!=source || i->second.State!=release.Before || !Compatible(*release.Resource,release.Before) || !Compatible(*release.Resource,release.After)) return false; operation={TextureOwnershipOperationType::Release,release.Resource,source,destination,release.Before,release.After,{}}; return true; }
+        { return RecordRelease(release, list, source, destination, release.Before, operation); }
         bool RecordAcquire(const TextureOwnershipAcquire& acquire, QueueType list, QueueType source, QueueType destination, RecordedTextureOwnershipOperation& operation) const
         { const auto i=m_Records.find(acquire.Resource); if (i==m_Records.end() || !SupportsWholeResource(*acquire.Resource) || !i->second.Pending || !acquire.ReleaseToken.IsValid() || source==destination || list!=destination || !SamePair(*i->second.Pending,source,destination,acquire.Before,acquire.After) || !SameToken(i->second.Pending->Token,acquire.ReleaseToken)) return false; operation={TextureOwnershipOperationType::Acquire,acquire.Resource,source,destination,acquire.Before,acquire.After,acquire.ReleaseToken}; return true; }
         bool ValidateSubmission(const RecordedTextureOwnershipOperation& op, const std::vector<CompletionToken>& dependencies) const
-        { const auto i=m_Records.find(op.Resource); if(i==m_Records.end()) return false; if(op.Type==TextureOwnershipOperationType::Release) return !i->second.Pending && i->second.Owner==op.Source && i->second.State==op.Before; return i->second.Pending && SamePair(*i->second.Pending,op.Source,op.Destination,op.Before,op.After) && SameToken(i->second.Pending->Token,op.ReleaseToken) && std::count_if(dependencies.begin(),dependencies.end(),[&](const auto& d){return SameToken(d,op.ReleaseToken);})==1; }
+        { const auto i=m_Records.find(op.Resource); if(i==m_Records.end()) return false; if(op.Type==TextureOwnershipOperationType::Release) return !i->second.Pending && i->second.Owner==op.Source && i->second.State==op.CommittedBaseline; return i->second.Pending && SamePair(*i->second.Pending,op.Source,op.Destination,op.Before,op.After) && SameToken(i->second.Pending->Token,op.ReleaseToken) && std::count_if(dependencies.begin(),dependencies.end(),[&](const auto& d){return SameToken(d,op.ReleaseToken);})==1; }
         bool PublishRelease(const RecordedTextureOwnershipOperation& op, const CompletionToken& token)
-        { auto i=m_Records.find(op.Resource); if(op.Type!=TextureOwnershipOperationType::Release || !token.IsValid() || i==m_Records.end() || i->second.Pending || i->second.Owner!=op.Source || i->second.State!=op.Before) return false; i->second.Pending=PendingTransfer{op.Source,op.Destination,op.Before,op.After,token}; return true; }
+        { auto i=m_Records.find(op.Resource); if(op.Type!=TextureOwnershipOperationType::Release || !token.IsValid() || i==m_Records.end() || i->second.Pending || i->second.Owner!=op.Source || (i->second.State!=op.CommittedBaseline && i->second.State!=op.Before && i->second.State!=op.After)) return false; i->second.Pending=PendingTransfer{op.Source,op.Destination,op.Before,op.After,token}; return true; }
         bool PublishAcquire(const RecordedTextureOwnershipOperation& op)
         { auto i=m_Records.find(op.Resource); if(op.Type!=TextureOwnershipOperationType::Acquire || i==m_Records.end() || !i->second.Pending || !SamePair(*i->second.Pending,op.Source,op.Destination,op.Before,op.After) || !SameToken(i->second.Pending->Token,op.ReleaseToken)) return false; i->second.Owner=op.Destination; i->second.State=op.After; i->second.Pending.reset(); return true; }
         bool Recover(Texture& resource, const CompletionToken& token, CompletionStatus status)

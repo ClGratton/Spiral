@@ -257,9 +257,9 @@ namespace Engine::RHI
                 m_TextureStates.clear();
                 m_BufferStates.clear();
                 m_UsedBuffers.clear();
-                m_OwnershipOperation.reset();
+                m_OwnershipOperations.clear();
                 m_UsedTextures.clear();
-                m_TextureOwnershipOperation.reset();
+                m_TextureOwnershipOperations.clear();
                 m_State = State::Recording;
                 return true;
             }
@@ -317,24 +317,29 @@ namespace Engine::RHI
             }
             bool ReleaseTextureOwnership(const TextureOwnershipRelease& release) override
             {
-                if (m_State != State::Recording || !m_TextureOwnershipTracker || m_TextureOwnershipOperation
-                    || std::find(m_UsedTextures.begin(), m_UsedTextures.end(), release.Resource) != m_UsedTextures.end()) return false;
+                if (m_State != State::Recording || !m_TextureOwnershipTracker
+                    || !release.Resource) return false;
+                if (std::any_of(m_TextureOwnershipOperations.begin(), m_TextureOwnershipOperations.end(), [&](const auto& item) { return item.Resource == release.Resource; })) return false;
                 RecordedTextureOwnershipOperation operation;
+                ResourceState baseline = ResourceState::Unknown;
+                if (!m_TextureOwnershipTracker->QueryState(release.Resource, baseline)) return false;
                 if (!m_TextureOwnershipTracker->RecordRelease(release, m_ResolveQueue(m_QueueType), m_ResolveQueue(release.SourceQueue),
-                    m_ResolveQueue(release.DestinationQueue), operation)) return false;
+                    m_ResolveQueue(release.DestinationQueue), baseline, operation)) return false;
                 if (!RecordNativeTextureOwnership(operation)) return false;
-                m_TextureOwnershipOperation = operation;
+                m_TextureOwnershipOperations.push_back(operation);
                 return true;
             }
             bool AcquireTextureOwnership(const TextureOwnershipAcquire& acquire) override
             {
-                if (m_State != State::Recording || !m_TextureOwnershipTracker || m_TextureOwnershipOperation
+                if (m_State != State::Recording || !m_TextureOwnershipTracker
+                    || !acquire.Resource
                     || std::find(m_UsedTextures.begin(), m_UsedTextures.end(), acquire.Resource) != m_UsedTextures.end()) return false;
+                if (std::any_of(m_TextureOwnershipOperations.begin(), m_TextureOwnershipOperations.end(), [&](const auto& item) { return item.Resource == acquire.Resource; })) return false;
                 RecordedTextureOwnershipOperation operation;
                 if (!m_TextureOwnershipTracker->RecordAcquire(acquire, m_ResolveQueue(m_QueueType), m_ResolveQueue(acquire.SourceQueue),
                     m_ResolveQueue(acquire.DestinationQueue), operation)) return false;
                 if (!RecordNativeTextureOwnership(operation)) return false;
-                m_TextureOwnershipOperation = operation;
+                m_TextureOwnershipOperations.push_back(operation);
                 return true;
             }
             bool TransitionBuffer(Buffer& buffer, ResourceState state) override
@@ -354,28 +359,33 @@ namespace Engine::RHI
             }
             bool ReleaseBufferOwnership(const BufferOwnershipRelease& release) override
             {
-                if (m_State != State::Recording || !m_OwnershipTracker || m_OwnershipOperation
-                    || std::find(m_UsedBuffers.begin(), m_UsedBuffers.end(), release.Resource) != m_UsedBuffers.end())
+                if (m_State != State::Recording || !m_OwnershipTracker
+                    || !release.Resource)
                     return false;
+                if (std::any_of(m_OwnershipOperations.begin(), m_OwnershipOperations.end(), [&](const auto& item) { return item.Resource == release.Resource; })) return false;
                 RecordedBufferOwnershipOperation operation;
+                ResourceState baseline = ResourceState::Unknown;
+                if (!m_OwnershipTracker->QueryState(release.Resource, baseline)) return false;
                 if (!m_OwnershipTracker->RecordRelease(release, m_ResolveQueue(m_QueueType), m_ResolveQueue(release.SourceQueue),
-                    m_ResolveQueue(release.DestinationQueue), operation))
+                    m_ResolveQueue(release.DestinationQueue), baseline, operation))
                     return false;
                 if (!RecordNativeBufferOwnership(operation)) return false;
-                m_OwnershipOperation = operation;
+                m_OwnershipOperations.push_back(operation);
                 return true;
             }
             bool AcquireBufferOwnership(const BufferOwnershipAcquire& acquire) override
             {
-                if (m_State != State::Recording || !m_OwnershipTracker || m_OwnershipOperation
+                if (m_State != State::Recording || !m_OwnershipTracker
+                    || !acquire.Resource
                     || std::find(m_UsedBuffers.begin(), m_UsedBuffers.end(), acquire.Resource) != m_UsedBuffers.end())
                     return false;
+                if (std::any_of(m_OwnershipOperations.begin(), m_OwnershipOperations.end(), [&](const auto& item) { return item.Resource == acquire.Resource; })) return false;
                 RecordedBufferOwnershipOperation operation;
                 if (!m_OwnershipTracker->RecordAcquire(acquire, m_ResolveQueue(m_QueueType), m_ResolveQueue(acquire.SourceQueue),
                     m_ResolveQueue(acquire.DestinationQueue), operation))
                     return false;
                 if (!RecordNativeBufferOwnership(operation)) return false;
-                m_OwnershipOperation = operation;
+                m_OwnershipOperations.push_back(operation);
                 return true;
             }
             void SetGraphicsPipeline(Pipeline& pipeline) override { m_Pipeline = dynamic_cast<VulkanPipeline*>(&pipeline); }
@@ -438,8 +448,8 @@ namespace Engine::RHI
                 return true;
             }
             nvrhi::ICommandList* Native() const { return m_List; }
-            const std::optional<RecordedBufferOwnershipOperation>& GetOwnershipOperation() const { return m_OwnershipOperation; }
-            const std::optional<RecordedTextureOwnershipOperation>& GetTextureOwnershipOperation() const { return m_TextureOwnershipOperation; }
+            const std::vector<RecordedBufferOwnershipOperation>& GetOwnershipOperations() const { return m_OwnershipOperations; }
+            const std::vector<RecordedTextureOwnershipOperation>& GetTextureOwnershipOperations() const { return m_TextureOwnershipOperations; }
             bool RecordNativeRecoveryBufferBarrier(const RecordedBufferOwnershipOperation& operation)
             {
                 return m_State == State::Recording && RecordNativeBufferOwnership(operation, false);
@@ -587,8 +597,8 @@ namespace Engine::RHI
             std::vector<BufferState> m_BufferStates;
             std::vector<Buffer*> m_UsedBuffers;
             std::vector<Texture*> m_UsedTextures;
-            std::optional<RecordedBufferOwnershipOperation> m_OwnershipOperation;
-            std::optional<RecordedTextureOwnershipOperation> m_TextureOwnershipOperation;
+            std::vector<RecordedBufferOwnershipOperation> m_OwnershipOperations;
+            std::vector<RecordedTextureOwnershipOperation> m_TextureOwnershipOperations;
             bool m_AllowPendingTexture = false;
             State m_State = State::Ready;
         };
@@ -813,9 +823,9 @@ namespace Engine::RHI
                     [this](const CompletionToken& dependency) { return FindCompletionEntry(dependency) != m_CompletionEntries.end(); });
                 if (dependencyError != SubmissionDependencyError::None)
                     return {};
-                if (list->GetOwnershipOperation() && !m_BufferOwnership.ValidateSubmission(*list->GetOwnershipOperation(), dependencies))
+                if (std::any_of(list->GetOwnershipOperations().begin(), list->GetOwnershipOperations().end(), [&](const auto& operation) { return !m_BufferOwnership.ValidateSubmission(operation, dependencies); }))
                     return {};
-                if (list->GetTextureOwnershipOperation() && !m_TextureOwnership.ValidateSubmission(*list->GetTextureOwnershipOperation(), dependencies))
+                if (std::any_of(list->GetTextureOwnershipOperations().begin(), list->GetTextureOwnershipOperations().end(), [&](const auto& operation) { return !m_TextureOwnership.ValidateSubmission(operation, dependencies); }))
                     return {};
                 const nvrhi::CommandQueue executionQueue = ConvertQueue(list->GetQueueType());
                 for (const CompletionToken& dependency : dependencies)
@@ -831,16 +841,16 @@ namespace Engine::RHI
                 m_CompletionEntries.emplace(token.SubmissionId, CompletionEntry { executionQueue, nativeSubmissionId });
                 if (!list->MarkSubmitted(token))
                     return {};
-                if (const auto& ownership = list->GetOwnershipOperation())
+                for (const auto& ownership : list->GetOwnershipOperations())
                 {
-                    const bool published = ownership->Type == BufferOwnershipOperationType::Release
-                        ? m_BufferOwnership.PublishRelease(*ownership, token) : m_BufferOwnership.PublishAcquire(*ownership);
+                    const bool published = ownership.Type == BufferOwnershipOperationType::Release
+                        ? m_BufferOwnership.PublishRelease(ownership, token) : m_BufferOwnership.PublishAcquire(ownership);
                     if (!published) return {};
                 }
-                if (const auto& ownership = list->GetTextureOwnershipOperation())
+                for (const auto& ownership : list->GetTextureOwnershipOperations())
                 {
-                    const bool published = ownership->Type == TextureOwnershipOperationType::Release
-                        ? m_TextureOwnership.PublishRelease(*ownership, token) : m_TextureOwnership.PublishAcquire(*ownership);
+                    const bool published = ownership.Type == TextureOwnershipOperationType::Release
+                        ? m_TextureOwnership.PublishRelease(ownership, token) : m_TextureOwnership.PublishAcquire(ownership);
                     if (!published) return {};
                 }
                 return token;
