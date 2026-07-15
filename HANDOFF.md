@@ -4,7 +4,7 @@ Updated 2026-07-15. This is a recovery aid; `PLAN.md` remains the sole roadmap a
 
 ## Objective And Stop Condition
 
-The continuation preserved the user-set 23%-remaining weekly-allowance floor and used one exact persistent `terra_medium` owner for the medium transient-resource capability prerequisite. Reliable allowance telemetry was unavailable in this task session (`get_goal` returned no allowance state), so do not infer an exact remaining percentage from token counts. Commit `02c86e0` is locally accepted and pushed; its exact-head dependency submission passed and its CI workflow was in progress at the single permitted status check. The next ordered item is a large physical-allocation/reuse slice, so do not begin it without reliable allowance telemetry showing that doing so preserves the 23% floor.
+The transient-resource capability prerequisite was completed in an erroneously created separate background task using one exact persistent `terra_medium` owner. That task was stopped and archived after the user clarified that a separate task is not an automatic continuation of the main root. Its already-complete, verified commits `02c86e0` and `48a5563` are preserved on `main`; no background work remains active. The user reports 29% weekly allowance remaining against a hard 23% floor. The next ordered item is a large physical-allocation/reuse slice and cannot safely fit inside the six-point margin, so stopping now is allowance-floor compliance rather than a context rollover. Future continuation must remain in the current main task and rely on Codex Desktop's transparent same-task compaction; never create/fork/message another task for rollover.
 
 ## Token-Efficiency Baseline And Required Next-Session Audit (2026-07-15)
 
@@ -89,7 +89,7 @@ The first unchecked `PLAN.md` item is:
 
 > Transient resource allocation and reuse from render-graph lifetimes.
 
-This is a large multi-backend physical-allocation slice: it must bind resource lifetime intervals, choose the established truthful path, report memory cost, and prove no resource is reused before its exact GPU completion token retires. Recheck reliable weekly allowance telemetry before delegating it. If telemetry remains unavailable, do not start the slice because compliance with the 23%-remaining floor cannot be demonstrated; preserve the clean tree and return control rather than guessing.
+This is a large multi-backend physical-allocation slice: it must bind resource lifetime intervals, choose the established truthful path, report memory cost, and prove no resource is reused before its exact GPU completion token retires. Do not begin it with the user-reported 29% remaining because the six-point margin cannot safely contain the slice above the 23% floor. On a later continuation with sufficient allowance, remain in this same main task, reread the mandatory state, and continue across transparent automatic compaction; do not create or steer a separate task.
 
 ## Working State
 
