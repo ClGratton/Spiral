@@ -17,7 +17,7 @@ D3D12 global-resource semantics are explicit: release emits no ownership barrier
 - Existing `Scripts/TestRender.ps1 -Configuration Debug -Action vs2022 -SkipBuild` passed on the local RTX 3080 Ti, including its normal independent and forced-Graphics queue-dependency regressions. It contains no ownership-lifecycle marker and is not native ownership qualification.
 - Existing `Scripts/TestVulkan.ps1 -Configuration Debug -Action vs2022` passed on the local Vulkan device. It contains no ownership-lifecycle marker and proves only the prior graphics-fallback regressions.
 - `Scripts/TestInvokeBoundedProcess.ps1`, `Scripts/CheckCodeStyle.ps1`, `git diff --check`, and tracked project Markdown link validation passed.
-- Hosted CI was not started. The managed workspace grants read-only access to `.git`; `git add`/`git commit` failed because Git could not create `.git/index.lock`. Without a commit to push, there is no exact-head run ID and no bounded hosted wait to report. Compilation/regression CI would not be native ownership qualification in any case.
+- Root committed the preserved owner changes as `0a4fb2e`. Exact-head CI [run 29415941902](https://github.com/ClGratton/Spiral/actions/runs/29415941902) passed Windows D3D12, Ubuntu Vulkan/lavapipe, macOS MoltenVK, and code style; dependency submission [run 29415941895](https://github.com/ClGratton/Spiral/actions/runs/29415941895) passed. This is compilation/regression evidence for the checked deterministic-contract gate, not native ownership qualification.
 
 ## Next Ordered Work
 
@@ -25,4 +25,4 @@ The first unchecked item is real-device qualification of this exact buffer lifec
 
 ## Working State
 
-Final local verification is green, but the complete scoped change remains unstaged in the working tree because this managed session cannot write `.git/index.lock`. No commit or push was created and hosted CI was not started. Preserve the listed source, test, roadmap, architecture, verification, and handoff changes; once `.git` write access is available, rerun style/diff checks after any conflict resolution, commit and push the atomic slice, perform one bounded hosted compilation/regression wait, record its exact IDs here if complete, and confirm a clean tree.
+Implementation `0a4fb2e` is on `origin/main` with completed hosted compilation/regression evidence. The evidence-only documentation commit following it should be current head, and the working tree must be clean. The next owner starts from the real-device buffer queue-ownership qualification item and must not infer that the deterministic contract already proves native transfer behavior.
