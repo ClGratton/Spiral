@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Engine/RHI/Device.h"
+#include "Engine/RHI/NVRHI/VulkanQueueAdmission.h"
 
 namespace nvrhi
 {
@@ -10,6 +11,8 @@ namespace nvrhi
 
 namespace Engine::RHI
 {
+    using NVRHIVulkanQueueTopology = VulkanQueueAdmission;
+
     // Borrowed native image/view for the documented Vulkan presentation bridge.
     // They remain valid only while the renderer-owned texture remains alive.
     struct NVRHIVulkanTextureNativeHandles
@@ -24,6 +27,7 @@ namespace Engine::RHI
         DeviceDescription description,
         const DeviceCapabilities& capabilities,
         nvrhi::IDevice* nativeDevice,
-        nvrhi::vulkan::IDevice* completionDevice);
+        nvrhi::vulkan::IDevice* completionDevice,
+        NVRHIVulkanQueueTopology queueTopology);
     NVRHIVulkanTextureNativeHandles GetNVRHIVulkanTextureNativeHandles(Texture& texture);
 }

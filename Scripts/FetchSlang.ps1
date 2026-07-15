@@ -22,9 +22,12 @@ $SlangRoot = Join-Path $Root "Vendor/Slang/v$SlangVersion"
 $CacheRoot = Join-Path $Root "Vendor/Slang/.cache"
 
 function Get-DetectedPlatform {
-    if ($IsWindows -or $env:OS -eq "Windows_NT") { return "windows" }
-    if ($IsLinux) { return "linux" }
-    if ($IsMacOS) { return "macos" }
+    $isWindowsHost = (Get-Variable IsWindows -ValueOnly -ErrorAction SilentlyContinue) -eq $true
+    $isLinuxHost = (Get-Variable IsLinux -ValueOnly -ErrorAction SilentlyContinue) -eq $true
+    $isMacOSHost = (Get-Variable IsMacOS -ValueOnly -ErrorAction SilentlyContinue) -eq $true
+    if ($isWindowsHost -or $env:OS -eq "Windows_NT") { return "windows" }
+    if ($isLinuxHost) { return "linux" }
+    if ($isMacOSHost) { return "macos" }
     throw "Unsupported host operating system. Specify a supported Slang host package explicitly."
 }
 

@@ -96,6 +96,10 @@ namespace Engine::RHI
         virtual const DeviceDescription& GetDescription() const = 0;
         virtual const DeviceCapabilities& GetCapabilities() const = 0;
         virtual QueueResolution ResolveQueue(QueueType requested) const { return { requested, QueueType::Graphics, requested == QueueType::Graphics }; }
+        virtual bool CanQueuesShareResources(QueueType source, QueueType destination) const
+        {
+            return ResolveQueue(source).Effective == ResolveQueue(destination).Effective;
+        }
 
         virtual Scope<Buffer> CreateBuffer(const BufferDescription& description) = 0;
         virtual Scope<Texture> CreateTexture(const TextureDescription& description) = 0;

@@ -8,6 +8,7 @@
 #include "Engine/RHI/BufferOwnership.h"
 #include "Engine/RHI/TextureOwnership.h"
 #include "Engine/RHI/NVRHI/NVRHID3D12Device.h"
+#include "Engine/RHI/NVRHI/VulkanQueueAdmission.h"
 #include "Engine/Renderer/CapabilityDiagnostics.h"
 #include "Engine/Renderer/AsyncShaderPackageService.h"
 #include "Engine/Renderer/PortableShaderContract.h"
@@ -3108,6 +3109,26 @@ float4 main(VertexInput input) : SV_Position
         return passed;
     }
 
+    bool TestVulkanQueueAdmissionPolicy()
+    {
+        using namespace Engine::RHI;
+        const VulkanQueueAdmission fallback {};
+        const VulkanQueueAdmission sameFamily { true, true, 3, 3, 3 };
+        const VulkanQueueAdmission splitFamilies { true, true, 0, 2, 1 };
+        const QueueResolution fallbackCopy = ResolveVulkanQueue(fallback, QueueType::Copy);
+        const QueueResolution sameCompute = ResolveVulkanQueue(sameFamily, QueueType::Compute);
+        const QueueResolution splitCopy = ResolveVulkanQueue(splitFamilies, QueueType::Copy);
+        const bool resolution = ResolveVulkanQueue(fallback, QueueType::Graphics).Independent
+            && fallbackCopy.Requested == QueueType::Copy && fallbackCopy.Effective == QueueType::Graphics
+            && !fallbackCopy.Independent && sameCompute.Effective == QueueType::Compute && sameCompute.Independent
+            && splitCopy.Effective == QueueType::Copy && splitCopy.Independent;
+        const bool policy = VulkanQueuesMayShareResources(fallback, QueueType::Graphics, QueueType::Copy)
+            && VulkanQueuesMayShareResources(sameFamily, QueueType::Graphics, QueueType::Compute)
+            && !VulkanQueuesMayShareResources(splitFamilies, QueueType::Graphics, QueueType::Copy)
+            && !VulkanQueuesMayShareResources(splitFamilies, QueueType::Copy, QueueType::Compute);
+        return Expect(resolution && policy, "Vulkan queue admission resolves fallback and rejects only different-family shared resources");
+    }
+
 }
 
 int main()
@@ -3133,6 +3154,7 @@ int main()
         { "RHI buffer ownership lifecycle publishes only accepted exact-token pairs", TestRhiBufferOwnershipLifecycleContract },
         { "RHI buffer ownership recovery and adapter seams preserve fallback semantics", TestRhiBufferOwnershipRecoveryAndAdapterSeams },
         { "RHI texture ownership tracker preserves accepted-token pending publication", TestRhiTextureOwnershipLifecycleContract },
+        { "Vulkan queue admission preserves fallback same-family and split-family policy", TestVulkanQueueAdmissionPolicy },
         { "JobSystem contains worker exceptions", TestJobSystemContainsWorkerExceptions },
         { "JobSystem inline fallback is reentrant", TestJobSystemInlineFallbackIsReentrant },
         { "JobSystem steals nested worker jobs", TestJobSystemStealsNestedWorkerJobs },

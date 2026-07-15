@@ -230,6 +230,13 @@ namespace Engine::RHI
             if (!CreateNVRHIDevice(description.EnableValidation))
                 return false;
 
+            const std::string computeTopology = m_ComputeQueue == VK_NULL_HANDLE ? "graphics-fallback"
+                : std::string("family") + std::to_string(m_ComputeQueueFamily) + "/index" + std::to_string(m_ComputeQueueIndex);
+            const std::string copyTopology = m_CopyQueue == VK_NULL_HANDLE ? "graphics-fallback"
+                : std::string("family") + std::to_string(m_CopyQueueFamily) + "/index" + std::to_string(m_CopyQueueIndex);
+            Log::Info("Vulkan queue topology: graphics=family", m_GraphicsQueueFamily, "/index", m_GraphicsQueueIndex,
+                ", compute=", computeTopology, ", copy=", copyTopology);
+
             adapterInfo.Available = true;
             adapterInfo.HasNativeDevice = true;
             adapterInfo.AdapterName = m_SelectedProperties.deviceName;
@@ -239,8 +246,8 @@ namespace Engine::RHI
             m_Capabilities.ProfileName = "Phase 3 Vulkan Bootstrap Presentation V1";
             m_Capabilities.Identity = m_SelectedIdentity;
             m_Capabilities.Queues.Graphics = (m_SelectedQueueProperties.queueFlags & VK_QUEUE_GRAPHICS_BIT) != 0;
-            m_Capabilities.Queues.Compute = (m_SelectedQueueProperties.queueFlags & VK_QUEUE_COMPUTE_BIT) != 0;
-            m_Capabilities.Queues.Copy = (m_SelectedQueueProperties.queueFlags & VK_QUEUE_TRANSFER_BIT) != 0;
+            m_Capabilities.Queues.Compute = m_ComputeQueue != VK_NULL_HANDLE;
+            m_Capabilities.Queues.Copy = m_CopyQueue != VK_NULL_HANDLE;
             m_Capabilities.Queues.Present = true;
             m_Capabilities.Qualification = QualificationLevel::Bootstrap;
             m_Capabilities.Formats = m_SelectedFormats;
@@ -296,13 +303,22 @@ namespace Engine::RHI
             m_NativeHandles.Device = m_Device;
             m_NativeHandles.Surface = m_Surface;
             m_NativeHandles.GraphicsQueue = m_GraphicsQueue;
+            m_NativeHandles.ComputeQueue = m_ComputeQueue;
+            m_NativeHandles.CopyQueue = m_CopyQueue;
             m_NativeHandles.NVRHIDevice = m_NVRHIDevice.Get();
             m_NativeHandles.GraphicsQueueFamily = m_GraphicsQueueFamily;
+            m_NativeHandles.ComputeQueueFamily = m_ComputeQueueFamily;
+            m_NativeHandles.CopyQueueFamily = m_CopyQueueFamily;
+            m_NativeHandles.GraphicsQueueIndex = m_GraphicsQueueIndex;
+            m_NativeHandles.ComputeQueueIndex = m_ComputeQueueIndex;
+            m_NativeHandles.CopyQueueIndex = m_CopyQueueIndex;
             m_RHIDevice = CreateNVRHIVulkanDevice(
                 description,
                 m_Capabilities,
                 m_NVRHIDevice.Get(),
-                m_NativeNVRHIDevice.Get());
+                m_NativeNVRHIDevice.Get(),
+                { m_ComputeQueue != VK_NULL_HANDLE, m_CopyQueue != VK_NULL_HANDLE,
+                    m_GraphicsQueueFamily, m_ComputeQueueFamily, m_CopyQueueFamily });
             if (!m_RHIDevice)
             {
                 Log::Error("Could not create the Engine::RHI wrapper around the NVRHI Vulkan device");
@@ -362,6 +378,8 @@ namespace Engine::RHI
             m_Instance = VK_NULL_HANDLE;
             m_PhysicalDevice = VK_NULL_HANDLE;
             m_GraphicsQueue = VK_NULL_HANDLE;
+            m_ComputeQueue = VK_NULL_HANDLE;
+            m_CopyQueue = VK_NULL_HANDLE;
             m_DynamicLoader.reset();
 #endif
             m_NativeHandles = {};
@@ -419,6 +437,12 @@ namespace Engine::RHI
                 VkPhysicalDeviceProperties Properties {};
                 VkQueueFamilyProperties GraphicsQueueProperties {};
                 u32 GraphicsQueueFamily = std::numeric_limits<u32>::max();
+                u32 GraphicsQueueIndex = 0;
+                u32 ComputeQueueFamily = std::numeric_limits<u32>::max();
+                u32 ComputeQueueIndex = 0;
+                u32 CopyQueueFamily = std::numeric_limits<u32>::max();
+                u32 CopyQueueIndex = 0;
+                std::vector<VkQueueFamilyProperties> QueueFamilies;
                 bool BufferDeviceAddress = false;
                 bool DynamicRendering = false;
                 bool Synchronization2 = false;
@@ -523,6 +547,7 @@ namespace Engine::RHI
                 VULKAN_HPP_DEFAULT_DISPATCHER.vkGetPhysicalDeviceQueueFamilyProperties(device, &queueFamilyCount, nullptr);
                 std::vector<VkQueueFamilyProperties> queueFamilies(queueFamilyCount);
                 VULKAN_HPP_DEFAULT_DISPATCHER.vkGetPhysicalDeviceQueueFamilyProperties(device, &queueFamilyCount, queueFamilies.data());
+                native.QueueFamilies = queueFamilies;
 
                 for (u32 index = 0; index < queueFamilyCount; ++index)
                 {
@@ -551,10 +576,41 @@ namespace Engine::RHI
                     && hasSwapchain
                     && surfaceFormatResult == VK_SUCCESS && surfaceFormatCount > 0
                     && presentModeResult == VK_SUCCESS && presentModeCount > 0;
-                // This bootstrap admits one unified queue. The evaluator records the
-                // required compute/copy classes as explicit graphics-queue fallbacks.
-                candidate.Queues.Compute = false;
-                candidate.Queues.Copy = false;
+                // Admit a class only when it can name a distinct VkQueue handle.
+                // Prefer dedicated families, then any compatible family with an
+                // unused queue index. This makes aliases and fallbacks explicit.
+                std::vector<u32> nextQueueIndex(queueFamilyCount, 0);
+                if (hasCombinedGraphicsPresent)
+                    nextQueueIndex[native.GraphicsQueueFamily] = 1;
+                const auto selectQueue = [&](VkQueueFlags required, VkQueueFlags preferredAbsent,
+                                             u32& family, u32& queueIndex) -> bool
+                {
+                    for (u32 pass = 0; pass < 2; ++pass)
+                    {
+                        for (u32 familyIndex = 0; familyIndex < queueFamilyCount; ++familyIndex)
+                        {
+                            const VkQueueFlags flags = queueFamilies[familyIndex].queueFlags;
+                            if ((flags & required) != required || nextQueueIndex[familyIndex] >= queueFamilies[familyIndex].queueCount)
+                                continue;
+                            const bool preferred = (flags & preferredAbsent) == 0;
+                            if ((pass == 0) != preferred)
+                                continue;
+                            family = familyIndex;
+                            queueIndex = nextQueueIndex[familyIndex]++;
+                            return true;
+                        }
+                    }
+                    return false;
+                };
+                candidate.Queues.Compute = hasCombinedGraphicsPresent
+                    && selectQueue(VK_QUEUE_COMPUTE_BIT, VK_QUEUE_GRAPHICS_BIT, native.ComputeQueueFamily, native.ComputeQueueIndex);
+                candidate.Queues.Copy = hasCombinedGraphicsPresent
+                    && selectQueue(VK_QUEUE_TRANSFER_BIT, VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT,
+                        native.CopyQueueFamily, native.CopyQueueIndex);
+                if (!candidate.Queues.Compute)
+                    native.QueryNotes.emplace_back("no independent compute queue handle is available; Graphics fallback will be used");
+                if (!candidate.Queues.Copy)
+                    native.QueryNotes.emplace_back("no independent copy queue handle is available; Graphics fallback will be used");
                 if (!hasCombinedGraphicsPresent)
                     native.QueryNotes.emplace_back("no queue family supports both graphics and presentation");
 
@@ -627,6 +683,11 @@ namespace Engine::RHI
 
             m_PhysicalDevice = selectedNative.Device;
             m_GraphicsQueueFamily = selectedNative.GraphicsQueueFamily;
+            m_GraphicsQueueIndex = selectedNative.GraphicsQueueIndex;
+            m_ComputeQueueFamily = selectedNative.ComputeQueueFamily;
+            m_ComputeQueueIndex = selectedNative.ComputeQueueIndex;
+            m_CopyQueueFamily = selectedNative.CopyQueueFamily;
+            m_CopyQueueIndex = selectedNative.CopyQueueIndex;
             m_SelectedProperties = selectedNative.Properties;
             m_SelectedQueueProperties = selectedNative.GraphicsQueueProperties;
             m_SelectedIdentity = selectedCandidate.Identity;
@@ -639,10 +700,10 @@ namespace Engine::RHI
             m_BufferDeviceAddressEnabled = false;
             m_SelectedFormats = selectedCandidate.Formats;
             m_SelectionFallbacks = selection.Evaluations[selection.SelectedIndex].Fallbacks;
-            if (selectedCandidate.Queues.DedicatedCompute)
-                m_SelectionFallbacks.emplace_back("A dedicated compute queue is advertised but not enabled by the bootstrap profile");
-            if (selectedCandidate.Queues.DedicatedCopy)
-                m_SelectionFallbacks.emplace_back("A dedicated copy queue is advertised but not enabled by the bootstrap profile");
+            if (!selectedCandidate.Queues.Compute)
+                m_SelectionFallbacks.emplace_back("Compute resolves to Graphics because no independent selected Vulkan queue handle exists");
+            if (!selectedCandidate.Queues.Copy)
+                m_SelectionFallbacks.emplace_back("Copy resolves to Graphics because no independent selected Vulkan queue handle exists");
             if (!description.PreferredAdapterName.empty()
                 && selectedCandidate.Identity.Name != description.PreferredAdapterName
                 && selectedCandidate.Identity.StableId != description.PreferredAdapterName)
@@ -667,11 +728,40 @@ namespace Engine::RHI
         bool CreateLogicalDevice()
         {
             constexpr float queuePriority = 1.0f;
-            VkDeviceQueueCreateInfo queueInfo {};
-            queueInfo.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
-            queueInfo.queueFamilyIndex = m_GraphicsQueueFamily;
-            queueInfo.queueCount = 1;
-            queueInfo.pQueuePriorities = &queuePriority;
+            struct QueueRequest { u32 Family; u32 Index; };
+            const QueueRequest requests[] = {
+                { m_GraphicsQueueFamily, m_GraphicsQueueIndex },
+                { m_ComputeQueueFamily, m_ComputeQueueIndex },
+                { m_CopyQueueFamily, m_CopyQueueIndex }
+            };
+            std::vector<u32> families;
+            std::vector<u32> counts;
+            for (const QueueRequest& request : requests)
+            {
+                if (request.Family == std::numeric_limits<u32>::max())
+                    continue;
+                auto found = std::find(families.begin(), families.end(), request.Family);
+                if (found == families.end())
+                {
+                    families.push_back(request.Family);
+                    counts.push_back(request.Index + 1);
+                }
+                else
+                {
+                    const size_t index = static_cast<size_t>(found - families.begin());
+                    counts[index] = std::max(counts[index], request.Index + 1);
+                }
+            }
+            std::vector<std::vector<float>> priorities(families.size());
+            std::vector<VkDeviceQueueCreateInfo> queueInfos(families.size());
+            for (size_t index = 0; index < families.size(); ++index)
+            {
+                priorities[index].assign(counts[index], queuePriority);
+                queueInfos[index].sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
+                queueInfos[index].queueFamilyIndex = families[index];
+                queueInfos[index].queueCount = counts[index];
+                queueInfos[index].pQueuePriorities = priorities[index].data();
+            }
 
             VkPhysicalDeviceVulkan12Features vulkan12Features {};
             vulkan12Features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
@@ -686,8 +776,8 @@ namespace Engine::RHI
             VkDeviceCreateInfo deviceInfo {};
             deviceInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
             deviceInfo.pNext = &vulkan12Features;
-            deviceInfo.queueCreateInfoCount = 1;
-            deviceInfo.pQueueCreateInfos = &queueInfo;
+            deviceInfo.queueCreateInfoCount = static_cast<u32>(queueInfos.size());
+            deviceInfo.pQueueCreateInfos = queueInfos.data();
             deviceInfo.enabledExtensionCount = static_cast<u32>(m_DeviceExtensions.size());
             deviceInfo.ppEnabledExtensionNames = m_DeviceExtensions.data();
 
@@ -698,7 +788,15 @@ namespace Engine::RHI
                 return false;
             }
             VULKAN_HPP_DEFAULT_DISPATCHER.init(m_Instance, m_GetInstanceProcAddr, m_Device);
-            VULKAN_HPP_DEFAULT_DISPATCHER.vkGetDeviceQueue(m_Device, m_GraphicsQueueFamily, 0, &m_GraphicsQueue);
+            VULKAN_HPP_DEFAULT_DISPATCHER.vkGetDeviceQueue(m_Device, m_GraphicsQueueFamily, m_GraphicsQueueIndex, &m_GraphicsQueue);
+            if (m_ComputeQueueFamily != std::numeric_limits<u32>::max())
+                VULKAN_HPP_DEFAULT_DISPATCHER.vkGetDeviceQueue(m_Device, m_ComputeQueueFamily, m_ComputeQueueIndex, &m_ComputeQueue);
+            if (m_CopyQueueFamily != std::numeric_limits<u32>::max())
+                VULKAN_HPP_DEFAULT_DISPATCHER.vkGetDeviceQueue(m_Device, m_CopyQueueFamily, m_CopyQueueIndex, &m_CopyQueue);
+            if (m_ComputeQueueFamily != std::numeric_limits<u32>::max() && m_ComputeQueue == VK_NULL_HANDLE)
+                return false;
+            if (m_CopyQueueFamily != std::numeric_limits<u32>::max() && m_CopyQueue == VK_NULL_HANDLE)
+                return false;
             m_DynamicRenderingEnabled = m_DynamicRenderingAdvertised;
             m_Synchronization2Enabled = m_Synchronization2Advertised;
             return m_GraphicsQueue != VK_NULL_HANDLE;
@@ -761,6 +859,10 @@ namespace Engine::RHI
             description.device = m_Device;
             description.graphicsQueue = m_GraphicsQueue;
             description.graphicsQueueIndex = static_cast<int>(m_GraphicsQueueFamily);
+            description.computeQueue = m_ComputeQueue;
+            description.computeQueueIndex = m_ComputeQueue == VK_NULL_HANDLE ? -1 : static_cast<int>(m_ComputeQueueFamily);
+            description.transferQueue = m_CopyQueue;
+            description.transferQueueIndex = m_CopyQueue == VK_NULL_HANDLE ? -1 : static_cast<int>(m_CopyQueueFamily);
             description.instanceExtensions = m_InstanceExtensions.data();
             description.numInstanceExtensions = m_InstanceExtensions.size();
             description.deviceExtensions = m_DeviceExtensions.data();
@@ -792,7 +894,14 @@ namespace Engine::RHI
         VkDevice m_Device = VK_NULL_HANDLE;
         VkSurfaceKHR m_Surface = VK_NULL_HANDLE;
         VkQueue m_GraphicsQueue = VK_NULL_HANDLE;
+        VkQueue m_ComputeQueue = VK_NULL_HANDLE;
+        VkQueue m_CopyQueue = VK_NULL_HANDLE;
         u32 m_GraphicsQueueFamily = 0;
+        u32 m_ComputeQueueFamily = std::numeric_limits<u32>::max();
+        u32 m_CopyQueueFamily = std::numeric_limits<u32>::max();
+        u32 m_GraphicsQueueIndex = 0;
+        u32 m_ComputeQueueIndex = 0;
+        u32 m_CopyQueueIndex = 0;
         VkPhysicalDeviceProperties m_SelectedProperties {};
         VkQueueFamilyProperties m_SelectedQueueProperties {};
         AdapterIdentity m_SelectedIdentity;

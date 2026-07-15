@@ -546,15 +546,31 @@ namespace Engine
             const bool computeClosed = computeList && computeList->Begin() && computeList->End();
             const RHI::CompletionToken computeToken = computeClosed
                 ? device.Submit(*computeList, { graphicsToken }) : RHI::CompletionToken {};
+            RHI::BufferDescription ownedDescription;
+            ownedDescription.DebugName = "RHIQueueDependencyForeignFamilyV1";
+            ownedDescription.SizeBytes = 16;
+            ownedDescription.Usage = RHI::BufferUsage::CopyDest;
+            Scope<RHI::Buffer> graphicsOwned = device.CreateBuffer(ownedDescription);
+            Scope<RHI::CommandList> forbiddenList = copy.Independent && graphicsOwned
+                ? device.CreateCommandList(RHI::QueueType::Copy, "RHIQueueDependencyForeignFamilyV1") : nullptr;
+            const bool mustReject = copy.Independent && !device.CanQueuesShareResources(RHI::QueueType::Graphics, RHI::QueueType::Copy);
+            const bool foreignFamilyPolicy = !copy.Independent || (forbiddenList && forbiddenList->Begin()
+                && (mustReject ? !forbiddenList->TransitionBuffer(*graphicsOwned, RHI::ResourceState::CopyDest)
+                    : forbiddenList->TransitionBuffer(*graphicsOwned, RHI::ResourceState::CopyDest)) && forbiddenList->End());
             const bool retired = computeToken.IsValid() && device.WaitForCompletion(computeToken, 5000)
                 && device.QueryCompletion(copyToken) == RHI::CompletionStatus::Complete
                 && device.QueryCompletion(graphicsToken) == RHI::CompletionStatus::Complete;
-            const bool passed = copy.Requested == RHI::QueueType::Copy && copy.Effective == RHI::QueueType::Graphics && !copy.Independent
-                && compute.Requested == RHI::QueueType::Compute && compute.Effective == RHI::QueueType::Graphics && !compute.Independent
-                && retired;
-            Log::Info("RHIQueueDependencySmokeV1 backend=Vulkan, copy=graphics-fallback, compute=graphics-fallback, "
-                "copyToGraphics=ordered-elided, graphicsToCompute=ordered-elided, cpuWaitBetween=no, bytes=not-required, "
-                "finalState=not-required, retirement=", retired ? "pass" : "fail", ", result=", passed ? "pass" : "fail");
+            const bool topology = graphics.Requested == RHI::QueueType::Graphics
+                && graphics.Effective == RHI::QueueType::Graphics && graphics.Independent
+                && (copy.Independent ? copy.Effective == RHI::QueueType::Copy : copy.Effective == RHI::QueueType::Graphics)
+                && (compute.Independent ? compute.Effective == RHI::QueueType::Compute : compute.Effective == RHI::QueueType::Graphics);
+            const bool passed = topology && retired && foreignFamilyPolicy;
+            Log::Info("RHIQueueDependencySmokeV1 backend=Vulkan, copy=", copy.Independent ? "independent" : "graphics-fallback",
+                ", compute=", compute.Independent ? "independent" : "graphics-fallback",
+                ", copyToGraphics=", copy.Effective == graphics.Effective ? "ordered-elided" : "gpu-wait",
+                ", graphicsToCompute=", graphics.Effective == compute.Effective ? "ordered-elided" : "gpu-wait",
+                ", cpuWaitBetween=no, queueLocal=yes, sharedResources=", mustReject ? "rejected" : "permitted-or-elided", ", retirement=", retired ? "pass" : "fail",
+                ", result=", passed ? "pass" : "fail");
             return passed;
         }
         constexpr u32 valueCount = 1024;
@@ -638,6 +654,25 @@ namespace Engine
     {
         const RHI::QueueResolution graphics = device.ResolveQueue(RHI::QueueType::Graphics);
         const RHI::QueueResolution copy = device.ResolveQueue(RHI::QueueType::Copy);
+        if (backendName == "Vulkan")
+        {
+            RHI::BufferDescription description;
+            description.DebugName = "RHIBufferOwnershipDeferredV1";
+            description.SizeBytes = 16;
+            description.Usage = RHI::BufferUsage::CopyDest;
+            Scope<RHI::Buffer> buffer = device.CreateBuffer(description);
+            Scope<RHI::CommandList> release = buffer
+                ? device.CreateCommandList(RHI::QueueType::Graphics, "RHIBufferOwnershipDeferredV1") : nullptr;
+            const bool rejected = release && release->Begin()
+                && !release->ReleaseBufferOwnership({ buffer.get(), RHI::QueueType::Graphics, RHI::QueueType::Copy,
+                    RHI::ResourceState::CopyDest, RHI::ResourceState::CopySource }) && release->End();
+            const bool pending = buffer && device.HasPendingBufferOwnershipTransfer(buffer.get());
+            const bool passed = graphics.Independent && graphics.Effective == RHI::QueueType::Graphics
+                && (copy.Independent ? copy.Effective == RHI::QueueType::Copy : copy.Effective == RHI::QueueType::Graphics)
+                && rejected && !pending;
+            Log::Info("RHIBufferOwnershipSmokeV1 backend=Vulkan, mode=queue-local, sharedResources=deferred, transfer=rejected, pending=no, result=", passed ? "pass" : "fail");
+            return passed;
+        }
         RHI::BufferDescription description;
         description.DebugName = "RHIBufferOwnershipSmokeV1 Transfer";
         description.SizeBytes = 4096;
@@ -646,7 +681,7 @@ namespace Engine
         description.InitialState = RHI::ResourceState::CopyDest;
         Scope<RHI::Buffer> transfer = device.CreateBuffer(description);
 
-        const bool fallback = backendName == "Vulkan" || !copy.Independent;
+        const bool fallback = !copy.Independent;
         if (fallback)
         {
             Scope<RHI::CommandList> release = transfer
@@ -744,13 +779,34 @@ namespace Engine
     {
         const RHI::QueueResolution graphics = device.ResolveQueue(RHI::QueueType::Graphics);
         const RHI::QueueResolution copy = device.ResolveQueue(RHI::QueueType::Copy);
+        if (backendName == "Vulkan")
+        {
+            RHI::TextureDescription description;
+            description.DebugName = "RHITextureOwnershipDeferredV1";
+            description.Extent = { 1, 1 };
+            description.TextureFormat = RHI::Format::R8G8B8A8Unorm;
+            description.Usage = RHI::TextureUsage::CopySource;
+            description.InitialState = RHI::ResourceState::CopySource;
+            Scope<RHI::Texture> texture = device.CreateTexture(description);
+            Scope<RHI::CommandList> release = texture
+                ? device.CreateCommandList(RHI::QueueType::Graphics, "RHITextureOwnershipDeferredV1") : nullptr;
+            const bool rejected = release && release->Begin()
+                && !release->ReleaseTextureOwnership({ texture.get(), RHI::QueueType::Graphics, RHI::QueueType::Copy,
+                    RHI::ResourceState::CopySource, RHI::ResourceState::CopySource }) && release->End();
+            const bool pending = texture && device.HasPendingTextureOwnershipTransfer(texture.get());
+            const bool passed = graphics.Independent && graphics.Effective == RHI::QueueType::Graphics
+                && (copy.Independent ? copy.Effective == RHI::QueueType::Copy : copy.Effective == RHI::QueueType::Graphics)
+                && rejected && !pending;
+            Log::Info("RHITextureOwnershipSmokeV1 backend=Vulkan, mode=queue-local, sharedResources=deferred, transfer=rejected, pending=no, result=", passed ? "pass" : "fail");
+            return passed;
+        }
         RHI::TextureDescription description;
         description.DebugName = "RHITextureOwnershipSmokeV1 Transfer";
         description.Extent = { 3, 2 }; description.TextureFormat = RHI::Format::R8G8B8A8Unorm;
         description.Usage = static_cast<RHI::TextureUsage>(static_cast<u32>(RHI::TextureUsage::RenderTarget) | static_cast<u32>(RHI::TextureUsage::CopySource));
         description.InitialState = RHI::ResourceState::CopySource;
         Scope<RHI::Texture> transfer = device.CreateTexture(description);
-        const bool fallback = backendName == "Vulkan" || !copy.Independent;
+        const bool fallback = !copy.Independent;
         if (fallback)
         {
             Scope<RHI::CommandList> release = transfer ? device.CreateCommandList(RHI::QueueType::Graphics, "RHITextureOwnershipFallbackReleaseV1") : nullptr;

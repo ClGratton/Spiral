@@ -15,6 +15,13 @@ namespace Engine::RHI
         void* GraphicsQueue = nullptr;
         void* NVRHIDevice = nullptr;
         u32 GraphicsQueueFamily = 0;
+        void* ComputeQueue = nullptr;
+        void* CopyQueue = nullptr;
+        u32 ComputeQueueFamily = 0;
+        u32 CopyQueueFamily = 0;
+        u32 GraphicsQueueIndex = 0;
+        u32 ComputeQueueIndex = 0;
+        u32 CopyQueueIndex = 0;
     };
 
     class NVRHIVulkanContext final

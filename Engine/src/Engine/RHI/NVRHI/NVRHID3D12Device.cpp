@@ -1480,6 +1480,7 @@ namespace Engine::RHI
                     : requested == QueueType::Copy && !m_CopyIndependent ? QueueType::Graphics : requested;
                 return { requested, effective, requested == QueueType::Graphics || effective == requested };
             }
+            bool CanQueuesShareResources(QueueType, QueueType) const override { return true; }
 
             Scope<Buffer> CreateBuffer(const BufferDescription& description) override
             {

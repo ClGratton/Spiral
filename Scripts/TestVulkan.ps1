@@ -47,8 +47,8 @@ $RequiredMarkers = @(
     "RHIBufferTransitionSmokeV1 backend=Vulkan, invalid=rejected, lifecycle=pass, submission=pass, result=pass",
     "RHICompletionSmokeV1 backend=Vulkan, tokenValidation=pass, query=nonblocking-",
     "RHIQueueDependencySmokeV1 backend=Vulkan,",
-    "RHIBufferOwnershipSmokeV1 backend=Vulkan, mode=graphics-fallback, transfer=rejected, pending=no, result=pass",
-    "RHITextureOwnershipSmokeV1 backend=Vulkan, mode=graphics-fallback, transfer=rejected, pending=no, result=pass",
+    "RHIBufferOwnershipSmokeV1 backend=Vulkan, mode=queue-local, sharedResources=deferred, transfer=rejected, pending=no, result=pass",
+    "RHITextureOwnershipSmokeV1 backend=Vulkan, mode=queue-local, sharedResources=deferred, transfer=rejected, pending=no, result=pass",
     "RHIResourceOwnershipSmokeV1 backend=Vulkan, owned=pass, null=rejected, result=pass",
     "RHIResourceStateSmokeV1 backend=Vulkan, initial=pass, pending=hidden, invalid=rejected, submission=pass, final=pass, result=pass",
     "VulkanRHICoreV1",
@@ -69,8 +69,8 @@ foreach ($Marker in $RequiredMarkers) {
 if ($JoinedLog -notmatch 'RHICompletionSmokeV1 backend=Vulkan, tokenValidation=pass, query=nonblocking-(incomplete|complete), wait=pass, reuse=pass, result=pass') {
     throw "Vulkan render smoke did not prove completion-token retirement and recording reuse."
 }
-if ($JoinedLog -notmatch 'RHIQueueDependencySmokeV1 backend=Vulkan, copy=graphics-fallback, compute=graphics-fallback, copyToGraphics=ordered-elided, graphicsToCompute=ordered-elided, cpuWaitBetween=no, bytes=not-required, finalState=not-required, retirement=pass, result=pass') {
-    throw "Vulkan smoke did not prove truthful graphics fallback and same-effective ordered dependencies."
+if ($JoinedLog -notmatch 'RHIQueueDependencySmokeV1 backend=Vulkan, copy=(independent|graphics-fallback), compute=(independent|graphics-fallback), copyToGraphics=(gpu-wait|ordered-elided), graphicsToCompute=(gpu-wait|ordered-elided), cpuWaitBetween=no, queueLocal=yes, sharedResources=(rejected|permitted-or-elided), retirement=pass, result=pass') {
+    throw "Vulkan smoke did not prove topology-adaptive queue-local dependency retirement."
 }
 $DiagnosticsPattern = "Editor renderer capability diagnostics rendered: profile=Phase 3 Vulkan Bootstrap Presentation V1, adapter=.+, qualification=Bootstrap, formats=[1-9][0-9]*, features=9, groups=1, candidates=[1-9][0-9]*"
 if ($JoinedLog -notmatch $DiagnosticsPattern) {

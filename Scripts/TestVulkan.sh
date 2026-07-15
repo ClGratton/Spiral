@@ -5,6 +5,7 @@ CONFIGURATION="${1:-Debug}"
 ACTION="${2:-gmake}"
 BUILD_MODE="${3:-build}"
 ITERATIONS="${VULKAN_SMOKE_ITERATIONS:-1}"
+CHILD_TIMEOUT_SECONDS="${VULKAN_SMOKE_TIMEOUT_SECONDS:-180}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 case "$CONFIGURATION" in
@@ -21,6 +22,14 @@ if [[ "$BUILD_MODE" != "build" && "$BUILD_MODE" != "--skip-build" ]]; then
 fi
 if [[ ! "$ITERATIONS" =~ ^[1-9][0-9]*$ ]]; then
     echo "VULKAN_SMOKE_ITERATIONS must be a positive integer: $ITERATIONS" >&2
+    exit 1
+fi
+if [[ ! "$CHILD_TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ]]; then
+    echo "VULKAN_SMOKE_TIMEOUT_SECONDS must be a positive integer: $CHILD_TIMEOUT_SECONDS" >&2
+    exit 1
+fi
+if ! command -v perl >/dev/null 2>&1; then
+    echo "Perl is required for portable Vulkan smoke timeout/process-group cleanup." >&2
     exit 1
 fi
 
@@ -107,7 +116,29 @@ for ((ATTEMPT = 1; ATTEMPT <= ITERATIONS; ++ATTEMPT)); do
 
     echo "Vulkan render smoke attempt $ATTEMPT/$ITERATIONS"
     set +e
-    (cd "$ROOT" && "$EDITOR" --vulkan-render-smoke --renderer-capability-smoke --vulkan-rhi-core-smoke --vulkan-rhi-indexed-draw-smoke --rhi-completion-smoke --rhi-buffer-ownership-smoke --rhi-texture-ownership-smoke) 2>&1 | tee "$LOG_FILE"
+    (cd "$ROOT" && perl -e '
+        my $timeout = shift;
+        my $child = fork();
+        die "fork failed: $!\n" unless defined $child;
+        if ($child == 0) {
+            setpgrp(0, 0) or die "setpgrp failed: $!\n";
+            exec @ARGV or die "exec failed: $!\n";
+        }
+        $SIG{ALRM} = sub {
+            warn "Vulkan smoke child timed out after ${timeout}s; terminating process group\n";
+            kill "TERM", -$child;
+            sleep 1;
+            kill "KILL", -$child;
+            waitpid($child, 0);
+            exit 124;
+        };
+        alarm $timeout;
+        waitpid($child, 0);
+        alarm 0;
+        my $status = $?;
+        exit(128 + ($status & 127)) if $status & 127;
+        exit($status >> 8);
+    ' "$CHILD_TIMEOUT_SECONDS" "$EDITOR" --vulkan-render-smoke --renderer-capability-smoke --vulkan-rhi-core-smoke --vulkan-rhi-indexed-draw-smoke --rhi-completion-smoke --rhi-queue-dependency-smoke --rhi-buffer-ownership-smoke --rhi-texture-ownership-smoke) 2>&1 | tee "$LOG_FILE"
     STATUS=${PIPESTATUS[0]}
     set -e
     if [[ $STATUS -ne 0 ]]; then
@@ -136,12 +167,16 @@ for ((ATTEMPT = 1; ATTEMPT <= ITERATIONS; ++ATTEMPT)); do
         echo "Vulkan render smoke did not prove completion-token retirement and recording reuse on attempt $ATTEMPT/$ITERATIONS." >&2
         exit 1
     fi
-    if ! grep -Fq 'RHIBufferOwnershipSmokeV1 backend=Vulkan, mode=graphics-fallback, transfer=rejected, pending=no, result=pass' "$LOG_FILE"; then
-        echo "Vulkan smoke did not reject buffer ownership transfer without publishing pending state on attempt $ATTEMPT/$ITERATIONS." >&2
+    if ! grep -Eq 'RHIQueueDependencySmokeV1 backend=Vulkan, copy=(independent|graphics-fallback), compute=(independent|graphics-fallback), copyToGraphics=(gpu-wait|ordered-elided), graphicsToCompute=(gpu-wait|ordered-elided), cpuWaitBetween=no, queueLocal=yes, sharedResources=(rejected|permitted-or-elided), retirement=pass, result=pass' "$LOG_FILE"; then
+        echo "Vulkan smoke did not prove topology-adaptive queue-local dependency retirement on attempt $ATTEMPT/$ITERATIONS." >&2
         exit 1
     fi
-    if ! grep -Fq 'RHITextureOwnershipSmokeV1 backend=Vulkan, mode=graphics-fallback, transfer=rejected, pending=no, result=pass' "$LOG_FILE"; then
-        echo "Vulkan smoke did not reject texture ownership transfer without publishing pending state on attempt $ATTEMPT/$ITERATIONS." >&2
+    if ! grep -Fq 'RHIBufferOwnershipSmokeV1 backend=Vulkan, mode=queue-local, sharedResources=deferred, transfer=rejected, pending=no, result=pass' "$LOG_FILE"; then
+        echo "Vulkan smoke did not retain queue-local buffer-ownership rejection evidence on attempt $ATTEMPT/$ITERATIONS." >&2
+        exit 1
+    fi
+    if ! grep -Fq 'RHITextureOwnershipSmokeV1 backend=Vulkan, mode=queue-local, sharedResources=deferred, transfer=rejected, pending=no, result=pass' "$LOG_FILE"; then
+        echo "Vulkan smoke did not retain queue-local texture-ownership rejection evidence on attempt $ATTEMPT/$ITERATIONS." >&2
         exit 1
     fi
     if ! grep -Eq 'VulkanSceneOutputCaptureV1 outputGeneration=[2-9][0-9]* capture=pass' "$LOG_FILE"; then
