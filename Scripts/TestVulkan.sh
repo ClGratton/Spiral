@@ -107,7 +107,7 @@ for ((ATTEMPT = 1; ATTEMPT <= ITERATIONS; ++ATTEMPT)); do
 
     echo "Vulkan render smoke attempt $ATTEMPT/$ITERATIONS"
     set +e
-    (cd "$ROOT" && "$EDITOR" --vulkan-render-smoke --renderer-capability-smoke --vulkan-rhi-core-smoke --vulkan-rhi-indexed-draw-smoke --rhi-completion-smoke) 2>&1 | tee "$LOG_FILE"
+    (cd "$ROOT" && "$EDITOR" --vulkan-render-smoke --renderer-capability-smoke --vulkan-rhi-core-smoke --vulkan-rhi-indexed-draw-smoke --rhi-completion-smoke --rhi-buffer-ownership-smoke) 2>&1 | tee "$LOG_FILE"
     STATUS=${PIPESTATUS[0]}
     set -e
     if [[ $STATUS -ne 0 ]]; then
@@ -134,6 +134,10 @@ for ((ATTEMPT = 1; ATTEMPT <= ITERATIONS; ++ATTEMPT)); do
     fi
     if ! grep -Eq 'RHICompletionSmokeV1 backend=Vulkan, tokenValidation=pass, query=nonblocking-(incomplete|complete), wait=pass, reuse=pass, result=pass' "$LOG_FILE"; then
         echo "Vulkan render smoke did not prove completion-token retirement and recording reuse on attempt $ATTEMPT/$ITERATIONS." >&2
+        exit 1
+    fi
+    if ! grep -Fq 'RHIBufferOwnershipSmokeV1 backend=Vulkan, mode=graphics-fallback, transfer=rejected, pending=no, result=pass' "$LOG_FILE"; then
+        echo "Vulkan smoke did not reject buffer ownership transfer without publishing pending state on attempt $ATTEMPT/$ITERATIONS." >&2
         exit 1
     fi
     if ! grep -Eq 'VulkanSceneOutputCaptureV1 outputGeneration=[2-9][0-9]* capture=pass' "$LOG_FILE"; then

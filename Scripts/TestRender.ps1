@@ -42,7 +42,7 @@ foreach ($Path in @($ResolvedCapturePath) + $SceneOriginCapturePaths) {
     }
 }
 
-$RenderResult = Invoke-BoundedProcess -FilePath $Editor -Arguments @("--capture-viewport", "--smoke-test", "--renderer-capability-smoke", "--scene-origin-raster-smoke", "--rhi-buffer-transition-smoke", "--rhi-completion-smoke", "--rhi-queue-dependency-smoke", "--rhi-resource-ownership-smoke", "--rhi-resource-state-smoke", "--rhi-texture-readback-smoke", "--render-graph-execution-smoke") -Label "Editor render smoke" -TimeoutSeconds $ChildTimeoutSeconds
+$RenderResult = Invoke-BoundedProcess -FilePath $Editor -Arguments @("--capture-viewport", "--smoke-test", "--renderer-capability-smoke", "--scene-origin-raster-smoke", "--rhi-buffer-transition-smoke", "--rhi-completion-smoke", "--rhi-queue-dependency-smoke", "--rhi-buffer-ownership-smoke", "--rhi-resource-ownership-smoke", "--rhi-resource-state-smoke", "--rhi-texture-readback-smoke", "--render-graph-execution-smoke") -Label "Editor render smoke" -TimeoutSeconds $ChildTimeoutSeconds
 $Output = $RenderLog = $RenderResult.Output
 if ($RenderResult.TimedOut) {
     throw "Editor render smoke timed out after $ChildTimeoutSeconds seconds."
@@ -51,7 +51,7 @@ if ($RenderResult.ExitCode -ne 0) {
     throw "Editor render smoke run failed with exit code $($RenderResult.ExitCode)."
 }
 
-$FallbackResult = Invoke-BoundedProcess -FilePath $Editor -Arguments @("--smoke-test", "--rhi-queue-dependency-smoke", "--rhi-force-graphics-queue-fallback") -Label "Editor forced graphics-queue fallback smoke" -TimeoutSeconds $ChildTimeoutSeconds
+$FallbackResult = Invoke-BoundedProcess -FilePath $Editor -Arguments @("--smoke-test", "--rhi-queue-dependency-smoke", "--rhi-buffer-ownership-smoke", "--rhi-force-graphics-queue-fallback") -Label "Editor forced graphics-queue fallback smoke" -TimeoutSeconds $ChildTimeoutSeconds
 $FallbackOutput = $FallbackLog = $FallbackResult.Output
 if ($FallbackResult.TimedOut) {
     throw "Editor forced graphics-queue fallback smoke timed out after $ChildTimeoutSeconds seconds."
@@ -76,6 +76,7 @@ $RequiredMarkers = @(
     "RHIBufferTransitionSmokeV1 backend=D3D12, invalid=rejected, lifecycle=pass, submission=pass, result=pass"
     "RHICompletionSmokeV1 backend=D3D12, tokenValidation=pass, query=nonblocking-"
     "RHIQueueDependencySmokeV1 backend=D3D12,"
+    "RHIBufferOwnershipSmokeV1 backend=D3D12,"
     "RHIResourceOwnershipSmokeV1 backend=D3D12, owned=pass, null=rejected, result=pass"
     "RHIResourceStateSmokeV1 backend=D3D12, initial=pass, pending=hidden, invalid=rejected, submission=pass, final=pass, result=pass"
     "RHITextureReadbackSmokeV1 backend=D3D12, invalidState=rejected, unsupportedFormat=rejected, submit=pass, readback=pass, layout=tight, result=pass"
@@ -100,9 +101,15 @@ $ComputeTopologyMatchesMode = ($QueueDependencyMatch.Groups['compute'].Value -eq
 if (!$CopyTopologyMatchesMode -or !$ComputeTopologyMatchesMode) {
     throw "D3D12 queue topology and wait/elision evidence disagree."
 }
+if ($JoinedLog -notmatch 'RHIBufferOwnershipSmokeV1 backend=D3D12, mode=independent, release=accepted, acquire=gpu-wait, cpuWaitBetween=no, bytes=pass, finalOwner=Copy, finalState=CopySource, recovery=pass, retirement=pass, result=pass') {
+    throw "D3D12 render smoke did not prove real independent-queue buffer ownership transfer, recovery, and retirement."
+}
 $FallbackJoinedLog = $FallbackLog -join "`n"
 if ($FallbackJoinedLog -notmatch 'RHIQueueDependencySmokeV1 backend=D3D12, copy=graphics-fallback, compute=graphics-fallback, copyToGraphics=ordered-elided, graphicsToCompute=ordered-elided, cpuWaitBetween=no, bytes=pass, finalState=CopySource, retirement=pass, result=pass') {
     throw "D3D12 forced fallback smoke did not prove same-effective-graphics ordered dependencies."
+}
+if ($FallbackJoinedLog -notmatch 'RHIBufferOwnershipSmokeV1 backend=D3D12, mode=graphics-fallback, transfer=rejected, pending=no, result=pass') {
+    throw "D3D12 forced fallback smoke did not reject buffer ownership transfer without publishing pending state."
 }
 
 $ConventionEvidence = "schema=1\|matrix=row-major\|d3dClipDepth=zero-to-one\|spirvY=inverted\|frontFace=clockwise\|binding=D3DRegisterSpace"

@@ -92,6 +92,14 @@ namespace Engine
                 m_VulkanContext.reset();
                 return false;
             }
+            if (args.HasFlag("--rhi-buffer-ownership-smoke")
+                && !RunRHIBufferOwnershipSmoke(*m_VulkanContext->GetRHIDevice(), "Vulkan"))
+            {
+                Log::Error("Vulkan RHI buffer-ownership smoke failed");
+                m_VulkanContext->Shutdown();
+                m_VulkanContext.reset();
+                return false;
+            }
             if (args.HasFlag("--rhi-resource-ownership-smoke")
                 && !RunRHIResourceOwnershipSmoke(*m_VulkanContext->GetRHIDevice(), "Vulkan"))
             {
@@ -162,6 +170,12 @@ namespace Engine
             if (args.HasFlag("--rhi-queue-dependency-smoke") && !RunRHIQueueDependencySmoke(*m_Device, "D3D12"))
             {
                 Log::Error("D3D12 RHI queue-dependency smoke failed");
+                m_Device.reset();
+                return false;
+            }
+            if (args.HasFlag("--rhi-buffer-ownership-smoke") && !RunRHIBufferOwnershipSmoke(*m_Device, "D3D12"))
+            {
+                Log::Error("D3D12 RHI buffer-ownership smoke failed");
                 m_Device.reset();
                 return false;
             }
@@ -612,6 +626,112 @@ namespace Engine
             ", graphicsToCompute=", graphics.Effective == compute.Effective ? "ordered-elided" : "gpu-wait",
             ", cpuWaitBetween=no, bytes=", bytesMatch ? "pass" : "fail",
             ", finalState=", statePublished ? "CopySource" : "fail",
+            ", retirement=", retired ? "pass" : "fail", ", result=", passed ? "pass" : "fail");
+        return passed;
+    }
+
+    bool NVRHIRenderBackend::RunRHIBufferOwnershipSmoke(RHI::Device& device, std::string_view backendName)
+    {
+        const RHI::QueueResolution graphics = device.ResolveQueue(RHI::QueueType::Graphics);
+        const RHI::QueueResolution copy = device.ResolveQueue(RHI::QueueType::Copy);
+        RHI::BufferDescription description;
+        description.DebugName = "RHIBufferOwnershipSmokeV1 Transfer";
+        description.SizeBytes = 4096;
+        description.Usage = static_cast<RHI::BufferUsage>(
+            static_cast<u32>(RHI::BufferUsage::CopySource) | static_cast<u32>(RHI::BufferUsage::CopyDest));
+        description.InitialState = RHI::ResourceState::CopyDest;
+        Scope<RHI::Buffer> transfer = device.CreateBuffer(description);
+
+        const bool fallback = backendName == "Vulkan" || !copy.Independent;
+        if (fallback)
+        {
+            Scope<RHI::CommandList> release = transfer
+                ? device.CreateCommandList(RHI::QueueType::Graphics, "RHIBufferOwnershipFallbackReleaseV1") : nullptr;
+            const bool rejected = release && release->Begin()
+                && !release->ReleaseBufferOwnership({ transfer.get(), RHI::QueueType::Graphics, RHI::QueueType::Copy,
+                    RHI::ResourceState::CopyDest, RHI::ResourceState::CopySource })
+                && release->End();
+            const bool pending = transfer && device.HasPendingBufferOwnershipTransfer(transfer.get());
+            const bool passed = graphics.Effective == RHI::QueueType::Graphics
+                && copy.Effective == RHI::QueueType::Graphics && !copy.Independent && rejected && !pending;
+            Log::Info("RHIBufferOwnershipSmokeV1 backend=", backendName,
+                ", mode=graphics-fallback, transfer=rejected, pending=", pending ? "yes" : "no",
+                ", result=", passed ? "pass" : "fail");
+            return passed;
+        }
+
+        std::array<u32, 1024> expected {};
+        for (u32 index = 0; index < expected.size(); ++index)
+            expected[index] = 0x0B1E0000u ^ (index * 2246822519u);
+        RHI::BufferDescription readbackDescription;
+        readbackDescription.DebugName = "RHIBufferOwnershipSmokeV1 Readback";
+        readbackDescription.SizeBytes = sizeof(expected);
+        readbackDescription.Usage = RHI::BufferUsage::CopyDest;
+        readbackDescription.CpuAccess = RHI::BufferCpuAccess::Read;
+        Scope<RHI::Buffer> readback = device.CreateBuffer(readbackDescription);
+        const bool uploaded = transfer && device.UploadBuffer(*transfer, expected.data(), sizeof(expected));
+
+        Scope<RHI::CommandList> release = uploaded
+            ? device.CreateCommandList(RHI::QueueType::Graphics, "RHIBufferOwnershipReleaseV1") : nullptr;
+        const bool releaseClosed = release && release->Begin()
+            && release->ReleaseBufferOwnership({ transfer.get(), RHI::QueueType::Graphics, RHI::QueueType::Copy,
+                RHI::ResourceState::CopyDest, RHI::ResourceState::CopySource })
+            && release->End();
+        const RHI::CompletionToken releaseToken = releaseClosed ? device.Submit(*release) : RHI::CompletionToken {};
+        const bool pendingAfterRelease = releaseToken.IsValid() && device.HasPendingBufferOwnershipTransfer(transfer.get());
+
+        Scope<RHI::CommandList> acquire = pendingAfterRelease
+            ? device.CreateCommandList(RHI::QueueType::Copy, "RHIBufferOwnershipAcquireV1") : nullptr;
+        RHI::BufferOwnershipAcquire acquireDescription;
+        acquireDescription.Resource = transfer.get();
+        acquireDescription.SourceQueue = RHI::QueueType::Graphics;
+        acquireDescription.DestinationQueue = RHI::QueueType::Copy;
+        acquireDescription.Before = RHI::ResourceState::CopyDest;
+        acquireDescription.After = RHI::ResourceState::CopySource;
+        acquireDescription.ReleaseToken = releaseToken;
+        const bool acquireClosed = acquire && acquire->Begin()
+            && acquire->AcquireBufferOwnership(acquireDescription)
+            && acquire->End();
+        const RHI::CompletionToken acquireToken = acquireClosed ? device.Submit(*acquire, { releaseToken }) : RHI::CompletionToken {};
+        RHI::QueueType finalOwner = RHI::QueueType::Graphics;
+        RHI::ResourceState finalState = RHI::ResourceState::Unknown;
+        const bool acquired = acquireToken.IsValid() && !device.HasPendingBufferOwnershipTransfer(transfer.get())
+            && device.QueryBufferQueueOwner(transfer.get(), finalOwner) && finalOwner == RHI::QueueType::Copy
+            && device.QueryResourceState(transfer.get(), finalState) && finalState == RHI::ResourceState::CopySource;
+
+        Scope<RHI::CommandList> readbackCopy = acquired && readback
+            ? device.CreateCommandList(RHI::QueueType::Copy, "RHIBufferOwnershipReadbackV1") : nullptr;
+        const bool readbackClosed = readbackCopy && readbackCopy->Begin()
+            && readbackCopy->CopyBuffer(*readback, 0, *transfer, 0, sizeof(expected)) && readbackCopy->End();
+        const RHI::CompletionToken readbackToken = readbackClosed ? device.Submit(*readbackCopy) : RHI::CompletionToken {};
+        const bool retired = readbackToken.IsValid() && device.WaitForCompletion(readbackToken, 5000)
+            && device.QueryCompletion(releaseToken) == RHI::CompletionStatus::Complete
+            && device.QueryCompletion(acquireToken) == RHI::CompletionStatus::Complete;
+        const void* mapped = retired ? readback->Map() : nullptr;
+        const bool bytesMatch = mapped && std::memcmp(mapped, expected.data(), sizeof(expected)) == 0;
+        if (mapped)
+            readback->Unmap();
+
+        Scope<RHI::Buffer> abandoned = device.CreateBuffer(description);
+        const bool abandonedUploaded = abandoned && device.UploadBuffer(*abandoned, expected.data(), sizeof(expected));
+        Scope<RHI::CommandList> abandonedRelease = abandonedUploaded
+            ? device.CreateCommandList(RHI::QueueType::Graphics, "RHIBufferOwnershipRecoveryReleaseV1") : nullptr;
+        const bool abandonedClosed = abandonedRelease && abandonedRelease->Begin()
+            && abandonedRelease->ReleaseBufferOwnership({ abandoned.get(), RHI::QueueType::Graphics, RHI::QueueType::Copy,
+                RHI::ResourceState::CopyDest, RHI::ResourceState::CopySource })
+            && abandonedRelease->End();
+        const RHI::CompletionToken abandonedToken = abandonedClosed ? device.Submit(*abandonedRelease) : RHI::CompletionToken {};
+        const bool recovery = abandonedToken.IsValid() && device.HasPendingBufferOwnershipTransfer(abandoned.get())
+            && device.WaitForCompletion(abandonedToken, 5000)
+            && device.RecoverAbandonedBufferOwnershipTransfer(*abandoned, abandonedToken)
+            && !device.HasPendingBufferOwnershipTransfer(abandoned.get())
+            && device.QueryBufferQueueOwner(abandoned.get(), finalOwner) && finalOwner == RHI::QueueType::Graphics
+            && device.QueryResourceState(abandoned.get(), finalState) && finalState == RHI::ResourceState::CopyDest;
+        const bool passed = graphics.Independent && copy.Independent && graphics.Effective == RHI::QueueType::Graphics
+            && copy.Effective == RHI::QueueType::Copy && uploaded && pendingAfterRelease && acquired && bytesMatch && retired && recovery;
+        Log::Info("RHIBufferOwnershipSmokeV1 backend=", backendName,
+            ", mode=independent, release=accepted, acquire=gpu-wait, cpuWaitBetween=no, bytes=", bytesMatch ? "pass" : "fail",
+            ", finalOwner=Copy, finalState=CopySource, recovery=", recovery ? "pass" : "fail",
             ", retirement=", retired ? "pass" : "fail", ", result=", passed ? "pass" : "fail");
         return passed;
     }

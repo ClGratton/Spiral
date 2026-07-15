@@ -3,13 +3,17 @@ param(
     [string]$Configuration = "Debug",
 
     [ValidateSet("vs2022", "gmake", "gmake2")]
-    [string]$Action = "vs2022"
+    [string]$Action = "vs2022",
+
+    [ValidateRange(1, 3600)]
+    [int]$ChildTimeoutSeconds = 180
 )
 
 $ErrorActionPreference = "Stop"
 $Root = Resolve-Path (Join-Path $PSScriptRoot "..")
 
 & (Join-Path $PSScriptRoot "Build.ps1") -Configuration $Configuration -Action $Action
+. (Join-Path $PSScriptRoot "InvokeBoundedProcess.ps1")
 
 $OutputSuffix = if ($Action -like "gmake*") { "-$Action" } else { "" }
 $Executable = Join-Path $Root "bin\$Configuration-windows-x86_64$OutputSuffix\Editor\Editor.exe"
@@ -17,9 +21,13 @@ if (!(Test-Path $Executable)) {
     throw "Vulkan smoke executable was not found: $Executable"
 }
 
-$Output = & $Executable --vulkan-render-smoke --renderer-capability-smoke --vulkan-rhi-core-smoke --vulkan-rhi-indexed-draw-smoke --vulkan-scene-viewport-raster-smoke --rhi-buffer-transition-smoke --rhi-completion-smoke --rhi-queue-dependency-smoke --rhi-resource-ownership-smoke --rhi-resource-state-smoke --render-graph-execution-smoke 2>&1 | Tee-Object -Variable VulkanLog
-if ($LASTEXITCODE -ne 0) {
-    throw "Vulkan render smoke failed with exit code $LASTEXITCODE."
+$VulkanResult = Invoke-BoundedProcess -FilePath $Executable -Arguments @("--vulkan-render-smoke", "--renderer-capability-smoke", "--vulkan-rhi-core-smoke", "--vulkan-rhi-indexed-draw-smoke", "--vulkan-scene-viewport-raster-smoke", "--rhi-buffer-transition-smoke", "--rhi-completion-smoke", "--rhi-queue-dependency-smoke", "--rhi-buffer-ownership-smoke", "--rhi-resource-ownership-smoke", "--rhi-resource-state-smoke", "--render-graph-execution-smoke") -Label "Editor Vulkan render smoke" -TimeoutSeconds $ChildTimeoutSeconds
+$Output = $VulkanLog = $VulkanResult.Output
+if ($VulkanResult.TimedOut) {
+    throw "Vulkan render smoke timed out after $ChildTimeoutSeconds seconds."
+}
+if ($VulkanResult.ExitCode -ne 0) {
+    throw "Vulkan render smoke failed with exit code $($VulkanResult.ExitCode)."
 }
 
 $RequiredMarkers = @(
@@ -39,6 +47,7 @@ $RequiredMarkers = @(
     "RHIBufferTransitionSmokeV1 backend=Vulkan, invalid=rejected, lifecycle=pass, submission=pass, result=pass",
     "RHICompletionSmokeV1 backend=Vulkan, tokenValidation=pass, query=nonblocking-",
     "RHIQueueDependencySmokeV1 backend=Vulkan,",
+    "RHIBufferOwnershipSmokeV1 backend=Vulkan, mode=graphics-fallback, transfer=rejected, pending=no, result=pass",
     "RHIResourceOwnershipSmokeV1 backend=Vulkan, owned=pass, null=rejected, result=pass",
     "RHIResourceStateSmokeV1 backend=Vulkan, initial=pass, pending=hidden, invalid=rejected, submission=pass, final=pass, result=pass",
     "VulkanRHICoreV1",
