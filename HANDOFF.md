@@ -4,7 +4,7 @@ Updated 2026-07-15. This is a recovery aid; `PLAN.md` remains the sole roadmap a
 
 ## Objective And Stop Condition
 
-The latest continuation began at 58% weekly allowance used with a user-set floor of 23% remaining. One exact persistent `terra_medium` owner implemented the representative Scene-viewport RenderGraph slice and the root performed targeted synchronization/lifetime review plus one consolidated local acceptance pass. Implementation commit `e950d21` and exact-head hosted evidence are now accepted; `PLAN.md` line 261 is checked. The audit snapshot ended at 64% used / 36% remaining. The measured context exceeded the 100k transition threshold, so the agent must now use the supported same-goal fresh-task path, reread the mandatory repository state, and continue automatically while remaining above the 23% floor.
+The continuation preserved the user-set 23%-remaining weekly-allowance floor and used one exact persistent `terra_medium` owner for the medium transient-resource capability prerequisite. Reliable allowance telemetry was unavailable in this task session (`get_goal` returned no allowance state), so do not infer an exact remaining percentage from token counts. Commit `02c86e0` is locally accepted and pushed; its exact-head dependency submission passed and its CI workflow was in progress at the single permitted status check. The next ordered item is a large physical-allocation/reuse slice, so do not begin it without reliable allowance telemetry showing that doing so preserves the 23% floor.
 
 ## Token-Efficiency Baseline And Required Next-Session Audit (2026-07-15)
 
@@ -24,6 +24,10 @@ Root telemetry recorded 29 model turns and 30 tool calls (21 `exec`, four `wait_
 
 Root performed one full-SHA check for `e950d217df23b507a2bc10ba0da59038bce11b0d`, then attempted one synchronous monitor because macOS was the blocking every-claimed-backend gate. That monitor stopped on a transient GitHub HTTP 401 while the run remained active, and root correctly did not poll repeatedly. The later single recovery check confirmed [CI run 29430304670](https://github.com/ClGratton/Spiral/actions/runs/29430304670) and [dependency submission 29430304809](https://github.com/ClGratton/Spiral/actions/runs/29430304809) passed; Windows D3D12, Ubuntu Vulkan/lavapipe, and macOS Intel/MoltenVK logs contain the required `comparator=exact-byte-pass` markers. This is the required next-session comparison result: routing/session reuse and allowance cost improved substantially, but root and owner turn counts still need reduction without weakening the exact-byte/backend evidence.
 
+### Transient-Capability Slice Audit (2026-07-15)
+
+One exact `terra_medium` owner classified the capability prerequisite as a coherent medium slice and made commit `02c86e0` (`Add transient resource capability fallback gate`). The root used more than the preferred two explicit owner waits because the surface limited waits to 60 seconds while the owner was still working; no replacement owner or reviewer was introduced. The owner reported `EngineTests` 55/55 plus local RTX 3080 Ti D3D12 `TestRender.ps1 -SkipBuild`, Vulkan `TestVulkan.ps1`, and code style passing. Root then confirmed `git diff --check`, `bash -n Scripts/TestVulkan.sh`, and `CheckCodeStyle.ps1` on the committed head. The single full-SHA CI check found [dependency submission 29432926998](https://github.com/ClGratton/Spiral/actions/runs/29432926998) successful and [CI run 29432926976](https://github.com/ClGratton/Spiral/actions/runs/29432926976) in progress; local evidence already accepts this capability-only prerequisite, so CI is deliberately detached rather than polled.
+
 ## Completed Roadmap Work
 
 The following commits are on `main` and `origin/main`:
@@ -38,8 +42,9 @@ The following commits are on `main` and `origin/main`:
 Latest accepted slice:
 
 - `e950d21` - live D3D12/Vulkan Scene viewports through named Clear, Raster, and Output Handoff RenderGraph passes, plus a retained direct-recorder oracle that requires exact-byte output equivalence on separate smoke-only outputs.
+- `02c86e0` - Phase 3 transient-resource capability prerequisite: separate RHI placed-resource/alias-barrier lifecycle reporting, truthful `PlacedAliasedTransient` versus `NonAliasedGpuRetiredPool` selection, selected-path diagnostics, deterministic coverage, and local backend smoke exercise without premature allocation.
 
-`PLAN.md` is checked through the Scene-viewport integration item at line 261. The transient-resource capability group at line 262 is the first unchecked item.
+`PLAN.md` is checked through the transient-resource capability group at line 262.
 
 ## Accepted Mechanism And Current Behavior
 
@@ -52,6 +57,7 @@ Latest accepted slice:
 - The live D3D12 and Vulkan Scene viewport uses three imported-resource graph passes: `Scene Viewport Graph Clear`, `Scene Viewport Graph Raster`, and `Scene Viewport Graph Output Handoff`. The executor surrounds callbacks with those stable debug labels; presentation and ImGui remain native-bridge owned.
 - Smoke mode retains the prior direct recorder as an oracle on separate color/depth outputs. It renders the same immutable prepared frame and requires matching extent, row pitch, and every output byte before publishing only the graph result. The graph color output is restored to `ShaderResource` after comparison.
 - The per-frame graph currently waits for its final completion because its recording contexts are stack-owned. This is a safe lifetime bridge, not frame pacing or deliberate smoothing; persistent overlap remains later roadmap work.
+- `Phase3TransientResourcesV1` selects `PlacedAliasedTransient` only when both RHI `PlacedResources` and `AliasingBarriers` are usable. Current D3D12 and Vulkan/NVRHI adapters truthfully select `NonAliasedGpuRetiredPool` because backend-neutral translations are absent. That fallback defines future reuse as completion-token-gated; it does not allocate resources, publish memory cost, or claim physical reuse.
 
 ## Evidence
 
@@ -64,6 +70,7 @@ Local Windows/MSVC Debug evidence on an RTX 3080 Ti:
 - `bash -n Scripts/TestVulkan.sh`, `Scripts/CheckCodeStyle.ps1`, and `git diff --check` passed.
 - `SceneViewportRenderGraphV1` passed exact-byte D3D12 comparison at 1560x822 (5,129,280 bytes) and 850x613 (2,084,200 bytes), while the existing Scene A/C identity and B centroid-shift captures remained green.
 - The same marker passed Vulkan comparison at 48x36 (6,912 bytes), 64x48 (12,288 bytes), and the live/resized viewport outputs before native ImGui handoff.
+- `Phase3TransientResourcesV1` passed deterministic preferred/fallback policy tests as part of `EngineTests` (55/55), and the named local D3D12/Vulkan presentation smokes exercised selected-path publication. No native placement/alias-barrier, allocator, physical-reuse, memory-cost, or hosted fallback-regression claim is made.
 
 Hosted evidence for behavior/harness head `7e5e80b`:
 
@@ -80,10 +87,10 @@ Exact-head CI run `29430304670` passed real Windows D3D12, Ubuntu Vulkan/lavapip
 
 The first unchecked `PLAN.md` item is:
 
-> Phase 3 transient-resource capability group for placement/aliasing/barriers with a correct committed/pooled non-aliased fallback and GPU-retired reuse, defined and exercised before transient allocation is integrated.
+> Transient resource allocation and reuse from render-graph lifetimes.
 
-Create/continue the supported same-goal fresh first-class task, reread the mandatory state and the transient-resource sections of `Docs/Architecture/RENDER_GRAPH_ARCHITECTURE.md`, recheck allowance, classify the slice, and continue automatically. Return control only if no supported transition exists, a genuine CI/user decision blocks progress, or the 23%-remaining floor has been reached.
+This is a large multi-backend physical-allocation slice: it must bind resource lifetime intervals, choose the established truthful path, report memory cost, and prove no resource is reused before its exact GPU completion token retires. Recheck reliable weekly allowance telemetry before delegating it. If telemetry remains unavailable, do not start the slice because compliance with the 23%-remaining floor cannot be demonstrated; preserve the clean tree and return control rather than guessing.
 
 ## Working State
 
-Implementation commit `e950d21` is on `main` and `origin/main` with green exact-head CI/dependency evidence. This documentation acceptance should be committed and pushed before the same-goal fresh task starts; leave the working tree clean. Generated captures and CI artifacts remain under ignored `output/`.
+Implementation commit `02c86e0` is on `main` and `origin/main`. Its dependency-submission workflow passed; CI run `29432926976` was in progress at the one exact-head status check and must be monitored event-driven or checked once in a later task, not repeatedly polled. This handoff update must be committed and pushed before returning control; leave the working tree clean. Generated captures and CI artifacts remain under ignored `output/`.
