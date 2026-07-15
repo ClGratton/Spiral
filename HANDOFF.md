@@ -4,7 +4,7 @@ Updated 2026-07-15. This is a recovery aid; `PLAN.md` remains the sole roadmap a
 
 ## Objective And Stop Condition
 
-This continuation began at 1% weekly model allowance used and was asked to complete as many coherent roadmap features as practical near 50%, without stopping mid-slice. Native `terra_medium` owners implemented bounded vertical slices while the root agent reconciled architecture, reviewed synchronization/publication risk, ran one consolidated acceptance gate, and handled CI. The final checkpoint was 52% used; the small overrun completed and qualified the active cross-queue RenderGraph slice rather than leaving its CI failures unresolved. Do not start another large slice from this handoff without a fresh allowance check.
+The latest continuation began at 58% weekly allowance used with a user-set floor of 23% remaining. One exact persistent `terra_medium` owner implemented the representative Scene-viewport RenderGraph slice and the root performed targeted synchronization/lifetime review plus one consolidated local acceptance pass. Implementation commit `e950d21` is pushed, but `PLAN.md` line 261 intentionally remains unchecked until exact-head hosted macOS Vulkan evidence completes. The audit snapshot ended at 64% used / 36% remaining. Do not start another feature in this root context: its measured input exceeded the 100k safe-compaction threshold, so continue from this handoff in a fresh/compacted task after resolving the pending CI gate.
 
 ## Token-Efficiency Baseline And Required Next-Session Audit (2026-07-15)
 
@@ -15,6 +15,14 @@ Verdict: role routing, evidence collection, and defect discovery were correct an
 Wall-clock audit: the 7,777-second window was partitioned from rollout session timestamps and GitHub run `createdAt`/`updatedAt`, clipping to the window and taking interval unions rather than summing overlap. Exact Terra owner-session coverage was 5,898.1 s (75.8%); CI workflow coverage for heads `0cc9b6faf8770d8dd00724529348ad837add3852`, `f89134228946d1c5e6b1e35da1f17e5fd721476a`, `0b6d72a06e0aeb0a21a4dcdacbbd9747e29d2c64`, `e8e7878880513457489d228e7b0cec009d744662`, `093bdaedcc32159e8085778826c89693ed8d9dfa`, `7e5e80b082686949b0bd2697ffe263f1c65ac616`, and the window-clipped start of `589192148f916c6644a8cde7bbc55f6cb2479051` was 2,481.0 s (31.9%). The exclusive partition is 4,555.9 s owner-only (58.6%), 1,342.2 s overlapping owner/CI (17.3%), 1,138.8 s CI-only (14.6%), and 740.1 s neither (9.5%).
 
 Hosted CI was therefore not most of the wall time; owner-session lifetime and orchestration/model gaps were dominant. Active recorded tool durations were only 548.2 s local build/test, 131.7 s explicit waits, and 43.7 s GitHub queries; session lifetime includes reasoning and unobserved idle gaps, so it cannot be called active work, and wall time cannot be converted into token/allowance cost. Next medium/large-slice handoff must record the exact head, whether local evidence already accepted the slice, one initial CI check, monitor/pending-handoff choice, any synchronous-wait blocking-gate justification, and the resulting compact status.
+
+### Scene-Viewport Slice Audit (2026-07-15)
+
+The audit snapshot covers 2026-07-15 15:41:11Z-16:00:47Z (about 19m36s). Weekly allowance moved from 58% to 64% used, leaving 36%, so this large slice consumed about six percentage points and respected the 23%-remaining floor. One coherent feature used one exact `terra_medium` session running `gpt-5.6-terra`; the incomplete first report was resumed through one `followup_task`, with no cold replacement or optional reviewer. The owner had two active turns totaling about 669.2 seconds. This meets the one-session-per-slice rule.
+
+Root telemetry recorded 29 model turns and 30 tool calls (21 `exec`, four `wait_agent`, three process `wait`, one `spawn_agent`, and one `followup_task`), with 95.37% cache share, median input 89,853, and maximum input 132,849. The root therefore missed the at-most-20-turn target and crossed the 100k compaction threshold. Two user messages interrupted the two intended long owner waits, producing four `wait_agent` calls; the single same-owner correction was required because the first implementation lacked the mandated side-by-side comparator. Additional avoidable churn came from one incorrect local test-binary path and repeated telemetry-parser corrections. The owner recorded 50 model turns and 48 tool calls, with 96.79% cache share, median input 138,443, and maximum input 225,744; future owners should batch repository reads and verification output more aggressively even when prompt caching is high.
+
+Local evidence accepted the implementation, but hosted/platform evidence did not complete inside this task. Root performed one full-SHA check for `e950d217df23b507a2bc10ba0da59038bce11b0d`, then attempted one synchronous monitor because macOS was the blocking every-claimed-backend gate. The monitor stopped on a transient GitHub HTTP 401 while the run remained active. Root did not poll again: [CI run 29430304670](https://github.com/ClGratton/Spiral/actions/runs/29430304670) and [dependency submission 29430304809](https://github.com/ClGratton/Spiral/actions/runs/29430304809) are handed off pending. This is the required next-session comparison result: routing/session reuse and allowance cost improved substantially, but root and owner turn counts still need reduction without weakening the exact-byte/backend evidence.
 
 ## Completed Roadmap Work
 
@@ -27,7 +35,11 @@ The following commits are on `main` and `origin/main`:
 - `093bdae` — compiled RenderGraph cross-queue execution, ownership translation, accepted-prefix state publication, per-pass bounded context retirement/reuse, focused tests, architecture/verification documentation, and the checked `PLAN.md` item at line 260.
 - `7e5e80b` — portable Vulkan harness parity so Linux/macOS actually invoke every marker they require, including RenderGraph execution.
 
-`PLAN.md` is complete through the cross-queue execution item. The first unchecked item is the representative Scene-viewport integration at line 261.
+Pending exact-head hosted acceptance:
+
+- `e950d21` - live D3D12/Vulkan Scene viewports through named Clear, Raster, and Output Handoff RenderGraph passes, plus a retained direct-recorder oracle that requires exact-byte output equivalence on separate smoke-only outputs.
+
+`PLAN.md` is checked through the cross-queue execution item. The Scene-viewport implementation at line 261 remains the first unchecked item only because exact-head hosted macOS evidence is pending.
 
 ## Accepted Mechanism And Current Behavior
 
@@ -37,6 +49,9 @@ The following commits are on `main` and `origin/main`:
 - D3D12 and Vulkan command lists retain ordered vectors of buffer and texture ownership operations. Every operation is validated before native submission. Duplicate resources reject before tracker, transition, or native command-list mutation, so a failed record cannot leave hidden GPU work.
 - A source command list may stage the portable transition needed for release while the ownership tracker still validates against its committed baseline. Native acceptance commits staged state before release publication; pending/recovery remains tied to the declared pre-release state.
 - The completion smoke accepts either a complete or incomplete first nonblocking query. It no longer assumes an incomplete fence remains incomplete across a second observation; actual same-list reuse is checked at `Begin` and then proved after bounded retirement.
+- The live D3D12 and Vulkan Scene viewport uses three imported-resource graph passes: `Scene Viewport Graph Clear`, `Scene Viewport Graph Raster`, and `Scene Viewport Graph Output Handoff`. The executor surrounds callbacks with those stable debug labels; presentation and ImGui remain native-bridge owned.
+- Smoke mode retains the prior direct recorder as an oracle on separate color/depth outputs. It renders the same immutable prepared frame and requires matching extent, row pitch, and every output byte before publishing only the graph result. The graph color output is restored to `ShaderResource` after comparison.
+- The per-frame graph currently waits for its final completion because its recording contexts are stack-owned. This is a safe lifetime bridge, not frame pacing or deliberate smoothing; persistent overlap remains later roadmap work.
 
 ## Evidence
 
@@ -47,6 +62,8 @@ Local Windows/MSVC Debug evidence on an RTX 3080 Ti:
 - `Scripts/TestRender.ps1 -Configuration Debug -Action vs2022 -SkipBuild` passed. `RenderGraphExecutionSmokeV1` exercised independent D3D12 Graphics-to-Copy execution, a GPU wait, exact readback, and retired same-context reuse.
 - `Scripts/TestVulkan.ps1 -Configuration Debug -Action vs2022 -SkipBuild` passed on split families Graphics 0, Copy 1, and Compute 2. The same RenderGraph smoke exercised an independent Copy queue and GPU wait.
 - `bash -n Scripts/TestVulkan.sh`, `Scripts/CheckCodeStyle.ps1`, and `git diff --check` passed.
+- `SceneViewportRenderGraphV1` passed exact-byte D3D12 comparison at 1560x822 (5,129,280 bytes) and 850x613 (2,084,200 bytes), while the existing Scene A/C identity and B centroid-shift captures remained green.
+- The same marker passed Vulkan comparison at 48x36 (6,912 bytes), 64x48 (12,288 bytes), and the live/resized viewport outputs before native ImGui handoff.
 
 Hosted evidence for behavior/harness head `7e5e80b`:
 
@@ -57,14 +74,18 @@ Hosted evidence for behavior/harness head `7e5e80b`:
 
 Hosted Vulkan evidence is regression/fallback evidence unless the selected runner reports independent queues. The native independent-family qualification remains the local RTX 3080 Ti run. No new Apple Silicon claim was made; the hosted macOS job is Intel MoltenVK coverage only.
 
+Exact-head hosted evidence for `e950d21` is pending. At the single recorded check, CI run `29430304670` had Windows, Ubuntu, and macOS Intel jobs actively executing real build steps; it was not a zero-step billing failure. Do not treat it as passed until its final job conclusions and required viewport marker are inspected.
+
 ## Next Ordered Work
 
-The first unchecked `PLAN.md` item is:
+The first unchecked `PLAN.md` item is still:
 
 > Frame/render graph real-workflow integration: drive a representative multi-pass Scene viewport through the execution path on every backend claimed, with graph/pass capture labels and output equivalence against the pre-graph path before removing that bootstrap path.
 
-Start by classifying and bounding that item under `AGENTS.md`. Assign one exact `terra_medium` owner the vertical slice with `PLAN.md` line 261, `Docs/Architecture/RENDER_GRAPH_ARCHITECTURE.md`, renderer ownership files, the existing D3D12/Vulkan viewport scene renderers, and the required backend captures. Do not remove the bootstrap path until output equivalence is demonstrated on every claimed backend. Do not select speculative native Apple Silicon work without an execution environment that can run its focused verification.
+Do not reimplement or rerun local evidence first. Check exact-head CI run `29430304670` once. If all real Windows, Ubuntu Vulkan, and macOS Intel MoltenVK jobs pass and the hosted Vulkan logs contain the required `SceneViewportRenderGraphV1 ... comparator=exact-byte-pass` marker, change line 261 to `[x]`, replace its pending sentence with the exact run evidence, refresh this handoff, run style/diff checks, and commit/push the documentation-only acceptance. If CI failed, inspect only the failed log and fix the scoped cause before checking the item.
+
+After line 261 is honestly accepted, the next implementation item is the Phase 3 transient-resource capability group at line 262. Start that feature only from a fresh/compacted root context and after rechecking allowance; do not continue from this 132k-maximum root context.
 
 ## Working State
 
-Behavior and harness commits through `7e5e80b` are pushed and have green exact-head hosted evidence. This file is the only deliberate post-evidence change; after its documentation commit, the working tree must be clean. Generated CI artifact downloads are under ignored `output/`. Preserve the first unchecked `PLAN.md` item exactly as the next scope.
+Implementation commit `e950d21` is on `main` and `origin/main`. Its exact-head CI/dependency runs are pending as recorded above, so `PLAN.md` line 261 is deliberately unchecked. This handoff is the only intended post-implementation edit; commit and push it, then leave the working tree clean. Generated captures and CI artifacts remain under ignored `output/`.
