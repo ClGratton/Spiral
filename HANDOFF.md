@@ -4,7 +4,7 @@ Updated 2026-07-15. This is a recovery aid; `PLAN.md` remains the sole roadmap a
 
 ## Objective And Stop Condition
 
-The latest continuation began at 58% weekly allowance used with a user-set floor of 23% remaining. One exact persistent `terra_medium` owner implemented the representative Scene-viewport RenderGraph slice and the root performed targeted synchronization/lifetime review plus one consolidated local acceptance pass. Implementation commit `e950d21` is pushed, but `PLAN.md` line 261 intentionally remains unchecked until exact-head hosted macOS Vulkan evidence completes. The audit snapshot ended at 64% used / 36% remaining. The measured context exceeded the 100k transition threshold: after resolving the genuine pending CI gate, the agent must use supported safe compaction or create/continue a same-goal fresh first-class task, reread the mandatory repository state, and continue automatically while remaining above the 23% floor.
+The latest continuation began at 58% weekly allowance used with a user-set floor of 23% remaining. One exact persistent `terra_medium` owner implemented the representative Scene-viewport RenderGraph slice and the root performed targeted synchronization/lifetime review plus one consolidated local acceptance pass. Implementation commit `e950d21` and exact-head hosted evidence are now accepted; `PLAN.md` line 261 is checked. The audit snapshot ended at 64% used / 36% remaining. The measured context exceeded the 100k transition threshold, so the agent must now use the supported same-goal fresh-task path, reread the mandatory repository state, and continue automatically while remaining above the 23% floor.
 
 ## Token-Efficiency Baseline And Required Next-Session Audit (2026-07-15)
 
@@ -22,7 +22,7 @@ The audit snapshot covers 2026-07-15 15:41:11Z-16:00:47Z (about 19m36s). Weekly 
 
 Root telemetry recorded 29 model turns and 30 tool calls (21 `exec`, four `wait_agent`, three process `wait`, one `spawn_agent`, and one `followup_task`), with 95.37% cache share, median input 89,853, and maximum input 132,849. The root therefore missed the at-most-20-turn target and crossed the 100k compaction threshold. Two user messages interrupted the two intended long owner waits, producing four `wait_agent` calls; the single same-owner correction was required because the first implementation lacked the mandated side-by-side comparator. Additional avoidable churn came from one incorrect local test-binary path and repeated telemetry-parser corrections. The owner recorded 50 model turns and 48 tool calls, with 96.79% cache share, median input 138,443, and maximum input 225,744; future owners should batch repository reads and verification output more aggressively even when prompt caching is high.
 
-Local evidence accepted the implementation, but hosted/platform evidence did not complete inside this task. Root performed one full-SHA check for `e950d217df23b507a2bc10ba0da59038bce11b0d`, then attempted one synchronous monitor because macOS was the blocking every-claimed-backend gate. The monitor stopped on a transient GitHub HTTP 401 while the run remained active. Root did not poll again: [CI run 29430304670](https://github.com/ClGratton/Spiral/actions/runs/29430304670) and [dependency submission 29430304809](https://github.com/ClGratton/Spiral/actions/runs/29430304809) are handed off pending. This is the required next-session comparison result: routing/session reuse and allowance cost improved substantially, but root and owner turn counts still need reduction without weakening the exact-byte/backend evidence.
+Root performed one full-SHA check for `e950d217df23b507a2bc10ba0da59038bce11b0d`, then attempted one synchronous monitor because macOS was the blocking every-claimed-backend gate. That monitor stopped on a transient GitHub HTTP 401 while the run remained active, and root correctly did not poll repeatedly. The later single recovery check confirmed [CI run 29430304670](https://github.com/ClGratton/Spiral/actions/runs/29430304670) and [dependency submission 29430304809](https://github.com/ClGratton/Spiral/actions/runs/29430304809) passed; Windows D3D12, Ubuntu Vulkan/lavapipe, and macOS Intel/MoltenVK logs contain the required `comparator=exact-byte-pass` markers. This is the required next-session comparison result: routing/session reuse and allowance cost improved substantially, but root and owner turn counts still need reduction without weakening the exact-byte/backend evidence.
 
 ## Completed Roadmap Work
 
@@ -35,11 +35,11 @@ The following commits are on `main` and `origin/main`:
 - `093bdae` — compiled RenderGraph cross-queue execution, ownership translation, accepted-prefix state publication, per-pass bounded context retirement/reuse, focused tests, architecture/verification documentation, and the checked `PLAN.md` item at line 260.
 - `7e5e80b` — portable Vulkan harness parity so Linux/macOS actually invoke every marker they require, including RenderGraph execution.
 
-Pending exact-head hosted acceptance:
+Latest accepted slice:
 
 - `e950d21` - live D3D12/Vulkan Scene viewports through named Clear, Raster, and Output Handoff RenderGraph passes, plus a retained direct-recorder oracle that requires exact-byte output equivalence on separate smoke-only outputs.
 
-`PLAN.md` is checked through the cross-queue execution item. The Scene-viewport implementation at line 261 remains the first unchecked item only because exact-head hosted macOS evidence is pending.
+`PLAN.md` is checked through the Scene-viewport integration item at line 261. The transient-resource capability group at line 262 is the first unchecked item.
 
 ## Accepted Mechanism And Current Behavior
 
@@ -74,18 +74,16 @@ Hosted evidence for behavior/harness head `7e5e80b`:
 
 Hosted Vulkan evidence is regression/fallback evidence unless the selected runner reports independent queues. The native independent-family qualification remains the local RTX 3080 Ti run. No new Apple Silicon claim was made; the hosted macOS job is Intel MoltenVK coverage only.
 
-Exact-head hosted evidence for `e950d21` is pending. At the single recorded check, CI run `29430304670` had Windows, Ubuntu, and macOS Intel jobs actively executing real build steps; it was not a zero-step billing failure. Do not treat it as passed until its final job conclusions and required viewport marker are inspected.
+Exact-head CI run `29430304670` passed real Windows D3D12, Ubuntu Vulkan/lavapipe, macOS Intel/MoltenVK, and code-style jobs. Its backend logs contain the required `SceneViewportRenderGraphV1 ... comparator=exact-byte-pass` markers. Dependency submission `29430304809` also passed.
 
 ## Next Ordered Work
 
-The first unchecked `PLAN.md` item is still:
+The first unchecked `PLAN.md` item is:
 
-> Frame/render graph real-workflow integration: drive a representative multi-pass Scene viewport through the execution path on every backend claimed, with graph/pass capture labels and output equivalence against the pre-graph path before removing that bootstrap path.
+> Phase 3 transient-resource capability group for placement/aliasing/barriers with a correct committed/pooled non-aliased fallback and GPU-retired reuse, defined and exercised before transient allocation is integrated.
 
-Do not reimplement or rerun local evidence first. Check exact-head CI run `29430304670` once. If all real Windows, Ubuntu Vulkan, and macOS Intel MoltenVK jobs pass and the hosted Vulkan logs contain the required `SceneViewportRenderGraphV1 ... comparator=exact-byte-pass` marker, change line 261 to `[x]`, replace its pending sentence with the exact run evidence, refresh this handoff, run style/diff checks, and commit/push the documentation-only acceptance. If CI failed, inspect only the failed log and fix the scoped cause before checking the item.
-
-After line 261 is honestly accepted, the next implementation item is the Phase 3 transient-resource capability group at line 262. The agent that resolves the gate must perform the supported safe-compaction or same-goal fresh-task transition itself, reread the mandatory state, recheck allowance, and continue automatically. Return control only if no supported transition exists, a genuine CI/user decision blocks progress, or the 23%-remaining floor has been reached.
+Create/continue the supported same-goal fresh first-class task, reread the mandatory state and the transient-resource sections of `Docs/Architecture/RENDER_GRAPH_ARCHITECTURE.md`, recheck allowance, classify the slice, and continue automatically. Return control only if no supported transition exists, a genuine CI/user decision blocks progress, or the 23%-remaining floor has been reached.
 
 ## Working State
 
-Implementation commit `e950d21` is on `main` and `origin/main`. Its exact-head CI/dependency runs are pending as recorded above, so `PLAN.md` line 261 is deliberately unchecked. This handoff is the only intended post-implementation edit; commit and push it, then leave the working tree clean. Generated captures and CI artifacts remain under ignored `output/`.
+Implementation commit `e950d21` is on `main` and `origin/main` with green exact-head CI/dependency evidence. This documentation acceptance should be committed and pushed before the same-goal fresh task starts; leave the working tree clean. Generated captures and CI artifacts remain under ignored `output/`.
