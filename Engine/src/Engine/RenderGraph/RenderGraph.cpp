@@ -6,6 +6,20 @@
 
 namespace Engine
 {
+    RenderGraph::ExecutionContext::ExecutionContext(RHI::CommandList& commandList, const std::vector<RHI::Texture*>& textures,
+        const std::vector<RHI::Buffer*>& buffers, const std::vector<bool>& declared)
+        : m_CommandList(&commandList), m_Textures(&textures), m_Buffers(&buffers), m_Declared(&declared) {}
+
+    RHI::CommandList& RenderGraph::ExecutionContext::GetCommandList() const { return *m_CommandList; }
+    RHI::Texture* RenderGraph::ExecutionContext::GetTexture(ResourceHandle resource) const
+    {
+        return resource.IsValid() && resource.Index < m_Declared->size() && (*m_Declared)[resource.Index] ? (*m_Textures)[resource.Index] : nullptr;
+    }
+    RHI::Buffer* RenderGraph::ExecutionContext::GetBuffer(ResourceHandle resource) const
+    {
+        return resource.IsValid() && resource.Index < m_Declared->size() && (*m_Declared)[resource.Index] ? (*m_Buffers)[resource.Index] : nullptr;
+    }
+
     RenderGraph::ResourceHandle RenderGraph::AddTexture(RHI::TextureDescription description, ResourceLifetimeKind lifetime)
     {
         ResourceDescription resource;
@@ -39,7 +53,29 @@ namespace Engine
 
         m_DebugPasses.emplace_back(pass.DebugName);
         m_Passes.emplace_back(std::move(pass));
+        m_Callbacks.emplace_back();
         return handle;
+    }
+
+    void RenderGraph::SetPassCallback(PassHandle pass, PassCallback callback)
+    {
+        if (IsValid(pass)) m_Callbacks[pass.Index] = std::move(callback);
+    }
+
+    bool RenderGraph::BindTexture(ResourceHandle resource, RHI::Texture& texture)
+    {
+        if (!IsValid(resource) || m_Resources[resource.Index].Kind != ResourceKind::Texture || !Matches(m_Resources[resource.Index].Texture, texture.GetDescription())) return false;
+        if (m_BoundTextures.size() != m_Resources.size()) { m_BoundTextures.resize(m_Resources.size()); m_BoundBuffers.resize(m_Resources.size()); }
+        m_BoundTextures[resource.Index] = &texture;
+        return true;
+    }
+
+    bool RenderGraph::BindBuffer(ResourceHandle resource, RHI::Buffer& buffer)
+    {
+        if (!IsValid(resource) || m_Resources[resource.Index].Kind != ResourceKind::Buffer || !Matches(m_Resources[resource.Index].Buffer, buffer.GetDescription())) return false;
+        if (m_BoundTextures.size() != m_Resources.size()) { m_BoundTextures.resize(m_Resources.size()); m_BoundBuffers.resize(m_Resources.size()); }
+        m_BoundBuffers[resource.Index] = &buffer;
+        return true;
     }
 
     void RenderGraph::AddDebugPass(std::string name)
@@ -81,6 +117,100 @@ namespace Engine
         m_Passes.clear();
         m_ExplicitDependencies.clear();
         m_DebugPasses.clear();
+        m_Callbacks.clear();
+        m_BoundTextures.clear();
+        m_BoundBuffers.clear();
+    }
+
+    RenderGraph::ExecuteResult RenderGraph::Execute(RHI::Device& device, const CompileResult& compiled)
+    {
+        ExecuteResult result;
+        if (!compiled.Success) { result.Error = "Cannot execute an unsuccessful render-graph compilation."; return result; }
+        if (m_RecordingDevice && m_RecordingDevice != &device) { result.Error = "Render graph recording contexts belong to another RHI device."; return result; }
+        if (compiled.Passes.size() != m_Passes.size() || m_Callbacks.size() != m_Passes.size()) { result.Error = "Compiled passes do not match this render graph."; return result; }
+        if (m_BoundTextures.size() != m_Resources.size() || m_BoundBuffers.size() != m_Resources.size()) { result.Error = "Render graph resources are not all explicitly bound."; return result; }
+        for (const CompiledPass& pass : compiled.Passes)
+        {
+            if (!IsValid(pass.Pass) || pass.DebugName != m_Passes[pass.Pass.Index].DebugName || pass.Queue != m_Passes[pass.Pass.Index].Queue) { result.Error = "A compiled pass does not match this render graph."; return result; }
+            if (pass.Queue != RHI::QueueType::Graphics) { result.Error = "Single-queue execution accepts graphics passes only."; return result; }
+            if (pass.FirstBarrier > compiled.Barriers.size() || pass.BarrierCount > compiled.Barriers.size() - pass.FirstBarrier) { result.Error = "A compiled pass has an invalid barrier range."; return result; }
+            if (!m_Callbacks[pass.Pass.Index]) { result.Error = "A compiled graph pass has no execution callback."; return result; }
+            for (u32 barrierIndex = pass.FirstBarrier; barrierIndex < pass.FirstBarrier + pass.BarrierCount; ++barrierIndex)
+                if (!IsValid(compiled.Barriers[barrierIndex].Resource) || compiled.Barriers[barrierIndex].Pass.Index != pass.Pass.Index) { result.Error = "A compiled graph barrier is invalid."; return result; }
+        }
+        for (const QueueTransition& transition : compiled.QueueTransitions)
+            if (transition.SourceQueue != transition.DestinationQueue) { result.Error = "Cross-queue graph execution is not implemented."; return result; }
+        for (u32 index = 0; index < m_Resources.size(); ++index)
+        {
+            const ResourceDescription& resource = m_Resources[index];
+            RHI::ResourceState observed = RHI::ResourceState::Unknown;
+            const bool valid = resource.Kind == ResourceKind::Texture
+                ? m_BoundTextures[index] && !m_BoundBuffers[index] && Matches(resource.Texture, m_BoundTextures[index]->GetDescription())
+                    && device.OwnsResource(m_BoundTextures[index]) && device.QueryResourceState(m_BoundTextures[index], observed)
+                : m_BoundBuffers[index] && !m_BoundTextures[index] && Matches(resource.Buffer, m_BoundBuffers[index]->GetDescription())
+                    && device.OwnsResource(m_BoundBuffers[index]) && device.QueryResourceState(m_BoundBuffers[index], observed);
+            if (!valid || observed != resource.InitialState) { result.Error = "A bound graph resource has invalid ownership or does not match its declared initial state."; return result; }
+        }
+        m_RecordingDevice = &device;
+        u32 contextIndex = InvalidIndex;
+        for (u32 index = 0; index < m_RecordingContexts.size(); ++index)
+        {
+            RecordingContext& candidate = m_RecordingContexts[index];
+            if (!candidate.Completion.IsValid()) { contextIndex = index; break; }
+            const RHI::CompletionStatus completion = device.QueryCompletion(candidate.Completion);
+            if (completion == RHI::CompletionStatus::Complete) { contextIndex = index; result.ReusedRetiredContext = true; break; }
+            if (completion == RHI::CompletionStatus::Invalid || completion == RHI::CompletionStatus::Failed) { result.Error = "A graph recording-context completion query failed."; return result; }
+        }
+        if (contextIndex == InvalidIndex && m_RecordingContexts.size() < 3)
+        {
+            RecordingContext candidate; candidate.CommandList = device.CreateCommandList(RHI::QueueType::Graphics, "RenderGraph Execution");
+            if (!candidate.CommandList) { result.Error = "Could not create a graph recording context."; return result; }
+            m_RecordingContexts.emplace_back(std::move(candidate)); contextIndex = static_cast<u32>(m_RecordingContexts.size() - 1);
+        }
+        if (contextIndex == InvalidIndex) { result.Error = "All bounded graph recording contexts are in flight."; return result; }
+        result.RecordingContextIndex = contextIndex;
+        RecordingContext& context = m_RecordingContexts[contextIndex];
+        const auto discardContext = [this, contextIndex]() { m_RecordingContexts.erase(m_RecordingContexts.begin() + contextIndex); };
+        if (!context.CommandList->Begin()) { result.Error = "Could not begin a GPU-retired graph recording context."; discardContext(); return result; }
+        for (const CompiledPass& compiledPass : compiled.Passes)
+        {
+            for (u32 barrierIndex = compiledPass.FirstBarrier; barrierIndex < compiledPass.FirstBarrier + compiledPass.BarrierCount; ++barrierIndex)
+            {
+                const Barrier& barrier = compiled.Barriers[barrierIndex];
+                const bool transitioned = m_Resources[barrier.Resource.Index].Kind == ResourceKind::Texture
+                    ? context.CommandList->TransitionTexture(*m_BoundTextures[barrier.Resource.Index], barrier.After)
+                    : context.CommandList->TransitionBuffer(*m_BoundBuffers[barrier.Resource.Index], barrier.After);
+                if (!transitioned) { result.Error = "Could not record a compiled graph transition."; discardContext(); return result; }
+            }
+            const PassDescription& pass = m_Passes[compiledPass.Pass.Index];
+            std::vector<bool> declared(m_Resources.size(), false);
+            for (const ResourceUse& use : pass.Uses) declared[use.Resource.Index] = true;
+            ExecutionContext execution(*context.CommandList, m_BoundTextures, m_BoundBuffers, declared);
+            try
+            {
+                if (!m_Callbacks[compiledPass.Pass.Index](execution)) { result.Error = "A graph pass callback failed."; discardContext(); return result; }
+            }
+            catch (...)
+            {
+                result.Error = "A graph pass callback threw an exception."; discardContext(); return result;
+            }
+        }
+        if (!context.CommandList->End()) { result.Error = "Could not close graph recording."; discardContext(); return result; }
+        result.Completion = device.Submit(*context.CommandList);
+        if (!result.Completion.IsValid()) { result.Error = "Could not submit graph recording."; discardContext(); return result; }
+        context.Completion = result.Completion;
+        for (u32 index = 0; index < m_Resources.size(); ++index)
+        {
+            if (m_Resources[index].Lifetime != ResourceLifetimeKind::Imported) continue;
+            RHI::ResourceState observed = RHI::ResourceState::Unknown;
+            const bool queried = m_Resources[index].Kind == ResourceKind::Texture
+                ? device.QueryResourceState(m_BoundTextures[index], observed) : device.QueryResourceState(m_BoundBuffers[index], observed);
+            RHI::ResourceState expected = m_Resources[index].InitialState;
+            for (const Barrier& barrier : compiled.Barriers) if (barrier.Resource.Index == index) expected = barrier.After;
+            if (!queried || observed != expected) { result.Error = "Submitted graph did not publish its imported final state."; return result; }
+        }
+        result.Success = true;
+        return result;
     }
 
     RenderGraph::CompileResult RenderGraph::Compile() const
@@ -280,6 +410,20 @@ namespace Engine
     bool RenderGraph::IsValid(PassHandle handle) const
     {
         return handle.IsValid() && handle.Index < m_Passes.size();
+    }
+
+    bool RenderGraph::Matches(const RHI::TextureDescription& expected, const RHI::TextureDescription& actual)
+    {
+        return expected.Extent.Width == actual.Extent.Width && expected.Extent.Height == actual.Extent.Height
+            && expected.TextureFormat == actual.TextureFormat && expected.Usage == actual.Usage
+            && expected.InitialState == actual.InitialState && expected.MipLevels == actual.MipLevels
+            && expected.ArrayLayers == actual.ArrayLayers && expected.SampleCount == actual.SampleCount;
+    }
+
+    bool RenderGraph::Matches(const RHI::BufferDescription& expected, const RHI::BufferDescription& actual)
+    {
+        return expected.SizeBytes == actual.SizeBytes && expected.StrideBytes == actual.StrideBytes
+            && expected.Usage == actual.Usage && expected.CpuAccess == actual.CpuAccess && expected.InitialState == actual.InitialState;
     }
 
     RenderGraph::ResourceUse RenderGraph::Read(ResourceHandle resource, RHI::ResourceState state, RHI::ShaderStage stages)

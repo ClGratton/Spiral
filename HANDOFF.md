@@ -4,6 +4,14 @@ Updated 2026-07-15. This file is a recovery aid, not roadmap authority; `PLAN.md
 
 ## Current Slice
 
+### Complete Locally: Phase 3 Frame/Render-Graph Execution Core
+
+The checked execution-core item adds a backend-neutral graphics-only executor. It validates every explicit physical binding's exact device ownership, kind, complete shape/size/usage description, and committed initial state before recording; emits compiled same-queue texture/buffer barriers; confines callbacks to declared handles and the assigned RHI list; stops on validation/callback/recording/submission/completion failure; commits imported final states only through a valid submission token; and manages a bounded three-context pool by exact-token retirement. Cross-queue execution, transient allocation/reuse, and viewport adoption remain later items.
+
+Deterministic `EngineTests` prove rejection before recording, access confinement, failure propagation, compiled barrier/callback order, pending-versus-committed state timing, three-token exhaustion, completion failure, and reuse of only the exact retired context/list. Real `RenderGraphExecutionSmokeV1` runs two imported-texture clear/finalize passes twice on both local D3D12 and Vulkan/NVRHI, requires three graph-derived transitions, ordered callbacks, undeclared rejection, compact deterministic 3x2 RGBA8 bytes, a completed first token, and the same retired recording context on the second execution. Local Windows/MSVC Debug build, `EngineTests` 45/45, `TestRender.ps1`, `TestVulkan.ps1`, `CheckCodeStyle.ps1`, and `git diff --check` passed. Hosted CI is pending the implementation push; after it completes, record the exact run and resulting commits here and in `PLAN.md`.
+
+## Current Slice
+
 ### Latest: Phase 3 Resource-State Query Prerequisite
 
 The checked graph-import prerequisite adds read-only `RHI::Device::QueryResourceState` overloads for texture and buffer wrappers. Queries require a live wrapper owned by that exact RHI device and return only portable `ResourceState`; null, foreign-backend, same-backend-other-device, and `Unknown` values fail. There is no external state adoption or native-state exposure.

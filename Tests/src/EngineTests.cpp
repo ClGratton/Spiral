@@ -2152,6 +2152,441 @@ float4 main(VertexInput input) : SV_Position
             && Expect(issued.IsValid(), "completion token preserves opaque nonzero device and submission identities");
     }
 
+    class RenderGraphTestTexture final : public Engine::RHI::Texture
+    {
+    public:
+        RenderGraphTestTexture(Engine::u64 ownerId, Engine::RHI::TextureDescription description,
+            Engine::RHI::ResourceState committedState)
+            : m_OwnerId(ownerId), m_Description(std::move(description)), m_State(committedState) {}
+
+        const Engine::RHI::TextureDescription& GetDescription() const override { return m_Description; }
+        Engine::u64 GetOwnerId() const { return m_OwnerId; }
+        Engine::RHI::ResourceState GetState() const { return m_State; }
+        void SetState(Engine::RHI::ResourceState state) { m_State = state; }
+
+    private:
+        Engine::u64 m_OwnerId = 0;
+        Engine::RHI::TextureDescription m_Description;
+        Engine::RHI::ResourceState m_State = Engine::RHI::ResourceState::Unknown;
+    };
+
+    class RenderGraphTestBuffer final : public Engine::RHI::Buffer
+    {
+    public:
+        RenderGraphTestBuffer(Engine::u64 ownerId, Engine::RHI::BufferDescription description,
+            Engine::RHI::ResourceState committedState)
+            : m_OwnerId(ownerId), m_Description(std::move(description)), m_State(committedState) {}
+
+        const Engine::RHI::BufferDescription& GetDescription() const override { return m_Description; }
+        void* Map() override { return nullptr; }
+        void Unmap() override {}
+        Engine::u64 GetOwnerId() const { return m_OwnerId; }
+        Engine::RHI::ResourceState GetState() const { return m_State; }
+        void SetState(Engine::RHI::ResourceState state) { m_State = state; }
+
+    private:
+        Engine::u64 m_OwnerId = 0;
+        Engine::RHI::BufferDescription m_Description;
+        Engine::RHI::ResourceState m_State = Engine::RHI::ResourceState::Unknown;
+    };
+
+    class RenderGraphTestCommandList final : public Engine::RHI::CommandList
+    {
+    public:
+        RenderGraphTestCommandList(Engine::u32 id, int& beginCount, std::vector<Engine::u32>& begunIds,
+            std::vector<std::string>& events)
+            : m_Id(id), m_BeginCount(beginCount), m_BegunIds(begunIds), m_Events(events) {}
+
+        Engine::RHI::QueueType GetQueueType() const override { return Engine::RHI::QueueType::Graphics; }
+        bool Begin() override
+        {
+            if (m_Recording) return false;
+            m_Recording = true;
+            m_Closed = false;
+            m_TextureTransitions.clear();
+            m_BufferTransitions.clear();
+            ++m_BeginCount;
+            m_BegunIds.push_back(m_Id);
+            return true;
+        }
+        bool End() override
+        {
+            if (!m_Recording) return false;
+            m_Recording = false;
+            m_Closed = true;
+            return true;
+        }
+        void BeginDebugMarker(std::string_view) override {}
+        void EndDebugMarker() override {}
+        bool BindViewportOutputs(Engine::RHI::Texture&, Engine::RHI::Texture*) override { return m_Recording; }
+        bool ClearViewportOutputs(const Engine::RHI::ViewportClear&) override { return m_Recording; }
+        bool TransitionTexture(Engine::RHI::Texture& texture, Engine::RHI::ResourceState state) override
+        {
+            auto* resource = dynamic_cast<RenderGraphTestTexture*>(&texture);
+            if (!m_Recording || !resource || state == Engine::RHI::ResourceState::Unknown) return false;
+            m_TextureTransitions.push_back({ resource, state });
+            m_Events.push_back("texture:" + resource->GetDescription().DebugName + ":" + Engine::RenderGraph::ToString(state));
+            return true;
+        }
+        bool TransitionBuffer(Engine::RHI::Buffer& buffer, Engine::RHI::ResourceState state) override
+        {
+            auto* resource = dynamic_cast<RenderGraphTestBuffer*>(&buffer);
+            if (!m_Recording || !resource || state == Engine::RHI::ResourceState::Unknown) return false;
+            m_BufferTransitions.push_back({ resource, state });
+            m_Events.push_back("buffer:" + resource->GetDescription().DebugName + ":" + Engine::RenderGraph::ToString(state));
+            return true;
+        }
+        void SetGraphicsPipeline(Engine::RHI::Pipeline&) override {}
+        void SetGraphicsConstantBuffer(Engine::u32, Engine::RHI::Buffer&) override {}
+        void SetViewport(const Engine::RHI::Viewport&) override {}
+        void SetScissorRect(const Engine::RHI::ScissorRect&) override {}
+        void SetVertexBuffer(Engine::u32, Engine::RHI::Buffer&) override {}
+        void SetIndexBuffer(Engine::RHI::Buffer&, Engine::RHI::IndexFormat) override {}
+        bool CopyBuffer(Engine::RHI::Buffer&, Engine::u64, Engine::RHI::Buffer&, Engine::u64, Engine::u64) override { return m_Recording; }
+        void DrawIndexed(Engine::u32, Engine::u32, Engine::u32, int, Engine::u32) override {}
+        void ResetQueryPool(Engine::RHI::QueryPool&, Engine::u32, Engine::u32) override {}
+        void WriteTimestamp(Engine::RHI::QueryPool&, Engine::u32) override {}
+        void ResolveQueryPool(Engine::RHI::QueryPool&, Engine::u32, Engine::u32) override {}
+
+        Engine::u32 GetId() const { return m_Id; }
+        bool Commit()
+        {
+            if (!m_Closed) return false;
+            for (const TextureTransition& transition : m_TextureTransitions) transition.Resource->SetState(transition.State);
+            for (const BufferTransition& transition : m_BufferTransitions) transition.Resource->SetState(transition.State);
+            m_Closed = false;
+            return true;
+        }
+
+    private:
+        struct TextureTransition { RenderGraphTestTexture* Resource = nullptr; Engine::RHI::ResourceState State = Engine::RHI::ResourceState::Unknown; };
+        struct BufferTransition { RenderGraphTestBuffer* Resource = nullptr; Engine::RHI::ResourceState State = Engine::RHI::ResourceState::Unknown; };
+        Engine::u32 m_Id = 0;
+        int& m_BeginCount;
+        std::vector<Engine::u32>& m_BegunIds;
+        std::vector<std::string>& m_Events;
+        bool m_Recording = false;
+        bool m_Closed = false;
+        std::vector<TextureTransition> m_TextureTransitions;
+        std::vector<BufferTransition> m_BufferTransitions;
+    };
+
+    class RenderGraphTestDevice final : public Engine::RHI::Device
+    {
+    public:
+        explicit RenderGraphTestDevice(Engine::u64 ownerId = 7001) : m_OwnerId(ownerId)
+        {
+            m_Completions.push_back(Engine::RHI::CompletionStatus::Invalid);
+        }
+
+        const Engine::RHI::DeviceDescription& GetDescription() const override { return m_Description; }
+        const Engine::RHI::DeviceCapabilities& GetCapabilities() const override { return m_Capabilities; }
+        Engine::Scope<Engine::RHI::Buffer> CreateBuffer(const Engine::RHI::BufferDescription& description) override
+        {
+            return Engine::CreateScope<RenderGraphTestBuffer>(m_OwnerId, description, description.InitialState);
+        }
+        Engine::Scope<Engine::RHI::Texture> CreateTexture(const Engine::RHI::TextureDescription& description) override
+        {
+            return Engine::CreateScope<RenderGraphTestTexture>(m_OwnerId, description, description.InitialState);
+        }
+        bool OwnsResource(const Engine::RHI::Buffer* resource) const override
+        {
+            const auto* buffer = dynamic_cast<const RenderGraphTestBuffer*>(resource);
+            return buffer && buffer->GetOwnerId() == m_OwnerId;
+        }
+        bool OwnsResource(const Engine::RHI::Texture* resource) const override
+        {
+            const auto* texture = dynamic_cast<const RenderGraphTestTexture*>(resource);
+            return texture && texture->GetOwnerId() == m_OwnerId;
+        }
+        bool QueryResourceState(const Engine::RHI::Buffer* resource, Engine::RHI::ResourceState& state) const override
+        {
+            const auto* buffer = dynamic_cast<const RenderGraphTestBuffer*>(resource);
+            if (!OwnsResource(resource) || buffer->GetState() == Engine::RHI::ResourceState::Unknown) return false;
+            state = buffer->GetState();
+            return true;
+        }
+        bool QueryResourceState(const Engine::RHI::Texture* resource, Engine::RHI::ResourceState& state) const override
+        {
+            const auto* texture = dynamic_cast<const RenderGraphTestTexture*>(resource);
+            if (!OwnsResource(resource) || texture->GetState() == Engine::RHI::ResourceState::Unknown) return false;
+            state = texture->GetState();
+            return true;
+        }
+        Engine::Scope<Engine::RHI::Shader> CreateShader(const Engine::RHI::ShaderDescription&) override { return nullptr; }
+        Engine::Scope<Engine::RHI::Pipeline> CreatePipeline(const Engine::RHI::PipelineDescription&) override { return nullptr; }
+        Engine::Scope<Engine::RHI::QueryPool> CreateQueryPool(const Engine::RHI::QueryPoolDescription&) override { return nullptr; }
+        Engine::Scope<Engine::RHI::CommandList> CreateCommandList(Engine::RHI::QueueType queue, std::string_view) override
+        {
+            if (queue != Engine::RHI::QueueType::Graphics) return nullptr;
+            const Engine::u32 id = ++CreatedCommandListCount;
+            return Engine::CreateScope<RenderGraphTestCommandList>(id, BeginCount, BegunCommandListIds, Events);
+        }
+        bool UploadBuffer(Engine::RHI::Buffer&, const void*, Engine::u64, Engine::u64) override { return false; }
+        bool ReadbackTexture(Engine::RHI::Texture&, Engine::RHI::TextureReadback&) override { return false; }
+        Engine::RHI::CompletionToken Submit(Engine::RHI::CommandList& commandList) override
+        {
+            auto* list = dynamic_cast<RenderGraphTestCommandList*>(&commandList);
+            if (!list || !list->Commit()) return {};
+            const Engine::u64 submissionId = m_Completions.size();
+            m_Completions.push_back(Engine::RHI::CompletionStatus::Incomplete);
+            ++SubmitCount;
+            SubmittedCommandListIds.push_back(list->GetId());
+            return { m_OwnerId, submissionId };
+        }
+        Engine::RHI::CompletionStatus QueryCompletion(const Engine::RHI::CompletionToken& token) override
+        {
+            if (token.DeviceId != m_OwnerId || token.SubmissionId == 0 || token.SubmissionId >= m_Completions.size()) return Engine::RHI::CompletionStatus::Invalid;
+            return m_Completions[static_cast<size_t>(token.SubmissionId)];
+        }
+        bool WaitForCompletion(const Engine::RHI::CompletionToken& token, Engine::u32) override
+        {
+            return QueryCompletion(token) == Engine::RHI::CompletionStatus::Complete;
+        }
+        bool SubmitAndWait(Engine::RHI::CommandList& commandList) override
+        {
+            const Engine::RHI::CompletionToken token = Submit(commandList);
+            if (!token.IsValid()) return false;
+            SetCompletion(token, Engine::RHI::CompletionStatus::Complete);
+            return true;
+        }
+        void WaitIdle() override {}
+
+        void SetCompletion(const Engine::RHI::CompletionToken& token, Engine::RHI::CompletionStatus status)
+        {
+            if (token.DeviceId == m_OwnerId && token.SubmissionId > 0 && token.SubmissionId < m_Completions.size())
+                m_Completions[static_cast<size_t>(token.SubmissionId)] = status;
+        }
+
+        int BeginCount = 0;
+        int SubmitCount = 0;
+        Engine::u32 CreatedCommandListCount = 0;
+        std::vector<Engine::u32> BegunCommandListIds;
+        std::vector<Engine::u32> SubmittedCommandListIds;
+        std::vector<std::string> Events;
+
+    private:
+        Engine::u64 m_OwnerId = 0;
+        Engine::RHI::DeviceDescription m_Description;
+        Engine::RHI::DeviceCapabilities m_Capabilities;
+        std::vector<Engine::RHI::CompletionStatus> m_Completions;
+    };
+
+    Engine::RHI::TextureDescription MakeExecutionTexture(std::string name,
+        Engine::RHI::ResourceState initialState = Engine::RHI::ResourceState::CopyDest)
+    {
+        Engine::RHI::TextureDescription description;
+        description.DebugName = std::move(name);
+        description.Extent = { 8, 8 };
+        description.TextureFormat = Engine::RHI::Format::R8G8B8A8Unorm;
+        description.Usage = static_cast<Engine::RHI::TextureUsage>(
+            static_cast<Engine::u32>(Engine::RHI::TextureUsage::RenderTarget)
+            | static_cast<Engine::u32>(Engine::RHI::TextureUsage::CopySource)
+            | static_cast<Engine::u32>(Engine::RHI::TextureUsage::CopyDest));
+        description.InitialState = initialState;
+        return description;
+    }
+
+    Engine::RHI::BufferDescription MakeExecutionBuffer(std::string name,
+        Engine::RHI::ResourceState initialState = Engine::RHI::ResourceState::CopyDest)
+    {
+        Engine::RHI::BufferDescription description;
+        description.DebugName = std::move(name);
+        description.SizeBytes = 64;
+        description.Usage = static_cast<Engine::RHI::BufferUsage>(
+            static_cast<Engine::u32>(Engine::RHI::BufferUsage::CopySource)
+            | static_cast<Engine::u32>(Engine::RHI::BufferUsage::CopyDest));
+        description.InitialState = initialState;
+        return description;
+    }
+
+    bool TestRenderGraphExecutorRejectsBindingsBeforeRecording()
+    {
+        using namespace Engine;
+        using namespace Engine::RHI;
+        int callbacks = 0;
+        RenderGraph graph;
+        const TextureDescription description = MakeExecutionTexture("binding");
+        const auto resource = graph.AddTexture(description, RenderGraph::ResourceLifetimeKind::Imported);
+        const auto pass = graph.AddPass("Read");
+        graph.AddRead(pass, resource, ResourceState::CopySource, ShaderStage::Pixel);
+        graph.SetPassCallback(pass, [&callbacks](RenderGraph::ExecutionContext&) { ++callbacks; return true; });
+        const RenderGraph::CompileResult compiled = graph.Compile();
+
+        RenderGraphTestDevice foreignDevice(8001);
+        RenderGraphTestTexture foreign(8002, description, ResourceState::CopyDest);
+        const bool foreignBound = graph.BindTexture(resource, foreign);
+        const RenderGraph::ExecuteResult foreignResult = graph.Execute(foreignDevice, compiled);
+
+        RenderGraph mismatchGraph;
+        const auto mismatchResource = mismatchGraph.AddTexture(description, RenderGraph::ResourceLifetimeKind::Imported);
+        const auto mismatchPass = mismatchGraph.AddPass("Read");
+        mismatchGraph.AddRead(mismatchPass, mismatchResource, ResourceState::CopySource, ShaderStage::Pixel);
+        mismatchGraph.SetPassCallback(mismatchPass, [&callbacks](RenderGraph::ExecutionContext&) { ++callbacks; return true; });
+        RenderGraphTestDevice mismatchDevice(8003);
+        RenderGraphTestTexture mismatch(8003, description, ResourceState::Common);
+        const bool mismatchBound = mismatchGraph.BindTexture(mismatchResource, mismatch);
+        const RenderGraph::ExecuteResult mismatchResult = mismatchGraph.Execute(mismatchDevice, mismatchGraph.Compile());
+
+        RenderGraph invalidDescriptionGraph;
+        const auto invalidResource = invalidDescriptionGraph.AddTexture(description, RenderGraph::ResourceLifetimeKind::Imported);
+        const auto invalidPass = invalidDescriptionGraph.AddPass("Read");
+        invalidDescriptionGraph.AddRead(invalidPass, invalidResource, ResourceState::CopySource, ShaderStage::Pixel);
+        invalidDescriptionGraph.SetPassCallback(invalidPass, [&callbacks](RenderGraph::ExecutionContext&) { ++callbacks; return true; });
+        TextureDescription wrongDescription = description;
+        wrongDescription.Extent.Width += 1;
+        RenderGraphTestTexture wrongDescriptionTexture(8004, wrongDescription, ResourceState::CopyDest);
+        RenderGraphTestDevice invalidDescriptionDevice(8004);
+        const bool invalidDescriptionBound = invalidDescriptionGraph.BindTexture(invalidResource, wrongDescriptionTexture);
+        const RenderGraph::ExecuteResult invalidDescriptionResult = invalidDescriptionGraph.Execute(invalidDescriptionDevice, invalidDescriptionGraph.Compile());
+
+        return Expect(compiled.Success && foreignBound && !foreignResult.Success, "foreign resource binding is rejected by the exact device before execution")
+            && Expect(mismatchBound && !mismatchResult.Success, "imported committed-state mismatch is rejected before execution")
+            && Expect(!invalidDescriptionBound && !invalidDescriptionResult.Success, "description mismatch cannot become a physical graph binding")
+            && Expect(callbacks == 0, "binding validation failures invoke no pass callback")
+            && Expect(foreignDevice.BeginCount == 0 && mismatchDevice.BeginCount == 0 && invalidDescriptionDevice.BeginCount == 0,
+                "binding validation failures begin no command recording")
+            && Expect(foreignDevice.SubmitCount == 0 && mismatchDevice.SubmitCount == 0 && invalidDescriptionDevice.SubmitCount == 0,
+                "binding validation failures submit no work");
+    }
+
+    bool TestRenderGraphExecutorStopsAfterCallbackFailure()
+    {
+        using namespace Engine;
+        using namespace Engine::RHI;
+        RenderGraph graph;
+        const TextureDescription description = MakeExecutionTexture("failure", ResourceState::Common);
+        const auto resource = graph.AddTexture(description, RenderGraph::ResourceLifetimeKind::Imported);
+        const auto failing = graph.AddPass("Failing");
+        const auto later = graph.AddPass("Later");
+        graph.AddRead(failing, resource, ResourceState::Common, ShaderStage::Pixel);
+        graph.AddRead(later, resource, ResourceState::Common, ShaderStage::Pixel);
+        graph.AddDependency(failing, later);
+        int failingCallbacks = 0;
+        int laterCallbacks = 0;
+        graph.SetPassCallback(failing, [&failingCallbacks](RenderGraph::ExecutionContext&) { ++failingCallbacks; return false; });
+        graph.SetPassCallback(later, [&laterCallbacks](RenderGraph::ExecutionContext&) { ++laterCallbacks; return true; });
+        RenderGraphTestTexture texture(8101, description, ResourceState::Common);
+        RenderGraphTestDevice device(8101);
+        const bool bound = graph.BindTexture(resource, texture);
+        const RenderGraph::ExecuteResult result = graph.Execute(device, graph.Compile());
+        return Expect(bound && !result.Success && result.Error.find("callback failed") != std::string::npos, "callback failure fails graph execution explicitly")
+            && Expect(failingCallbacks == 1 && laterCallbacks == 0, "callback failure prevents every later callback")
+            && Expect(device.BeginCount == 1 && device.SubmitCount == 0, "callback failure records no submission")
+            && Expect(!result.Completion.IsValid(), "callback failure publishes no completion token or success");
+    }
+
+    bool TestRenderGraphExecutorOrdersBarriersAndRestrictsContext()
+    {
+        using namespace Engine;
+        using namespace Engine::RHI;
+        RenderGraph graph;
+        const TextureDescription colorDescription = MakeExecutionTexture("color");
+        const BufferDescription bufferDescription = MakeExecutionBuffer("data");
+        const TextureDescription hiddenDescription = MakeExecutionTexture("hidden");
+        const auto color = graph.AddTexture(colorDescription, RenderGraph::ResourceLifetimeKind::Imported);
+        const auto data = graph.AddBuffer(bufferDescription, RenderGraph::ResourceLifetimeKind::Imported);
+        const auto hidden = graph.AddTexture(hiddenDescription, RenderGraph::ResourceLifetimeKind::Imported);
+        const auto writer = graph.AddPass("Writer");
+        const auto reader = graph.AddPass("Reader");
+        graph.AddWrite(writer, color, ResourceState::RenderTarget);
+        graph.AddWrite(writer, data, ResourceState::CopyDest);
+        graph.AddRead(reader, color, ResourceState::CopySource, ShaderStage::Pixel);
+        graph.AddRead(reader, data, ResourceState::CopySource, ShaderStage::Pixel);
+
+        RenderGraphTestDevice device(8201);
+        RenderGraphTestTexture colorTexture(8201, colorDescription, ResourceState::CopyDest);
+        RenderGraphTestBuffer dataBuffer(8201, bufferDescription, ResourceState::CopyDest);
+        RenderGraphTestTexture hiddenTexture(8201, hiddenDescription, ResourceState::CopyDest);
+        bool restricted = false;
+        bool pendingHidden = false;
+        graph.SetPassCallback(writer, [&](RenderGraph::ExecutionContext& context)
+        {
+            restricted = context.GetTexture(color) == &colorTexture && context.GetBuffer(data) == &dataBuffer
+                && context.GetBuffer(color) == nullptr && context.GetTexture(data) == nullptr
+                && context.GetTexture(hidden) == nullptr && context.GetBuffer(hidden) == nullptr;
+            device.Events.push_back("callback:Writer");
+            return restricted;
+        });
+        graph.SetPassCallback(reader, [&](RenderGraph::ExecutionContext&)
+        {
+            ResourceState textureState = ResourceState::Unknown;
+            ResourceState bufferState = ResourceState::Unknown;
+            pendingHidden = device.QueryResourceState(&colorTexture, textureState) && textureState == ResourceState::CopyDest
+                && device.QueryResourceState(&dataBuffer, bufferState) && bufferState == ResourceState::CopyDest;
+            device.Events.push_back("callback:Reader");
+            return pendingHidden;
+        });
+        const bool bound = graph.BindTexture(color, colorTexture) && graph.BindBuffer(data, dataBuffer) && graph.BindTexture(hidden, hiddenTexture);
+        const RenderGraph::CompileResult compiled = graph.Compile();
+        const RenderGraph::ExecuteResult result = graph.Execute(device, compiled);
+        const std::vector<std::string> expectedEvents {
+            "texture:color:RenderTarget", "callback:Writer", "texture:color:CopySource",
+            "buffer:data:CopySource", "callback:Reader"
+        };
+        ResourceState finalTexture = ResourceState::Unknown;
+        ResourceState finalBuffer = ResourceState::Unknown;
+        const bool finalStates = device.QueryResourceState(&colorTexture, finalTexture) && finalTexture == ResourceState::CopySource
+            && device.QueryResourceState(&dataBuffer, finalBuffer) && finalBuffer == ResourceState::CopySource;
+        return Expect(bound && compiled.Success && compiled.Barriers.size() == 3 && result.Success, "compiled two-pass texture and buffer graph executes successfully")
+            && Expect(restricted, "execution context rejects undeclared and wrong-kind resource access")
+            && Expect(pendingHidden, "recorded transitions remain hidden until successful submission")
+            && Expect(device.Events == expectedEvents, "barriers and callbacks execute in deterministic compiled order")
+            && Expect(device.SubmitCount == 1 && result.Completion.IsValid(), "successful execution submits exactly once")
+            && Expect(finalStates, "successful submission publishes the compiled final texture and buffer states");
+    }
+
+    bool TestRenderGraphExecutorPoolExhaustionAndExactRetirement()
+    {
+        using namespace Engine;
+        using namespace Engine::RHI;
+        RenderGraph graph;
+        const TextureDescription description = MakeExecutionTexture("pool", ResourceState::Common);
+        const auto resource = graph.AddTexture(description, RenderGraph::ResourceLifetimeKind::Imported);
+        const auto pass = graph.AddPass("Use");
+        graph.AddRead(pass, resource, ResourceState::Common, ShaderStage::Pixel);
+        int callbacks = 0;
+        graph.SetPassCallback(pass, [&callbacks](RenderGraph::ExecutionContext&) { ++callbacks; return true; });
+        RenderGraphTestTexture texture(8301, description, ResourceState::Common);
+        RenderGraphTestDevice device(8301);
+        const bool bound = graph.BindTexture(resource, texture);
+        const RenderGraph::CompileResult compiled = graph.Compile();
+        const RenderGraph::ExecuteResult first = graph.Execute(device, compiled);
+        const RenderGraph::ExecuteResult second = graph.Execute(device, compiled);
+        const RenderGraph::ExecuteResult third = graph.Execute(device, compiled);
+        const RenderGraph::ExecuteResult exhausted = graph.Execute(device, compiled);
+        device.SetCompletion(second.Completion, CompletionStatus::Complete);
+        const RenderGraph::ExecuteResult reused = graph.Execute(device, compiled);
+
+        RenderGraph completionFailureGraph;
+        const auto completionResource = completionFailureGraph.AddTexture(description, RenderGraph::ResourceLifetimeKind::Imported);
+        const auto completionPass = completionFailureGraph.AddPass("Use");
+        completionFailureGraph.AddRead(completionPass, completionResource, ResourceState::Common, ShaderStage::Pixel);
+        int completionCallbacks = 0;
+        completionFailureGraph.SetPassCallback(completionPass, [&completionCallbacks](RenderGraph::ExecutionContext&) { ++completionCallbacks; return true; });
+        RenderGraphTestTexture completionTexture(8302, description, ResourceState::Common);
+        RenderGraphTestDevice completionDevice(8302);
+        completionFailureGraph.BindTexture(completionResource, completionTexture);
+        const RenderGraph::CompileResult completionCompiled = completionFailureGraph.Compile();
+        const RenderGraph::ExecuteResult completionFirst = completionFailureGraph.Execute(completionDevice, completionCompiled);
+        completionDevice.SetCompletion(completionFirst.Completion, CompletionStatus::Failed);
+        const RenderGraph::ExecuteResult completionFailed = completionFailureGraph.Execute(completionDevice, completionCompiled);
+
+        return Expect(bound && first.Success && second.Success && third.Success, "three bounded recording contexts accept three in-flight submissions")
+            && Expect(first.RecordingContextIndex == 0 && second.RecordingContextIndex == 1 && third.RecordingContextIndex == 2,
+                "in-flight submissions occupy distinct bounded contexts")
+            && Expect(!exhausted.Success && exhausted.Error.find("in flight") != std::string::npos, "fourth execution reports pool exhaustion")
+            && Expect(device.CreatedCommandListCount == 3 && device.BeginCount == 4 && device.SubmitCount == 4 && callbacks == 4,
+                "exhaustion records nothing and one later retired reuse records exactly once")
+            && Expect(reused.Success && reused.ReusedRetiredContext && reused.RecordingContextIndex == second.RecordingContextIndex,
+                "only the context guarded by the exact completed token is reused")
+            && Expect(device.SubmittedCommandListIds.size() == 4 && device.SubmittedCommandListIds[3] == device.SubmittedCommandListIds[1],
+                "retired reuse re-records the same command-list object")
+            && Expect(completionFirst.Success && !completionFailed.Success && completionCallbacks == 1
+                && completionDevice.BeginCount == 1 && completionDevice.SubmitCount == 1,
+                "completion failure prevents later callbacks, recording, submission, and success");
+    }
+
     class OwnershipTestBuffer final : public Engine::RHI::Buffer
     {
     public:
@@ -2270,6 +2705,10 @@ int main()
         { "Render graph orders hazards and lifetimes deterministically", TestRenderGraphOrdersHazardsAndLifetimesDeterministically },
         { "Render graph tracks RAW WAR WAW barriers and queue transitions", TestRenderGraphTracksRawWarWawBarriersAndQueueTransitions },
         { "Render graph rejects invalid declarations and cycles", TestRenderGraphRejectsInvalidDeclarationsAndCycles },
+        { "Render graph executor rejects invalid bindings before recording", TestRenderGraphExecutorRejectsBindingsBeforeRecording },
+        { "Render graph executor stops after callback failure", TestRenderGraphExecutorStopsAfterCallbackFailure },
+        { "Render graph executor orders barriers and restricts context", TestRenderGraphExecutorOrdersBarriersAndRestrictsContext },
+        { "Render graph executor exhausts and reuses exact retired contexts", TestRenderGraphExecutorPoolExhaustionAndExactRetirement },
         { "RHI buffer transition contract rejects incompatible states", TestRhiBufferTransitionContract },
         { "RHI completion token contract rejects unissued identities", TestRhiCompletionTokenContract },
         { "RHI resource-state query rejects null foreign and unknown resources", TestRhiResourceOwnershipContract },

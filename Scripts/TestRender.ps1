@@ -38,7 +38,7 @@ foreach ($Path in @($ResolvedCapturePath) + $SceneOriginCapturePaths) {
     }
 }
 
-$Output = & $Editor --capture-viewport --smoke-test --renderer-capability-smoke --scene-origin-raster-smoke --rhi-buffer-transition-smoke --rhi-completion-smoke --rhi-resource-ownership-smoke --rhi-resource-state-smoke --rhi-texture-readback-smoke 2>&1 | Tee-Object -Variable RenderLog
+$Output = & $Editor --capture-viewport --smoke-test --renderer-capability-smoke --scene-origin-raster-smoke --rhi-buffer-transition-smoke --rhi-completion-smoke --rhi-resource-ownership-smoke --rhi-resource-state-smoke --rhi-texture-readback-smoke --render-graph-execution-smoke 2>&1 | Tee-Object -Variable RenderLog
 if ($LASTEXITCODE -ne 0) {
     throw "Editor render smoke run failed with exit code $LASTEXITCODE."
 }
@@ -61,6 +61,7 @@ $RequiredMarkers = @(
     "RHIResourceOwnershipSmokeV1 backend=D3D12, owned=pass, null=rejected, result=pass"
     "RHIResourceStateSmokeV1 backend=D3D12, initial=pass, pending=hidden, invalid=rejected, submission=pass, final=pass, result=pass"
     "RHITextureReadbackSmokeV1 backend=D3D12, invalidState=rejected, unsupportedFormat=rejected, submit=pass, readback=pass, layout=tight, result=pass"
+    "RenderGraphExecutionSmokeV1 backend=D3D12, barriers=3, callbacks=ordered-pass, undeclared=rejected, submission=pass, readback=pass, reuse=retired-same-context, result=pass"
 )
 $JoinedLog = $RenderLog -join "`n"
 foreach ($Marker in $RequiredMarkers) {

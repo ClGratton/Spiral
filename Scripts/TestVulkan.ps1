@@ -17,7 +17,7 @@ if (!(Test-Path $Executable)) {
     throw "Vulkan smoke executable was not found: $Executable"
 }
 
-$Output = & $Executable --vulkan-render-smoke --renderer-capability-smoke --vulkan-rhi-core-smoke --vulkan-rhi-indexed-draw-smoke --vulkan-scene-viewport-raster-smoke --rhi-buffer-transition-smoke --rhi-completion-smoke --rhi-resource-ownership-smoke --rhi-resource-state-smoke 2>&1 | Tee-Object -Variable VulkanLog
+$Output = & $Executable --vulkan-render-smoke --renderer-capability-smoke --vulkan-rhi-core-smoke --vulkan-rhi-indexed-draw-smoke --vulkan-scene-viewport-raster-smoke --rhi-buffer-transition-smoke --rhi-completion-smoke --rhi-resource-ownership-smoke --rhi-resource-state-smoke --render-graph-execution-smoke 2>&1 | Tee-Object -Variable VulkanLog
 if ($LASTEXITCODE -ne 0) {
     throw "Vulkan render smoke failed with exit code $LASTEXITCODE."
 }
@@ -46,6 +46,7 @@ $RequiredMarkers = @(
     "VulkanSceneViewportRasterV1 snapshot=pass pipeline=pass raster=pass readback=pass geometry=pass background=pass resize=pass"
     "VulkanSceneOutputCaptureV1 outputGeneration="
     "VulkanSceneOutputHandoffV1 producer=pass"
+    "RenderGraphExecutionSmokeV1 backend=Vulkan, barriers=3, callbacks=ordered-pass, undeclared=rejected, submission=pass, readback=pass, reuse=retired-same-context, result=pass"
 )
 
 $JoinedLog = $VulkanLog -join "`n"

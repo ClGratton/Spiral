@@ -6,6 +6,7 @@
 #include "Engine/Core/Log.h"
 #include "Engine/Core/Application.h"
 #include "Engine/RHI/NVRHI/NVRHID3D12Device.h"
+#include "Engine/RenderGraph/RenderGraph.h"
 
 #include <algorithm>
 #include <cmath>
@@ -97,6 +98,10 @@ namespace Engine
                 m_VulkanContext.reset();
                 return false;
             }
+            if (args.HasFlag("--render-graph-execution-smoke") && !RunRenderGraphExecutionSmoke(*m_VulkanContext->GetRHIDevice(), "Vulkan"))
+            {
+                Log::Error("Vulkan render-graph execution smoke failed"); m_VulkanContext->Shutdown(); m_VulkanContext.reset(); return false;
+            }
             if (args.HasFlag("--vulkan-rhi-indexed-draw-smoke") && !RunVulkanRHIIndexedDrawSmoke())
             {
                 Log::Error("Vulkan RHI indexed draw smoke failed");
@@ -161,6 +166,10 @@ namespace Engine
                 Log::Error("D3D12 RHI texture-readback smoke failed");
                 m_Device.reset();
                 return false;
+            }
+            if (args.HasFlag("--render-graph-execution-smoke") && !RunRenderGraphExecutionSmoke(*m_Device, "D3D12"))
+            {
+                Log::Error("D3D12 render-graph execution smoke failed"); return false;
             }
             return true;
         }
@@ -613,6 +622,87 @@ namespace Engine
             ", submit=", draw ? "pass" : "fail",
             ", readback=", readbackOk ? "pass" : "fail",
             ", layout=", pixelsOk ? "tight" : "invalid",
+            ", result=", passed ? "pass" : "fail");
+        return passed;
+    }
+
+    bool NVRHIRenderBackend::RunRenderGraphExecutionSmoke(RHI::Device& device, std::string_view backendName)
+    {
+        RHI::TextureDescription colorDescription;
+        colorDescription.DebugName = "RenderGraphExecutionSmokeV1 Color";
+        colorDescription.Extent = { 3, 2 };
+        colorDescription.TextureFormat = RHI::Format::R8G8B8A8Unorm;
+        colorDescription.Usage = static_cast<RHI::TextureUsage>(static_cast<u32>(RHI::TextureUsage::RenderTarget) | static_cast<u32>(RHI::TextureUsage::CopySource) | static_cast<u32>(RHI::TextureUsage::CopyDest));
+        colorDescription.InitialState = RHI::ResourceState::CopyDest;
+        RHI::TextureDescription depthDescription;
+        depthDescription.DebugName = "RenderGraphExecutionSmokeV1 Depth";
+        depthDescription.Extent = colorDescription.Extent;
+        depthDescription.TextureFormat = RHI::Format::D32Float;
+        depthDescription.Usage = static_cast<RHI::TextureUsage>(static_cast<u32>(RHI::TextureUsage::DepthStencil) | static_cast<u32>(RHI::TextureUsage::CopyDest));
+        depthDescription.InitialState = RHI::ResourceState::CopyDest;
+        Scope<RHI::Texture> color = device.CreateTexture(colorDescription);
+        Scope<RHI::Texture> depth = device.CreateTexture(depthDescription);
+        RenderGraph graph;
+        const auto graphColor = graph.AddTexture(colorDescription, RenderGraph::ResourceLifetimeKind::Imported);
+        const auto graphDepth = graph.AddTexture(depthDescription, RenderGraph::ResourceLifetimeKind::Imported);
+        const auto clear = graph.AddPass("Clear");
+        const auto finalize = graph.AddPass("Finalize");
+        graph.AddWrite(clear, graphColor, RHI::ResourceState::RenderTarget);
+        graph.AddWrite(clear, graphDepth, RHI::ResourceState::DepthWrite);
+        graph.AddRead(finalize, graphColor, RHI::ResourceState::CopySource, RHI::ShaderStage::Pixel);
+        u32 callbackStep = 0;
+        bool ordered = true;
+        graph.SetPassCallback(clear, [&callbackStep, &ordered, graphColor, graphDepth](RenderGraph::ExecutionContext& context)
+        {
+            RHI::Texture* colorTarget = context.GetTexture(graphColor); RHI::Texture* depthTarget = context.GetTexture(graphDepth);
+            RHI::ViewportClear clearValue; clearValue.Color[0] = 0.25f; clearValue.Color[1] = 0.5f; clearValue.Color[2] = 0.75f;
+            ordered = ordered && callbackStep % 2 == 0;
+            ++callbackStep;
+            return ordered && colorTarget && depthTarget && context.GetCommandList().BindViewportOutputs(*colorTarget, depthTarget) && context.GetCommandList().ClearViewportOutputs(clearValue);
+        });
+        graph.SetPassCallback(finalize, [&callbackStep, &ordered, graphColor, graphDepth](RenderGraph::ExecutionContext& context)
+        {
+            ordered = ordered && callbackStep % 2 == 1
+                && context.GetTexture(graphColor) != nullptr && context.GetTexture(graphDepth) == nullptr;
+            ++callbackStep;
+            return ordered;
+        });
+        const RenderGraph::CompileResult compiled = graph.Compile();
+        const bool bound = color && depth && graph.BindTexture(graphColor, *color) && graph.BindTexture(graphDepth, *depth);
+        const RenderGraph::ExecuteResult executed = bound ? graph.Execute(device, compiled) : RenderGraph::ExecuteResult {};
+        if (!executed.Success) Log::Error("RenderGraphExecutionSmokeV1 execution error: ", executed.Error);
+        RHI::TextureReadback readback;
+        const bool readbackOk = executed.Success && device.ReadbackTexture(*color, readback);
+        const std::array<u8, 4> expected { 64u, 128u, 191u, 255u };
+        const auto pixelsMatch = [&expected](const RHI::TextureReadback& value)
+        {
+            bool matches = value.Data.size() == 24 && value.RowPitchBytes == 12;
+            for (u32 y = 0; matches && y < 2; ++y) for (u32 x = 0; matches && x < 3; ++x) for (u32 c = 0; c < 4; ++c)
+                if (std::abs(static_cast<int>(value.Data[y * value.RowPitchBytes + x * 4 + c]) - expected[c]) > 1) matches = false;
+            return matches;
+        };
+        const bool firstPixels = readbackOk && pixelsMatch(readback);
+        const bool firstRetired = firstPixels && device.QueryCompletion(executed.Completion) == RHI::CompletionStatus::Complete;
+        Scope<RHI::CommandList> reset = firstRetired ? device.CreateCommandList(RHI::QueueType::Graphics, "RenderGraphExecutionSmokeV1 Reset") : nullptr;
+        const bool resetSubmitted = reset && reset->Begin()
+            && reset->TransitionTexture(*color, RHI::ResourceState::CopyDest)
+            && reset->TransitionTexture(*depth, RHI::ResourceState::CopyDest)
+            && reset->End() && device.SubmitAndWait(*reset);
+        const RenderGraph::ExecuteResult reused = resetSubmitted ? graph.Execute(device, compiled) : RenderGraph::ExecuteResult {};
+        if (!reused.Success) Log::Error("RenderGraphExecutionSmokeV1 reuse error: ", reused.Error);
+        RHI::TextureReadback reusedReadback;
+        const bool reusedReadbackOk = reused.Success && device.ReadbackTexture(*color, reusedReadback);
+        const bool reusedPixels = reusedReadbackOk && pixelsMatch(reusedReadback);
+        const bool sameRetiredContext = reused.Success && reused.ReusedRetiredContext
+            && reused.RecordingContextIndex == executed.RecordingContextIndex;
+        const bool passed = compiled.Success && ordered && callbackStep == 4 && executed.Success && firstPixels
+            && firstRetired && resetSubmitted && sameRetiredContext && reusedPixels;
+        Log::Info("RenderGraphExecutionSmokeV1 backend=", backendName,
+            ", barriers=", compiled.Barriers.size(),
+            ", callbacks=ordered-", ordered && callbackStep == 4 ? "pass" : "fail",
+            ", undeclared=rejected, submission=", executed.Success && reused.Success ? "pass" : "fail",
+            ", readback=", firstPixels && reusedPixels ? "pass" : "fail",
+            ", reuse=", sameRetiredContext ? "retired-same-context" : "fail",
             ", result=", passed ? "pass" : "fail");
         return passed;
     }

@@ -2,10 +2,13 @@
 
 #include "Engine/Core/Base.h"
 #include "Engine/RHI/Buffer.h"
+#include "Engine/RHI/Device.h"
 #include "Engine/RHI/RHICommon.h"
 #include "Engine/RHI/Texture.h"
 
+#include <functional>
 #include <limits>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -77,6 +80,34 @@ namespace Engine
             std::vector<ResourceUse> Uses;
         };
 
+        class ExecutionContext
+        {
+        public:
+            [[nodiscard]] RHI::CommandList& GetCommandList() const;
+            [[nodiscard]] RHI::Texture* GetTexture(ResourceHandle resource) const;
+            [[nodiscard]] RHI::Buffer* GetBuffer(ResourceHandle resource) const;
+
+        private:
+            friend class RenderGraph;
+            ExecutionContext(RHI::CommandList& commandList, const std::vector<RHI::Texture*>& textures,
+                const std::vector<RHI::Buffer*>& buffers, const std::vector<bool>& declared);
+            RHI::CommandList* m_CommandList = nullptr;
+            const std::vector<RHI::Texture*>* m_Textures = nullptr;
+            const std::vector<RHI::Buffer*>* m_Buffers = nullptr;
+            const std::vector<bool>* m_Declared = nullptr;
+        };
+
+        using PassCallback = std::function<bool(ExecutionContext&)>;
+
+        struct ExecuteResult
+        {
+            bool Success = false;
+            std::string Error;
+            RHI::CompletionToken Completion;
+            u32 RecordingContextIndex = InvalidIndex;
+            bool ReusedRetiredContext = false;
+        };
+
         struct ResourceLifetime
         {
             ResourceHandle Resource;
@@ -134,6 +165,10 @@ namespace Engine
         ResourceHandle AddTexture(RHI::TextureDescription description, ResourceLifetimeKind lifetime = ResourceLifetimeKind::Transient);
         ResourceHandle AddBuffer(RHI::BufferDescription description, ResourceLifetimeKind lifetime = ResourceLifetimeKind::Transient);
         PassHandle AddPass(std::string name, RHI::QueueType queue = RHI::QueueType::Graphics, bool allowCulling = false);
+        void SetPassCallback(PassHandle pass, PassCallback callback);
+        bool BindTexture(ResourceHandle resource, RHI::Texture& texture);
+        bool BindBuffer(ResourceHandle resource, RHI::Buffer& buffer);
+        ExecuteResult Execute(RHI::Device& device, const CompileResult& compiled);
         void AddDebugPass(std::string name);
         void AddResourceUse(PassHandle pass, ResourceUse use);
         void AddDependency(PassHandle producer, PassHandle consumer);
@@ -159,13 +194,25 @@ namespace Engine
         [[nodiscard]] static const char* ToString(RHI::ResourceState state);
 
     private:
+        struct RecordingContext
+        {
+            Scope<RHI::CommandList> CommandList;
+            RHI::CompletionToken Completion;
+        };
         ResourceHandle AddResource(ResourceDescription description);
         static CompileResult Fail(std::string_view message);
+        static bool Matches(const RHI::TextureDescription& expected, const RHI::TextureDescription& actual);
+        static bool Matches(const RHI::BufferDescription& expected, const RHI::BufferDescription& actual);
 
     private:
         std::vector<ResourceDescription> m_Resources;
         std::vector<PassDescription> m_Passes;
         std::vector<Dependency> m_ExplicitDependencies;
         std::vector<std::string> m_DebugPasses;
+        std::vector<PassCallback> m_Callbacks;
+        std::vector<RHI::Texture*> m_BoundTextures;
+        std::vector<RHI::Buffer*> m_BoundBuffers;
+        std::vector<RecordingContext> m_RecordingContexts;
+        RHI::Device* m_RecordingDevice = nullptr;
     };
 }
