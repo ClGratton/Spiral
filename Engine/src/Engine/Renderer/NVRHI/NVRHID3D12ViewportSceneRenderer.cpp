@@ -4,6 +4,7 @@
 #include "Engine/Core/Log.h"
 #include "Engine/Math/Math.h"
 #include "Engine/RHI/NVRHI/NVRHID3D12Device.h"
+#include "Engine/RenderGraph/RenderGraph.h"
 #include "Engine/Renderer/AsyncShaderPackageService.h"
 #include "Engine/Renderer/NVRHI/D3D12DebugMarkers.h"
 #include "Engine/Renderer/ShaderLibrary.h"
@@ -117,6 +118,47 @@ namespace Engine
 
     struct NVRHID3D12ViewportSceneRenderer::Impl
     {
+        bool RecordBootstrapReference(
+            RHI::Texture& colorTexture,
+            RHI::Texture& depthTexture,
+            u32 width,
+            u32 height,
+            const RHI::ViewportClear& clear,
+            const SceneRasterFrame& rasterFrame,
+            const std::vector<ConstantBufferAllocation>* constantBuffers,
+            size_t drawCount)
+        {
+            Scope<RHI::CommandList> commands = m_RHIDevice->CreateCommandList(RHI::QueueType::Graphics, "Scene Viewport Bootstrap Reference");
+            if (!commands || !commands->Begin()
+                || !commands->TransitionTexture(colorTexture, RHI::ResourceState::RenderTarget)
+                || !commands->TransitionTexture(depthTexture, RHI::ResourceState::DepthWrite)
+                || !commands->BindViewportOutputs(colorTexture, &depthTexture)
+                || !commands->ClearViewportOutputs(clear)) return false;
+            commands->BeginDebugMarker("Scene Viewport Bootstrap Reference Raster");
+            if (m_Pipeline && m_VertexBuffer && m_IndexBuffer && rasterFrame.HasValidView && !rasterFrame.Instances.empty())
+            {
+                commands->SetGraphicsPipeline(*m_Pipeline);
+                commands->SetViewport({ 0.0f, 0.0f, static_cast<float>(width), static_cast<float>(height), 0.0f, 1.0f });
+                commands->SetScissorRect({ 0, 0, static_cast<int>(width), static_cast<int>(height) });
+                commands->SetVertexBuffer(0, *m_VertexBuffer);
+                commands->SetIndexBuffer(*m_IndexBuffer, RHI::IndexFormat::Uint16);
+                for (size_t index = 0; index < drawCount; ++index) { commands->SetGraphicsConstantBuffer(0, *(*constantBuffers)[index].Buffer); commands->DrawIndexed(m_IndexCount, 1, 0, 0, 0); }
+            }
+            commands->EndDebugMarker();
+            return commands->TransitionTexture(colorTexture, RHI::ResourceState::CopySource)
+                && commands->End() && m_RHIDevice->SubmitAndWait(*commands);
+        }
+
+        bool ReadbackGraphOutput(RHI::Texture& colorTexture, RHI::TextureReadback& readback)
+        {
+            Scope<RHI::CommandList> commands = m_RHIDevice->CreateCommandList(RHI::QueueType::Graphics, "Scene Viewport Graph Comparison Readback");
+            if (!commands || !commands->Begin() || !commands->TransitionTexture(colorTexture, RHI::ResourceState::CopySource)
+                || !commands->End() || !m_RHIDevice->SubmitAndWait(*commands) || !m_RHIDevice->ReadbackTexture(colorTexture, readback)) return false;
+            commands = m_RHIDevice->CreateCommandList(RHI::QueueType::Graphics, "Scene Viewport Graph Comparison Restore");
+            return commands && commands->Begin() && commands->TransitionTexture(colorTexture, RHI::ResourceState::ShaderResource)
+                && commands->End() && m_RHIDevice->SubmitAndWait(*commands);
+        }
+
         bool Initialize(RHI::Device* rhiDevice)
         {
             m_RHIDevice = rhiDevice;
@@ -155,7 +197,6 @@ namespace Engine
         }
 
         bool Render(
-            RHI::CommandList& commandList,
             RHI::Texture& colorTexture,
             RHI::Texture& depthTexture,
             u32 width,
@@ -169,16 +210,20 @@ namespace Engine
             PollShaderCompilation();
             PollShaderHotReload();
 
-            ScopedCommandListDebugMarker marker(commandList, "Viewport Scene Snapshot Pass");
+            RHI::ResourceState colorState = RHI::ResourceState::Unknown;
+            RHI::ResourceState depthState = RHI::ResourceState::Unknown;
+            if (!m_RHIDevice->QueryResourceState(&colorTexture, colorState)
+                || !m_RHIDevice->QueryResourceState(&depthTexture, depthState))
+                return false;
+
             RHI::ViewportClear clear;
             clear.Color[0] = clearColor.R;
             clear.Color[1] = clearColor.G;
             clear.Color[2] = clearColor.B;
             clear.Color[3] = clearColor.A;
-            if (!commandList.BindViewportOutputs(colorTexture, &depthTexture) || !commandList.ClearViewportOutputs(clear))
-                return false;
-
             SceneRasterFrame rasterFrame;
+            std::vector<ConstantBufferAllocation>* constantBuffers = nullptr;
+            size_t drawCount = 0;
             const std::shared_ptr<const SceneRenderSnapshot> snapshot = Renderer::GetSceneRenderSnapshot();
             if (snapshot)
                 rasterFrame = PrepareSceneRasterFrame(*snapshot);
@@ -205,32 +250,90 @@ namespace Engine
                 }
                 else
                 {
+                    constantBuffers = &m_FrameConstantBuffers[frameSlot];
+                    drawCount = rasterFrame.Instances.size();
+                    for (size_t index = 0; index < rasterFrame.Instances.size(); ++index)
                     {
-                        commandList.SetGraphicsPipeline(*m_Pipeline);
-                        commandList.SetViewport({ 0.0f, 0.0f, static_cast<float>(width), static_cast<float>(height), 0.0f, 1.0f });
-                        commandList.SetScissorRect({ 0, 0, static_cast<int>(width), static_cast<int>(height) });
-                        commandList.SetVertexBuffer(0, *m_VertexBuffer);
-                        commandList.SetIndexBuffer(*m_IndexBuffer, RHI::IndexFormat::Uint16);
-                        std::vector<ConstantBufferAllocation>& constantBuffers = m_FrameConstantBuffers[frameSlot];
-                        for (size_t index = 0; index < rasterFrame.Instances.size(); ++index)
-                        {
-                            ViewportConstants constants {};
-                            std::memcpy(
-                                constants.ViewProjection,
-                                rasterFrame.Instances[index].ModelViewProjection.Values,
-                                sizeof(constants.ViewProjection));
-                            std::memcpy(constantBuffers[index].Mapped, &constants, sizeof(constants));
-                            commandList.SetGraphicsConstantBuffer(0, *constantBuffers[index].Buffer);
-                            commandList.DrawIndexed(m_IndexCount, 1, 0, 0, 0);
-                            ++rasterFrame.IssuedDrawCount;
-                        }
+                        ViewportConstants constants {};
+                        std::memcpy(constants.ViewProjection, rasterFrame.Instances[index].ModelViewProjection.Values, sizeof(constants.ViewProjection));
+                        std::memcpy((*constantBuffers)[index].Mapped, &constants, sizeof(constants));
                     }
                 }
             }
+            if (!renderSucceeded)
+                return false;
 
-            renderSucceeded = commandList.TransitionTexture(colorTexture, RHI::ResourceState::ShaderResource) && renderSucceeded;
+            RenderGraph graph;
+            RHI::TextureDescription colorDescription = colorTexture.GetDescription();
+            colorDescription.InitialState = colorState;
+            RHI::TextureDescription depthDescription = depthTexture.GetDescription();
+            depthDescription.InitialState = depthState;
+            const RenderGraph::ResourceHandle color = graph.AddTexture(colorDescription, RenderGraph::ResourceLifetimeKind::Imported);
+            const RenderGraph::ResourceHandle depth = graph.AddTexture(depthDescription, RenderGraph::ResourceLifetimeKind::Imported);
+            const RenderGraph::PassHandle clearPass = graph.AddPass("Scene Viewport Graph Clear", RHI::QueueType::Graphics);
+            graph.AddWrite(clearPass, color, RHI::ResourceState::RenderTarget);
+            graph.AddWrite(clearPass, depth, RHI::ResourceState::DepthWrite);
+            graph.SetPassCallback(clearPass, [clear](RenderGraph::ExecutionContext& context)
+            {
+                RHI::Texture* graphColor = context.GetTexture({ 0 });
+                RHI::Texture* graphDepth = context.GetTexture({ 1 });
+                return graphColor && graphDepth && context.GetCommandList().BindViewportOutputs(*graphColor, graphDepth)
+                    && context.GetCommandList().ClearViewportOutputs(clear);
+            });
+            const RenderGraph::PassHandle rasterPass = graph.AddPass("Scene Viewport Graph Raster", RHI::QueueType::Graphics);
+            graph.AddWrite(rasterPass, color, RHI::ResourceState::RenderTarget);
+            graph.AddWrite(rasterPass, depth, RHI::ResourceState::DepthWrite);
+            graph.SetPassCallback(rasterPass, [this, width, height, &rasterFrame, constantBuffers, drawCount](RenderGraph::ExecutionContext& context)
+            {
+                RHI::Texture* graphColor = context.GetTexture({ 0 });
+                RHI::Texture* graphDepth = context.GetTexture({ 1 });
+                RHI::CommandList& commands = context.GetCommandList();
+                if (!graphColor || !graphDepth || !commands.BindViewportOutputs(*graphColor, graphDepth)) return false;
+                if (!m_Pipeline || !m_VertexBuffer || !m_IndexBuffer || !rasterFrame.HasValidView || rasterFrame.Instances.empty()) return true;
+                commands.SetGraphicsPipeline(*m_Pipeline);
+                commands.SetViewport({ 0.0f, 0.0f, static_cast<float>(width), static_cast<float>(height), 0.0f, 1.0f });
+                commands.SetScissorRect({ 0, 0, static_cast<int>(width), static_cast<int>(height) });
+                commands.SetVertexBuffer(0, *m_VertexBuffer);
+                commands.SetIndexBuffer(*m_IndexBuffer, RHI::IndexFormat::Uint16);
+                for (size_t index = 0; index < drawCount; ++index) { commands.SetGraphicsConstantBuffer(0, *(*constantBuffers)[index].Buffer); commands.DrawIndexed(m_IndexCount, 1, 0, 0, 0); ++rasterFrame.IssuedDrawCount; }
+                return true;
+            });
+            const RenderGraph::PassHandle handoffPass = graph.AddPass("Scene Viewport Graph Output Handoff", RHI::QueueType::Graphics);
+            graph.AddRead(handoffPass, color, RHI::ResourceState::ShaderResource, RHI::ShaderStage::Pixel);
+            graph.SetPassCallback(handoffPass, [](RenderGraph::ExecutionContext& context) { return context.GetTexture({ 0 }) != nullptr; });
+            const RenderGraph::CompileResult compiled = graph.Compile();
+            const RenderGraph::ExecuteResult executed = graph.BindTexture(color, colorTexture) && graph.BindTexture(depth, depthTexture)
+                ? graph.Execute(*m_RHIDevice, compiled) : RenderGraph::ExecuteResult {};
+            // This per-frame graph owns its recording contexts on the stack.
+            // Retire the final graphics submission before graph destruction;
+            // presentation remains the separate native ImGui consumer.
+            if (!executed.Success || !m_RHIDevice->WaitForCompletion(executed.Completion, 5000)) return false;
+            const bool comparisonRequested = Application::Get().GetSpecification().CommandLineArgs.HasFlag("--scene-viewport-render-graph-smoke");
+            if (comparisonRequested)
+            {
+                RHI::TextureDescription referenceColorDescription = colorTexture.GetDescription();
+                referenceColorDescription.DebugName = "Scene Viewport Bootstrap Reference Color";
+                RHI::TextureDescription referenceDepthDescription = depthTexture.GetDescription();
+                referenceDepthDescription.DebugName = "Scene Viewport Bootstrap Reference Depth";
+                Scope<RHI::Texture> referenceColor = m_RHIDevice->CreateTexture(referenceColorDescription);
+                Scope<RHI::Texture> referenceDepth = m_RHIDevice->CreateTexture(referenceDepthDescription);
+                RHI::TextureReadback graphReadback, referenceReadback;
+                const bool referenceRendered = referenceColor && referenceDepth && RecordBootstrapReference(
+                    *referenceColor, *referenceDepth, width, height, clear, rasterFrame, constantBuffers, drawCount);
+                const bool readBack = referenceRendered && ReadbackGraphOutput(colorTexture, graphReadback)
+                    && m_RHIDevice->ReadbackTexture(*referenceColor, referenceReadback);
+                const bool equivalent = readBack && graphReadback.Extent.Width == referenceReadback.Extent.Width
+                    && graphReadback.Extent.Height == referenceReadback.Extent.Height
+                    && graphReadback.RowPitchBytes == referenceReadback.RowPitchBytes
+                    && graphReadback.Data == referenceReadback.Data;
+                Log::Info("SceneViewportRenderGraphV1 backend=D3D12 passes=3 labels=clear,raster,output-handoff execution=pass reference=direct comparator=exact-byte-",
+                    equivalent ? "pass" : "fail", " size=", width, "x", height, " bytes=", graphReadback.Data.size());
+                if (!equivalent) return false;
+            }
             Renderer::PublishSceneRasterFrame(std::move(rasterFrame));
-            return renderSucceeded;
+            if (!comparisonRequested)
+                Log::Trace("Scene viewport graph rendered without the smoke-only bootstrap comparator");
+            return true;
         }
 
         bool RequestInitialPipeline()
@@ -612,7 +715,6 @@ namespace Engine
     }
 
     bool NVRHID3D12ViewportSceneRenderer::Render(
-        RHI::CommandList& commandList,
         RHI::Texture& colorTexture,
         RHI::Texture& depthTexture,
         u32 width,
@@ -621,7 +723,6 @@ namespace Engine
         const ClearColor& clearColor)
     {
         return m_Impl && m_Impl->Render(
-            commandList,
             colorTexture,
             depthTexture,
             width,

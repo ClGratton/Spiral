@@ -244,14 +244,19 @@ namespace Engine
             std::vector<bool> declared(m_Resources.size(), false);
             for (const ResourceUse& use : pass.Uses) declared[use.Resource.Index] = true;
             ExecutionContext execution(*context->CommandList, m_BoundTextures, m_BoundBuffers, declared);
+            context->CommandList->BeginDebugMarker(pass.DebugName);
+            bool callbackSucceeded = false;
             try
             {
-                if (!m_Callbacks[compiledPass.Pass.Index](execution)) { result.Error = "A graph pass callback failed."; discardContext(); return result; }
+                callbackSucceeded = m_Callbacks[compiledPass.Pass.Index](execution);
             }
             catch (...)
             {
+                context->CommandList->EndDebugMarker();
                 result.Error = "A graph pass callback threw an exception."; discardContext(); return result;
             }
+            context->CommandList->EndDebugMarker();
+            if (!callbackSucceeded) { result.Error = "A graph pass callback failed."; discardContext(); return result; }
             for (const QueueTransition* transition : releases[compiledPass.Pass.Index])
             {
                 const bool released = m_Resources[transition->Resource.Index].Kind == ResourceKind::Texture
@@ -495,14 +500,14 @@ namespace Engine
     {
         return expected.Extent.Width == actual.Extent.Width && expected.Extent.Height == actual.Extent.Height
             && expected.TextureFormat == actual.TextureFormat && expected.Usage == actual.Usage
-            && expected.InitialState == actual.InitialState && expected.MipLevels == actual.MipLevels
+            && expected.MipLevels == actual.MipLevels
             && expected.ArrayLayers == actual.ArrayLayers && expected.SampleCount == actual.SampleCount;
     }
 
     bool RenderGraph::Matches(const RHI::BufferDescription& expected, const RHI::BufferDescription& actual)
     {
         return expected.SizeBytes == actual.SizeBytes && expected.StrideBytes == actual.StrideBytes
-            && expected.Usage == actual.Usage && expected.CpuAccess == actual.CpuAccess && expected.InitialState == actual.InitialState;
+            && expected.Usage == actual.Usage && expected.CpuAccess == actual.CpuAccess;
     }
 
     RenderGraph::ResourceUse RenderGraph::Read(ResourceHandle resource, RHI::ResourceState state, RHI::ShaderStage stages)

@@ -515,10 +515,7 @@ namespace Engine
 
                 {
                     ScopedD3D12Marker viewportMarker(m_CommandList.Get(), "Capture Viewport Texture Refresh");
-                    Scope<RHI::CommandList> viewportCommands = RHI::WrapNVRHID3D12CommandList(
-                        RHI::QueueType::Graphics, m_CommandList.Get(), m_Device, "Editor Viewport Capture Command Bridge");
-                    if (!viewportCommands || !m_ViewportSceneRenderer.Render(
-                        *viewportCommands,
+                    if (!m_ViewportSceneRenderer.Render(
                         *m_ViewportTexture,
                         *m_ViewportDepthTexture,
                         m_ViewportWidth,
@@ -893,10 +890,7 @@ namespace Engine
             if (!m_ViewportTextureResource || !m_ViewportDepthTextureResource)
                 return true;
 
-            Scope<RHI::CommandList> viewportCommands = RHI::WrapNVRHID3D12CommandList(
-                RHI::QueueType::Graphics, m_CommandList.Get(), m_Device, "Editor Viewport Present Command Bridge");
-            return viewportCommands && m_ViewportSceneRenderer.Render(
-                *viewportCommands,
+            return m_ViewportSceneRenderer.Render(
                 *m_ViewportTexture,
                 *m_ViewportDepthTexture,
                 m_ViewportWidth,

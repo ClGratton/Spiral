@@ -29,7 +29,6 @@ namespace Engine
         void Shutdown();
 
         bool Render(
-            RHI::CommandList& commandList,
             RHI::Texture& colorTexture,
             RHI::Texture& depthTexture,
             u32 width,
