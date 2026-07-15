@@ -6,6 +6,12 @@ Updated 2026-07-15. This is a recovery aid; `PLAN.md` remains the sole roadmap a
 
 This continuation began at 1% weekly model allowance used and was asked to complete as many coherent roadmap features as practical near 50%, without stopping mid-slice. Native `terra_medium` owners implemented bounded vertical slices while the root agent reconciled architecture, reviewed synchronization/publication risk, ran one consolidated acceptance gate, and handled CI. The final checkpoint was 52% used; the small overrun completed and qualified the active cross-queue RenderGraph slice rather than leaving its CI failures unresolved. Do not start another large slice from this handoff without a fresh allowance check.
 
+## Token-Efficiency Baseline And Required Next-Session Audit (2026-07-15)
+
+This baseline is scoped only to the 2026-07-15 12:58:27Z-15:08:04Z goal window (2h10m). Goal telemetry reported 732,808 tokens and 7,777 seconds; weekly allowance moved from about 1% to 52%. Five coherent features used nine exact `terra_medium` owner sessions. Root telemetry recorded 214 model turns, 206 tool calls, and 48 explicit waits (33 `wait_agent`, 15 `functions.wait`), with median input context 138,427, maximum 220,812, and cache share 97.67%. Terra recorded 445 turns; combined cache share was 97.06%. All nine delegated session metadata records reported `agent_role` `terra_medium` and model `gpt-5.6-terra`. Cached/raw token totals are diagnostic measures and cannot prove exact weekly-quota weighting.
+
+Verdict: role routing, evidence collection, and defect discovery were correct and useful, but root resumptions/waits, cold continuation owners, and context growth were excessive. For the next completed medium/large slice, compare actual results with the `AGENTS.md` targets (at most 20 root resumptions through pre-CI acceptance, at most two explicit waits per owner/process, and owner sessions equal coherent slices unless justified). Report whether orchestration/tool telemetry or role routing changed, record exception reasons, and update `AGENTS.md` and this handoff if those rules prove stale. In practice: resume the same owner with `followup_task`, use one longest event/process wait, use the full commit SHA with compact CI status/log excerpts, and compact at the safe threshold rather than carrying an overgrown root context.
+
 ## Completed Roadmap Work
 
 The following commits are on `main` and `origin/main`:
