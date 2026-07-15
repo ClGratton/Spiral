@@ -172,6 +172,8 @@ namespace Engine::RHI
             case DeviceFeature::DynamicRendering: return "Dynamic Rendering";
             case DeviceFeature::Synchronization2: return "Synchronization2";
             case DeviceFeature::BufferDeviceAddress: return "Buffer Device Address";
+            case DeviceFeature::PlacedResources: return "Placed Resources";
+            case DeviceFeature::AliasingBarriers: return "Aliasing Barriers";
             case DeviceFeature::Count: break;
         }
         return "Unknown";
@@ -182,6 +184,7 @@ namespace Engine::RHI
         switch (group)
         {
             case CapabilityGroupId::Phase3FrameTimingV1: return "Phase3FrameTimingV1";
+            case CapabilityGroupId::Phase3TransientResourcesV1: return "Phase3TransientResourcesV1";
             case CapabilityGroupId::Count: break;
         }
         return "Unknown";
@@ -194,6 +197,8 @@ namespace Engine::RHI
             case CapabilityPath::None: return "None";
             case CapabilityPath::CpuSteadyClock: return "CpuSteadyClock";
             case CapabilityPath::GpuTimestamps: return "GpuTimestamps";
+            case CapabilityPath::PlacedAliasedTransient: return "PlacedAliasedTransient";
+            case CapabilityPath::NonAliasedGpuRetiredPool: return "NonAliasedGpuRetiredPool";
             case CapabilityPath::Count: break;
         }
         return "Unknown";

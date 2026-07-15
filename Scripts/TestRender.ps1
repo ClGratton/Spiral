@@ -67,7 +67,9 @@ $RequiredMarkers = @(
     "D3D12 capability state: Timestamps advertised=yes, enabled=no, implemented=no, exercised=no",
     "Editor renderer capability diagnostics ready: profile=Phase 3 D3D12 Bootstrap V1, qualification=Bootstrap",
     "Renderer capability group: group=Phase3FrameTimingV1, profile=Phase 3 Frame Timing V1, preferredPath=GpuTimestamps, selectedPath=CpuSteadyClock, implemented=yes, exercised=no",
+    "Renderer capability group: group=Phase3TransientResourcesV1, profile=Phase 3 Transient Resources V1, preferredPath=PlacedAliasedTransient, selectedPath=NonAliasedGpuRetiredPool, implemented=yes, exercised=no",
     "Editor renderer capability group exercised: group=Phase3FrameTimingV1, profile=Phase 3 Frame Timing V1, preferredPath=GpuTimestamps, selectedPath=CpuSteadyClock, implemented=yes, exercised=yes, qualification=Presentation, deviceQualification=Bootstrap",
+    "Editor renderer capability group exercised: group=Phase3TransientResourcesV1, profile=Phase 3 Transient Resources V1, preferredPath=PlacedAliasedTransient, selectedPath=NonAliasedGpuRetiredPool, implemented=yes, exercised=yes, qualification=Presentation, deviceQualification=Bootstrap",
     "Renderer initialized with backend: NVRHI D3D12",
     "D3D12 scene origin raster case A:",
     "D3D12 scene origin raster case B:",
@@ -187,7 +189,7 @@ foreach ($Pattern in $CanonicalOriginPatterns) {
         throw "D3D12 scene-origin diagnostics did not prove the expected canonical mesh/origin boundary transition: $Pattern"
     }
 }
-$DiagnosticsPattern = "Editor renderer capability diagnostics rendered: profile=Phase 3 D3D12 Bootstrap V1, adapter=.+, qualification=Bootstrap, formats=[1-9][0-9]*, features=9, groups=1, candidates=[1-9][0-9]*"
+$DiagnosticsPattern = "Editor renderer capability diagnostics rendered: profile=Phase 3 D3D12 Bootstrap V1, adapter=.+, qualification=Bootstrap, formats=[1-9][0-9]*, features=11, groups=2, candidates=[1-9][0-9]*"
 if ($JoinedLog -notmatch $DiagnosticsPattern) {
     throw "D3D12 render smoke did not emit a complete editor capability diagnostics marker."
 }

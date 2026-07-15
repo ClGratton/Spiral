@@ -160,7 +160,7 @@ for ((ATTEMPT = 1; ATTEMPT <= ITERATIONS; ++ATTEMPT)); do
             exit 1
         fi
     done
-    DIAGNOSTICS_PATTERN='Editor renderer capability diagnostics rendered: profile=Phase 3 Vulkan Bootstrap Presentation V1, adapter=.+, qualification=Bootstrap, formats=[1-9][0-9]*, features=9, groups=1, candidates=[1-9][0-9]*'
+    DIAGNOSTICS_PATTERN='Editor renderer capability diagnostics rendered: profile=Phase 3 Vulkan Bootstrap Presentation V1, adapter=.+, qualification=Bootstrap, formats=[1-9][0-9]*, features=11, groups=2, candidates=[1-9][0-9]*'
     if ! grep -Eq "$DIAGNOSTICS_PATTERN" "$LOG_FILE"; then
         echo "Vulkan render smoke did not emit a complete editor capability diagnostics marker on attempt $ATTEMPT/$ITERATIONS." >&2
         exit 1

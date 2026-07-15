@@ -2,6 +2,7 @@
 
 #include "Engine/Core/Application.h"
 #include "Engine/Core/Log.h"
+#include "Engine/RenderGraph/RenderGraph.h"
 #include "Engine/RHI/NVRHI/NVRHIAdapter.h"
 #include "Engine/Renderer/CapabilityDiagnostics.h"
 #include "Engine/Renderer/NVRHI/NVRHIRenderBackend.h"
@@ -187,6 +188,19 @@ namespace Engine
                 group->Qualification = RHI::QualificationLevel::Bootstrap;
         }
 
+        void RefreshTransientResourceCapabilityGroup()
+        {
+            RHI::CapabilityGroupState* group = s_DeviceCapabilities.GetCapabilityGroup(
+                RHI::CapabilityGroupId::Phase3TransientResourcesV1);
+            if (!group || !group->Implemented || !s_FrameTiming.Presentation.PresentSucceeded)
+                return;
+
+            // This exercises the selected policy/diagnostics route only. Physical
+            // transient allocation and completion-token-gated reuse remain separate.
+            group->Exercised = true;
+            group->Qualification = RHI::QualificationLevel::Presentation;
+        }
+
         void BeginTimingFrame()
         {
             s_FrameTiming = {};
@@ -220,6 +234,7 @@ namespace Engine
             if (const RendererPresentationTiming* timing = backend ? backend->GetPresentationTiming() : nullptr)
                 s_FrameTiming.Presentation = *timing;
             RefreshFrameTimingCapabilityGroup();
+            RefreshTransientResourceCapabilityGroup();
         }
 
         void RebuildBackendOptions()
@@ -334,17 +349,21 @@ namespace Engine
                     s_DeviceCapabilities = *capabilities;
                     s_DeviceCapabilities.CapabilityGroups.push_back(
                         BuildFrameTimingCapabilityGroup(s_DeviceCapabilities));
+                    s_DeviceCapabilities.CapabilityGroups.push_back(
+                        RenderGraph::BuildTransientResourceCapabilityGroup(s_DeviceCapabilities));
                     s_HasDeviceCapabilities = true;
                     s_Capabilities.HasNativeRayTracing = capabilities->GetFeature(RHI::DeviceFeature::RayTracing).IsUsable();
                     s_Capabilities.HasWorkGraphs = capabilities->GetFeature(RHI::DeviceFeature::WorkGraphs).IsUsable();
                     s_Capabilities.HasNeuralAccelerators = capabilities->GetFeature(RHI::DeviceFeature::NeuralShaders).IsUsable();
-                    const RHI::CapabilityGroupState& timingGroup = s_DeviceCapabilities.CapabilityGroups.back();
-                    Log::Info("Renderer capability group: group=", RHI::ToString(timingGroup.Group),
-                        ", profile=", timingGroup.ProfileName,
-                        ", preferredPath=", RHI::ToString(timingGroup.PreferredPath),
-                        ", selectedPath=", RHI::ToString(timingGroup.SelectedPath),
-                        ", implemented=", timingGroup.Implemented ? "yes" : "no",
-                        ", exercised=", timingGroup.Exercised ? "yes" : "no");
+                    for (const RHI::CapabilityGroupState& group : s_DeviceCapabilities.CapabilityGroups)
+                    {
+                        Log::Info("Renderer capability group: group=", RHI::ToString(group.Group),
+                            ", profile=", group.ProfileName,
+                            ", preferredPath=", RHI::ToString(group.PreferredPath),
+                            ", selectedPath=", RHI::ToString(group.SelectedPath),
+                            ", implemented=", group.Implemented ? "yes" : "no",
+                            ", exercised=", group.Exercised ? "yes" : "no");
+                    }
                 }
             }
         }

@@ -2467,6 +2467,12 @@ namespace Engine::RHI
                 m_Capabilities.GetFeature(DeviceFeature::BufferDeviceAddress) = MakeCapabilityState(
                     false, false, false, false,
                     "Not required or queried by the Phase 3 D3D12 bootstrap profile");
+                m_Capabilities.GetFeature(DeviceFeature::PlacedResources) = MakeCapabilityState(
+                    false, false, false, false,
+                    "D3D12 placed-resource translation is not implemented by the backend-neutral RHI");
+                m_Capabilities.GetFeature(DeviceFeature::AliasingBarriers) = MakeCapabilityState(
+                    false, false, false, false,
+                    "D3D12 alias-barrier translation is not implemented by the backend-neutral RHI");
             }
 
         private:

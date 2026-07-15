@@ -1516,6 +1516,56 @@ namespace
                 "invalid optional-path diagnostics survive fallback selection");
     }
 
+    bool TestTransientCapabilityGroupSelectsPlacedAliasingOnlyWhenBothRhiFeaturesAreUsable()
+    {
+        using namespace Engine;
+        using namespace Engine::RHI;
+
+        DeviceCapabilities capabilities;
+        capabilities.GetFeature(DeviceFeature::PlacedResources) = MakeCapabilityState(
+            true, true, true, true, "placed resources are translated and exercised");
+        capabilities.GetFeature(DeviceFeature::AliasingBarriers) = MakeCapabilityState(
+            true, true, true, true, "aliasing barriers are translated and exercised");
+
+        const CapabilityGroupState group = RenderGraph::BuildTransientResourceCapabilityGroup(capabilities);
+        return Expect(group.Group == CapabilityGroupId::Phase3TransientResourcesV1,
+                   "transient resources use a stable versioned capability group")
+            && Expect(group.PreferredPath == CapabilityPath::PlacedAliasedTransient
+                    && group.SelectedPath == CapabilityPath::PlacedAliasedTransient,
+                "only usable placement plus alias barriers select the aliased path")
+            && Expect(group.Implemented && !group.Exercised && group.Fallbacks.empty()
+                    && group.IsValid() && group.IsUsable(),
+                "the selected aliased policy remains separately exercised from feature evidence");
+    }
+
+    bool TestTransientCapabilityGroupSelectsGpuRetiredNonAliasedFallback()
+    {
+        using namespace Engine;
+        using namespace Engine::RHI;
+
+        DeviceCapabilities capabilities;
+        capabilities.GetFeature(DeviceFeature::PlacedResources) = MakeCapabilityState(
+            true, true, true, true, "placed resources are translated and exercised");
+        capabilities.GetFeature(DeviceFeature::AliasingBarriers) = MakeCapabilityState(
+            false, false, false, false, "alias barriers are not translated by the active RHI device");
+
+        CapabilityGroupState group = RenderGraph::BuildTransientResourceCapabilityGroup(capabilities);
+        const bool fallback = group.PreferredPath == CapabilityPath::PlacedAliasedTransient
+            && group.SelectedPath == CapabilityPath::NonAliasedGpuRetiredPool
+            && group.Implemented && !group.Exercised
+            && group.Fallbacks.size() == 1 && group.UnsupportedReasons.size() == 2
+            && group.Fallbacks[0].find("GPU-retired reuse") != std::string::npos;
+
+        group.Exercised = true;
+        group.Qualification = QualificationLevel::Presentation;
+        capabilities.CapabilityGroups.push_back(group);
+        const CapabilityGroupState* published = capabilities.GetCapabilityGroup(
+            CapabilityGroupId::Phase3TransientResourcesV1);
+        return Expect(fallback, "missing alias barriers select the committed or pooled non-aliased GPU-retired fallback")
+            && Expect(published && published->IsValid() && published->Exercised,
+                "the selected fallback policy is publishable with its independent runtime exercise");
+    }
+
     bool TestPortableShaderContract()
     {
         using namespace Engine;
@@ -3456,7 +3506,9 @@ int main()
         { "Frame timing capability group selects usable GPU timestamps", TestFrameTimingCapabilityGroupSelectsUsableGpuTimestamps },
         { "Frame timing capability group selects portable CPU fallback", TestFrameTimingCapabilityGroupSelectsPortableCpuFallback },
         { "Portable shader contract validates deterministic cache and layouts", TestPortableShaderContract },
-        { "Frame timing capability group rejects invalid timestamp lifecycle", TestFrameTimingCapabilityGroupRejectsInvalidTimestampLifecycle }
+        { "Frame timing capability group rejects invalid timestamp lifecycle", TestFrameTimingCapabilityGroupRejectsInvalidTimestampLifecycle },
+        { "Transient capability group selects placed aliasing only when both RHI features are usable", TestTransientCapabilityGroupSelectsPlacedAliasingOnlyWhenBothRhiFeaturesAreUsable },
+        { "Transient capability group selects GPU-retired non-aliased fallback", TestTransientCapabilityGroupSelectsGpuRetiredNonAliasedFallback }
     };
 
     size_t failures = 0;

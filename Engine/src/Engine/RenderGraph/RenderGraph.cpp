@@ -6,6 +6,36 @@
 
 namespace Engine
 {
+    RHI::CapabilityGroupState RenderGraph::BuildTransientResourceCapabilityGroup(
+        const RHI::DeviceCapabilities& capabilities)
+    {
+        RHI::CapabilityGroupState group;
+        group.Group = RHI::CapabilityGroupId::Phase3TransientResourcesV1;
+        group.ProfileName = "Phase 3 Transient Resources V1";
+        group.PreferredPath = RHI::CapabilityPath::PlacedAliasedTransient;
+
+        const RHI::CapabilityState& placement = capabilities.GetFeature(RHI::DeviceFeature::PlacedResources);
+        const RHI::CapabilityState& aliasBarriers = capabilities.GetFeature(RHI::DeviceFeature::AliasingBarriers);
+        if (placement.IsUsable() && aliasBarriers.IsUsable())
+        {
+            group.SelectedPath = RHI::CapabilityPath::PlacedAliasedTransient;
+            group.Implemented = true;
+            return group;
+        }
+
+        group.SelectedPath = RHI::CapabilityPath::NonAliasedGpuRetiredPool;
+        group.Implemented = true;
+        group.Fallbacks.emplace_back(
+            "placed aliasing is unavailable; selected separately allocated or non-aliased pooled resources with GPU-retired reuse");
+        group.UnsupportedReasons.emplace_back(placement.Detail.empty()
+            ? "placed-resource capability is not usable on the active RHI device"
+            : placement.Detail);
+        group.UnsupportedReasons.emplace_back(aliasBarriers.Detail.empty()
+            ? "alias-barrier capability is not usable on the active RHI device"
+            : aliasBarriers.Detail);
+        return group;
+    }
+
     RenderGraph::ExecutionContext::ExecutionContext(RHI::CommandList& commandList, const std::vector<RHI::Texture*>& textures,
         const std::vector<RHI::Buffer*>& buffers, const std::vector<bool>& declared)
         : m_CommandList(&commandList), m_Textures(&textures), m_Buffers(&buffers), m_Declared(&declared) {}

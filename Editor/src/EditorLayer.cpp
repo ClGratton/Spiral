@@ -66,6 +66,10 @@ namespace
             error = "Phase 3 frame-timing capability group is missing";
         else if (!capabilities.GetCapabilityGroup(Engine::RHI::CapabilityGroupId::Phase3FrameTimingV1)->IsValid())
             error = "Phase 3 frame-timing capability group has an invalid lifecycle";
+        else if (!capabilities.GetCapabilityGroup(Engine::RHI::CapabilityGroupId::Phase3TransientResourcesV1))
+            error = "Phase 3 transient-resource capability group is missing";
+        else if (!capabilities.GetCapabilityGroup(Engine::RHI::CapabilityGroupId::Phase3TransientResourcesV1)->IsValid())
+            error = "Phase 3 transient-resource capability group has an invalid lifecycle";
         else
             return true;
 
@@ -1425,8 +1429,11 @@ void EditorLayer::DrawProfilerPanel()
             {
                 const Engine::RHI::CapabilityGroupState* timingGroup = capabilities->GetCapabilityGroup(
                     Engine::RHI::CapabilityGroupId::Phase3FrameTimingV1);
-                if (timingGroup && timingGroup->Exercised
-                    && timingGroup->Qualification >= Engine::RHI::QualificationLevel::Presentation)
+                const Engine::RHI::CapabilityGroupState* transientGroup = capabilities->GetCapabilityGroup(
+                    Engine::RHI::CapabilityGroupId::Phase3TransientResourcesV1);
+                if (timingGroup && transientGroup && timingGroup->Exercised && transientGroup->Exercised
+                    && timingGroup->Qualification >= Engine::RHI::QualificationLevel::Presentation
+                    && transientGroup->Qualification >= Engine::RHI::QualificationLevel::Presentation)
                 {
                     Engine::Log::Info(
                         "Editor renderer capability diagnostics rendered: profile=", capabilities->ProfileName,
@@ -1444,6 +1451,16 @@ void EditorLayer::DrawProfilerPanel()
                         ", implemented=", timingGroup->Implemented ? "yes" : "no",
                         ", exercised=", timingGroup->Exercised ? "yes" : "no",
                         ", qualification=", Engine::RHI::ToString(timingGroup->Qualification),
+                        ", deviceQualification=", Engine::RHI::ToString(capabilities->Qualification),
+                        ", adapter=", capabilities->Identity.Name);
+                    Engine::Log::Info(
+                        "Editor renderer capability group exercised: group=", Engine::RHI::ToString(transientGroup->Group),
+                        ", profile=", transientGroup->ProfileName,
+                        ", preferredPath=", Engine::RHI::ToString(transientGroup->PreferredPath),
+                        ", selectedPath=", Engine::RHI::ToString(transientGroup->SelectedPath),
+                        ", implemented=", transientGroup->Implemented ? "yes" : "no",
+                        ", exercised=", transientGroup->Exercised ? "yes" : "no",
+                        ", qualification=", Engine::RHI::ToString(transientGroup->Qualification),
                         ", deviceQualification=", Engine::RHI::ToString(capabilities->Qualification),
                         ", adapter=", capabilities->Identity.Name);
                     m_RendererCapabilitySmokeComplete = true;

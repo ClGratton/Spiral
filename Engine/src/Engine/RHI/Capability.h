@@ -9,6 +9,12 @@
 #include <string_view>
 #include <vector>
 
+// Windows headers define DeviceCapabilities as an ANSI/Unicode dispatch macro.
+// The RHI type predates native inclusion order, so keep the public contract stable.
+#if defined(DeviceCapabilities)
+    #undef DeviceCapabilities
+#endif
+
 namespace Engine::RHI
 {
     enum class DeviceFeature : u32
@@ -22,6 +28,8 @@ namespace Engine::RHI
         DynamicRendering,
         Synchronization2,
         BufferDeviceAddress,
+        PlacedResources,
+        AliasingBarriers,
         Count
     };
 
@@ -38,6 +46,7 @@ namespace Engine::RHI
     enum class CapabilityGroupId : u32
     {
         Phase3FrameTimingV1,
+        Phase3TransientResourcesV1,
         Count
     };
 
@@ -46,6 +55,8 @@ namespace Engine::RHI
         None,
         CpuSteadyClock,
         GpuTimestamps,
+        PlacedAliasedTransient,
+        NonAliasedGpuRetiredPool,
         Count
     };
 

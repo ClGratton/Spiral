@@ -14,12 +14,21 @@
 #include <string_view>
 #include <vector>
 
+#if defined(DeviceCapabilities)
+    #undef DeviceCapabilities
+#endif
+
 namespace Engine
 {
     class RenderGraph
     {
     public:
         static constexpr u32 InvalidIndex = std::numeric_limits<u32>::max();
+
+        // This policy selection deliberately precedes physical transient allocation.
+        // The allocation item consumes it so graph policy never infers native support.
+        static RHI::CapabilityGroupState BuildTransientResourceCapabilityGroup(
+            const RHI::DeviceCapabilities& capabilities);
 
         struct ResourceHandle
         {

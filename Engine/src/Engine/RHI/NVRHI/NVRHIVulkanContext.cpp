@@ -295,6 +295,12 @@ namespace Engine::RHI
                 m_BufferDeviceAddressAdvertised
                     ? "Advertised but deliberately not enabled: the bootstrap profile has no implemented consumer"
                     : "Not advertised by the selected Vulkan device");
+            m_Capabilities.GetFeature(DeviceFeature::PlacedResources) = MakeCapabilityState(
+                false, false, false, false,
+                "Vulkan placed-resource translation is not implemented by the backend-neutral RHI");
+            m_Capabilities.GetFeature(DeviceFeature::AliasingBarriers) = MakeCapabilityState(
+                false, false, false, false,
+                "Vulkan alias-barrier translation is not implemented by the backend-neutral RHI");
 
             m_Capabilities.Fallbacks = m_SelectionFallbacks;
 
