@@ -1334,24 +1334,27 @@ namespace Engine::RHI
                     m_CommandList->DrawIndexedInstanced(indexCount, instanceCount, startIndex, baseVertex, startInstance);
             }
 
-            void ResetQueryPool(QueryPool& queryPool, u32 firstQuery, u32 queryCount) override
+            bool ResetQueryPool(QueryPool& queryPool, u32 firstQuery, u32 queryCount) override
             {
                 (void)queryPool;
                 (void)firstQuery;
                 (void)queryCount;
+                return false;
             }
 
-            void WriteTimestamp(QueryPool& queryPool, u32 queryIndex) override
+            bool WriteTimestamp(QueryPool& queryPool, u32 queryIndex) override
             {
                 (void)queryPool;
                 (void)queryIndex;
+                return false;
             }
 
-            void ResolveQueryPool(QueryPool& queryPool, u32 firstQuery, u32 queryCount) override
+            bool ResolveQueryPool(QueryPool& queryPool, u32 firstQuery, u32 queryCount) override
             {
                 (void)queryPool;
                 (void)firstQuery;
                 (void)queryCount;
+                return false;
             }
 
         private:
@@ -1450,29 +1453,6 @@ namespace Engine::RHI
             std::vector<RecordedTextureOwnershipOperation> m_TextureOwnershipOperations;
             bool m_AllowPendingTexture = false;
             State m_State = State::Initial;
-        };
-
-        class NVRHIQueryPoolStub final : public QueryPool
-        {
-        public:
-            explicit NVRHIQueryPoolStub(QueryPoolDescription description)
-                : m_Description(std::move(description))
-            {
-            }
-
-            const QueryPoolDescription& GetDescription() const override
-            {
-                return m_Description;
-            }
-
-            QueryResult ReadResult(u32 queryIndex) const override
-            {
-                (void)queryIndex;
-                return {};
-            }
-
-        private:
-            QueryPoolDescription m_Description;
         };
 
         class NVRHID3D12Device final : public Device
@@ -1646,16 +1626,10 @@ namespace Engine::RHI
                 return pipeline;
             }
 
-            Scope<QueryPool> CreateQueryPool(const QueryPoolDescription& description) override
+            Scope<QueryPool> CreateQueryPool(const QueryPoolDescription&) override
             {
-                if (description.Count == 0)
-                {
-                    Log::Warn("NVRHI D3D12 query pool requested with zero query slots");
-                    return nullptr;
-                }
-
-                Log::Warn("NVRHI D3D12 query heap resolve is not implemented yet; creating CPU-visible query pool stub: ", description.DebugName);
-                return CreateScope<NVRHIQueryPoolStub>(description);
+                Log::Error("NVRHI D3D12 query pools are not implemented");
+                return nullptr;
             }
 
             Scope<CommandList> CreateCommandList(QueueType queueType, std::string_view debugName) override

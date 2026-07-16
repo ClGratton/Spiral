@@ -93,8 +93,9 @@ namespace Engine::RHI
         virtual void SetIndexBuffer(Buffer& buffer, IndexFormat format) = 0;
         virtual bool CopyBuffer(Buffer& destination, u64 destinationOffset, Buffer& source, u64 sourceOffset, u64 sizeBytes) = 0;
         virtual void DrawIndexed(u32 indexCount, u32 instanceCount, u32 startIndex, int baseVertex, u32 startInstance) = 0;
-        virtual void ResetQueryPool(QueryPool& queryPool, u32 firstQuery, u32 queryCount) = 0;
-        virtual void WriteTimestamp(QueryPool& queryPool, u32 queryIndex) = 0;
-        virtual void ResolveQueryPool(QueryPool& queryPool, u32 firstQuery, u32 queryCount) = 0;
+        // False rejects the operation before an adapter records native work.
+        virtual bool ResetQueryPool(QueryPool& queryPool, u32 firstQuery, u32 queryCount) = 0;
+        virtual bool WriteTimestamp(QueryPool& queryPool, u32 queryIndex) = 0;
+        virtual bool ResolveQueryPool(QueryPool& queryPool, u32 firstQuery, u32 queryCount) = 0;
     };
 }

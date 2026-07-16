@@ -34,7 +34,7 @@ Phases 4–9 are smaller because they layer algorithms onto that foundation, but
 | Backend-neutral render snapshot | Any scene renderer or render graph pass | Phase 3B |
 | Shared asynchronous DXIL/SPIR-V shader contract | Vulkan scene parity and all shared passes | Phase 3C foundation is implemented and D3D12 consumes DXIL; paired SPIR-V is validated artifact evidence until the following Vulkan scene-RHI item consumes it. |
 | Executable render graph and GPU retirement | Multi-pass renderer, transient reuse, AA, visibility, GI, rays | Phase 3C |
-| Backend-neutral GPU timestamp scopes with D3D12 heap/Vulkan pool resolve and Profiler publication | Measure Forward+/clustered lighting, PBR, lights, shadows, sky, and every later RenderGraph pass as it lands | Phase 3 prerequisite immediately before Phase 3E; CPU steady-clock fallback does not qualify GPU-cost claims. |
+| Backend-neutral GPU timestamp scopes with D3D12 heap/Vulkan pool resolve, frame-ID publication, and Profiler/benchmark headroom reporting | Production pacing comparison plus Forward+/clustered lighting, PBR, lights, shadows, sky, and every later RenderGraph pass as it lands | Phase 3 prerequisite immediately before production pacing selection; it remains a Phase 3E gate. CPU steady-clock fallback does not qualify GPU-cost or headroom claims. |
 | KTX2/Basis target cook and basic texture upload/mips | Phase 4 mip/filter validation and Phase 5 calibrated materials | Phase 3D |
 | Descriptor/bindless model with bounded fallback | Material tables, visibility resolve, streamed textures/geometry | Phase 3D |
 | Scene-referred HDR, exposure, photometric units, neutral tone map | PBR lighting, Callisto calibration, daylight and GI | Phase 3E |

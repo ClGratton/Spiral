@@ -136,6 +136,14 @@ namespace Engine::RHI
         virtual Scope<Shader> CreateShader(const ShaderDescription& description) = 0;
         virtual Scope<Pipeline> CreatePipeline(const PipelineDescription& description) = 0;
         virtual Scope<QueryPool> CreateQueryPool(const QueryPoolDescription& description) = 0;
+        // Query pools are exact-device objects just like resources. Backends
+        // without P2 query support leave this unavailable rather than adopting
+        // a foreign or stub pool.
+        virtual bool OwnsQueryPool(const QueryPool* queryPool) const
+        {
+            (void)queryPool;
+            return false;
+        }
         virtual Scope<CommandList> CreateCommandList(QueueType queueType, std::string_view debugName) = 0;
         virtual bool UploadBuffer(Buffer& destination, const void* sourceData, u64 sizeBytes, u64 destinationOffset = 0) = 0;
         virtual bool ReadbackTexture(Texture& source, TextureReadback& destination) = 0;

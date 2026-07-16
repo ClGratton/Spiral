@@ -30,6 +30,7 @@
 #include <iostream>
 #include <iterator>
 #include <limits>
+#include <optional>
 #include <stdexcept>
 #include <string_view>
 #include <thread>
@@ -2458,6 +2459,268 @@ float4 main(VertexInput input) : SV_Position
             && Expect(issued.IsValid(), "completion token preserves opaque nonzero device and submission identities");
     }
 
+    class QueryLifecycleTestCommandList final : public Engine::RHI::CommandList
+    {
+    public:
+        explicit QueryLifecycleTestCommandList(Engine::u64 ownerDeviceId) : m_OwnerDeviceId(ownerDeviceId) {}
+
+        Engine::RHI::QueueType GetQueueType() const override { return Engine::RHI::QueueType::Graphics; }
+        bool Begin() override { if (m_Recording) return false; m_Recording = true; m_Closed = false; m_Failed = false; m_Pool = nullptr; m_RecordingQuery.reset(); return true; }
+        bool End() override { if (!m_Recording || m_Failed) return false; m_Recording = false; m_Closed = true; return true; }
+        void BeginDebugMarker(std::string_view) override {}
+        void EndDebugMarker() override {}
+        bool BindViewportOutputs(Engine::RHI::Texture&, Engine::RHI::Texture*) override { return false; }
+        bool ClearViewportOutputs(const Engine::RHI::ViewportClear&) override { return false; }
+        bool TransitionTexture(Engine::RHI::Texture&, Engine::RHI::ResourceState) override { return false; }
+        bool TransitionBuffer(Engine::RHI::Buffer&, Engine::RHI::ResourceState) override { return false; }
+        void SetGraphicsPipeline(Engine::RHI::Pipeline&) override {}
+        void SetGraphicsConstantBuffer(Engine::u32, Engine::RHI::Buffer&) override {}
+        void SetViewport(const Engine::RHI::Viewport&) override {}
+        void SetScissorRect(const Engine::RHI::ScissorRect&) override {}
+        void SetVertexBuffer(Engine::u32, Engine::RHI::Buffer&) override {}
+        void SetIndexBuffer(Engine::RHI::Buffer&, Engine::RHI::IndexFormat) override {}
+        bool CopyBuffer(Engine::RHI::Buffer&, Engine::u64, Engine::RHI::Buffer&, Engine::u64, Engine::u64) override { return false; }
+        void DrawIndexed(Engine::u32, Engine::u32, Engine::u32, int, Engine::u32) override {}
+
+        bool ResetQueryPool(Engine::RHI::QueryPool& queryPool, Engine::u32 firstQuery, Engine::u32 queryCount) override
+        {
+            return Record(queryPool, [&](Engine::RHI::TimestampQueryRecording& recording) { return recording.Reset(firstQuery, queryCount); });
+        }
+        bool WriteTimestamp(Engine::RHI::QueryPool& queryPool, Engine::u32 queryIndex) override
+        {
+            return Record(queryPool, [&](Engine::RHI::TimestampQueryRecording& recording) { return recording.Write(queryIndex); });
+        }
+        bool ResolveQueryPool(Engine::RHI::QueryPool& queryPool, Engine::u32 firstQuery, Engine::u32 queryCount) override
+        {
+            return Record(queryPool, [&](Engine::RHI::TimestampQueryRecording& recording) { return recording.Resolve(firstQuery, queryCount); });
+        }
+
+        bool Publish(const Engine::RHI::CompletionToken& token)
+        {
+            if (!m_Closed || !m_Pool || !m_RecordingQuery || !m_Pool->Publish(*m_RecordingQuery, token)) return false;
+            m_Closed = false;
+            m_RecordingQuery.reset();
+            return true;
+        }
+
+    private:
+        template <typename Operation>
+        bool Record(Engine::RHI::QueryPool& queryPool, Operation&& operation)
+        {
+            auto* pool = dynamic_cast<Engine::RHI::TimestampQueryPool*>(&queryPool);
+            if (!m_Recording || m_Failed || !pool || pool->GetOwnerDeviceId() != m_OwnerDeviceId
+                || (m_Pool && m_Pool != pool))
+            {
+                m_Failed = true;
+                return false;
+            }
+            if (!m_Pool)
+            {
+                m_Pool = pool;
+                m_RecordingQuery.emplace(pool->BeginRecording());
+            }
+            if (!operation(*m_RecordingQuery))
+            {
+                m_Failed = true;
+                return false;
+            }
+            return true;
+        }
+
+        Engine::u64 m_OwnerDeviceId = 0;
+        bool m_Recording = false;
+        bool m_Closed = false;
+        bool m_Failed = false;
+        Engine::RHI::TimestampQueryPool* m_Pool = nullptr;
+        std::optional<Engine::RHI::TimestampQueryRecording> m_RecordingQuery;
+    };
+
+    class QueryLifecycleTestDevice final : public Engine::RHI::Device
+    {
+    public:
+        explicit QueryLifecycleTestDevice(Engine::u64 ownerDeviceId) : m_OwnerDeviceId(ownerDeviceId) {}
+
+        const Engine::RHI::DeviceDescription& GetDescription() const override { return m_Description; }
+        const Engine::RHI::DeviceCapabilities& GetCapabilities() const override { return m_Capabilities; }
+        Engine::Scope<Engine::RHI::Buffer> CreateBuffer(const Engine::RHI::BufferDescription&) override { return nullptr; }
+        Engine::Scope<Engine::RHI::Texture> CreateTexture(const Engine::RHI::TextureDescription&) override { return nullptr; }
+        bool OwnsResource(const Engine::RHI::Buffer*) const override { return false; }
+        bool OwnsResource(const Engine::RHI::Texture*) const override { return false; }
+        bool QueryResourceState(const Engine::RHI::Buffer*, Engine::RHI::ResourceState&) const override { return false; }
+        bool QueryResourceState(const Engine::RHI::Texture*, Engine::RHI::ResourceState&) const override { return false; }
+        Engine::Scope<Engine::RHI::Shader> CreateShader(const Engine::RHI::ShaderDescription&) override { return nullptr; }
+        Engine::Scope<Engine::RHI::Pipeline> CreatePipeline(const Engine::RHI::PipelineDescription&) override { return nullptr; }
+        Engine::Scope<Engine::RHI::QueryPool> CreateQueryPool(const Engine::RHI::QueryPoolDescription& description) override
+        {
+            return Engine::RHI::TimestampQueryPool::Create(m_OwnerDeviceId, description);
+        }
+        bool OwnsQueryPool(const Engine::RHI::QueryPool* queryPool) const override
+        {
+            const auto* timestampPool = dynamic_cast<const Engine::RHI::TimestampQueryPool*>(queryPool);
+            return timestampPool && timestampPool->GetOwnerDeviceId() == m_OwnerDeviceId;
+        }
+        Engine::Scope<Engine::RHI::CommandList> CreateCommandList(Engine::RHI::QueueType, std::string_view) override
+        {
+            return Engine::CreateScope<QueryLifecycleTestCommandList>(m_OwnerDeviceId);
+        }
+        bool UploadBuffer(Engine::RHI::Buffer&, const void*, Engine::u64, Engine::u64) override { return false; }
+        bool ReadbackTexture(Engine::RHI::Texture&, Engine::RHI::TextureReadback&) override { return false; }
+        Engine::RHI::CompletionToken Submit(Engine::RHI::CommandList& commandList) override
+        {
+            auto* list = dynamic_cast<QueryLifecycleTestCommandList*>(&commandList);
+            if (!list || m_FailNextSubmission) { m_FailNextSubmission = false; return {}; }
+            const Engine::RHI::CompletionToken token { m_OwnerDeviceId, m_NextSubmissionId };
+            if (!list->Publish(token)) return {};
+            ++m_NextSubmissionId;
+            ++AcceptedSubmissionCount;
+            return token;
+        }
+        Engine::RHI::CompletionStatus QueryCompletion(const Engine::RHI::CompletionToken& token) override
+        {
+            return token.DeviceId == m_OwnerDeviceId && token.SubmissionId < m_NextSubmissionId ? Engine::RHI::CompletionStatus::Incomplete : Engine::RHI::CompletionStatus::Invalid;
+        }
+        bool WaitForCompletion(const Engine::RHI::CompletionToken&, Engine::u32) override { ++WaitCount; return false; }
+        bool SubmitAndWait(Engine::RHI::CommandList&) override { return false; }
+        void WaitIdle() override { ++WaitCount; }
+
+        bool Complete(Engine::RHI::TimestampQueryPool& pool, const Engine::RHI::CompletionToken& token,
+            Engine::RHI::CompletionStatus status, const std::vector<Engine::u64>& values = {})
+        {
+            return pool.Complete(token, status, values);
+        }
+
+        void FailNextSubmission() { m_FailNextSubmission = true; }
+        int AcceptedSubmissionCount = 0;
+        int WaitCount = 0;
+
+    private:
+        Engine::u64 m_OwnerDeviceId = 0;
+        Engine::u64 m_NextSubmissionId = 1;
+        bool m_FailNextSubmission = false;
+        Engine::RHI::DeviceDescription m_Description;
+        Engine::RHI::DeviceCapabilities m_Capabilities;
+    };
+
+    bool TestTimestampQueryPoolLifecycleContract()
+    {
+        using namespace Engine;
+        using namespace Engine::RHI;
+        QueryLifecycleTestDevice owner(9101);
+        QueryLifecycleTestDevice foreign(9102);
+        QueryPoolDescription description;
+        description.DebugName = "timestamp-lifecycle";
+        description.Type = QueryType::Timestamp;
+        description.Count = 2;
+
+        QueryPoolDescription zero = description;
+        zero.Count = 0;
+        QueryPoolDescription wrongType = description;
+        wrongType.Type = QueryType::Occlusion;
+        QueryPoolDescription oversized = description;
+        oversized.Count = TimestampQueryPool::kMaximumQueryCount + 1;
+        const bool creationValidation = !owner.CreateQueryPool(zero) && !owner.CreateQueryPool(wrongType)
+            && !owner.CreateQueryPool(oversized);
+
+        Scope<QueryPool> poolBase = owner.CreateQueryPool(description);
+        auto* pool = dynamic_cast<TimestampQueryPool*>(poolBase.get());
+        const bool initiallyUnavailable = pool && pool->ReadResult(0).Status == QueryResultStatus::Unavailable;
+        const auto invalid = [&](std::string_view name, const std::function<bool(QueryLifecycleTestCommandList&)>& operation)
+        {
+            Scope<CommandList> base = owner.CreateCommandList(QueueType::Graphics, name);
+            auto* list = dynamic_cast<QueryLifecycleTestCommandList*>(base.get());
+            return list && list->Begin() && !operation(*list) && !list->End() && !owner.Submit(*list).IsValid();
+        };
+        const bool invalidOrder = pool && owner.OwnsQueryPool(pool) && !foreign.OwnsQueryPool(pool)
+            && [&]
+            {
+                Scope<CommandList> base = foreign.CreateCommandList(QueueType::Graphics, "timestamp-foreign");
+                auto* list = dynamic_cast<QueryLifecycleTestCommandList*>(base.get());
+                return list && list->Begin() && !list->ResetQueryPool(*pool, 0, 1) && !list->End() && !foreign.Submit(*list).IsValid();
+            }()
+            && invalid("timestamp-range", [&](QueryLifecycleTestCommandList& list) { return list.ResetQueryPool(*pool, 2, 1); })
+            && invalid("timestamp-duplicate-write", [&](QueryLifecycleTestCommandList& list)
+                { return list.ResetQueryPool(*pool, 0, 2) && list.WriteTimestamp(*pool, 0) && list.WriteTimestamp(*pool, 0); })
+            && invalid("timestamp-resolve-before-write", [&](QueryLifecycleTestCommandList& list)
+                { return list.ResetQueryPool(*pool, 0, 2) && list.WriteTimestamp(*pool, 0) && list.ResolveQueryPool(*pool, 0, 2); })
+            && invalid("timestamp-duplicate-resolve", [&](QueryLifecycleTestCommandList& list)
+                { return list.ResetQueryPool(*pool, 0, 2) && list.WriteTimestamp(*pool, 0) && list.WriteTimestamp(*pool, 1)
+                    && list.ResolveQueryPool(*pool, 0, 2) && list.ResolveQueryPool(*pool, 0, 2); })
+            && pool->GetGeneration() == 0 && owner.AcceptedSubmissionCount == 0;
+
+        TimestampQueryRecording poisoned = pool->BeginRecording();
+        const bool failedRecordRollback = pool && !poisoned.Write(0) && !poisoned.IsValid()
+            && !poisoned.Reset(0, 2) && !pool->Publish(poisoned, { 9101, 99 }) && pool->GetGeneration() == 0;
+
+        Scope<CommandList> submitBase = owner.CreateCommandList(QueueType::Graphics, "timestamp-submit");
+        auto* submit = dynamic_cast<QueryLifecycleTestCommandList*>(submitBase.get());
+        const bool closedForSubmit = submit && submit->Begin() && submit->ResetQueryPool(*pool, 0, 2)
+            && submit->WriteTimestamp(*pool, 0) && submit->WriteTimestamp(*pool, 1)
+            && submit->ResolveQueryPool(*pool, 0, 2) && submit->End();
+        owner.FailNextSubmission();
+        const bool rejectedSubmission = closedForSubmit && !owner.Submit(*submit).IsValid() && pool->GetGeneration() == 0
+            && owner.AcceptedSubmissionCount == 0;
+        const CompletionToken first = rejectedSubmission ? owner.Submit(*submit) : CompletionToken {};
+        const QueryResult pending = first.IsValid() ? pool->ReadResult(0, 1) : QueryResult {};
+        const QueryResult stale = first.IsValid() ? pool->ReadResult(0, 0) : QueryResult {};
+
+        Scope<CommandList> reuseBase = owner.CreateCommandList(QueueType::Graphics, "timestamp-pending-reuse");
+        auto* reuse = dynamic_cast<QueryLifecycleTestCommandList*>(reuseBase.get());
+        const bool reuseBlocked = first.IsValid() && reuse && reuse->Begin() && !reuse->ResetQueryPool(*pool, 0, 2)
+            && !reuse->End() && !owner.Submit(*reuse).IsValid() && pool->GetGeneration() == 1;
+        const bool completed = reuseBlocked && !owner.Complete(*pool, first, CompletionStatus::Incomplete)
+            && !owner.Complete(*pool, first, CompletionStatus::Complete, { 1 })
+            && owner.Complete(*pool, first, CompletionStatus::Complete, { 41, 42 });
+        const QueryResult ready = completed ? pool->ReadResult(1, 1) : QueryResult {};
+
+        TimestampQueryRecording duplicateToken = pool->BeginRecording();
+        const bool duplicateTokenRejected = completed && duplicateToken.Reset(0, 2) && duplicateToken.Write(0)
+            && duplicateToken.Write(1) && duplicateToken.Resolve(0, 2) && !pool->Publish(duplicateToken, first)
+            && pool->GetGeneration() == 1;
+
+        Scope<QueryPool> sharedTokenBase = owner.CreateQueryPool(description);
+        auto* sharedTokenPool = dynamic_cast<TimestampQueryPool*>(sharedTokenBase.get());
+        TimestampQueryRecording sharedToken = sharedTokenPool ? sharedTokenPool->BeginRecording() : pool->BeginRecording();
+        const bool tokenMayCrossPools = sharedTokenPool && sharedToken.Reset(0, 2) && sharedToken.Write(0)
+            && sharedToken.Write(1) && sharedToken.Resolve(0, 2) && sharedTokenPool->Publish(sharedToken, first)
+            && sharedTokenPool->Complete(first, CompletionStatus::Complete, { 7, 8 });
+
+        CompletionToken latest = first;
+        bool boundedHistory = duplicateTokenRejected && tokenMayCrossPools;
+        for (u64 iteration = 0; boundedHistory && iteration < TimestampQueryPool::kMaximumRetainedGenerations + 1; ++iteration)
+        {
+            Scope<CommandList> generationBase = owner.CreateCommandList(QueueType::Graphics, "timestamp-history");
+            auto* generation = dynamic_cast<QueryLifecycleTestCommandList*>(generationBase.get());
+            boundedHistory = generation && generation->Begin() && generation->ResetQueryPool(*pool, 0, 2)
+                && generation->WriteTimestamp(*pool, 0) && generation->WriteTimestamp(*pool, 1)
+                && generation->ResolveQueryPool(*pool, 0, 2) && generation->End();
+            latest = boundedHistory ? owner.Submit(*generation) : CompletionToken {};
+            boundedHistory = latest.IsValid() && owner.Complete(*pool, latest, CompletionStatus::Complete,
+                { iteration + 100, iteration + 200 });
+        }
+        const bool historyRetained = boundedHistory && pool->GetRetainedGenerationCount() == TimestampQueryPool::kMaximumRetainedGenerations
+            && pool->ReadResult(0, 1).Status == QueryResultStatus::Unavailable
+            && pool->ReadResult(0, pool->GetGeneration()).Status == QueryResultStatus::Ready;
+
+        Scope<QueryPool> disjointBase = owner.CreateQueryPool(description);
+        auto* disjointPool = dynamic_cast<TimestampQueryPool*>(disjointBase.get());
+        Scope<CommandList> disjointListBase = owner.CreateCommandList(QueueType::Graphics, "timestamp-disjoint");
+        auto* disjointList = dynamic_cast<QueryLifecycleTestCommandList*>(disjointListBase.get());
+        const bool disjoint = disjointPool && disjointList && disjointList->Begin() && disjointList->ResetQueryPool(*disjointPool, 0, 2)
+            && disjointList->WriteTimestamp(*disjointPool, 0) && disjointList->WriteTimestamp(*disjointPool, 1)
+            && disjointList->ResolveQueryPool(*disjointPool, 0, 2) && disjointList->End();
+        const CompletionToken failed = disjoint ? owner.Submit(*disjointList) : CompletionToken {};
+        const bool disjointPublished = failed.IsValid() && owner.Complete(*disjointPool, failed, CompletionStatus::Failed)
+            && disjointPool->ReadResult(0, 1).Status == QueryResultStatus::Disjoint && owner.WaitCount == 0;
+
+        return Expect(creationValidation && initiallyUnavailable, "timestamp query creation rejects invalid type and bounded-count descriptions")
+            && Expect(invalidOrder && failedRecordRollback, "query commands reject cross-device, range, duplicate, unresolved, and poisoned-record ordering without publication")
+            && Expect(rejectedSubmission && first.IsValid() && pending.Status == QueryResultStatus::Pending && stale.Status == QueryResultStatus::Unavailable,
+                "failed submission rolls back recording while an accepted generation publishes only pending nonblocking results")
+            && Expect(reuseBlocked && completed && duplicateTokenRejected && tokenMayCrossPools && ready.Status == QueryResultStatus::Ready && ready.Value == 42,
+                "query reuse waits for completion without a CPU wait and token reuse is rejected only within one pool")
+            && Expect(historyRetained && disjointPublished, "query history is bounded and failed completion publishes disjoint results truthfully");
+    }
+
     class RenderGraphTestTexture final : public Engine::RHI::Texture
     {
     public:
@@ -2617,9 +2880,9 @@ float4 main(VertexInput input) : SV_Position
         void SetIndexBuffer(Engine::RHI::Buffer&, Engine::RHI::IndexFormat) override {}
         bool CopyBuffer(Engine::RHI::Buffer&, Engine::u64, Engine::RHI::Buffer&, Engine::u64, Engine::u64) override { return m_Recording; }
         void DrawIndexed(Engine::u32, Engine::u32, Engine::u32, int, Engine::u32) override {}
-        void ResetQueryPool(Engine::RHI::QueryPool&, Engine::u32, Engine::u32) override {}
-        void WriteTimestamp(Engine::RHI::QueryPool&, Engine::u32) override {}
-        void ResolveQueryPool(Engine::RHI::QueryPool&, Engine::u32, Engine::u32) override {}
+        bool ResetQueryPool(Engine::RHI::QueryPool&, Engine::u32, Engine::u32) override { return false; }
+        bool WriteTimestamp(Engine::RHI::QueryPool&, Engine::u32) override { return false; }
+        bool ResolveQueryPool(Engine::RHI::QueryPool&, Engine::u32, Engine::u32) override { return false; }
 
         Engine::u32 GetId() const { return m_Id; }
         bool Commit()
@@ -3758,9 +4021,9 @@ float4 main(VertexInput input) : SV_Position
             return m_Recording && m_Tracker.CanUse(&destination) && m_Tracker.CanUse(&source);
         }
         void DrawIndexed(Engine::u32, Engine::u32, Engine::u32, int, Engine::u32) override {}
-        void ResetQueryPool(Engine::RHI::QueryPool&, Engine::u32, Engine::u32) override {}
-        void WriteTimestamp(Engine::RHI::QueryPool&, Engine::u32) override {}
-        void ResolveQueryPool(Engine::RHI::QueryPool&, Engine::u32, Engine::u32) override {}
+        bool ResetQueryPool(Engine::RHI::QueryPool&, Engine::u32, Engine::u32) override { return false; }
+        bool WriteTimestamp(Engine::RHI::QueryPool&, Engine::u32) override { return false; }
+        bool ResolveQueryPool(Engine::RHI::QueryPool&, Engine::u32, Engine::u32) override { return false; }
 
         const std::optional<Engine::RHI::RecordedBufferOwnershipOperation>& Operation() const { return m_Operation; }
         int AcquireTransitionCount = 0;
@@ -4035,6 +4298,7 @@ int main()
         { "Render graph worker recording preserves eligibility ordering and retirement", TestRenderGraphWorkerRecordingContract },
         { "RHI buffer transition contract rejects incompatible states", TestRhiBufferTransitionContract },
         { "RHI completion token contract rejects unissued identities", TestRhiCompletionTokenContract },
+        { "RHI timestamp query lifecycle preserves generation-safe nonblocking results", TestTimestampQueryPoolLifecycleContract },
         { "RHI submission dependencies reject invalid token graphs", TestRhiSubmissionDependencyValidation },
         { "RHI queue topology submits dependencies without premature publication", TestRhiQueueTopologyDependencySubmissionContract },
         { "RHI resource-state query rejects null foreign and unknown resources", TestRhiResourceOwnershipContract },

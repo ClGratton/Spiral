@@ -454,9 +454,9 @@ namespace Engine::RHI
                 m_List->setGraphicsState(state);
                 m_List->drawIndexed(nvrhi::DrawArguments().setVertexCount(indexCount).setInstanceCount(instanceCount).setStartIndexLocation(startIndex).setStartVertexLocation(0).setStartInstanceLocation(startInstance));
             }
-            void ResetQueryPool(QueryPool&, u32, u32) override {}
-            void WriteTimestamp(QueryPool&, u32) override {}
-            void ResolveQueryPool(QueryPool&, u32, u32) override {}
+            bool ResetQueryPool(QueryPool&, u32, u32) override { return false; }
+            bool WriteTimestamp(QueryPool&, u32) override { return false; }
+            bool ResolveQueryPool(QueryPool&, u32, u32) override { return false; }
             bool Ready() const { return m_State == State::Closed; }
             bool ValidateExpectedStates() const
             {

@@ -153,6 +153,17 @@ Exercise real Editor-to-Renderer scene snapshot publication and retained epoch l
 
 Both commands must publish the stable-ID editor viewport view after mutable layer update, validate counts and authoritative main-camera identity against the active Scene, retain the previous immutable epoch while publishing the next, consume the initial one-shot discontinuity only on a valid view epoch, and print both `CPU frame task graph smoke passed` and `Scene render snapshot smoke passed`. This is portable extraction/publication evidence; the D3D12-specific raster behavior is exercised separately below.
 
+## Phase 3 GPU Timing P1 Query Lifecycle
+
+P1 is deterministic backend-neutral contract evidence. Run the canonical Debug build and the complete deterministic suite:
+
+```powershell
+.\Scripts\Build.ps1 -Configuration Debug -Action vs2022
+.\bin\Debug-windows-x86_64\EngineTests\EngineTests.exe
+```
+
+The `RHI timestamp query lifecycle preserves generation-safe nonblocking results` case must prove timestamp-only nonzero bounded creation, exact-device ownership, overflow-safe ranges, reset/write/resolve order, poisoned failed recordings, failed-submission rollback, accepted exact-token `Pending` publication, no-CPU-wait completion-gated reuse, `Ready`/`Disjoint`, stale generation and duplicate-token/completion rejection, and a four-generation history bound. One logical pool is caller-serialized and has at most one pending generation; parallel command contexts use distinct bounded logical pools. Current D3D12/Vulkan query creation and query commands must continue to reject explicitly and timestamp capabilities must remain unimplemented until P2 native translation is qualified. A passing P1 test is not native timestamp, frame/pass timing, Profiler, or GPU-headroom evidence.
+
 ## Renderer Verification
 
 ## Render Graph Construction Verification

@@ -514,7 +514,7 @@ Current implementation audit (2026-07-13): no current backend contains an explic
 
 VRR and vendor latency technologies are profile inputs, not correctness mechanisms. Respect the user's VRR and driver settings, but do not claim that VRR repairs missed frame budgets. NVIDIA Reflex may become an optional Windows/NVIDIA latency integration after the portable pacing and instrumentation path exists; it is not a substitute for that path.
 
-RTSS `ASYNC`, RTSS FES, MSI Afterburner, and Special K may be useful external reference conditions. The engine must not require them or claim undocumented implementation equivalence. Claims such as a fixed one-frame cost, display-level timing, or frame-generation benefit require measurements on the target hardware and presentation path before they affect an engine default.
+RTSS `ASYNC`, RTSS FES, MSI Afterburner, and Special K may be useful external reference conditions. The engine must not require them or claim undocumented implementation equivalence. An automated RTSS condition requires a supported, versioned, exact-process/profile control interface plus captured before state, verified applied state, bounded failure cleanup, exact restoration, and a receipt; installation alone is not such an interface. If no supported non-UI transactional path exists, keep the candidate unavailable to automation and use an explicit bounded manual evidence gate rather than guessing persistent config formats or driving the UI. Claims such as a fixed one-frame cost, display-level timing, or frame-generation benefit require measurements on the target hardware and presentation path before they affect an engine default.
 
 ## Open Questions
 
