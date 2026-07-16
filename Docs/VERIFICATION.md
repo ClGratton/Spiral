@@ -259,7 +259,10 @@ Prefer the focused existing smoke that owns the behavior. Current headless flags
 --gltf-import-smoke
 --material-asset-smoke
 --scene-authoring-smoke
+--frame-pacing-policy-smoke
 ```
+
+`EngineTests` verifies frame-pacing policy default resolution, runtime override/inherit resolution, target validation, and transactional rejection of an invalid Smooth Frametime override. The editor `--frame-pacing-policy-smoke` writes and reads a version-1 legacy manifest (defaulting to Responsive), rejects an invalid version-2 target without mutating the caller's manifest value, then saves/reopens an opt-in 144 FPS project policy and emits `FramePacingPolicySmokeV1 ... behavior=policy-only ... result=pass`. This verifies settings persistence and diagnostics intent only; it does not qualify a sleep, cap, timing path, display cadence, or latency behavior.
 
 The root [README.md](../README.md) documents current executable paths and examples. For UI changes without a focused smoke, launch the editor, exercise the interaction, and inspect a screenshot. Add focused automated coverage when the interaction can be made deterministic.
 

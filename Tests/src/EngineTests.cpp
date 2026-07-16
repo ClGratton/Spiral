@@ -10,6 +10,7 @@
 #include "Engine/RHI/NVRHI/NVRHID3D12Device.h"
 #include "Engine/RHI/NVRHI/VulkanQueueAdmission.h"
 #include "Engine/Renderer/CapabilityDiagnostics.h"
+#include "Engine/Renderer/FramePacingPolicy.h"
 #include "Engine/Renderer/AsyncShaderPackageService.h"
 #include "Engine/Renderer/PortableShaderContract.h"
 #include "Engine/Renderer/SlangShaderCompiler.h"
@@ -46,6 +47,50 @@ namespace
     std::filesystem::path TestFilePath(std::string_view name)
     {
         return std::filesystem::temp_directory_path() / ("spiral-" + std::string(name));
+    }
+
+    bool TestFramePacingPolicyResolutionAndValidation()
+    {
+        const Engine::FramePacingPolicy responsiveProject {};
+        Engine::GameFramePacingSettings gameSettings;
+        const Engine::ResolvedFramePacingPolicy inherited = gameSettings.Resolve(responsiveProject);
+
+        Engine::FramePacingPolicy smoothProject;
+        smoothProject.Mode = Engine::FramePacingMode::SmoothFrametime;
+        smoothProject.SmoothTargetFramesPerSecond = 120.0;
+        const bool smoothProjectValid = Engine::IsValidFramePacingPolicy(smoothProject);
+        const bool invalidTargetRejected = !Engine::IsValidSmoothTargetFramesPerSecond(0.0);
+        const bool smoothOverrideApplied = gameSettings.SetRuntimeOverride(
+            Engine::FramePacingOverride::SmoothFrametime, smoothProject);
+        const Engine::ResolvedFramePacingPolicy overridden = gameSettings.Resolve(responsiveProject);
+        gameSettings.ClearRuntimeOverride();
+        const Engine::ResolvedFramePacingPolicy cleared = gameSettings.Resolve(smoothProject);
+
+        Engine::FramePacingPolicy invalidSmoothProject = smoothProject;
+        invalidSmoothProject.SmoothTargetFramesPerSecond = 0.0;
+        const Engine::FramePacingOverride beforeRejectedUpdate = gameSettings.GetRuntimeOverride();
+        const bool invalidOverrideRejected = !gameSettings.SetRuntimeOverride(
+            Engine::FramePacingOverride::SmoothFrametime, invalidSmoothProject);
+
+        return Expect(inherited.EffectiveMode == Engine::FramePacingMode::Responsive
+                && !inherited.SmoothTargetFramesPerSecond
+                && std::string_view(inherited.Behavior) == "policy-only",
+                "Responsive project default resolves as policy-only without an engine target")
+            && Expect(smoothProjectValid && invalidTargetRejected,
+                "Smooth Frametime target validation accepts maintainable targets and rejects invalid targets")
+            && Expect(smoothOverrideApplied
+                    && overridden.EffectiveMode == Engine::FramePacingMode::SmoothFrametime
+                    && overridden.SmoothTargetFramesPerSecond
+                    && *overridden.SmoothTargetFramesPerSecond == 60.0,
+                "runtime Smooth Frametime override deterministically uses the project target")
+            && Expect(cleared.RuntimeOverride == Engine::FramePacingOverride::InheritProject
+                    && cleared.EffectiveMode == Engine::FramePacingMode::SmoothFrametime
+                    && cleared.SmoothTargetFramesPerSecond
+                    && *cleared.SmoothTargetFramesPerSecond == 120.0,
+                "clearing the runtime override restores the project default")
+            && Expect(invalidOverrideRejected
+                    && gameSettings.GetRuntimeOverride() == beforeRejectedUpdate,
+                "invalid Smooth Frametime override updates leave the prior runtime state unchanged");
     }
 
     bool MatricesNear(const Engine::Math::Mat4& left, const Engine::Math::Mat4& right, float tolerance = 0.001f)
@@ -3761,6 +3806,7 @@ int main()
     Engine::Log::Init();
 
     const std::vector<std::pair<std::string_view, TestFunction>> tests = {
+        { "Frame pacing policy resolves overrides and validates targets", TestFramePacingPolicyResolutionAndValidation },
         { "Slang compiler emits validated portable shader packages", TestSlangShaderCompilerProducesPortableValidatedPackages },
         { "Async shader publication is nonblocking deduplicated and atomic", TestAsyncShaderPackagePublicationIsNonblockingDeduplicatedAndAtomic },
         { "Async shader failure retention inline equivalence and shutdown safety", TestAsyncShaderFailureRetentionInlineEquivalenceAndShutdownSafety },

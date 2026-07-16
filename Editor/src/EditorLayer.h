@@ -37,6 +37,7 @@ private:
     void DrawConsolePanel();
     void DrawProfilerPanel();
     void DrawProjectPanel();
+    void DrawProjectSettingsPanel();
     void DrawNewProjectDialog();
     bool DrawMaterialAssetControls(Engine::AssetHandle handle);
     void HandleAssetWatchEvents();
@@ -46,6 +47,7 @@ private:
     void RunUndoRedoSmoke();
     void RunSceneAuthoringSmoke();
     void RunSceneRenderSnapshotSmoke();
+    void RunFramePacingPolicySmoke();
     void ConfigureSceneOriginRasterSmoke();
     void AdvanceSceneOriginRasterSmoke();
     void CaptureSceneOriginRasterSmoke();
@@ -92,6 +94,8 @@ private:
     bool m_SceneRenderSnapshotSmokeCompleted = false;
     bool m_SceneOriginRasterSmokeRequested = false;
     bool m_SceneOriginRasterSmokeCompleted = false;
+    bool m_FramePacingPolicySmokeRequested = false;
+    bool m_FramePacingPolicySmokeCompleted = false;
     bool m_ShowNewProjectDialog = false;
     std::string m_CaptureViewportPath = "output/captures/editor-viewport.bmp";
     std::string m_ProjectPath = "output/projects/default.spiralproject";
@@ -109,6 +113,8 @@ private:
     Engine::AssetWatcher m_AssetWatcher;
     Engine::GltfImportResult m_LastGltfImport;
     Engine::MaterialLibrary m_MaterialLibrary;
+    Engine::FramePacingPolicy m_ProjectFramePacingPolicy;
+    Engine::GameFramePacingSettings m_GameFramePacingSettings;
     Engine::Scene m_ActiveScene { "Sample Scene" };
     Engine::Entity m_PrototypeMeshEntity;
     Engine::Entity m_DirectionalLightEntity;

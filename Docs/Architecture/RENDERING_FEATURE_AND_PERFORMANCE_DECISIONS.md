@@ -280,6 +280,12 @@ Required engine instrumentation:
 - Shader permutation count and pipeline cache misses.
 - Async upload/decompression time.
 
+### Current Frame-Pacing Policy Foundation
+
+The project-owned policy is versioned in the `.spiralproject` manifest. `Responsive` is the default and `Smooth Frametime` is opt-in with a finite target in the inclusive 1-1000 FPS range. A public developer `GameFramePacingSettings` can inherit the project, force `Responsive`, or force `Smooth Frametime`; it always resolves against the project target and invalid Smooth target updates preserve the prior state.
+
+This is a policy and diagnostics foundation only. Its diagnostic states project mode, runtime override/inherit, effective mode, relevant target, and `behavior=policy-only`. It contains no sleep, high-resolution wait, engine cap, submission gate, present delay, result replacement/drop, VSync/VRR/tearing change, maximum-frames-in-flight change, fixed-simulation change, or vendor-latency change. The following roadmap item must implement and measure the RTSS-ASYNC-inspired inter-frame and submission-gate candidates at their declared control points before any smoothness or latency claim.
+
 ### Presentation Measurement Rules
 
 Use PresentMon on Windows performance runs to compare `MsBetweenPresents`, `MsBetweenDisplayChange`, `MsUntilDisplayed`, `DisplayLatency`, and presentation mode with the engine's own markers. These metrics describe different pipeline stages; a stable `Present` cadence alone does not prove a stable display cadence.

@@ -17,7 +17,7 @@
 namespace
 {
     constexpr const char* AssetDragPayloadType = "SPIRAL_ASSET_HANDLE";
-    constexpr int ProjectFormatVersion = 1;
+    constexpr int ProjectFormatVersion = 2;
 
     struct AssetDragPayload
     {
@@ -29,7 +29,33 @@ namespace
     {
         std::string ScenePath;
         std::string AssetRegistryPath;
+        Engine::FramePacingPolicy FramePacingPolicy;
     };
+
+    bool ParseFramePacingMode(std::string_view text, Engine::FramePacingMode& outMode)
+    {
+        if (text == "Responsive")
+        {
+            outMode = Engine::FramePacingMode::Responsive;
+            return true;
+        }
+        if (text == "SmoothFrametime")
+        {
+            outMode = Engine::FramePacingMode::SmoothFrametime;
+            return true;
+        }
+        return false;
+    }
+
+    const char* ToManifestFramePacingMode(Engine::FramePacingMode mode)
+    {
+        switch (mode)
+        {
+            case Engine::FramePacingMode::Responsive: return "Responsive";
+            case Engine::FramePacingMode::SmoothFrametime: return "SmoothFrametime";
+        }
+        return "Unknown";
+    }
 
     const char* ToLightTypeName(Engine::LightType type)
     {
@@ -230,6 +256,8 @@ namespace
         output << "SpiralProject " << ProjectFormatVersion << '\n';
         output << "Scene " << std::quoted(manifest.ScenePath) << '\n';
         output << "AssetRegistry " << std::quoted(manifest.AssetRegistryPath) << '\n';
+        output << "FramePacingMode " << ToManifestFramePacingMode(manifest.FramePacingPolicy.Mode) << '\n';
+        output << "FramePacingTargetFps " << manifest.FramePacingPolicy.SmoothTargetFramesPerSecond << '\n';
         return static_cast<bool>(output);
     }
 
@@ -241,10 +269,12 @@ namespace
 
         std::string magic;
         int version = 0;
-        if (!(input >> magic >> version) || magic != "SpiralProject" || version != ProjectFormatVersion)
+        if (!(input >> magic >> version) || magic != "SpiralProject" || (version != 1 && version != ProjectFormatVersion))
             return false;
 
         ProjectManifest manifest;
+        bool readFramePacingMode = version == 1;
+        bool readFramePacingTarget = version == 1;
         std::string key;
         while (input >> key)
         {
@@ -252,6 +282,19 @@ namespace
                 input >> std::quoted(manifest.ScenePath);
             else if (key == "AssetRegistry")
                 input >> std::quoted(manifest.AssetRegistryPath);
+            else if (version >= 2 && key == "FramePacingMode")
+            {
+                std::string mode;
+                input >> mode;
+                if (!ParseFramePacingMode(mode, manifest.FramePacingPolicy.Mode))
+                    return false;
+                readFramePacingMode = true;
+            }
+            else if (version >= 2 && key == "FramePacingTargetFps")
+            {
+                input >> manifest.FramePacingPolicy.SmoothTargetFramesPerSecond;
+                readFramePacingTarget = true;
+            }
             else
                 return false;
 
@@ -259,7 +302,9 @@ namespace
                 return false;
         }
 
-        if (manifest.ScenePath.empty() || manifest.AssetRegistryPath.empty())
+        if (!readFramePacingMode || !readFramePacingTarget
+            || manifest.ScenePath.empty() || manifest.AssetRegistryPath.empty()
+            || !Engine::IsValidFramePacingPolicy(manifest.FramePacingPolicy))
             return false;
 
         outManifest = std::move(manifest);
@@ -319,6 +364,8 @@ void EditorLayer::OnAttach()
         Engine::Application::Get().GetSpecification().CommandLineArgs.HasFlag("--scene-render-snapshot-smoke");
     m_SceneOriginRasterSmokeRequested =
         Engine::Application::Get().GetSpecification().CommandLineArgs.HasFlag("--scene-origin-raster-smoke");
+    m_FramePacingPolicySmokeRequested =
+        Engine::Application::Get().GetSpecification().CommandLineArgs.HasFlag("--frame-pacing-policy-smoke");
     if (m_SceneOriginRasterSmokeRequested)
         ConfigureSceneOriginRasterSmoke();
     if (m_AssetWatchSmokeRequested)
@@ -364,6 +411,7 @@ void EditorLayer::OnUpdate(Engine::Timestep timestep)
     RunMaterialAssetSmoke();
     RunUndoRedoSmoke();
     RunSceneAuthoringSmoke();
+    RunFramePacingPolicySmoke();
     AdvanceSceneOriginRasterSmoke();
     HandleAssetWatchEvents();
 
@@ -414,6 +462,7 @@ void EditorLayer::OnUiRender()
     DrawConsolePanel();
     DrawProfilerPanel();
     DrawProjectPanel();
+    DrawProjectSettingsPanel();
     DrawNewProjectDialog();
 
     if (m_CaptureViewportRequested && !m_CaptureViewportComplete && m_FrameCounter >= 2)
@@ -1213,6 +1262,37 @@ void EditorLayer::DrawProfilerPanel()
     if (timing.GpuStatus == Engine::RendererTimingStatus::Pending)
         ImGui::TextDisabled("Timestamp query API is present; backend resolve path is next.");
 
+    const Engine::ResolvedFramePacingPolicy framePacing =
+        m_GameFramePacingSettings.Resolve(m_ProjectFramePacingPolicy);
+    ImGui::Separator();
+    ImGui::TextUnformatted("Frame pacing policy");
+    ImGui::Text("Project: %s", Engine::ToString(framePacing.ProjectMode));
+    ImGui::Text("Runtime override: %s", Engine::ToString(framePacing.RuntimeOverride));
+    ImGui::Text("Effective: %s", Engine::ToString(framePacing.EffectiveMode));
+    if (framePacing.SmoothTargetFramesPerSecond)
+        ImGui::Text("Target: %.2f FPS", *framePacing.SmoothTargetFramesPerSecond);
+    ImGui::TextDisabled("behavior=%s; no pacing, cap, wait, or discard is active", framePacing.Behavior);
+    const Engine::FramePacingOverride runtimeOptions[] = {
+        Engine::FramePacingOverride::InheritProject,
+        Engine::FramePacingOverride::Responsive,
+        Engine::FramePacingOverride::SmoothFrametime
+    };
+    if (ImGui::BeginCombo("Runtime game setting", Engine::ToString(m_GameFramePacingSettings.GetRuntimeOverride())))
+    {
+        for (Engine::FramePacingOverride option : runtimeOptions)
+        {
+            const bool selected = option == m_GameFramePacingSettings.GetRuntimeOverride();
+            if (ImGui::Selectable(Engine::ToString(option), selected)
+                && !m_GameFramePacingSettings.SetRuntimeOverride(option, m_ProjectFramePacingPolicy))
+            {
+                m_ConsoleLines.emplace_back("Runtime Smooth Frametime override rejected: invalid project target");
+            }
+            if (selected)
+                ImGui::SetItemDefaultFocus();
+        }
+        ImGui::EndCombo();
+    }
+
     const Engine::RendererPresentationTiming& presentation = timing.Presentation;
     if (presentation.UsesWaitableSwapchain)
     {
@@ -1587,6 +1667,48 @@ void EditorLayer::DrawProjectPanel()
     ImGui::End();
 }
 
+void EditorLayer::DrawProjectSettingsPanel()
+{
+    ImGui::Begin("Project Settings");
+    ImGui::TextUnformatted("Frame Pacing");
+    ImGui::TextDisabled("Policy only: it does not currently sleep, cap, pace, or discard frames.");
+
+    const Engine::FramePacingMode modes[] = {
+        Engine::FramePacingMode::Responsive,
+        Engine::FramePacingMode::SmoothFrametime
+    };
+    if (ImGui::BeginCombo("Project default", Engine::ToString(m_ProjectFramePacingPolicy.Mode)))
+    {
+        for (Engine::FramePacingMode mode : modes)
+        {
+            const bool selected = mode == m_ProjectFramePacingPolicy.Mode;
+            if (ImGui::Selectable(Engine::ToString(mode), selected))
+                m_ProjectFramePacingPolicy.Mode = mode;
+            if (selected)
+                ImGui::SetItemDefaultFocus();
+        }
+        ImGui::EndCombo();
+    }
+
+    double target = m_ProjectFramePacingPolicy.SmoothTargetFramesPerSecond;
+    if (ImGui::InputDouble("Smooth target FPS", &target, 1.0, 10.0, "%.2f")
+        && Engine::IsValidSmoothTargetFramesPerSecond(target))
+    {
+        m_ProjectFramePacingPolicy.SmoothTargetFramesPerSecond = target;
+    }
+    if (!Engine::IsValidSmoothTargetFramesPerSecond(target))
+        ImGui::TextDisabled("Target must be finite and between %.0f and %.0f FPS; current saved value remains unchanged.",
+            Engine::kMinimumSmoothTargetFramesPerSecond, Engine::kMaximumSmoothTargetFramesPerSecond);
+
+    if (ImGui::Button("Save Project Settings"))
+    {
+        if (SaveProject())
+            m_ConsoleLines.emplace_back("Project frame-pacing policy saved: "
+                + Engine::DescribeFramePacingPolicy(m_GameFramePacingSettings.Resolve(m_ProjectFramePacingPolicy)));
+    }
+    ImGui::End();
+}
+
 void EditorLayer::DrawNewProjectDialog()
 {
     if (m_ShowNewProjectDialog)
@@ -1926,12 +2048,60 @@ bool EditorLayer::ImportGltfAsset(const std::filesystem::path& sourcePath)
     return true;
 }
 
+void EditorLayer::RunFramePacingPolicySmoke()
+{
+    if (!m_FramePacingPolicySmokeRequested || m_FramePacingPolicySmokeCompleted || m_FrameCounter < 1)
+        return;
+
+    const std::filesystem::path smokeRoot = "output/projects/frame-pacing-policy-smoke";
+    const std::filesystem::path legacyManifestPath = smokeRoot / "legacy.spiralproject";
+    const std::filesystem::path invalidManifestPath = smokeRoot / "invalid.spiralproject";
+    const bool legacyWritten = WriteTextFile(legacyManifestPath,
+        "SpiralProject 1\nScene \"legacy.spiral\"\nAssetRegistry \"legacy.spiralassets\"\n");
+    ProjectManifest legacyManifest;
+    const bool legacyLoaded = legacyWritten && ReadProjectManifest(legacyManifestPath, legacyManifest)
+        && legacyManifest.FramePacingPolicy.Mode == Engine::FramePacingMode::Responsive;
+
+    const ProjectManifest beforeInvalidRead { "unchanged.spiral", "unchanged.spiralassets", {} };
+    ProjectManifest invalidReadTarget = beforeInvalidRead;
+    const bool invalidWritten = WriteTextFile(invalidManifestPath,
+        "SpiralProject 2\nScene \"invalid.spiral\"\nAssetRegistry \"invalid.spiralassets\"\n"
+        "FramePacingMode SmoothFrametime\nFramePacingTargetFps 0\n");
+    const bool invalidRejected = invalidWritten && !ReadProjectManifest(invalidManifestPath, invalidReadTarget)
+        && invalidReadTarget.ScenePath == beforeInvalidRead.ScenePath
+        && invalidReadTarget.AssetRegistryPath == beforeInvalidRead.AssetRegistryPath;
+
+    const Engine::FramePacingPolicy previousPolicy = m_ProjectFramePacingPolicy;
+    m_ProjectFramePacingPolicy = { Engine::FramePacingMode::SmoothFrametime, 144.0 };
+    const bool savedAndReloaded = SaveProject() && LoadProject()
+        && m_ProjectFramePacingPolicy.Mode == Engine::FramePacingMode::SmoothFrametime
+        && m_ProjectFramePacingPolicy.SmoothTargetFramesPerSecond == 144.0;
+    if (!savedAndReloaded)
+        m_ProjectFramePacingPolicy = previousPolicy;
+
+    m_FramePacingPolicySmokeCompleted = true;
+    if (!legacyLoaded || !invalidRejected || !savedAndReloaded)
+        throw std::runtime_error("Frame-pacing policy smoke failed");
+
+    const Engine::ResolvedFramePacingPolicy resolved = m_GameFramePacingSettings.Resolve(m_ProjectFramePacingPolicy);
+    Engine::Log::Info("FramePacingPolicySmokeV1 legacy=pass invalid=transactional-rejected saveReopen=pass ",
+        Engine::DescribeFramePacingPolicy(resolved), " result=pass");
+    m_ConsoleLines.emplace_back("Frame pacing policy smoke passed: behavior=policy-only");
+}
+
 bool EditorLayer::SaveProject()
 {
+    if (!Engine::IsValidFramePacingPolicy(m_ProjectFramePacingPolicy))
+    {
+        Engine::Log::Error("Project save rejected invalid frame-pacing policy");
+        m_ConsoleLines.emplace_back("Project save rejected invalid frame-pacing policy");
+        return false;
+    }
+
     if (!SaveActiveScene())
         return false;
 
-    const ProjectManifest manifest { m_ScenePath, m_AssetRegistryPath };
+    const ProjectManifest manifest { m_ScenePath, m_AssetRegistryPath, m_ProjectFramePacingPolicy };
     if (!WriteProjectManifest(m_ProjectPath, manifest))
     {
         Engine::Log::Error("Project save failed: ", m_ProjectPath);
@@ -1940,6 +2110,8 @@ bool EditorLayer::SaveProject()
     }
 
     Engine::Log::Info("Project saved: ", m_ProjectPath);
+    Engine::Log::Info("Frame pacing policy saved: ",
+        Engine::DescribeFramePacingPolicy(m_GameFramePacingSettings.Resolve(m_ProjectFramePacingPolicy)));
     m_ConsoleLines.emplace_back("Project saved: " + m_ProjectPath);
     return true;
 }
@@ -1969,12 +2141,14 @@ bool EditorLayer::CreateNewProject(std::string name, const std::filesystem::path
     const std::string previousProjectPath = m_ProjectPath;
     const std::string previousScenePath = m_ScenePath;
     const std::string previousAssetRegistryPath = m_AssetRegistryPath;
+    const Engine::FramePacingPolicy previousFramePacingPolicy = m_ProjectFramePacingPolicy;
     const std::vector<HistoryEntry> previousUndoHistory = m_UndoHistory;
     const std::vector<HistoryEntry> previousRedoHistory = m_RedoHistory;
 
     m_ProjectPath = projectPath.string();
     m_ScenePath = (projectRoot / "Scenes" / "Main.spiral").string();
     m_AssetRegistryPath = (projectRoot / "Assets" / "assets.spiralassets").string();
+    m_ProjectFramePacingPolicy = {};
     m_AssetRegistry = {};
     m_MaterialLibrary = {};
     m_ActiveScene = Engine::Scene(std::move(name));
@@ -1994,6 +2168,7 @@ bool EditorLayer::CreateNewProject(std::string name, const std::filesystem::path
         m_ProjectPath = previousProjectPath;
         m_ScenePath = previousScenePath;
         m_AssetRegistryPath = previousAssetRegistryPath;
+        m_ProjectFramePacingPolicy = previousFramePacingPolicy;
         RestoreHistoryState(previousState);
         m_UndoHistory = previousUndoHistory;
         m_RedoHistory = previousRedoHistory;
@@ -2091,6 +2266,7 @@ bool EditorLayer::LoadProject()
 
     m_ScenePath = std::move(manifest.ScenePath);
     m_AssetRegistryPath = std::move(manifest.AssetRegistryPath);
+    m_ProjectFramePacingPolicy = manifest.FramePacingPolicy;
     m_AssetRegistry = std::move(loadedRegistry);
     m_MaterialLibrary = std::move(loadedMaterials);
     m_ActiveScene = std::move(loadedScene);
@@ -2102,6 +2278,8 @@ bool EditorLayer::LoadProject()
     SyncEditorCameraStateFromMainCamera(true);
 
     Engine::Log::Info("Project loaded: ", m_ProjectPath);
+    Engine::Log::Info("Frame pacing policy loaded: ",
+        Engine::DescribeFramePacingPolicy(m_GameFramePacingSettings.Resolve(m_ProjectFramePacingPolicy)));
     m_ConsoleLines.emplace_back("Project loaded: " + m_ProjectPath);
     return true;
 }

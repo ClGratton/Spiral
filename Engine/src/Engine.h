@@ -25,6 +25,7 @@
 #include "Engine/Math/WorldGrid.h"
 #include "Engine/RenderGraph/RenderGraph.h"
 #include "Engine/Renderer/Renderer.h"
+#include "Engine/Renderer/FramePacingPolicy.h"
 #include "Engine/Renderer/SceneRasterPreparation.h"
 #include "Engine/Renderer/CapabilityDiagnostics.h"
 #include "Engine/Renderer/ShaderLibrary.h"
