@@ -9,6 +9,88 @@
 
 namespace Engine
 {
+    SubmittedRenderGraphFrameOwner::PollResult SubmittedRenderGraphFrameOwner::Poll(RHI::Device& device)
+    {
+        PollResult result;
+        for (auto frame = m_Frames.begin(); frame != m_Frames.end();)
+        {
+            bool complete = true;
+            for (const RHI::CompletionToken& token : frame->Identity.Completions)
+            {
+                const RHI::CompletionStatus status = device.QueryCompletion(token);
+                if (status == RHI::CompletionStatus::Invalid || status == RHI::CompletionStatus::Failed)
+                {
+                    result.Success = false;
+                    result.Error = "Submitted RenderGraph frame " + std::to_string(frame->Identity.FrameIndex)
+                        + " has an invalid or failed exact completion token.";
+                    result.PendingCount = m_Frames.size();
+                    return result;
+                }
+                if (status != RHI::CompletionStatus::Complete)
+                    complete = false;
+            }
+            if (!complete)
+            {
+                ++frame;
+                continue;
+            }
+
+            result.Retired.emplace_back(std::move(frame->Identity));
+            frame = m_Frames.erase(frame);
+        }
+        result.PendingCount = m_Frames.size();
+        return result;
+    }
+
+    bool SubmittedRenderGraphFrameOwner::Retain(u64 frameIndex, Scope<RenderGraph> graph,
+        const RenderGraph::CompileResult& compiled, const RenderGraph::ExecuteResult& executed,
+        std::vector<Ref<void>> retainedPayloads, std::string* error)
+    {
+        const auto fail = [&](std::string_view message)
+        {
+            if (error)
+                *error = message;
+            return false;
+        };
+        if (!graph || !compiled.Success || executed.Completions.empty()
+            || executed.Completions.size() != executed.AcceptedPassCount
+            || executed.Completions.size() > compiled.Passes.size())
+            return fail("A submitted RenderGraph frame has inconsistent graph, compile, or accepted-prefix state.");
+        if (!HasCapacity())
+            return fail("The submitted RenderGraph frame retirement owner is at bounded capacity.");
+        if (std::any_of(m_Frames.begin(), m_Frames.end(), [frameIndex](const PendingFrame& pending)
+            { return pending.Identity.FrameIndex == frameIndex; }))
+            return fail("The submitted RenderGraph frame retirement owner already contains this frame ID.");
+        if (std::any_of(retainedPayloads.begin(), retainedPayloads.end(), [](const Ref<void>& payload) { return !payload; }))
+            return fail("A submitted RenderGraph frame contains an empty retained payload.");
+
+        const u64 deviceId = executed.Completions.front().DeviceId;
+        for (size_t index = 0; index < executed.Completions.size(); ++index)
+        {
+            const RHI::CompletionToken& token = executed.Completions[index];
+            if (!token.IsValid() || token.DeviceId != deviceId || compiled.Passes[index].DebugName.empty())
+                return fail("A submitted RenderGraph frame has an invalid token device or pass label.");
+            if (std::any_of(executed.Completions.begin(), executed.Completions.begin() + static_cast<std::ptrdiff_t>(index),
+                [&token](const RHI::CompletionToken& prior)
+                { return prior.DeviceId == token.DeviceId && prior.SubmissionId == token.SubmissionId; }))
+                return fail("A submitted RenderGraph frame repeats an exact completion token.");
+        }
+        const RHI::CompletionToken& last = executed.Completions.back();
+        if (executed.Completion.DeviceId != last.DeviceId || executed.Completion.SubmissionId != last.SubmissionId)
+            return fail("A submitted RenderGraph frame final token does not match its accepted prefix.");
+
+        PendingFrame pending;
+        pending.Identity.FrameIndex = frameIndex;
+        pending.Identity.Completions = executed.Completions;
+        pending.Identity.PassLabels.reserve(executed.Completions.size());
+        for (size_t index = 0; index < executed.Completions.size(); ++index)
+            pending.Identity.PassLabels.push_back(compiled.Passes[index].DebugName);
+        pending.Graph = std::move(graph);
+        pending.RetainedPayloads = std::move(retainedPayloads);
+        m_Frames.emplace_back(std::move(pending));
+        return true;
+    }
+
     RHI::CapabilityGroupState RenderGraph::BuildTransientResourceCapabilityGroup(
         const RHI::DeviceCapabilities& capabilities)
     {

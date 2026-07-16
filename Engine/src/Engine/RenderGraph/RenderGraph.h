@@ -8,6 +8,7 @@
 #include "Engine/Jobs/FrameTaskGraph.h"
 
 #include <functional>
+#include <deque>
 #include <limits>
 #include <memory>
 #include <optional>
@@ -261,5 +262,54 @@ namespace Engine
         std::vector<RecordingContext> m_RecordingContexts;
         std::vector<TransientAllocation> m_TransientAllocations;
         RHI::Device* m_RecordingDevice = nullptr;
+    };
+
+    // Retains every object whose lifetime is coupled to an accepted graph
+    // submission without turning GPU retirement into a per-frame CPU wait.
+    class SubmittedRenderGraphFrameOwner final
+    {
+    public:
+        static constexpr size_t Capacity = 4;
+
+        struct RetiredFrame
+        {
+            u64 FrameIndex = 0;
+            std::vector<std::string> PassLabels;
+            std::vector<RHI::CompletionToken> Completions;
+        };
+
+        struct PollResult
+        {
+            bool Success = true;
+            std::string Error;
+            std::vector<RetiredFrame> Retired;
+            size_t PendingCount = 0;
+        };
+
+        [[nodiscard]] bool HasCapacity() const { return m_Frames.size() < Capacity; }
+        [[nodiscard]] size_t GetPendingCount() const { return m_Frames.size(); }
+        [[nodiscard]] PollResult Poll(RHI::Device& device);
+
+        // Retained payloads cover resources captured by pass recordings but
+        // owned outside RenderGraph (for example, per-frame constant buffers).
+        bool Retain(u64 frameIndex, Scope<RenderGraph> graph,
+            const RenderGraph::CompileResult& compiled,
+            const RenderGraph::ExecuteResult& executed,
+            std::vector<Ref<void>> retainedPayloads = {},
+            std::string* error = nullptr);
+
+        // The caller must establish device-idle before releasing pending GPU
+        // state during shutdown or device replacement.
+        void ReleaseAfterDeviceIdle() { m_Frames.clear(); }
+
+    private:
+        struct PendingFrame
+        {
+            RetiredFrame Identity;
+            Scope<RenderGraph> Graph;
+            std::vector<Ref<void>> RetainedPayloads;
+        };
+
+        std::deque<PendingFrame> m_Frames;
     };
 }

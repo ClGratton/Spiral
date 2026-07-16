@@ -3278,6 +3278,7 @@ float4 main(VertexInput input) : SV_Position
         }
         bool WaitForCompletion(const Engine::RHI::CompletionToken& token, Engine::u32) override
         {
+            ++WaitCount;
             return QueryCompletion(token) == Engine::RHI::CompletionStatus::Complete;
         }
         bool SubmitAndWait(Engine::RHI::CommandList& commandList) override
@@ -3300,6 +3301,7 @@ float4 main(VertexInput input) : SV_Position
         int NativeSubmissionCount = 0;
         int ElidedDependencyCount = 0;
         int GpuWaitDependencyCount = 0;
+        int WaitCount = 0;
         Engine::u32 CreatedCommandListCount = 0;
         std::vector<Engine::u32> BegunCommandListIds;
         std::vector<Engine::u32> SubmittedCommandListIds;
@@ -3318,6 +3320,104 @@ float4 main(VertexInput input) : SV_Position
         std::vector<Engine::RHI::CompletionStatus> m_Completions;
         std::vector<Engine::RHI::QueueType> m_SubmissionQueues { Engine::RHI::QueueType::Graphics };
     };
+
+    bool TestSubmittedRenderGraphFrameOwnerRetiresWithoutWaiting()
+    {
+        using namespace Engine;
+        using namespace Engine::RHI;
+
+        struct Payload
+        {
+            explicit Payload(int& destructions) : Destructions(destructions) {}
+            ~Payload() { ++Destructions; }
+            int& Destructions;
+        };
+        struct Submission
+        {
+            Scope<RenderGraph> Graph;
+            RenderGraph::CompileResult Compiled;
+            RenderGraph::ExecuteResult Executed;
+        };
+
+        RenderGraphTestDevice device(8351);
+        TextureDescription description;
+        description.DebugName = "submitted-owner";
+        description.Extent = { 4, 4 };
+        description.TextureFormat = Format::R8G8B8A8Unorm;
+        description.Usage = TextureUsage::ShaderResource;
+        description.InitialState = ResourceState::Common;
+        RenderGraphTestTexture texture(8351, description, ResourceState::Common);
+        const auto submit = [&](std::string_view suffix, bool failSecond = false)
+        {
+            Submission submission;
+            submission.Graph = CreateScope<RenderGraph>();
+            const auto resource = submission.Graph->AddTexture(description, RenderGraph::ResourceLifetimeKind::Imported);
+            const auto first = submission.Graph->AddPass("First " + std::string(suffix));
+            submission.Graph->AddRead(first, resource, ResourceState::Common, ShaderStage::Pixel);
+            submission.Graph->SetPassCallback(first, [](RenderGraph::ExecutionContext&) { return true; });
+            const auto second = submission.Graph->AddPass("Second " + std::string(suffix));
+            submission.Graph->AddRead(second, resource, ResourceState::Common, ShaderStage::Pixel);
+            submission.Graph->SetPassCallback(second, [failSecond](RenderGraph::ExecutionContext&) { return !failSecond; });
+            submission.Compiled = submission.Graph->Compile();
+            if (submission.Graph->BindTexture(resource, texture))
+                submission.Executed = submission.Graph->Execute(device, submission.Compiled);
+            return submission;
+        };
+
+        SubmittedRenderGraphFrameOwner owner;
+        int payloadDestructions = 0;
+        Ref<Payload> payload = CreateRef<Payload>(payloadDestructions);
+        std::weak_ptr<Payload> weakPayload = payload;
+        Submission first = submit("A");
+        const std::vector<CompletionToken> firstTokens = first.Executed.Completions;
+        std::string error;
+        const bool retained = owner.Retain(41, std::move(first.Graph), first.Compiled, first.Executed, { payload }, &error);
+        payload.reset();
+        const auto pending = owner.Poll(device);
+        const bool pendingRetained = retained && pending.Success && pending.Retired.empty() && pending.PendingCount == 1
+            && !weakPayload.expired() && payloadDestructions == 0 && device.WaitCount == 0;
+        for (const CompletionToken& token : firstTokens)
+            device.SetCompletion(token, CompletionStatus::Complete);
+        const auto retired = owner.Poll(device);
+        const bool exactRetirement = retired.Success && retired.PendingCount == 0 && retired.Retired.size() == 1
+            && retired.Retired[0].FrameIndex == 41
+            && retired.Retired[0].PassLabels == std::vector<std::string>({ "First A", "Second A" })
+            && retired.Retired[0].Completions.size() == 2 && weakPayload.expired() && payloadDestructions == 1
+            && device.WaitCount == 0;
+
+        Submission partial = submit("partial", true);
+        const CompletionToken partialToken = partial.Executed.Completion;
+        const bool partialAccepted = !partial.Executed.Success && partial.Executed.AcceptedPassCount == 1
+            && owner.Retain(42, std::move(partial.Graph), partial.Compiled, partial.Executed, {}, &error);
+        device.SetCompletion(partialToken, CompletionStatus::Failed);
+        const auto failed = owner.Poll(device);
+        const bool truthfulFailure = !failed.Success && failed.PendingCount == 1 && !failed.Error.empty()
+            && owner.GetPendingCount() == 1 && device.WaitCount == 0;
+        device.SetCompletion(partialToken, CompletionStatus::Complete);
+        const auto recovered = owner.Poll(device);
+
+        std::vector<Submission> bounded;
+        bounded.reserve(SubmittedRenderGraphFrameOwner::Capacity);
+        bool capacityAccepted = true;
+        for (size_t index = 0; index < SubmittedRenderGraphFrameOwner::Capacity; ++index)
+        {
+            bounded.push_back(submit("bounded" + std::to_string(index)));
+            capacityAccepted = capacityAccepted && owner.Retain(100 + index, std::move(bounded.back().Graph),
+                bounded.back().Compiled, bounded.back().Executed, {}, &error);
+        }
+        const bool boundedFailure = capacityAccepted && !owner.HasCapacity()
+            && owner.GetPendingCount() == SubmittedRenderGraphFrameOwner::Capacity
+            && device.WaitCount == 0;
+        for (const Submission& submission : bounded)
+            for (const CompletionToken& token : submission.Executed.Completions)
+                device.SetCompletion(token, CompletionStatus::Complete);
+        const auto boundedRetired = owner.Poll(device);
+
+        return Expect(pendingRetained && exactRetirement && partialAccepted && truthfulFailure
+            && recovered.Success && recovered.PendingCount == 0 && boundedFailure
+            && boundedRetired.Success && boundedRetired.PendingCount == 0,
+            "submitted RenderGraph frames retain graphs, payloads, labels, and exact tokens without a CPU wait");
+    }
 
     bool TestRhiSubmissionDependencyValidation()
     {
@@ -4493,6 +4593,7 @@ int main()
         { "Render graph executor translates cross-queue ownership and fallback", TestRenderGraphExecutorCrossQueueOwnershipAndFallback },
         { "Render graph executor preserves accepted prefix on missing producer token", TestRenderGraphExecutorRejectsMissingProducerTokenBeforeConsumer },
         { "Render graph worker recording preserves eligibility ordering and retirement", TestRenderGraphWorkerRecordingContract },
+        { "Submitted render graph frames retire exact tokens without waiting", TestSubmittedRenderGraphFrameOwnerRetiresWithoutWaiting },
         { "RHI buffer transition contract rejects incompatible states", TestRhiBufferTransitionContract },
         { "RHI completion token contract rejects unissued identities", TestRhiCompletionTokenContract },
         { "RHI timestamp query lifecycle preserves generation-safe nonblocking results", TestTimestampQueryPoolLifecycleContract },

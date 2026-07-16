@@ -45,6 +45,18 @@ namespace Engine
             std::byte* Mapped = nullptr;
         };
 
+        struct ConstantBufferSet
+        {
+            ~ConstantBufferSet()
+            {
+                for (ConstantBufferAllocation& allocation : Allocations)
+                    if (allocation.Buffer && allocation.Mapped)
+                        allocation.Buffer->Unmap();
+            }
+
+            std::vector<ConstantBufferAllocation> Allocations;
+        };
+
         class ScopedCommandListDebugMarker final
         {
         public:
@@ -172,17 +184,9 @@ namespace Engine
 
         void Shutdown()
         {
-            for (std::vector<ConstantBufferAllocation>& frameAllocations : m_FrameConstantBuffers)
-            {
-                for (ConstantBufferAllocation& allocation : frameAllocations)
-                {
-                    if (allocation.Buffer && allocation.Mapped)
-                        allocation.Buffer->Unmap();
-                    allocation.Mapped = nullptr;
-                    allocation.Buffer.reset();
-                }
-            }
-
+            if (m_RHIDevice)
+                m_RHIDevice->WaitIdle();
+            m_SubmittedGraphFrames.ReleaseAfterDeviceIdle();
             m_FrameConstantBuffers.clear();
             m_IndexBuffer.reset();
             m_VertexBuffer.reset();
@@ -207,6 +211,18 @@ namespace Engine
             if (width == 0 || height == 0)
                 return false;
 
+            const SubmittedRenderGraphFrameOwner::PollResult retirement = m_SubmittedGraphFrames.Poll(*m_RHIDevice);
+            if (!retirement.Success)
+            {
+                Log::Error("D3D12 Scene viewport RenderGraph retirement failed: ", retirement.Error);
+                return false;
+            }
+            if (!m_SubmittedGraphFrames.HasCapacity())
+            {
+                Log::Error("D3D12 Scene viewport RenderGraph retirement capacity exhausted without a CPU wait");
+                return false;
+            }
+
             PollShaderCompilation();
             PollShaderHotReload();
 
@@ -222,6 +238,7 @@ namespace Engine
             clear.Color[2] = clearColor.B;
             clear.Color[3] = clearColor.A;
             SceneRasterFrame rasterFrame;
+            Ref<ConstantBufferSet> constantBufferSet;
             std::vector<ConstantBufferAllocation>* constantBuffers = nullptr;
             size_t drawCount = 0;
             const std::shared_ptr<const SceneRenderSnapshot> snapshot = Renderer::GetSceneRenderSnapshot();
@@ -249,13 +266,14 @@ namespace Engine
                 && rasterFrame.HasValidView
                 && !rasterFrame.Instances.empty())
             {
-                if (!EnsureConstantBuffers(frameSlot, rasterFrame.Instances.size()))
+                constantBufferSet = AcquireConstantBuffers(frameSlot, rasterFrame.Instances.size());
+                if (!constantBufferSet)
                 {
                     renderSucceeded = false;
                 }
                 else
                 {
-                    constantBuffers = &m_FrameConstantBuffers[frameSlot];
+                    constantBuffers = &constantBufferSet->Allocations;
                     drawCount = rasterFrame.Instances.size();
                     for (size_t index = 0; index < rasterFrame.Instances.size(); ++index)
                     {
@@ -268,28 +286,28 @@ namespace Engine
             if (!renderSucceeded)
                 return false;
 
-            RenderGraph graph;
+            Scope<RenderGraph> graph = CreateScope<RenderGraph>();
             RHI::TextureDescription colorDescription = colorTexture.GetDescription();
             colorDescription.InitialState = colorState;
             RHI::TextureDescription depthDescription = depthTexture.GetDescription();
             depthDescription.InitialState = depthState;
-            const RenderGraph::ResourceHandle color = graph.AddTexture(colorDescription, RenderGraph::ResourceLifetimeKind::Imported);
-            const RenderGraph::ResourceHandle depth = graph.AddTexture(depthDescription, RenderGraph::ResourceLifetimeKind::Imported);
-            const RenderGraph::PassHandle clearPass = graph.AddPass("Scene Viewport Graph Clear", RHI::QueueType::Graphics);
-            graph.AddWrite(clearPass, color, RHI::ResourceState::RenderTarget);
-            graph.AddWrite(clearPass, depth, RHI::ResourceState::DepthWrite);
-            graph.SetPassCallback(clearPass, [clear](RenderGraph::ExecutionContext& context)
+            const RenderGraph::ResourceHandle color = graph->AddTexture(colorDescription, RenderGraph::ResourceLifetimeKind::Imported);
+            const RenderGraph::ResourceHandle depth = graph->AddTexture(depthDescription, RenderGraph::ResourceLifetimeKind::Imported);
+            const RenderGraph::PassHandle clearPass = graph->AddPass("Scene Viewport Graph Clear", RHI::QueueType::Graphics);
+            graph->AddWrite(clearPass, color, RHI::ResourceState::RenderTarget);
+            graph->AddWrite(clearPass, depth, RHI::ResourceState::DepthWrite);
+            graph->SetPassCallback(clearPass, [clear](RenderGraph::ExecutionContext& context)
             {
                 RHI::Texture* graphColor = context.GetTexture({ 0 });
                 RHI::Texture* graphDepth = context.GetTexture({ 1 });
                 return graphColor && graphDepth && context.GetCommandList().BindViewportOutputs(*graphColor, graphDepth)
                     && context.GetCommandList().ClearViewportOutputs(clear);
             });
-            graph.SetPassWorkerRecordingEligible(clearPass);
-            const RenderGraph::PassHandle rasterPass = graph.AddPass("Scene Viewport Graph Raster", RHI::QueueType::Graphics);
-            graph.AddWrite(rasterPass, color, RHI::ResourceState::RenderTarget);
-            graph.AddWrite(rasterPass, depth, RHI::ResourceState::DepthWrite);
-            graph.SetPassCallback(rasterPass, [this, width, height, &rasterFrame, constantBuffers, drawCount](RenderGraph::ExecutionContext& context)
+            graph->SetPassWorkerRecordingEligible(clearPass);
+            const RenderGraph::PassHandle rasterPass = graph->AddPass("Scene Viewport Graph Raster", RHI::QueueType::Graphics);
+            graph->AddWrite(rasterPass, color, RHI::ResourceState::RenderTarget);
+            graph->AddWrite(rasterPass, depth, RHI::ResourceState::DepthWrite);
+            graph->SetPassCallback(rasterPass, [this, width, height, &rasterFrame, constantBuffers, drawCount](RenderGraph::ExecutionContext& context)
             {
                 RHI::Texture* graphColor = context.GetTexture({ 0 });
                 RHI::Texture* graphDepth = context.GetTexture({ 1 });
@@ -304,19 +322,34 @@ namespace Engine
                 for (size_t index = 0; index < drawCount; ++index) { commands.SetGraphicsConstantBuffer(0, *(*constantBuffers)[index].Buffer); commands.DrawIndexed(m_IndexCount, 1, 0, 0, 0); ++rasterFrame.IssuedDrawCount; }
                 return true;
             });
-            const RenderGraph::PassHandle handoffPass = graph.AddPass("Scene Viewport Graph Output Handoff", RHI::QueueType::Graphics);
-            graph.AddRead(handoffPass, color, RHI::ResourceState::ShaderResource, RHI::ShaderStage::Pixel);
-            graph.SetPassCallback(handoffPass, [](RenderGraph::ExecutionContext& context) { return context.GetTexture({ 0 }) != nullptr; });
-            graph.SetPassWorkerRecordingEligible(handoffPass);
-            const RenderGraph::CompileResult compiled = graph.Compile();
+            const RenderGraph::PassHandle handoffPass = graph->AddPass("Scene Viewport Graph Output Handoff", RHI::QueueType::Graphics);
+            graph->AddRead(handoffPass, color, RHI::ResourceState::ShaderResource, RHI::ShaderStage::Pixel);
+            graph->SetPassCallback(handoffPass, [](RenderGraph::ExecutionContext& context) { return context.GetTexture({ 0 }) != nullptr; });
+            graph->SetPassWorkerRecordingEligible(handoffPass);
+            const RenderGraph::CompileResult compiled = graph->Compile();
             RenderGraph::ExecuteOptions executeOptions; executeOptions.RecordingMode = Application::Get().GetSpecification().CommandLineArgs.HasFlag("--frame-task-single-thread") ? FrameTaskExecutionMode::DeterministicSingleThread : FrameTaskExecutionMode::Parallel;
-            const RenderGraph::ExecuteResult executed = graph.BindTexture(color, colorTexture) && graph.BindTexture(depth, depthTexture)
-                ? graph.Execute(*m_RHIDevice, compiled, executeOptions) : RenderGraph::ExecuteResult {};
+            const RenderGraph::ExecuteResult executed = graph->BindTexture(color, colorTexture) && graph->BindTexture(depth, depthTexture)
+                ? graph->Execute(*m_RHIDevice, compiled, executeOptions) : RenderGraph::ExecuteResult {};
             if (Application::Get().GetSpecification().CommandLineArgs.HasFlag("--scene-viewport-render-graph-smoke")) Log::Info("RenderGraphRecordingV1 backend=D3D12 mode=", executeOptions.RecordingMode == FrameTaskExecutionMode::Parallel ? "worker" : "inline", " workerPasses=", executed.WorkerRecordedPassCount, " overlap=", executed.WorkerRecordingOverlapObserved ? "yes" : "no", " submitted=", executed.AcceptedPassCount, " result=", executed.Success ? "pass" : "fail");
-            // This per-frame graph owns its recording contexts on the stack.
-            // Retire the final graphics submission before graph destruction;
-            // presentation remains the separate native ImGui consumer.
-            if (!executed.Success || !m_RHIDevice->WaitForCompletion(executed.Completion, 5000)) return false;
+            if (!executed.Completions.empty())
+            {
+                std::vector<Ref<void>> payloads;
+                if (constantBufferSet)
+                    payloads.emplace_back(constantBufferSet);
+                std::string retentionError;
+                if (!m_SubmittedGraphFrames.Retain(Application::Get().GetFrameIndex(), std::move(graph), compiled,
+                    executed, std::move(payloads), &retentionError))
+                {
+                    Log::Error("D3D12 Scene viewport could not retain an accepted RenderGraph submission: ", retentionError);
+                    m_RHIDevice->WaitIdle();
+                    return false;
+                }
+            }
+            if (!executed.Success)
+                return false;
+            if (Application::Get().GetSpecification().CommandLineArgs.HasFlag("--scene-viewport-render-graph-smoke"))
+                Log::Info("ProductionRenderGraphRetirementV1 backend=D3D12 frame=", Application::Get().GetFrameIndex(),
+                    " passes=", executed.AcceptedPassCount, " cpuWaitBetween=no pending=", m_SubmittedGraphFrames.GetPendingCount(), " result=pass");
             const bool comparisonRequested = Application::Get().GetSpecification().CommandLineArgs.HasFlag("--scene-viewport-render-graph-smoke");
             if (comparisonRequested)
             {
@@ -641,12 +674,17 @@ namespace Engine
             return true;
         }
 
-        bool EnsureConstantBuffers(u32 frameSlot, size_t requiredCount)
+        Ref<ConstantBufferSet> AcquireConstantBuffers(u32 frameSlot, size_t requiredCount)
         {
             if (frameSlot >= m_FrameConstantBuffers.size())
                 m_FrameConstantBuffers.resize(static_cast<size_t>(frameSlot) + 1);
 
-            std::vector<ConstantBufferAllocation>& allocations = m_FrameConstantBuffers[frameSlot];
+            Ref<ConstantBufferSet>& set = m_FrameConstantBuffers[frameSlot];
+            if (set && set.use_count() != 1)
+                return nullptr;
+            if (!set)
+                set = CreateRef<ConstantBufferSet>();
+            std::vector<ConstantBufferAllocation>& allocations = set->Allocations;
             while (allocations.size() < requiredCount)
             {
                 RHI::BufferDescription description;
@@ -658,14 +696,14 @@ namespace Engine
 
                 ConstantBufferAllocation allocation;
                 if (!CreateRhiBuffer(description, allocation.Buffer))
-                    return false;
+                    return nullptr;
                 allocation.Mapped = static_cast<std::byte*>(allocation.Buffer->Map());
                 if (!allocation.Mapped)
-                    return false;
+                    return nullptr;
                 allocations.push_back(std::move(allocation));
             }
 
-            return true;
+            return set;
         }
 
         void PollShaderHotReload()
@@ -686,7 +724,8 @@ namespace Engine
         Scope<RHI::Shader> m_PixelShader;
         Scope<RHI::Buffer> m_VertexBuffer;
         Scope<RHI::Buffer> m_IndexBuffer;
-        std::vector<std::vector<ConstantBufferAllocation>> m_FrameConstantBuffers;
+        std::vector<Ref<ConstantBufferSet>> m_FrameConstantBuffers;
+        SubmittedRenderGraphFrameOwner m_SubmittedGraphFrames;
         ShaderSourceFile m_ShaderSource;
         Scope<AsyncShaderPackageService> m_ShaderPackages;
         ShaderPackageRequestHandle m_VertexRequest;

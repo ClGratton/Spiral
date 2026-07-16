@@ -126,8 +126,8 @@ namespace Engine
         bool EnsureOutputs(u32 width, u32 height)
         {
             if (m_Color && m_Depth && m_Width == width && m_Height == height) return true;
-            // Render submits synchronously in this pre-handoff slice, so the old
-            // renderer-owned outputs are GPU-retired before replacement.
+            // Render rejects replacement while the submitted-frame owner still
+            // retains an exact token for the current output generation.
             m_Color.reset(); m_Depth.reset();
             RHI::TextureDescription color; color.DebugName = "Vulkan Scene Viewport Color"; color.Extent = { width, height }; color.TextureFormat = RHI::Format::R8G8B8A8Unorm; color.Usage = static_cast<RHI::TextureUsage>(static_cast<u32>(RHI::TextureUsage::RenderTarget) | static_cast<u32>(RHI::TextureUsage::CopySource) | static_cast<u32>(RHI::TextureUsage::ShaderResource));
             RHI::TextureDescription depth = color; depth.DebugName = "Vulkan Scene Viewport Depth"; depth.TextureFormat = RHI::Format::D32Float; depth.Usage = RHI::TextureUsage::DepthStencil;
@@ -138,52 +138,66 @@ namespace Engine
 
         bool Render(const SceneRenderSnapshot& snapshot, u32 width, u32 height, const ClearColor& clearColor)
         {
-            if (!m_Device || width == 0 || height == 0 || !EnsureOutputs(width, height)) return false;
+            if (!m_Device || width == 0 || height == 0) return false;
+            const SubmittedRenderGraphFrameOwner::PollResult retirement = m_SubmittedGraphFrames.Poll(*m_Device);
+            if (!retirement.Success) { Log::Error("Vulkan Scene viewport RenderGraph retirement failed: ", retirement.Error); return false; }
+            if (!m_SubmittedGraphFrames.HasCapacity()) { Log::Error("Vulkan Scene viewport RenderGraph retirement capacity exhausted without a CPU wait"); return false; }
+            if ((m_Width != width || m_Height != height) && m_SubmittedGraphFrames.GetPendingCount() != 0)
+            {
+                Log::Error("Vulkan Scene viewport output replacement deferred because an exact RenderGraph token is still incomplete");
+                return false;
+            }
+            if (!EnsureOutputs(width, height)) return false;
             const std::shared_ptr<const SceneRasterFrame> prepared = Renderer::GetPreparedSceneRasterFrame();
             if (!prepared || prepared->SnapshotFrameIndex != snapshot.FrameIndex) return false;
             SceneRasterFrame frame = *prepared;
             if (!frame.HasValidView || frame.Instances.empty()) return false;
-            std::vector<Scope<RHI::Buffer>> constants; constants.reserve(frame.Instances.size());
-            for (const SceneRasterInstance& instance : frame.Instances) { RHI::BufferDescription d; d.DebugName = "Vulkan Scene Viewport Instance Constants"; d.SizeBytes = kConstantBufferSize; d.Usage = WithUsage(RHI::BufferUsage::Constant, RHI::BufferUsage::CopyDest); Scope<RHI::Buffer> b = m_Device->CreateBuffer(d); Constants c {}; std::memcpy(c.ViewProjection, instance.ModelViewProjection.Values, sizeof(c.ViewProjection)); if (!b || !m_Device->UploadBuffer(*b, &c, sizeof(c))) return false; constants.push_back(std::move(b)); }
+            Ref<std::vector<Scope<RHI::Buffer>>> constants = CreateRef<std::vector<Scope<RHI::Buffer>>>(); constants->reserve(frame.Instances.size());
+            for (const SceneRasterInstance& instance : frame.Instances) { RHI::BufferDescription d; d.DebugName = "Vulkan Scene Viewport Instance Constants"; d.SizeBytes = kConstantBufferSize; d.Usage = WithUsage(RHI::BufferUsage::Constant, RHI::BufferUsage::CopyDest); Scope<RHI::Buffer> b = m_Device->CreateBuffer(d); Constants c {}; std::memcpy(c.ViewProjection, instance.ModelViewProjection.Values, sizeof(c.ViewProjection)); if (!b || !m_Device->UploadBuffer(*b, &c, sizeof(c))) return false; constants->push_back(std::move(b)); }
             RHI::ResourceState colorState = RHI::ResourceState::Unknown;
             RHI::ResourceState depthState = RHI::ResourceState::Unknown;
             if (!m_Device->QueryResourceState(m_Color.get(), colorState) || !m_Device->QueryResourceState(m_Depth.get(), depthState)) return false;
             RHI::ViewportClear clear; clear.Color[0] = clearColor.R; clear.Color[1] = clearColor.G; clear.Color[2] = clearColor.B; clear.Color[3] = clearColor.A;
-            RenderGraph graph;
+            Scope<RenderGraph> graph = CreateScope<RenderGraph>();
             RHI::TextureDescription colorDescription = m_Color->GetDescription(); colorDescription.InitialState = colorState;
             RHI::TextureDescription depthDescription = m_Depth->GetDescription(); depthDescription.InitialState = depthState;
-            const RenderGraph::ResourceHandle color = graph.AddTexture(colorDescription, RenderGraph::ResourceLifetimeKind::Imported);
-            const RenderGraph::ResourceHandle depth = graph.AddTexture(depthDescription, RenderGraph::ResourceLifetimeKind::Imported);
-            const RenderGraph::PassHandle clearPass = graph.AddPass("Scene Viewport Graph Clear", RHI::QueueType::Graphics);
-            graph.AddWrite(clearPass, color, RHI::ResourceState::RenderTarget); graph.AddWrite(clearPass, depth, RHI::ResourceState::DepthWrite);
-            graph.SetPassCallback(clearPass, [clear](RenderGraph::ExecutionContext& context) { RHI::Texture* graphColor = context.GetTexture({ 0 }); RHI::Texture* graphDepth = context.GetTexture({ 1 }); return graphColor && graphDepth && context.GetCommandList().BindViewportOutputs(*graphColor, graphDepth) && context.GetCommandList().ClearViewportOutputs(clear); });
-            graph.SetPassWorkerRecordingEligible(clearPass);
-            const RenderGraph::PassHandle rasterPass = graph.AddPass("Scene Viewport Graph Raster", RHI::QueueType::Graphics);
-            graph.AddWrite(rasterPass, color, RHI::ResourceState::RenderTarget); graph.AddWrite(rasterPass, depth, RHI::ResourceState::DepthWrite);
-            graph.SetPassCallback(rasterPass, [this, width, height, &frame, &constants](RenderGraph::ExecutionContext& context)
+            const RenderGraph::ResourceHandle color = graph->AddTexture(colorDescription, RenderGraph::ResourceLifetimeKind::Imported);
+            const RenderGraph::ResourceHandle depth = graph->AddTexture(depthDescription, RenderGraph::ResourceLifetimeKind::Imported);
+            const RenderGraph::PassHandle clearPass = graph->AddPass("Scene Viewport Graph Clear", RHI::QueueType::Graphics);
+            graph->AddWrite(clearPass, color, RHI::ResourceState::RenderTarget); graph->AddWrite(clearPass, depth, RHI::ResourceState::DepthWrite);
+            graph->SetPassCallback(clearPass, [clear](RenderGraph::ExecutionContext& context) { RHI::Texture* graphColor = context.GetTexture({ 0 }); RHI::Texture* graphDepth = context.GetTexture({ 1 }); return graphColor && graphDepth && context.GetCommandList().BindViewportOutputs(*graphColor, graphDepth) && context.GetCommandList().ClearViewportOutputs(clear); });
+            graph->SetPassWorkerRecordingEligible(clearPass);
+            const RenderGraph::PassHandle rasterPass = graph->AddPass("Scene Viewport Graph Raster", RHI::QueueType::Graphics);
+            graph->AddWrite(rasterPass, color, RHI::ResourceState::RenderTarget); graph->AddWrite(rasterPass, depth, RHI::ResourceState::DepthWrite);
+            graph->SetPassCallback(rasterPass, [this, width, height, &frame, constants](RenderGraph::ExecutionContext& context)
             {
                 RHI::Texture* graphColor = context.GetTexture({ 0 }); RHI::Texture* graphDepth = context.GetTexture({ 1 }); RHI::CommandList& commands = context.GetCommandList();
                 if (!graphColor || !graphDepth || !commands.BindViewportOutputs(*graphColor, graphDepth)) return false;
                 commands.SetGraphicsPipeline(*m_Pipeline); commands.SetViewport({ 0.0f, 0.0f, static_cast<float>(width), static_cast<float>(height), 0.0f, 1.0f }); commands.SetScissorRect({ 0, 0, static_cast<int>(width), static_cast<int>(height) }); commands.SetVertexBuffer(0, *m_VertexBuffer); commands.SetIndexBuffer(*m_IndexBuffer, RHI::IndexFormat::Uint16);
-                for (const Scope<RHI::Buffer>& constant : constants) { commands.SetGraphicsConstantBuffer(0, *constant); commands.DrawIndexed(static_cast<u32>(kIndices.size()), 1, 0, 0, 0); ++frame.IssuedDrawCount; }
+                for (const Scope<RHI::Buffer>& constant : *constants) { commands.SetGraphicsConstantBuffer(0, *constant); commands.DrawIndexed(static_cast<u32>(kIndices.size()), 1, 0, 0, 0); ++frame.IssuedDrawCount; }
                 return true;
             });
-            const RenderGraph::PassHandle handoffPass = graph.AddPass("Scene Viewport Graph Output Handoff", RHI::QueueType::Graphics);
-            graph.AddRead(handoffPass, color, RHI::ResourceState::ShaderResource, RHI::ShaderStage::Pixel);
-            graph.SetPassCallback(handoffPass, [](RenderGraph::ExecutionContext& context) { return context.GetTexture({ 0 }) != nullptr; });
-            graph.SetPassWorkerRecordingEligible(handoffPass);
-            const RenderGraph::CompileResult compiled = graph.Compile();
+            const RenderGraph::PassHandle handoffPass = graph->AddPass("Scene Viewport Graph Output Handoff", RHI::QueueType::Graphics);
+            graph->AddRead(handoffPass, color, RHI::ResourceState::ShaderResource, RHI::ShaderStage::Pixel);
+            graph->SetPassCallback(handoffPass, [](RenderGraph::ExecutionContext& context) { return context.GetTexture({ 0 }) != nullptr; });
+            graph->SetPassWorkerRecordingEligible(handoffPass);
+            const RenderGraph::CompileResult compiled = graph->Compile();
             RenderGraph::ExecuteOptions executeOptions; executeOptions.RecordingMode = Application::Get().GetSpecification().CommandLineArgs.HasFlag("--frame-task-single-thread") ? FrameTaskExecutionMode::DeterministicSingleThread : FrameTaskExecutionMode::Parallel;
-            const RenderGraph::ExecuteResult executed = graph.BindTexture(color, *m_Color) && graph.BindTexture(depth, *m_Depth) ? graph.Execute(*m_Device, compiled, executeOptions) : RenderGraph::ExecuteResult {};
+            const RenderGraph::ExecuteResult executed = graph->BindTexture(color, *m_Color) && graph->BindTexture(depth, *m_Depth) ? graph->Execute(*m_Device, compiled, executeOptions) : RenderGraph::ExecuteResult {};
             if (Application::Get().GetSpecification().CommandLineArgs.HasFlag("--scene-viewport-render-graph-smoke")) Log::Info("RenderGraphRecordingV1 backend=Vulkan mode=", executeOptions.RecordingMode == FrameTaskExecutionMode::Parallel ? "worker" : "inline", " workerPasses=", executed.WorkerRecordedPassCount, " overlap=", executed.WorkerRecordingOverlapObserved ? "yes" : "no", " submitted=", executed.AcceptedPassCount, " result=", executed.Success ? "pass" : "fail");
-            // This per-frame graph owns its recording contexts on the stack.
-            // Retire the final graphics submission before graph destruction;
-            // presentation remains the separate native ImGui consumer.
-            if (!executed.Success || !m_Device->WaitForCompletion(executed.Completion, 5000))
+            if (!executed.Completions.empty())
             {
-                Log::Error("Vulkan Scene viewport render graph failed: ", executed.Success ? "completion timeout" : executed.Error);
-                return false;
+                std::string retentionError;
+                if (!m_SubmittedGraphFrames.Retain(snapshot.FrameIndex, std::move(graph), compiled, executed,
+                    { constants }, &retentionError))
+                {
+                    Log::Error("Vulkan Scene viewport could not retain an accepted RenderGraph submission: ", retentionError);
+                    m_Device->WaitIdle();
+                    return false;
+                }
             }
+            if (!executed.Success) { Log::Error("Vulkan Scene viewport render graph failed: ", executed.Error); return false; }
+            if (Application::Get().GetSpecification().CommandLineArgs.HasFlag("--scene-viewport-render-graph-smoke")) Log::Info("ProductionRenderGraphRetirementV1 backend=Vulkan frame=", snapshot.FrameIndex, " passes=", executed.AcceptedPassCount, " cpuWaitBetween=no pending=", m_SubmittedGraphFrames.GetPendingCount(), " result=pass");
             const bool comparisonRequested = Application::Get().GetSpecification().CommandLineArgs.HasFlag("--scene-viewport-render-graph-smoke");
             if (comparisonRequested)
             {
@@ -192,7 +206,7 @@ namespace Engine
                 Scope<RHI::Texture> referenceColor = m_Device->CreateTexture(referenceColorDescription);
                 Scope<RHI::Texture> referenceDepth = m_Device->CreateTexture(referenceDepthDescription);
                 RHI::TextureReadback graphReadback, referenceReadback;
-                const bool referenceRendered = referenceColor && referenceDepth && RecordBootstrapReference(*referenceColor, *referenceDepth, width, height, clear, frame, constants);
+                const bool referenceRendered = referenceColor && referenceDepth && RecordBootstrapReference(*referenceColor, *referenceDepth, width, height, clear, frame, *constants);
                 const bool readBack = referenceRendered && ReadbackGraphOutput(*m_Color, graphReadback) && m_Device->ReadbackTexture(*referenceColor, referenceReadback);
                 const bool equivalent = readBack && graphReadback.Extent.Width == referenceReadback.Extent.Width && graphReadback.Extent.Height == referenceReadback.Extent.Height
                     && graphReadback.RowPitchBytes == referenceReadback.RowPitchBytes && graphReadback.Data == referenceReadback.Data;
@@ -205,8 +219,8 @@ namespace Engine
         }
 
         bool ReadbackColor(RHI::TextureReadback& readback) const { return m_Device && m_Color && m_Device->ReadbackTexture(*m_Color, readback); }
-        void Shutdown() { m_Color.reset(); m_Depth.reset(); m_IndexBuffer.reset(); m_VertexBuffer.reset(); m_Pipeline.reset(); m_PixelShader.reset(); m_VertexShader.reset(); m_Device = nullptr; }
-        RHI::Device* m_Device = nullptr; Scope<RHI::Shader> m_VertexShader, m_PixelShader; Scope<RHI::Pipeline> m_Pipeline; Scope<RHI::Buffer> m_VertexBuffer, m_IndexBuffer; Scope<RHI::Texture> m_Color, m_Depth; u32 m_Width = 0, m_Height = 0; u64 m_OutputGeneration = 0;
+        void Shutdown() { if (m_Device) m_Device->WaitIdle(); m_SubmittedGraphFrames.ReleaseAfterDeviceIdle(); m_Color.reset(); m_Depth.reset(); m_IndexBuffer.reset(); m_VertexBuffer.reset(); m_Pipeline.reset(); m_PixelShader.reset(); m_VertexShader.reset(); m_Device = nullptr; }
+        RHI::Device* m_Device = nullptr; Scope<RHI::Shader> m_VertexShader, m_PixelShader; Scope<RHI::Pipeline> m_Pipeline; Scope<RHI::Buffer> m_VertexBuffer, m_IndexBuffer; Scope<RHI::Texture> m_Color, m_Depth; SubmittedRenderGraphFrameOwner m_SubmittedGraphFrames; u32 m_Width = 0, m_Height = 0; u64 m_OutputGeneration = 0;
     };
 
     NVRHIVulkanViewportSceneRenderer::NVRHIVulkanViewportSceneRenderer() = default;
