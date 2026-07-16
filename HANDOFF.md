@@ -4,7 +4,7 @@ Updated 2026-07-16. This is a recovery aid; `PLAN.md` remains the sole roadmap a
 
 ## Objective And Stop Condition
 
-Phase 3C expected-before RHI transitions, P2 worker-safe recording, the parent multithreaded preparation/recording integration, and the project-owned frame-pacing policy/runtime override are implemented and locally accepted. The user set a hard 25%-remaining weekly floor. The latest reliable meter reports 21% used / 79% remaining, so further coherent work is authorized while the next slice can finish above 25% remaining. A read-only native-boundary feasibility gate found that the measured DXGI/Vulkan presentation-policy item requires a shared frame-lifecycle telemetry and policy-handoff prerequisite; that prerequisite is now the first unchecked item. Continuation must remain in this main task and rely on Codex Desktop's transparent same-task compaction; never create, fork, or message another task for rollover.
+Phase 3C expected-before RHI transitions, P2 worker-safe recording, the parent multithreaded preparation/recording integration, the project-owned frame-pacing policy/runtime override, and the shared frame-lifecycle telemetry/policy-handoff prerequisite are implemented and locally accepted. The user set a hard 25%-remaining weekly floor. The latest reliable meter reports 29% used / 71% remaining, so further coherent work is authorized while the next slice can finish above 25% remaining. The first unchecked item is the measured DXGI/Vulkan presentation-policy candidate implementation. Continuation must remain in this main task and rely on Codex Desktop's transparent same-task compaction; never create, fork, or message another task for rollover.
 
 ## Token-Efficiency Baseline And Required Next-Session Audit (2026-07-15)
 
@@ -60,6 +60,14 @@ Root acceptance then exposed a pre-existing nondeterministic crash in the P2 wor
 
 Verdict: the current `AGENTS.md` rules fixed the failure mode they targeted: one coherent owner, bounded context, one complete assignment, no make/revert loop, no hidden prerequisite, and separate handling of an independent acceptance defect. No new orchestration rule is justified by this slice. Keep the existing feasibility, prerequisite-split, one-owner, coarse-wait, and consolidated-acceptance rules; do not interpret raw 2.26M/3.22M cached-heavy session token totals as weekly-quota percentages.
 
+### Presentation-Telemetry Prerequisite Workflow Audit (2026-07-16)
+
+One exact `terra_medium` session handled the large native-boundary feasibility gate and the resulting prerequisite. The first read-only turn stopped with zero edits and identified the missing evidence boundary before any pacing patch. Root committed the explicit prerequisite, then resumed the same hot owner for implementation and two acceptance corrections. The corrections were concrete high-risk findings: completion frame 0 needed an explicit availability bit and native mandatory-wait evidence; then Vulkan swapchain recreation was found to retain stale image-index/frame associations that could fabricate post-resize completion. The final generation-scoped association clears on recreation and the Vulkan marker requires generation 2.
+
+The owner session ran about 17m13s, used four turns in one persistent exact-Terra session, and moved the reliable weekly meter from 22% to 29% used. Including root feasibility scheduling from the prior 21% state, the complete prerequisite cost about eight percentage points. Goal telemetry moved from about 537k to 757k tokens across policy acceptance, prerequisite discovery, implementation, and final acceptance; it is not a quota meter. Root used four explicit owner waits, each ending at a decision boundary: feasibility, implementation, completion-evidence correction, and swapchain-generation correction. No replacement owner, optional reviewer, speculative make/revert loop, hosted-CI wait, or duplicate D3D12 rerun was used; the second correction retained passing D3D12 evidence and reran only the affected Vulkan path.
+
+Verdict: prerequisite splitting prevented the more expensive failure mode and the same-owner continuation kept context hot. The two corrections increased cost but caught false native evidence that would otherwise have checked an invalid contract. Existing `AGENTS.md` rules remain appropriate; future native telemetry owners should include explicit availability sentinels and generation/lifetime invalidation in their initial feasibility checklist.
+
 ## Completed Roadmap Work
 
 The following commits are on `main` and `origin/main`:
@@ -81,8 +89,10 @@ Latest accepted slice:
 - `1bf1e08` - expected-before D3D12/Vulkan transition validation plus explicit worker-safe RenderGraph recording, deterministic compiled-order submission/publication, and local end-to-end P1/P2 integration.
 - `c364a56` - synchronized fake-device worker-recording instrumentation, removing the intermittent deterministic-test access violation without changing production scheduling.
 - `4457d0b` - versioned project frame-pacing policy, Responsive default, opt-in Smooth Frametime intent, public runtime override resolution, editor controls, migration, diagnostics, and policy-only verification.
+- `5399996` - explicit shared frame-lifecycle telemetry/policy-handoff prerequisite scheduled before native pacing candidates.
+- `4154d09` - authoritative application-frame trace through input, native submission, Present, and generation-safe GPU-completion observation with mandatory-wait classification and truthful unavailable display/replacement states.
 
-`PLAN.md` is checked through the project-owned frame-pacing policy item.
+`PLAN.md` is checked through the shared frame-lifecycle telemetry/policy-handoff prerequisite.
 
 ## Accepted Mechanism And Current Behavior
 
@@ -100,6 +110,7 @@ Latest accepted slice:
 - Graph pre-recording supplies compiler-owned texture/buffer `Before` and `After` states. D3D12 records native barriers against that private expected state; Vulkan seeds only the NVRHI command-list-local tracker. Submission validates the exact live wrapper/tracker state before native acceptance, fails closed on unsupported adapters or stale recordings, and publishes `After` only after acceptance.
 - RenderGraph callbacks remain caller-affine unless explicitly marked worker-recording-safe. Eligible same-effective passes without ownership operations pre-record on separate bounded contexts through FrameTaskGraph; dependent Output Handoff may record alongside Clear, while mutable Raster and cross-queue ownership acquire/release remain caller-recorded. Submission and publication stay in compiled order with exact producer tokens; false/throw failures accept only the earlier prefix and discard every unsubmitted suffix context.
 - `.spiralproject` format version 2 persists `Responsive` or opt-in `Smooth Frametime` intent plus a validated target; version 1 projects migrate to `Responsive`, and invalid version-2 data is rejected without mutating the caller's manifest. `GameFramePacingSettings` can inherit the project or force either mode. Diagnostics explicitly report `behavior=policy-only`; no sleep, cap, submission gate, frame discard, VSync/VRR/tearing change, frames-in-flight change, simulation change, or vendor latency control is active.
+- Renderer timing now uses the authoritative application frame ID and receives the resolved project/runtime pacing policy. Each trace orders frame start, input/simulation, native render submission, and Present begin/end; a later back-buffer/image fence reuse publishes the completed application frame ID with an explicit availability bit. D3D12 latency-object and Vulkan acquire/fence waits are mandatory classifications, while intentional pacing remains `not-applied:0`. Vulkan submission associations are scoped to the swapchain generation and cleared on recreation/shutdown. Display cadence and replacement/drop remain explicitly unavailable.
 
 ## Evidence
 
@@ -118,6 +129,7 @@ Local Windows/MSVC Debug evidence on an RTX 3080 Ti:
 - Local RTX 3080 Ti D3D12 and Vulkan parallel runs emitted `RenderGraphRecordingV1 ... workerPasses=2 overlap=yes submitted=3 result=pass`; inline companions emitted `overlap=no submitted=3 result=pass`. The same runs retained worker/caller `SceneRasterPreparationV1`, exact-byte `SceneViewportRenderGraphV1`, and `RHIQueueDependencySmokeV1 ... cpuWaitBetween=no`. MSVC Debug build completed with zero warnings/errors; style, diff, PowerShell, and bash syntax checks passed.
 - After a root rerun exposed intermittent `0xC0000005` failures in fake worker-recording instrumentation, the synchronized test device completed 30 bounded consecutive `EngineTests` runs at 60/60. Production RenderGraph/Jobs code was not changed. Code style and diff checks passed.
 - Frame-pacing policy verification passed the MSVC Debug zero-warning build, `EngineTests` 60/60, code style, and `Editor.exe --headless --smoke-test --frame-pacing-policy-smoke`. The smoke emitted `FramePacingPolicySmokeV1 legacy=pass invalid=transactional-rejected saveReopen=pass ... targetFps=144.000000, behavior=policy-only result=pass`. This is settings/persistence evidence only, not pacing or display-delivery evidence.
+- Frame-lifecycle telemetry passed the Debug build, `EngineTests` 61/61, code style, and local RTX 3080 Ti D3D12/Vulkan harnesses. Both emitted `FrameLifecycleTelemetryV1` with ordered phase names, `intentionalWait=not-applied:0`, an observed completed application frame, backend-specific mandatory waits, and unavailable display/replacement status. The Vulkan marker additionally required `completionSwapchainGeneration=2`, proving the completion association came from a post-resize submission. No pacing or display-delivery claim is made.
 
 Hosted evidence for behavior/harness head `7e5e80b`:
 
@@ -132,12 +144,14 @@ Exact-head CI run `29430304670` passed real Windows D3D12, Ubuntu Vulkan/lavapip
 
 ## Next Ordered Work
 
+The completed presentation-telemetry prerequisite now publishes resolved policy into renderer timing, uses the application frame ID, separates no applied pacing wait from mandatory DXGI/Vulkan waits, and reports display/replacement feedback unavailable. Local RTX 3080 Ti D3D12/Vulkan harnesses emitted `FrameLifecycleTelemetryV1`; `EngineTests` passed 61/61.
+
 The first unchecked `PLAN.md` item is:
 
-> Phase 3 presentation-pacing prerequisite — shared frame lifecycle telemetry and policy handoff.
+> Implement and measure the selected presentation policy through DXGI waitable-swapchain and capability-gated Vulkan timing paths.
 
-The read-only feasibility gate established the required split with no source edits: the resolved policy currently stops in `EditorLayer`; renderer timing owns a separate internal index; D3D12's latency-object wait and Vulkan's acquire/fence waits are mandatory correctness/latency controls rather than opt-in smooth pacing; and neither backend publishes attributable display/replacement feedback. Implement the prerequisite as its own no-delay slice, with authoritative application-frame-ID continuity, explicit phase/wait classification, truthful unavailable states, deterministic tests, and local D3D12/Vulkan trace evidence. Only then resume the existing candidate-comparison item; do not treat DXGI latency waiting, Vulkan acquire/fence waiting, `Present` cadence, or a delay immediately before `Present` as Smooth Frametime evidence.
+The prerequisite evidence boundary is now present. The next owner may implement the two opt-in Smooth Frametime candidates against it: the inter-frame wait after the prior submission/Present and before the next input/simulation step, plus the separately instrumented submission gate. Preserve Responsive as no intentional wait, keep mandatory DXGI/Vulkan waits separate, and never substitute a delay immediately before the current Present. Measurement must retain frame-ID continuity, active work versus intentional wait, native submission/Present/completion, truthful unavailable display/replacement states, and explicit candidate identity.
 
 ## Working State
 
-Implementation commits `c364a56` and `4457d0b` plus workflow handoff commit `3cfd5bc` are on `main` and `origin/main`. The working tree contains only the prerequisite scheduling/contract update produced from the read-only pacing feasibility gate; commit it before resuming the same exact Terra owner on the new prerequisite. Exact-head CI runs `29503724382` and `29503724529` were in progress at the single post-push check and are deliberately detached because local acceptance already supports the committed slices. Generated captures and CI artifacts remain under ignored `output/`.
+Implementation commit `4154d09` and prerequisite-planning commit `5399996` are on local `main`; `origin/main` is at `3cfd5bc`. The working tree contains only this handoff refresh. Commit it, push the batch, and perform one exact-head CI status check; local acceptance is complete, so detach hosted CI unless it immediately reports a failure. The prior exact-head runs `29503724382` and `29503724529` were in progress at their single check. Generated captures and CI artifacts remain under ignored `output/`.
