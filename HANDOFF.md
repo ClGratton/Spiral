@@ -4,7 +4,7 @@ Updated 2026-07-16. This is a recovery aid; `PLAN.md` remains the sole roadmap a
 
 ## Objective And Stop Condition
 
-Phase 3C expected-before RHI transitions, P2 worker-safe recording, and the parent multithreaded preparation/recording integration are implemented and locally accepted. The user set a hard 25%-remaining weekly floor. Reliable telemetry at acceptance reports 14% used / 86% remaining, so further coherent work is authorized while the next slice can finish above 25% remaining. The first unchecked item is the project-owned frame-pacing policy/runtime override contract. Continuation must remain in this main task and rely on Codex Desktop's transparent same-task compaction; never create, fork, or message another task for rollover.
+Phase 3C expected-before RHI transitions, P2 worker-safe recording, the parent multithreaded preparation/recording integration, and the project-owned frame-pacing policy/runtime override are implemented and locally accepted. The user set a hard 25%-remaining weekly floor. The latest reliable meter reports 21% used / 79% remaining, so further coherent work is authorized while the next slice can finish above 25% remaining. The first unchecked item is the measured DXGI/Vulkan presentation-policy implementation. Continuation must remain in this main task and rely on Codex Desktop's transparent same-task compaction; never create, fork, or message another task for rollover.
 
 ## Token-Efficiency Baseline And Required Next-Session Audit (2026-07-15)
 
@@ -52,6 +52,14 @@ The completed slice consumed about 14 weekly percentage points from a reset-wind
 
 Verdict: the revised workflow fixed root polling, generic-model routing, unsafe partial acceptance, and duplicate broad verification, but it did not fix total token/allowance waste for this task. One feature cost materially more than the earlier approximately six-point Scene-viewport slice because the parent patch crossed owners before its hidden RHI prerequisite was isolated. Real D3D12 evidence was valuable and prevented a false completion, but the prerequisite should have become a separate committed slice immediately. `AGENTS.md` now requires exactly that split when runtime evidence exposes missing synchronization/native-boundary infrastructure. For the next frame-pacing-policy item, use one fresh exact Terra owner, keep the slice to policy/settings/serialization only, and do not begin the separate presentation-timing implementation line in the same owner session.
 
+### Frame-Pacing Policy Slice Workflow Audit (2026-07-16)
+
+The revised workflow materially reduced the intended slice cost. One exact native `terra_medium` owner implemented the complete policy/settings/serialization slice in one session and one final report, with no replacement owner, reviewer, follow-up correction, duplicate research pass, or native timing work. The owner ran from 2026-07-16 13:24:53Z to 13:31:47Z (about 6m55s); its reliable weekly meter moved from 15% to 17% used. Including root setup from the prior 14%-used handoff, the coherent policy slice cost about three percentage points rather than P2's fourteen. The session metadata confirms `agent_role=terra_medium`, model `gpt-5.6-terra`, and medium reasoning.
+
+Root acceptance then exposed a pre-existing nondeterministic crash in the P2 worker-recording test. That was handled as a separate debug slice rather than reopening or replacing the policy owner. One exact `terra_medium` debug owner found unsynchronized shared fake-device instrumentation, changed only `Tests/src/EngineTests.cpp`, and proved 30 bounded `EngineTests` repetitions at 60/60. The debug owner's meter moved from 19% to 21%; the intervening 17%-to-19% root cost includes acceptance, one user-interrupted wait, structured-debug setup, and selective staging. This extra four-point interval was a real evidence repair, not repeated policy implementation.
+
+Verdict: the current `AGENTS.md` rules fixed the failure mode they targeted: one coherent owner, bounded context, one complete assignment, no make/revert loop, no hidden prerequisite, and separate handling of an independent acceptance defect. No new orchestration rule is justified by this slice. Keep the existing feasibility, prerequisite-split, one-owner, coarse-wait, and consolidated-acceptance rules; do not interpret raw 2.26M/3.22M cached-heavy session token totals as weekly-quota percentages.
+
 ## Completed Roadmap Work
 
 The following commits are on `main` and `origin/main`:
@@ -71,8 +79,10 @@ Latest accepted slice:
 - `aa35d11` - worker-safe immutable Scene raster preparation: the Application CPU task graph prepares the exact published snapshot on a worker, deterministic mode runs the same task inline, and D3D12/Vulkan production viewports reject stale or missing prepared frames.
 - `0a5cf0e` - owner-workflow feasibility gate and durable P2 first-attempt audit.
 - `1bf1e08` - expected-before D3D12/Vulkan transition validation plus explicit worker-safe RenderGraph recording, deterministic compiled-order submission/publication, and local end-to-end P1/P2 integration.
+- `c364a56` - synchronized fake-device worker-recording instrumentation, removing the intermittent deterministic-test access violation without changing production scheduling.
+- `4457d0b` - versioned project frame-pacing policy, Responsive default, opt-in Smooth Frametime intent, public runtime override resolution, editor controls, migration, diagnostics, and policy-only verification.
 
-`PLAN.md` is checked through the transient-resource capability group at line 262.
+`PLAN.md` is checked through the project-owned frame-pacing policy item.
 
 ## Accepted Mechanism And Current Behavior
 
@@ -89,6 +99,7 @@ Latest accepted slice:
 - `Frame.PrepareSceneRaster` depends on caller-affine snapshot publication, runs immutable CPU raster preparation on the FrameTaskGraph worker lane, and atomically publishes one snapshot-frame-matched payload before caller-affine rendering. Deterministic single-thread mode executes the identical task inline. D3D12 and Vulkan production consumers fail stale/missing publications; only `RunVulkanSceneViewportRasterSmoke` synchronously prepares its synthetic snapshot outside an Application frame.
 - Graph pre-recording supplies compiler-owned texture/buffer `Before` and `After` states. D3D12 records native barriers against that private expected state; Vulkan seeds only the NVRHI command-list-local tracker. Submission validates the exact live wrapper/tracker state before native acceptance, fails closed on unsupported adapters or stale recordings, and publishes `After` only after acceptance.
 - RenderGraph callbacks remain caller-affine unless explicitly marked worker-recording-safe. Eligible same-effective passes without ownership operations pre-record on separate bounded contexts through FrameTaskGraph; dependent Output Handoff may record alongside Clear, while mutable Raster and cross-queue ownership acquire/release remain caller-recorded. Submission and publication stay in compiled order with exact producer tokens; false/throw failures accept only the earlier prefix and discard every unsubmitted suffix context.
+- `.spiralproject` format version 2 persists `Responsive` or opt-in `Smooth Frametime` intent plus a validated target; version 1 projects migrate to `Responsive`, and invalid version-2 data is rejected without mutating the caller's manifest. `GameFramePacingSettings` can inherit the project or force either mode. Diagnostics explicitly report `behavior=policy-only`; no sleep, cap, submission gate, frame discard, VSync/VRR/tearing change, frames-in-flight change, simulation change, or vendor latency control is active.
 
 ## Evidence
 
@@ -105,6 +116,8 @@ Local Windows/MSVC Debug evidence on an RTX 3080 Ti:
 - Phase 3C-P1 local RTX 3080 Ti D3D12 and Vulkan runs passed in parallel and deterministic-inline modes. `SceneRasterPreparationV1` reported a real worker index versus `worker=caller`, and every run retained `SceneViewportRenderGraphV1 ... comparator=exact-byte-pass`. Root's final 58/58 regression, code style, and diff check passed. This is CPU preparation evidence only, not overlapping command-list recording or changed GPU submission.
 - Final `EngineTests` passed 59/59, including fail-closed unsupported expected-before adapters, stale-state rejection/no publication, explicit eligibility/default affinity, bounded no-sleep overlap, inline equivalence, same-effective dependency-token order, cross-queue deferral, false/throw accepted-prefix disposal, and exact retirement/reuse.
 - Local RTX 3080 Ti D3D12 and Vulkan parallel runs emitted `RenderGraphRecordingV1 ... workerPasses=2 overlap=yes submitted=3 result=pass`; inline companions emitted `overlap=no submitted=3 result=pass`. The same runs retained worker/caller `SceneRasterPreparationV1`, exact-byte `SceneViewportRenderGraphV1`, and `RHIQueueDependencySmokeV1 ... cpuWaitBetween=no`. MSVC Debug build completed with zero warnings/errors; style, diff, PowerShell, and bash syntax checks passed.
+- After a root rerun exposed intermittent `0xC0000005` failures in fake worker-recording instrumentation, the synchronized test device completed 30 bounded consecutive `EngineTests` runs at 60/60. Production RenderGraph/Jobs code was not changed. Code style and diff checks passed.
+- Frame-pacing policy verification passed the MSVC Debug zero-warning build, `EngineTests` 60/60, code style, and `Editor.exe --headless --smoke-test --frame-pacing-policy-smoke`. The smoke emitted `FramePacingPolicySmokeV1 legacy=pass invalid=transactional-rejected saveReopen=pass ... targetFps=144.000000, behavior=policy-only result=pass`. This is settings/persistence evidence only, not pacing or display-delivery evidence.
 
 Hosted evidence for behavior/harness head `7e5e80b`:
 
@@ -121,10 +134,10 @@ Exact-head CI run `29430304670` passed real Windows D3D12, Ubuntu Vulkan/lavapip
 
 The first unchecked `PLAN.md` item is:
 
-> Project-owned frame-pacing policy with a developer-exposable runtime game-setting override.
+> Implement and measure the selected presentation policy through DXGI waitable-swapchain and capability-gated Vulkan timing paths.
 
-Keep this next slice bounded to policy/settings/serialization and deterministic behavior: `Responsive` remains the default with no smoothing delay/drop, `Smooth Frametime` remains opt-in, Project Settings owns the serialized default, and a runtime game-settings override can select it without coupling VSync/VRR/tearing, frame replacement, frames in flight, fixed simulation, or vendor latency modes. Do not implement the following DXGI/Vulkan timing paths in the same slice.
+This is a large native-boundary/performance slice. Its exact Terra owner must first perform the required read-only feasibility gate: map frame start, input/simulation, submission, `Present`, GPU completion, display-feedback, DXGI waitable-object, Vulkan acquire/present, and existing frame-ID telemetry boundaries; identify which candidate can be implemented and locally measured without claiming unavailable display feedback; and name the canonical D3D12/Vulkan harness commands. Preserve `Responsive` as the default, keep VSync/VRR/tearing and vendor latency independent, and do not silently substitute Front Edge Sync for either ASYNC-style control point.
 
 ## Working State
 
-Implementation commit `1bf1e08` and workflow commit `0a5cf0e` are on local `main`. Commit this handoff/rule update, push the batch, and perform one exact-head CI status check. Local acceptance is complete, so hosted CI should be detached after that one check unless it immediately reports a failure. Generated captures and CI artifacts remain under ignored `output/`.
+Implementation commits `c364a56` and `4457d0b` are on local `main` after pushed handoff head `9d334a1`. Commit this handoff update, push the batch, and perform one exact-head CI status check. Local acceptance is complete, so hosted CI should be detached after that one check unless it immediately reports a failure. Generated captures and CI artifacts remain under ignored `output/`.
