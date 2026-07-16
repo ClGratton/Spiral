@@ -183,7 +183,7 @@ Exact-head CI run `29430304670` passed real Windows D3D12, Ubuntu Vulkan/lavapip
 
 The deterministic raw-stream parser/report prerequisite is now implemented locally at base head `ac852c9` (uncommitted in this handoff): `Scripts/JoinPresentMonCorrelation.ps1` requires the exact observed official 1.10.0 header order, exact PID/QPC identity, stable input hashes, one `PresentBegin` per retained engine frame, monotonic QPC, interval/final-tolerance one-to-one pairing, and writes an atomic schema-1 report without changing raw streams. `Scripts/TestPresentMonCorrelation.ps1` passes synthetic success plus wrong PID, header, missing-row, duplicate/reordered QPC, missing/ambiguous interval, and noncausal-final failures. The saved ignored D3D12 capture passes with 512 pairs, 16 warm-up rows, zero trailing rows, and positive 118-1323-QPC-tick deltas.
 
-The first remaining unchecked `PLAN.md` item is:
+The first remaining unchecked `PLAN.md` item is the editor perspective-viewport navigation prerequisite at line 274. Its implementation and deterministic controller evidence are present, but the required manual headed native mouse/cursor interaction remains outstanding. After that gate, the next unchecked item is:
 
 > Phase 3 production-pacing measurement prerequisite — Windows PresentMon correlation.
 
@@ -199,4 +199,4 @@ Local Windows/MSVC Debug build passed with zero warnings/errors; `EngineTests` p
 
 ## Working State
 
-The focused LMB navigation correction is ready to commit; no generated artifacts are intended for staging. Generated captures, the portable diagnostic tool, raw streams, reports, and focused logs remain under ignored `output/`.
+Head `7da7834` is on local `main` and `origin/main`. The working tree is clean except for this exact-head handoff correction. Generated captures, the portable diagnostic tool, raw streams, reports, and focused logs remain under ignored `output/`.
