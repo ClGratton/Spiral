@@ -199,4 +199,4 @@ After the pivot/zoom correction, Windows/MSVC Debug rebuilt with zero warnings/e
 
 ## Working State
 
-This navigation correction is ready to commit from base head `b6d02a1`; generated captures, the portable diagnostic tool, raw streams, reports, and focused logs remain under ignored `output/`.
+Head `1d9e52a` is on local `main` and `origin/main`; it contains the navigation correction from base `b6d02a1`. Generated captures, the portable diagnostic tool, raw streams, reports, and focused logs remain under ignored `output/`.
