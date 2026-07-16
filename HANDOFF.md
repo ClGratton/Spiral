@@ -4,7 +4,7 @@ Updated 2026-07-16. This is a recovery aid; `PLAN.md` remains the sole roadmap a
 
 ## Objective And Stop Condition
 
-Phase 3C expected-before RHI transitions, P2 worker-safe recording, the parent multithreaded preparation/recording integration, the project-owned frame-pacing policy/runtime override, shared frame-lifecycle telemetry, and both experimental Smooth Frametime control points are implemented and locally accepted. The latest reliable weekly meter reports 40% used / 60% remaining. The user explicitly asked to stop after completing this pacing/settings slice, so do not automatically begin the remaining production pacing bake-off. The first unchecked item is now the maintainable-cadence measurement and production-selection work described below. Continuation must remain in the main task and follow the user's next instruction.
+Phase 3C expected-before RHI transitions, P2 worker-safe recording, the parent multithreaded preparation/recording integration, the project-owned frame-pacing policy/runtime override, shared frame-lifecycle telemetry, and both experimental Smooth Frametime control points are implemented and locally accepted. The user now authorized continued ordered work down to a hard 25%-remaining weekly floor. The latest reliable meter reports 45% used / 55% remaining. A read-only bake-off feasibility gate found that bounded multi-frame benchmark capture/statistics/export is the first unchecked prerequisite; implement it before attempting production candidate selection.
 
 ## Token-Efficiency Baseline And Required Next-Session Audit (2026-07-15)
 
@@ -160,12 +160,12 @@ Exact-head CI run `29430304670` passed real Windows D3D12, Ubuntu Vulkan/lavapip
 
 The first unchecked `PLAN.md` item is:
 
-> Measure, compare, and select the production `Smooth Frametime` behavior at maintainable target cadences through DXGI waitable-swapchain and Vulkan presentation paths.
+> Phase 3 presentation-pacing benchmark-capture prerequisite.
 
-Both engine candidates now exist and have low-target control-point evidence. The remaining work is the real bake-off: maintainable 60/120/refresh-relative targets, multiple-frame distributions, deadline overshoot, GPU headroom, PresentMon display attribution on Windows, external RTSS `ASYNC`, presentation-mode/VRR conditions, and an appropriate input-latency path. Do not select InterFrame or SubmissionGate as the production default from the current 5 FPS smoke, `Present` cadence, or an engine/overlay graph alone. GPU timestamp-query implementation remains a later separate PLAN item and is not required to explain that current native draws already execute on the GPU.
+PresentMon is installed at `C:\Program Files\NVIDIA Corporation\FrameViewSDK\bin\PresentMon_x64.exe` and can support later bounded Windows display/present capture. RTSS is installed but no safe non-interactive per-process ASYNC/FES configuration path was found; do not mutate its global binary state. The local display is 2560x1440 at 200 Hz, but VRR enabled/disabled state is not evidenced and no click-to-photon hardware is available. Current renderer timing stores only the last frame, so the next slice must retain/export raw engine history and statistics before any candidate bake-off.
 
 The GPU-timing roadmap prerequisite is now explicitly backend-neutral and gates Phase 3E: D3D12 query heaps, Vulkan query pools, non-stalling resolve/readback, frame/pass identity, RenderGraph scopes, Profiler `GpuMilliseconds`, and native qualification must exist before Forward+/clustered lighting, PBR, lights, shadows, or sky/atmosphere begins. CPU steady-clock timing remains a fallback but cannot qualify GPU-cost claims.
 
 ## Working State
 
-Implementation commit `8bb678e` and pacing handoff commit `dc6393c` are on `main` and `origin/main`. The working tree contains only the GPU-timing roadmap/architecture/handoff clarification requested after that slice. Commit and push this documentation change; no runtime behavior or checkbox changed. Generated captures and CI artifacts remain under ignored `output/`.
+GPU-timing planning commit `df6590c` is on `main` and `origin/main`. The working tree contains only the benchmark-capture prerequisite scheduling/contract update produced by the read-only feasibility gate. Commit it before resuming the same exact Terra owner on implementation. Generated captures and CI artifacts remain under ignored `output/`.
