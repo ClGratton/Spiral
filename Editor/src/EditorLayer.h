@@ -45,7 +45,8 @@ private:
     void ClearViewportNavigationInput();
     bool IsShiftNavigationModifierDown() const;
     void BeginFusionOrbitPivot();
-    void ClearFusionOrbitPivot();
+    void ResetFusionNavigationPivotFromScene();
+    void SetFusionNavigationPivot(const Engine::Math::DVec3& pivot);
     bool SaveEditorSettings();
     void LoadEditorSettings();
     void FocusSelectedEntity();
@@ -156,7 +157,7 @@ private:
     bool m_RightMouseDown = false;
     bool m_MiddleMouseDown = false;
     bool m_HasMousePosition = false;
-    bool m_FusionOrbitPivotValid = false;
+    bool m_FusionNavigationPivotValid = false;
     std::array<bool, 512> m_KeyDown {};
     double m_MouseX = 0.0;
     double m_MouseY = 0.0;
@@ -167,7 +168,11 @@ private:
     float m_MouseWheelDelta = 0.0f;
     float m_ViewportNavigationSpeed = 4.0f;
     ViewportNavigationPreset m_ViewportNavigationPreset = ViewportNavigationPreset::Fusion;
-    Engine::Math::DVec3 m_FusionOrbitPivot {};
+    Engine::Math::DVec3 m_FusionNavigationPivot {};
+    float m_ViewportImageX = 0.0f;
+    float m_ViewportImageY = 0.0f;
+    float m_ViewportImageWidth = 1600.0f;
+    float m_ViewportImageHeight = 900.0f;
     std::shared_ptr<const Engine::SceneRenderSnapshot> m_FirstSceneRenderSnapshot;
     std::array<double, 3> m_CameraPosition = { 0.0, 0.0, -3.35 };
     std::array<float, 3> m_CameraRotation = { 0.0f, 0.0f, 0.0f };

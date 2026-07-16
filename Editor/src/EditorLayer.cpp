@@ -479,6 +479,7 @@ void EditorLayer::OnAttach()
         EnsureDefaultSceneEntities();
     PublishFramePacingPolicy();
     SyncEditorCameraStateFromMainCamera(true);
+    ResetFusionNavigationPivotFromScene();
     m_CaptureViewportRequested = Engine::Application::Get().GetSpecification().CommandLineArgs.HasFlag("--capture-viewport");
     m_SaveSceneSmokeRequested = Engine::Application::Get().GetSpecification().CommandLineArgs.HasFlag("--save-scene-smoke");
     m_AssetWatchSmokeRequested = Engine::Application::Get().GetSpecification().CommandLineArgs.HasFlag("--asset-watch-smoke");
@@ -990,7 +991,7 @@ void EditorLayer::DrawMainMenuBar()
                 ImGui::EndCombo();
             }
             ImGui::TextDisabled("Global editor setting: %s", m_EditorSettingsPath.c_str());
-            ImGui::TextDisabled("Fusion: wheel dolly, MMB pan, Shift+MMB orbit. F focuses selected origin, not bounds fit.");
+            ImGui::TextDisabled("Fusion: cursor wheel zoom, MMB pan, Shift+MMB orbit. F sets a selected-origin pivot; Fit is deferred.");
             ImGui::EndMenu();
         }
 
@@ -1445,7 +1446,6 @@ void EditorLayer::EndViewportCursorCapture()
     m_HasMousePosition = false;
     m_MouseDeltaX = 0.0f;
     m_MouseDeltaY = 0.0f;
-    ClearFusionOrbitPivot();
 }
 
 void EditorLayer::ClearViewportNavigationInput()
@@ -1458,7 +1458,6 @@ void EditorLayer::ClearViewportNavigationInput()
     m_MouseDeltaY = 0.0f;
     m_MouseWheelDelta = 0.0f;
     m_HasMousePosition = false;
-    ClearFusionOrbitPivot();
 }
 
 bool EditorLayer::IsShiftNavigationModifierDown() const
@@ -1470,12 +1469,56 @@ bool EditorLayer::IsShiftNavigationModifierDown() const
 
 void EditorLayer::BeginFusionOrbitPivot()
 {
-    if (m_FusionOrbitPivotValid)
+    if (m_FusionNavigationPivotValid)
         return;
 
-    if (m_ActiveScene.TryGetEntityApproximateWorldPosition(m_SelectedEntity, m_FusionOrbitPivot))
+    ResetFusionNavigationPivotFromScene();
+}
+
+void EditorLayer::SetFusionNavigationPivot(const Engine::Math::DVec3& pivot)
+{
+    m_FusionNavigationPivot = pivot;
+    m_FusionNavigationPivotValid = true;
+}
+
+void EditorLayer::ResetFusionNavigationPivotFromScene()
+{
+    bool hasVisibleMeshPosition = false;
+    Engine::Math::DVec3 minimum {};
+    Engine::Math::DVec3 maximum {};
+    const Engine::Math::WorldGridPolicy& worldGridPolicy = m_ActiveScene.GetWorldGridPolicy();
+    for (const Engine::SceneEntity& entity : m_ActiveScene.GetEntities())
     {
-        m_FusionOrbitPivotValid = true;
+        if (!entity.MeshRenderer || !entity.MeshRenderer->Visible)
+            continue;
+
+        Engine::Math::DVec3 position;
+        if (!entity.Transform.TryGetApproximateWorldPosition(worldGridPolicy, position))
+            continue;
+
+        if (!hasVisibleMeshPosition)
+        {
+            minimum = position;
+            maximum = position;
+            hasVisibleMeshPosition = true;
+            continue;
+        }
+
+        minimum.X = std::min(minimum.X, position.X);
+        minimum.Y = std::min(minimum.Y, position.Y);
+        minimum.Z = std::min(minimum.Z, position.Z);
+        maximum.X = std::max(maximum.X, position.X);
+        maximum.Y = std::max(maximum.Y, position.Y);
+        maximum.Z = std::max(maximum.Z, position.Z);
+    }
+
+    if (hasVisibleMeshPosition)
+    {
+        SetFusionNavigationPivot({
+            minimum.X + (maximum.X - minimum.X) * 0.5,
+            minimum.Y + (maximum.Y - minimum.Y) * 0.5,
+            minimum.Z + (maximum.Z - minimum.Z) * 0.5
+        });
         return;
     }
 
@@ -1487,17 +1530,11 @@ void EditorLayer::BeginFusionOrbitPivot()
         std::cos(yaw) * std::cos(pitch)
     };
     constexpr double fallbackDistance = 3.35;
-    m_FusionOrbitPivot = {
+    SetFusionNavigationPivot({
         m_CameraPosition[0] + forward.X * fallbackDistance,
         m_CameraPosition[1] + forward.Y * fallbackDistance,
         m_CameraPosition[2] + forward.Z * fallbackDistance
-    };
-    m_FusionOrbitPivotValid = true;
-}
-
-void EditorLayer::ClearFusionOrbitPivot()
-{
-    m_FusionOrbitPivotValid = false;
+    });
 }
 
 bool EditorLayer::SaveEditorSettings()
@@ -1556,6 +1593,7 @@ void EditorLayer::FocusSelectedEntity()
         focusPosition.Y - forward.Y * focusDistance,
         focusPosition.Z - forward.Z * focusDistance
     };
+    SetFusionNavigationPivot(focusPosition);
     m_EditorCamera.SetPosition({ m_CameraPosition[0], m_CameraPosition[1], m_CameraPosition[2] });
     ApplyEditorCameraStateToScene();
     m_ViewportDiscontinuousRelocationPending = true;
@@ -1589,6 +1627,15 @@ void EditorLayer::UpdateViewportNavigation(Engine::Timestep timestep)
         std::cos(yaw) * std::cos(pitch)
     };
     const Engine::Math::DVec3 right { std::cos(yaw), 0.0, -std::sin(yaw) };
+    const Engine::Math::DVec3 up {
+        forward.Y * right.Z - forward.Z * right.Y,
+        forward.Z * right.X - forward.X * right.Z,
+        forward.X * right.Y - forward.Y * right.X
+    };
+    const auto dot = [] (const Engine::Math::DVec3& lhs, const Engine::Math::DVec3& rhs)
+    {
+        return lhs.X * rhs.X + lhs.Y * rhs.Y + lhs.Z * rhs.Z;
+    };
     bool changed = false;
 
     if (m_ViewportNavigationPreset == ViewportNavigationPreset::Unreal && m_RightMouseDown && m_MouseWheelDelta != 0.0f)
@@ -1598,11 +1645,62 @@ void EditorLayer::UpdateViewportNavigation(Engine::Timestep timestep)
     }
     else if (m_MouseWheelDelta != 0.0f)
     {
-        const double distance = static_cast<double>(m_MouseWheelDelta * m_ViewportNavigationSpeed * 0.25f);
-        m_CameraPosition[0] += forward.X * distance;
-        m_CameraPosition[1] += forward.Y * distance;
-        m_CameraPosition[2] += forward.Z * distance;
-        changed = true;
+        if (m_ViewportNavigationPreset == ViewportNavigationPreset::Unreal)
+        {
+            const double distance = static_cast<double>(m_MouseWheelDelta) * m_ViewportNavigationSpeed * 0.25;
+            m_CameraPosition[0] += forward.X * distance;
+            m_CameraPosition[1] += forward.Y * distance;
+            m_CameraPosition[2] += forward.Z * distance;
+            changed = true;
+        }
+        else
+        {
+        BeginFusionOrbitPivot();
+        const Engine::Math::DVec3 cameraPosition { m_CameraPosition[0], m_CameraPosition[1], m_CameraPosition[2] };
+        const Engine::Math::DVec3 pivotOffset {
+            m_FusionNavigationPivot.X - cameraPosition.X,
+            m_FusionNavigationPivot.Y - cameraPosition.Y,
+            m_FusionNavigationPivot.Z - cameraPosition.Z
+        };
+        const double fallbackDepth = std::sqrt(dot(pivotOffset, pivotOffset));
+        const double navigationDepth = std::max(
+            static_cast<double>(m_EditorCamera.GetProjection().NearClip) * 2.0,
+            dot(pivotOffset, forward) > 0.0 ? dot(pivotOffset, forward) : fallbackDepth);
+        const double cursorX = m_CursorCaptured ? m_CursorRestoreX : m_MouseX;
+        const double cursorY = m_CursorCaptured ? m_CursorRestoreY : m_MouseY;
+        const double normalizedX = ((cursorX - m_ViewportImageX) / m_ViewportImageWidth - 0.5) * 2.0;
+        const double normalizedY = (0.5 - (cursorY - m_ViewportImageY) / m_ViewportImageHeight) * 2.0;
+        const double tangent = std::tan(Engine::Math::DegreesToRadians(m_EditorCamera.GetProjection().VerticalFovDegrees) * 0.5);
+        const double aspect = std::max(0.001, static_cast<double>(m_EditorCamera.GetAspectRatio()));
+        Engine::Math::DVec3 ray {
+            forward.X + right.X * normalizedX * tangent * aspect + up.X * normalizedY * tangent,
+            forward.Y + right.Y * normalizedX * tangent * aspect + up.Y * normalizedY * tangent,
+            forward.Z + right.Z * normalizedX * tangent * aspect + up.Z * normalizedY * tangent
+        };
+        const double rayLength = std::sqrt(dot(ray, ray));
+        if (rayLength > 0.0)
+        {
+            ray.X /= rayLength;
+            ray.Y /= rayLength;
+            ray.Z /= rayLength;
+            const double rayForward = std::max(0.001, dot(ray, forward));
+            const double rayDistance = navigationDepth / rayForward;
+            const Engine::Math::DVec3 anchor {
+                cameraPosition.X + ray.X * rayDistance,
+                cameraPosition.Y + ray.Y * rayDistance,
+                cameraPosition.Z + ray.Z * rayDistance
+            };
+            const double requestedScale = std::pow(0.85, static_cast<double>(m_MouseWheelDelta));
+            const double minimumScale = std::min(1.0, static_cast<double>(m_EditorCamera.GetProjection().NearClip) * 2.0 / navigationDepth);
+            const double scale = std::clamp(requestedScale, minimumScale, 32.0);
+            m_CameraPosition = {
+                anchor.X + (cameraPosition.X - anchor.X) * scale,
+                anchor.Y + (cameraPosition.Y - anchor.Y) * scale,
+                anchor.Z + (cameraPosition.Z - anchor.Z) * scale
+            };
+            changed = true;
+        }
+        }
     }
     m_MouseWheelDelta = 0.0f;
 
@@ -1611,9 +1709,9 @@ void EditorLayer::UpdateViewportNavigation(Engine::Timestep timestep)
         if (IsShiftNavigationModifierDown())
         {
             BeginFusionOrbitPivot();
-            const double offsetX = m_CameraPosition[0] - m_FusionOrbitPivot.X;
-            const double offsetY = m_CameraPosition[1] - m_FusionOrbitPivot.Y;
-            const double offsetZ = m_CameraPosition[2] - m_FusionOrbitPivot.Z;
+            const double offsetX = m_CameraPosition[0] - m_FusionNavigationPivot.X;
+            const double offsetY = m_CameraPosition[1] - m_FusionNavigationPivot.Y;
+            const double offsetZ = m_CameraPosition[2] - m_FusionNavigationPivot.Z;
             const double distance = std::max(0.001, std::sqrt(offsetX * offsetX + offsetY * offsetY + offsetZ * offsetZ));
             m_CameraRotation[0] = std::clamp(m_CameraRotation[0] + m_MouseDeltaY * 0.15f, -89.0f, 89.0f);
             m_CameraRotation[1] += m_MouseDeltaX * 0.15f;
@@ -1625,18 +1723,35 @@ void EditorLayer::UpdateViewportNavigation(Engine::Timestep timestep)
                 std::cos(orbitYaw) * std::cos(orbitPitch)
             };
             m_CameraPosition = {
-                m_FusionOrbitPivot.X - orbitForward.X * distance,
-                m_FusionOrbitPivot.Y - orbitForward.Y * distance,
-                m_FusionOrbitPivot.Z - orbitForward.Z * distance
+                m_FusionNavigationPivot.X - orbitForward.X * distance,
+                m_FusionNavigationPivot.Y - orbitForward.Y * distance,
+                m_FusionNavigationPivot.Z - orbitForward.Z * distance
             };
             changed |= m_MouseDeltaX != 0.0f || m_MouseDeltaY != 0.0f;
         }
         else
         {
-            const double panScale = static_cast<double>(m_ViewportNavigationSpeed) * 0.01;
-            m_CameraPosition[0] += right.X * m_MouseDeltaX * panScale;
-            m_CameraPosition[1] -= m_MouseDeltaY * panScale;
-            m_CameraPosition[2] += right.Z * m_MouseDeltaX * panScale;
+            BeginFusionOrbitPivot();
+            const Engine::Math::DVec3 pivotOffset {
+                m_FusionNavigationPivot.X - m_CameraPosition[0],
+                m_FusionNavigationPivot.Y - m_CameraPosition[1],
+                m_FusionNavigationPivot.Z - m_CameraPosition[2]
+            };
+            const double navigationDepth = std::max(0.001, dot(pivotOffset, forward));
+            const double worldUnitsPerPixel = 2.0 * navigationDepth
+                * std::tan(Engine::Math::DegreesToRadians(m_EditorCamera.GetProjection().VerticalFovDegrees) * 0.5)
+                / std::max(1.0f, m_ViewportImageHeight);
+            const Engine::Math::DVec3 translation {
+                -right.X * m_MouseDeltaX * worldUnitsPerPixel + up.X * m_MouseDeltaY * worldUnitsPerPixel,
+                -right.Y * m_MouseDeltaX * worldUnitsPerPixel + up.Y * m_MouseDeltaY * worldUnitsPerPixel,
+                -right.Z * m_MouseDeltaX * worldUnitsPerPixel + up.Z * m_MouseDeltaY * worldUnitsPerPixel
+            };
+            m_CameraPosition[0] += translation.X;
+            m_CameraPosition[1] += translation.Y;
+            m_CameraPosition[2] += translation.Z;
+            m_FusionNavigationPivot.X += translation.X;
+            m_FusionNavigationPivot.Y += translation.Y;
+            m_FusionNavigationPivot.Z += translation.Z;
             changed |= m_MouseDeltaX != 0.0f || m_MouseDeltaY != 0.0f;
         }
     }
@@ -1767,6 +1882,10 @@ void EditorLayer::DrawViewportPanel()
 
     const ImVec2 min = ImGui::GetItemRectMin();
     const ImVec2 max = ImGui::GetItemRectMax();
+    m_ViewportImageX = min.x;
+    m_ViewportImageY = min.y;
+    m_ViewportImageWidth = std::max(1.0f, max.x - min.x);
+    m_ViewportImageHeight = std::max(1.0f, max.y - min.y);
     ImDrawList* drawList = ImGui::GetWindowDrawList();
 
     drawList->AddRect(min, max, IM_COL32(70, 80, 90, 255));
@@ -2701,86 +2820,153 @@ void EditorLayer::RunViewportNavigationSmoke()
     const ViewportNavigationPreset previousPreset = m_ViewportNavigationPreset;
     m_ViewportNavigationInputEnabled = true;
 
-    const auto cameraChanged = [this](const Engine::Math::DVec3& beforePosition, const Engine::Math::Vec3& beforeRotation)
+    const auto dot = [] (const Engine::Math::DVec3& lhs, const Engine::Math::DVec3& rhs)
     {
-        const Engine::Math::DVec3 afterPosition = m_EditorCamera.GetPosition();
-        const Engine::Math::Vec3 afterRotation = m_EditorCamera.GetRotationDegrees();
-        return afterPosition.X != beforePosition.X || afterPosition.Y != beforePosition.Y || afterPosition.Z != beforePosition.Z
-            || afterRotation.X != beforeRotation.X || afterRotation.Y != beforeRotation.Y || afterRotation.Z != beforeRotation.Z;
+        return lhs.X * rhs.X + lhs.Y * rhs.Y + lhs.Z * rhs.Z;
+    };
+    const auto distance = [&dot] (const Engine::Math::DVec3& lhs, const Engine::Math::DVec3& rhs)
+    {
+        const Engine::Math::DVec3 delta { lhs.X - rhs.X, lhs.Y - rhs.Y, lhs.Z - rhs.Z };
+        return std::sqrt(dot(delta, delta));
+    };
+    const auto sameVector = [] (const Engine::Math::DVec3& lhs, const Engine::Math::DVec3& rhs, double tolerance = 0.0001)
+    {
+        return std::abs(lhs.X - rhs.X) < tolerance && std::abs(lhs.Y - rhs.Y) < tolerance && std::abs(lhs.Z - rhs.Z) < tolerance;
+    };
+    const auto cameraChanged = [this, &sameVector](const Engine::Math::DVec3& beforePosition, const Engine::Math::Vec3& beforeRotation)
+    {
+        return !sameVector(m_EditorCamera.GetPosition(), beforePosition)
+            || m_EditorCamera.GetRotationDegrees().X != beforeRotation.X
+            || m_EditorCamera.GetRotationDegrees().Y != beforeRotation.Y
+            || m_EditorCamera.GetRotationDegrees().Z != beforeRotation.Z;
     };
 
+    m_ViewportImageX = 0.0f;
+    m_ViewportImageY = 0.0f;
+    m_ViewportImageWidth = 1600.0f;
+    m_ViewportImageHeight = 900.0f;
     m_ViewportNavigationPreset = ViewportNavigationPreset::Fusion;
+    m_CameraRotation = { 22.0f, 37.0f, 0.0f };
+    const float yaw = Engine::Math::DegreesToRadians(m_CameraRotation[1]);
+    const float pitch = Engine::Math::DegreesToRadians(m_CameraRotation[0]);
+    const Engine::Math::DVec3 forward { std::sin(yaw) * std::cos(pitch), -std::sin(pitch), std::cos(yaw) * std::cos(pitch) };
+    const Engine::Math::DVec3 right { std::cos(yaw), 0.0, -std::sin(yaw) };
+    const Engine::Math::DVec3 up {
+        forward.Y * right.Z - forward.Z * right.Y,
+        forward.Z * right.X - forward.X * right.Z,
+        forward.X * right.Y - forward.Y * right.X
+    };
+    const Engine::Math::DVec3 initialPivot { 4.0, -2.0, 7.0 };
+    SetFusionNavigationPivot(initialPivot);
+    m_CameraPosition = {
+        initialPivot.X - forward.X * 12.0,
+        initialPivot.Y - forward.Y * 12.0,
+        initialPivot.Z - forward.Z * 12.0
+    };
+    m_EditorCamera.SetPosition({ m_CameraPosition[0], m_CameraPosition[1], m_CameraPosition[2] });
+    m_EditorCamera.SetRotationDegrees({ m_CameraRotation[0], m_CameraRotation[1], m_CameraRotation[2] });
+    ApplyEditorCameraStateToScene();
+
     const Engine::Math::DVec3 fusionBefore = m_EditorCamera.GetPosition();
     const Engine::Math::Vec3 fusionBeforeRotation = m_EditorCamera.GetRotationDegrees();
-    Engine::MouseButtonPressedEvent leftPress(0);
-    OnEvent(leftPress);
-    Engine::MouseMovedEvent leftMotion(110.0f, 110.0f);
-    OnEvent(leftMotion);
+    m_LeftMouseDown = true;
+    m_MouseDeltaX = 25.0f;
+    m_MouseDeltaY = -17.0f;
     UpdateViewportNavigation(Engine::Timestep(1.0f));
-    Engine::MouseButtonReleasedEvent leftRelease(0);
-    OnEvent(leftRelease);
+    m_LeftMouseDown = false;
     const bool fusionLeftNoOp = !cameraChanged(fusionBefore, fusionBeforeRotation);
-
-    Engine::MouseButtonPressedEvent rightPress(1);
-    OnEvent(rightPress);
-    Engine::MouseMovedEvent rightMotion(120.0f, 120.0f);
-    OnEvent(rightMotion);
+    m_RightMouseDown = true;
+    m_MouseDeltaX = 25.0f;
+    m_MouseDeltaY = -17.0f;
     UpdateViewportNavigation(Engine::Timestep(1.0f));
-    Engine::MouseButtonReleasedEvent rightRelease(1);
-    OnEvent(rightRelease);
+    m_RightMouseDown = false;
     const bool fusionRightNoOp = !cameraChanged(fusionBefore, fusionBeforeRotation);
 
-    Engine::MouseScrolledEvent wheel(0.0f, 1.0f);
-    OnEvent(wheel);
+    const Engine::Math::DVec3 cameraBeforePan = m_EditorCamera.GetPosition();
+    const Engine::Math::DVec3 pivotBeforePan = m_FusionNavigationPivot;
+    m_MiddleMouseDown = true;
+    m_MouseDeltaX = 80.0f;
+    m_MouseDeltaY = -45.0f;
     UpdateViewportNavigation(Engine::Timestep(1.0f));
-    const Engine::Math::DVec3 afterFusionWheel = m_EditorCamera.GetPosition();
-    const bool fusionWheelDollied = afterFusionWheel.X != fusionBefore.X || afterFusionWheel.Y != fusionBefore.Y || afterFusionWheel.Z != fusionBefore.Z;
+    m_MiddleMouseDown = false;
+    const Engine::Math::DVec3 panTranslation {
+        m_EditorCamera.GetPosition().X - cameraBeforePan.X,
+        m_EditorCamera.GetPosition().Y - cameraBeforePan.Y,
+        m_EditorCamera.GetPosition().Z - cameraBeforePan.Z
+    };
+    const Engine::Math::DVec3 pivotTranslation {
+        m_FusionNavigationPivot.X - pivotBeforePan.X,
+        m_FusionNavigationPivot.Y - pivotBeforePan.Y,
+        m_FusionNavigationPivot.Z - pivotBeforePan.Z
+    };
+    const bool fusionCameraPlanePan = sameVector(panTranslation, pivotTranslation)
+        && std::abs(dot(panTranslation, forward)) < 0.0001 && dot(panTranslation, right) < 0.0;
 
-    Engine::MouseButtonPressedEvent middlePress(2);
-    OnEvent(middlePress);
-    Engine::MouseMovedEvent panMotion(130.0f, 120.0f);
-    OnEvent(panMotion);
+    m_MouseX = 1200.0f;
+    m_MouseY = 300.0f;
+    const Engine::Math::DVec3 cameraBeforeZoom = m_EditorCamera.GetPosition();
+    const Engine::Math::DVec3 pivotOffset {
+        m_FusionNavigationPivot.X - cameraBeforeZoom.X,
+        m_FusionNavigationPivot.Y - cameraBeforeZoom.Y,
+        m_FusionNavigationPivot.Z - cameraBeforeZoom.Z
+    };
+    const double navigationDepth = dot(pivotOffset, forward);
+    const double tangent = std::tan(Engine::Math::DegreesToRadians(m_EditorCamera.GetProjection().VerticalFovDegrees) * 0.5);
+    const double normalizedX = ((m_MouseX - m_ViewportImageX) / m_ViewportImageWidth - 0.5) * 2.0;
+    const double normalizedY = (0.5 - (m_MouseY - m_ViewportImageY) / m_ViewportImageHeight) * 2.0;
+    Engine::Math::DVec3 ray {
+        forward.X + right.X * normalizedX * tangent * m_EditorCamera.GetAspectRatio() + up.X * normalizedY * tangent,
+        forward.Y + right.Y * normalizedX * tangent * m_EditorCamera.GetAspectRatio() + up.Y * normalizedY * tangent,
+        forward.Z + right.Z * normalizedX * tangent * m_EditorCamera.GetAspectRatio() + up.Z * normalizedY * tangent
+    };
+    const double rayLength = std::sqrt(dot(ray, ray));
+    ray = { ray.X / rayLength, ray.Y / rayLength, ray.Z / rayLength };
+    const Engine::Math::DVec3 zoomAnchor {
+        cameraBeforeZoom.X + ray.X * navigationDepth / dot(ray, forward),
+        cameraBeforeZoom.Y + ray.Y * navigationDepth / dot(ray, forward),
+        cameraBeforeZoom.Z + ray.Z * navigationDepth / dot(ray, forward)
+    };
+    const double distanceBeforeZoom = distance(cameraBeforeZoom, zoomAnchor);
+    m_MouseWheelDelta = 1.0f;
     UpdateViewportNavigation(Engine::Timestep(1.0f));
-    Engine::MouseButtonReleasedEvent middleRelease(2);
-    OnEvent(middleRelease);
-    const Engine::Math::DVec3 afterFusionPan = m_EditorCamera.GetPosition();
-    const bool fusionPanned = afterFusionPan.X != afterFusionWheel.X || afterFusionPan.Y != afterFusionWheel.Y || afterFusionPan.Z != afterFusionWheel.Z;
+    const Engine::Math::DVec3 cameraAfterZoom = m_EditorCamera.GetPosition();
+    const double distanceAfterZoom = distance(cameraAfterZoom, zoomAnchor);
+    const Engine::Math::DVec3 beforeAnchor { cameraBeforeZoom.X - zoomAnchor.X, cameraBeforeZoom.Y - zoomAnchor.Y, cameraBeforeZoom.Z - zoomAnchor.Z };
+    const Engine::Math::DVec3 afterAnchor { cameraAfterZoom.X - zoomAnchor.X, cameraAfterZoom.Y - zoomAnchor.Y, cameraAfterZoom.Z - zoomAnchor.Z };
+    const Engine::Math::DVec3 anchorAfterCamera { zoomAnchor.X - cameraAfterZoom.X, zoomAnchor.Y - cameraAfterZoom.Y, zoomAnchor.Z - cameraAfterZoom.Z };
+    const double collinearity = std::sqrt(std::pow(beforeAnchor.Y * afterAnchor.Z - beforeAnchor.Z * afterAnchor.Y, 2.0)
+        + std::pow(beforeAnchor.Z * afterAnchor.X - beforeAnchor.X * afterAnchor.Z, 2.0)
+        + std::pow(beforeAnchor.X * afterAnchor.Y - beforeAnchor.Y * afterAnchor.X, 2.0));
+    const bool fusionCursorZoom = std::abs(distanceAfterZoom / distanceBeforeZoom - 0.85) < 0.0001
+        && collinearity < 0.0001 && dot(anchorAfterCamera, forward) > m_EditorCamera.GetProjection().NearClip;
 
-    m_SelectedEntity = m_PrototypeMeshEntity;
-    Engine::KeyPressedEvent shiftPress(340, false);
-    OnEvent(shiftPress);
-    Engine::MouseButtonPressedEvent orbitPress(2);
-    OnEvent(orbitPress);
-    const Engine::Math::DVec3 orbitPivot = m_FusionOrbitPivot;
-    const double orbitDistanceBefore = std::sqrt(
-        std::pow(m_CameraPosition[0] - orbitPivot.X, 2.0)
-        + std::pow(m_CameraPosition[1] - orbitPivot.Y, 2.0)
-        + std::pow(m_CameraPosition[2] - orbitPivot.Z, 2.0));
-    Engine::MouseMovedEvent orbitMotion(140.0f, 130.0f);
-    OnEvent(orbitMotion);
+    const Engine::Math::DVec3 beforeHeldWheel = m_EditorCamera.GetPosition();
+    m_MiddleMouseDown = true;
+    m_MouseWheelDelta = -1.0f;
     UpdateViewportNavigation(Engine::Timestep(1.0f));
-    const double orbitDistanceAfter = std::sqrt(
-        std::pow(m_CameraPosition[0] - orbitPivot.X, 2.0)
-        + std::pow(m_CameraPosition[1] - orbitPivot.Y, 2.0)
-        + std::pow(m_CameraPosition[2] - orbitPivot.Z, 2.0));
-    Engine::MouseButtonReleasedEvent orbitRelease(2);
-    OnEvent(orbitRelease);
-    Engine::KeyReleasedEvent shiftRelease(340);
-    OnEvent(shiftRelease);
-    const bool fusionOrbited = orbitDistanceBefore > 0.0 && std::abs(orbitDistanceAfter - orbitDistanceBefore) < 0.001
-        && !m_FusionOrbitPivotValid;
+    m_MiddleMouseDown = false;
+    const bool fusionWheelWhileMiddleHeld = !sameVector(beforeHeldWheel, m_EditorCamera.GetPosition());
+
+    const Engine::Math::DVec3 orbitPivot = m_FusionNavigationPivot;
+    const double orbitDistanceBefore = distance(m_EditorCamera.GetPosition(), orbitPivot);
+    m_MiddleMouseDown = true;
+    m_KeyDown[340] = true;
+    m_MouseDeltaX = 40.0f;
+    m_MouseDeltaY = -20.0f;
+    UpdateViewportNavigation(Engine::Timestep(1.0f));
+    m_MiddleMouseDown = false;
+    m_KeyDown[340] = false;
+    const bool fusionOrbited = orbitDistanceBefore > 0.0 && std::abs(distance(m_EditorCamera.GetPosition(), orbitPivot) - orbitDistanceBefore) < 0.001
+        && sameVector(m_FusionNavigationPivot, orbitPivot) && m_EditorCamera.GetRotationDegrees().Z == 0.0f && m_FusionNavigationPivotValid;
 
     m_ViewportNavigationPreset = ViewportNavigationPreset::Unreal;
     const Engine::Math::DVec3 before = m_EditorCamera.GetPosition();
     const Engine::Math::Vec3 beforeRotation = m_EditorCamera.GetRotationDegrees();
-    m_ViewportNavigationInputEnabled = true;
-    Engine::MouseButtonPressedEvent unrealLeftPress(0);
-    OnEvent(unrealLeftPress);
-    Engine::MouseMovedEvent unrealLeftMotion(150.0f, 140.0f);
-    OnEvent(unrealLeftMotion);
+    m_LeftMouseDown = true;
+    m_MouseDeltaX = 25.0f;
+    m_MouseDeltaY = -17.0f;
     UpdateViewportNavigation(Engine::Timestep(1.0f));
-    Engine::MouseButtonReleasedEvent unrealLeftRelease(0);
-    OnEvent(unrealLeftRelease);
+    m_LeftMouseDown = false;
     const bool unrealLeftDragMoved = cameraChanged(before, beforeRotation);
 
     const Engine::Math::DVec3 beforeKeyboardNavigation = m_EditorCamera.GetPosition();
@@ -2811,12 +2997,12 @@ void EditorLayer::RunViewportNavigationSmoke()
     const bool focusLossReleased = !m_CursorCaptured && !m_RightMouseDown
         && !m_KeyDown[static_cast<size_t>('W')] && m_MouseDeltaX == 0.0f && m_MouseDeltaY == 0.0f;
     m_ViewportNavigationPreset = previousPreset;
-    if (!fusionLeftNoOp || !fusionRightNoOp || !fusionWheelDollied || !fusionPanned || !fusionOrbited)
+    if (!fusionLeftNoOp || !fusionRightNoOp || !fusionCameraPlanePan || !fusionCursorZoom || !fusionWheelWhileMiddleHeld || !fusionOrbited)
         throw std::runtime_error("Viewport navigation Fusion preset smoke failed");
     if (!unrealLeftDragMoved || !sceneMatches || !unrealFlyMoved || !focusDiscontinuous || !focusLossReleased)
         throw std::runtime_error("Viewport navigation smoke failed");
 
-    Engine::Log::Info("ViewportNavigationSmokeV2 fusion=pass unreal=pass dvec3=pass sceneAuthority=pass focusDiscontinuity=pass focusLossRelease=pass result=pass");
+    Engine::Log::Info("ViewportNavigationSmokeV3 fusionPlanePan=pass cursorZoom=pass wheelHeld=pass stablePivot=pass unreal=pass dvec3=pass sceneAuthority=pass focusDiscontinuity=pass focusLossRelease=pass result=pass");
     m_ConsoleLines.emplace_back("Viewport navigation smoke passed");
 }
 
@@ -2893,6 +3079,7 @@ bool EditorLayer::CreateNewProject(std::string name, const std::filesystem::path
 
     EnsureDefaultSceneEntities();
     SyncEditorCameraStateFromMainCamera(true);
+    ResetFusionNavigationPivotFromScene();
     m_AssetWatcher.SyncRegistry(m_AssetRegistry);
     if (!SaveProject())
     {
@@ -3008,6 +3195,7 @@ bool EditorLayer::LoadProject()
     m_SelectedEntity = m_PrototypeMeshEntity ? m_PrototypeMeshEntity : m_ActiveScene.GetMainCameraEntity();
     m_AssetWatcher.SyncRegistry(m_AssetRegistry);
     SyncEditorCameraStateFromMainCamera(true);
+    ResetFusionNavigationPivotFromScene();
 
     Engine::Log::Info("Project loaded: ", m_ProjectPath);
     Engine::Log::Info("Frame pacing policy loaded: ",
@@ -3049,6 +3237,7 @@ void EditorLayer::RestoreHistoryState(const HistoryState& state)
         m_SelectedEntity = m_PrototypeMeshEntity ? m_PrototypeMeshEntity : m_ActiveScene.GetMainCameraEntity();
 
     SyncEditorCameraStateFromMainCamera(true);
+    ResetFusionNavigationPivotFromScene();
     m_AssetWatcher.SyncRegistry(m_AssetRegistry);
 }
 
