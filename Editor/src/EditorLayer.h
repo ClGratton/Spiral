@@ -36,6 +36,7 @@ private:
     void UpdateViewportNavigation(Engine::Timestep timestep);
     void BeginViewportCursorCapture();
     void EndViewportCursorCapture();
+    void ClearViewportNavigationInput();
     void FocusSelectedEntity();
     void DrawViewportPanel();
     void DrawConsolePanel();
@@ -134,6 +135,7 @@ private:
     bool m_ViewportHovered = false;
     bool m_ViewportFocused = false;
     bool m_ViewportNavigationInputEnabled = false;
+    bool m_WindowFocused = true;
     bool m_CursorCaptured = false;
     bool m_LeftMouseDown = false;
     bool m_RightMouseDown = false;

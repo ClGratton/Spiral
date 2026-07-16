@@ -104,6 +104,14 @@ namespace Engine
                 data.EventCallback(event);
         });
 
+        glfwSetWindowFocusCallback(m_Window, [](GLFWwindow* window, int focused)
+        {
+            WindowData& data = *static_cast<WindowData*>(glfwGetWindowUserPointer(window));
+            WindowFocusEvent event(focused == GLFW_TRUE);
+            if (data.EventCallback)
+                data.EventCallback(event);
+        });
+
         glfwSetDropCallback(m_Window, [](GLFWwindow* window, int pathCount, const char* paths[])
         {
             WindowData& data = *static_cast<WindowData*>(glfwGetWindowUserPointer(window));

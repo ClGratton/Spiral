@@ -45,6 +45,25 @@ namespace Engine
         u32 GetCategoryFlags() const override { return EventCategoryApplication; }
     };
 
+    class WindowFocusEvent final : public Event
+    {
+    public:
+        explicit WindowFocusEvent(bool focused)
+            : m_Focused(focused)
+        {
+        }
+
+        bool IsFocused() const { return m_Focused; }
+
+        static EventType GetStaticType() { return EventType::WindowFocus; }
+        EventType GetEventType() const override { return GetStaticType(); }
+        std::string_view GetName() const override { return "WindowFocus"; }
+        u32 GetCategoryFlags() const override { return EventCategoryApplication; }
+
+    private:
+        bool m_Focused;
+    };
+
     class FileDropEvent final : public Event
     {
     public:

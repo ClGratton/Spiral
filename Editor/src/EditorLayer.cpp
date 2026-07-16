@@ -404,6 +404,8 @@ void EditorLayer::OnAttach()
 
 void EditorLayer::OnDetach()
 {
+    EndViewportCursorCapture();
+    ClearViewportNavigationInput();
     Engine::Log::Info("Editor layer detached");
 }
 
@@ -495,7 +497,16 @@ void EditorLayer::OnEvent(Engine::Event& event)
     if (event.Handled)
         return;
 
-    if (event.GetEventType() == Engine::EventType::KeyPressed)
+    if (event.GetEventType() == Engine::EventType::WindowFocus)
+    {
+        m_WindowFocused = static_cast<const Engine::WindowFocusEvent&>(event).IsFocused();
+        if (!m_WindowFocused)
+        {
+            EndViewportCursorCapture();
+            ClearViewportNavigationInput();
+        }
+    }
+    else if (event.GetEventType() == Engine::EventType::KeyPressed)
     {
         const auto& keyEvent = static_cast<const Engine::KeyPressedEvent&>(event);
         const int key = keyEvent.GetKeyCode();
@@ -1268,6 +1279,18 @@ void EditorLayer::EndViewportCursorCapture()
     m_MouseDeltaY = 0.0f;
 }
 
+void EditorLayer::ClearViewportNavigationInput()
+{
+    m_LeftMouseDown = false;
+    m_RightMouseDown = false;
+    m_MiddleMouseDown = false;
+    m_KeyDown.fill(false);
+    m_MouseDeltaX = 0.0f;
+    m_MouseDeltaY = 0.0f;
+    m_MouseWheelDelta = 0.0f;
+    m_HasMousePosition = false;
+}
+
 void EditorLayer::FocusSelectedEntity()
 {
     Engine::Math::DVec3 focusPosition;
@@ -1431,6 +1454,8 @@ void EditorLayer::DrawViewportPanel()
     const ImVec2 size = ImGui::GetContentRegionAvail();
     if (size.x < 1.0f || size.y < 1.0f)
     {
+        EndViewportCursorCapture();
+        ClearViewportNavigationInput();
         Engine::Renderer::SetViewportRect({});
         ImGui::End();
         return;
@@ -1456,7 +1481,8 @@ void EditorLayer::DrawViewportPanel()
         ImGui::SetWindowFocus();
     m_ViewportFocused = ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
     const ImGuiIO& io = ImGui::GetIO();
-    m_ViewportNavigationInputEnabled = (m_CursorCaptured || (m_ViewportHovered && m_ViewportFocused))
+    m_ViewportNavigationInputEnabled = m_WindowFocused
+        && (m_CursorCaptured || (m_ViewportHovered && m_ViewportFocused))
         && !io.WantTextInput
         && !ImGui::IsAnyItemActive();
 
@@ -2368,10 +2394,17 @@ void EditorLayer::RunViewportNavigationSmoke()
     m_SelectedEntity = m_PrototypeMeshEntity;
     FocusSelectedEntity();
     const bool focusDiscontinuous = m_ViewportDiscontinuousRelocationPending;
-    if (!sceneMatches || !moved || !focusDiscontinuous)
+    m_RightMouseDown = true;
+    m_KeyDown[static_cast<size_t>('W')] = true;
+    BeginViewportCursorCapture();
+    Engine::WindowFocusEvent focusLost(false);
+    OnEvent(focusLost);
+    const bool focusLossReleased = !m_CursorCaptured && !m_RightMouseDown
+        && !m_KeyDown[static_cast<size_t>('W')] && m_MouseDeltaX == 0.0f && m_MouseDeltaY == 0.0f;
+    if (!sceneMatches || !moved || !focusDiscontinuous || !focusLossReleased)
         throw std::runtime_error("Viewport navigation smoke failed");
 
-    Engine::Log::Info("ViewportNavigationSmokeV1 dvec3=pass sceneAuthority=pass focusDiscontinuity=pass result=pass");
+    Engine::Log::Info("ViewportNavigationSmokeV1 dvec3=pass sceneAuthority=pass focusDiscontinuity=pass focusLossRelease=pass result=pass");
     m_ConsoleLines.emplace_back("Viewport navigation smoke passed");
 }
 
