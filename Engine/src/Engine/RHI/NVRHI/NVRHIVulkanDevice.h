@@ -28,6 +28,9 @@ namespace Engine::RHI
         const DeviceCapabilities& capabilities,
         nvrhi::IDevice* nativeDevice,
         nvrhi::vulkan::IDevice* completionDevice,
-        NVRHIVulkanQueueTopology queueTopology);
+        NVRHIVulkanQueueTopology queueTopology,
+        void* vulkanDevice,
+        u32 graphicsTimestampValidBits,
+        double timestampPeriodNanoseconds);
     NVRHIVulkanTextureNativeHandles GetNVRHIVulkanTextureNativeHandles(Texture& texture);
 }

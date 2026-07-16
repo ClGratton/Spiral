@@ -84,6 +84,14 @@ namespace Engine
                 m_VulkanContext.reset();
                 return false;
             }
+            if (args.HasFlag("--rhi-timestamp-query-smoke")
+                && !RunRHITimestampQuerySmoke(*m_VulkanContext->GetRHIDevice(), "Vulkan"))
+            {
+                Log::Error("Vulkan RHI timestamp-query smoke failed");
+                m_VulkanContext->Shutdown();
+                m_VulkanContext.reset();
+                return false;
+            }
             if (args.HasFlag("--rhi-queue-dependency-smoke")
                 && !RunRHIQueueDependencySmoke(*m_VulkanContext->GetRHIDevice(), "Vulkan"))
             {

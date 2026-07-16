@@ -182,6 +182,16 @@ Run the canonical zero-warning Debug build, complete deterministic suite, and fo
 
 The focused script must exit successfully, leave no Editor child alive, report D3D12 timestamps advertised/enabled/implemented with a nonzero graphics-queue frequency, and emit `RHITimestampQuerySmokeV1 ... allocation=pass ... writeResolve=pass, pending=pass, readback=pass, reuse=retired-pass, destruction=retained-pass, result=pass` with a positive `periodNanoseconds`. `Pending` is observed after accepted publication and before completion collection; mapping and logical completion occur only when the exact completion fence is terminal. This qualifies the D3D12 native RHI bridge only. `Phase3FrameTimingV1` must remain on `CpuSteadyClock` until P3 adds whole-frame/pass identity and asynchronous Profiler publication; the smoke is not GPU-headroom or pacing-selection evidence.
 
+## Phase 3 GPU Timing P2C Vulkan Native Translation
+
+Run the same zero-warning Debug build and deterministic suite, then the focused backend smoke:
+
+```powershell
+.\Scripts\TestVulkanTimestamps.ps1 -Configuration Debug -Action vs2022 -SkipBuild
+```
+
+The script must exit successfully with no surviving Editor, report timestamps advertised/enabled/implemented with nonzero graphics `timestampValidBits` and positive physical `timestampPeriod`, and emit the same `RHITimestampQuerySmokeV1` pass fields for `backend=Vulkan`. The adapter must record reset/write only through the live NVRHI command buffer, call `vkGetQueryPoolResults` only after the exact NVRHI submission is complete and without `VK_QUERY_RESULT_WAIT_BIT`, keep `VK_NOT_READY` nonterminal, mask values to valid bits, and publish other native errors as failed/disjoint. This qualifies the Vulkan native RHI bridge only; P3 renderer instrumentation and GPU headroom remain separate.
+
 ## Renderer Verification
 
 ## Render Graph Construction Verification

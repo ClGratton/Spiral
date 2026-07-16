@@ -271,13 +271,18 @@ namespace Engine::RHI
             m_Capabilities.GetFeature(DeviceFeature::NeuralShaders) = MakeCapabilityState(
                 nvrhiNeuralShadersAdvertised, false, false, false,
                 "NVRHI advertisement only; the bootstrap profile does not enable or implement neural shaders");
+            const bool timestampsUsable = m_SelectedQueueProperties.timestampValidBits > 0
+                && m_SelectedProperties.limits.timestampPeriod > 0.0f;
             m_Capabilities.GetFeature(DeviceFeature::Timestamps) = MakeCapabilityState(
                 m_SelectedQueueProperties.timestampValidBits > 0,
-                m_SelectedQueueProperties.timestampValidBits > 0,
+                timestampsUsable,
+                timestampsUsable,
                 false,
-                false,
-                "Selected queue timestampValidBits=" + std::to_string(m_SelectedQueueProperties.timestampValidBits)
-                    + "; Vulkan timestamp recording is not implemented or exercised");
+                timestampsUsable
+                    ? "Selected queue timestampValidBits=" + std::to_string(m_SelectedQueueProperties.timestampValidBits)
+                        + ", timestampPeriod=" + std::to_string(m_SelectedProperties.limits.timestampPeriod)
+                        + " ns; native query-pool/record/readback path is usable; runtime exercise is reported separately"
+                    : "Selected Vulkan graphics queue did not expose a usable timestampValidBits/timestampPeriod pair");
             m_Capabilities.GetFeature(DeviceFeature::TimelineSynchronization) = MakeCapabilityState(
                 m_TimelineSemaphoreAdvertised, true, true, false,
                 "Required and enabled for the NVRHI Vulkan bootstrap; no focused timeline exercise is recorded yet");
@@ -324,7 +329,10 @@ namespace Engine::RHI
                 m_NVRHIDevice.Get(),
                 m_NativeNVRHIDevice.Get(),
                 { m_ComputeQueue != VK_NULL_HANDLE, m_CopyQueue != VK_NULL_HANDLE,
-                    m_GraphicsQueueFamily, m_ComputeQueueFamily, m_CopyQueueFamily });
+                    m_GraphicsQueueFamily, m_ComputeQueueFamily, m_CopyQueueFamily },
+                reinterpret_cast<void*>(m_Device),
+                m_SelectedQueueProperties.timestampValidBits,
+                static_cast<double>(m_SelectedProperties.limits.timestampPeriod));
             if (!m_RHIDevice)
             {
                 Log::Error("Could not create the Engine::RHI wrapper around the NVRHI Vulkan device");

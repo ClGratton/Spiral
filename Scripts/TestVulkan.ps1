@@ -21,7 +21,7 @@ if (!(Test-Path $Executable)) {
     throw "Vulkan smoke executable was not found: $Executable"
 }
 
-$VulkanResult = Invoke-BoundedProcess -FilePath $Executable -Arguments @("--vulkan-render-smoke", "--frame-lifecycle-telemetry-smoke", "--renderer-capability-smoke", "--scene-raster-preparation-smoke", "--scene-viewport-render-graph-smoke", "--vulkan-rhi-core-smoke", "--vulkan-rhi-indexed-draw-smoke", "--vulkan-scene-viewport-raster-smoke", "--rhi-buffer-transition-smoke", "--rhi-completion-smoke", "--rhi-queue-dependency-smoke", "--rhi-buffer-ownership-smoke", "--rhi-texture-ownership-smoke", "--rhi-resource-ownership-smoke", "--rhi-resource-state-smoke", "--render-graph-execution-smoke") -Label "Editor Vulkan render smoke" -TimeoutSeconds $ChildTimeoutSeconds
+$VulkanResult = Invoke-BoundedProcess -FilePath $Executable -Arguments @("--vulkan-render-smoke", "--frame-lifecycle-telemetry-smoke", "--renderer-capability-smoke", "--scene-raster-preparation-smoke", "--scene-viewport-render-graph-smoke", "--vulkan-rhi-core-smoke", "--vulkan-rhi-indexed-draw-smoke", "--vulkan-scene-viewport-raster-smoke", "--rhi-buffer-transition-smoke", "--rhi-completion-smoke", "--rhi-timestamp-query-smoke", "--rhi-queue-dependency-smoke", "--rhi-buffer-ownership-smoke", "--rhi-texture-ownership-smoke", "--rhi-resource-ownership-smoke", "--rhi-resource-state-smoke", "--render-graph-execution-smoke") -Label "Editor Vulkan render smoke" -TimeoutSeconds $ChildTimeoutSeconds
 $Output = $VulkanLog = $VulkanResult.Output
 if ($VulkanResult.TimedOut) {
     throw "Vulkan render smoke timed out after $ChildTimeoutSeconds seconds."
@@ -53,6 +53,7 @@ $RequiredMarkers = @(
     "Selected Vulkan adapter:",
     "Vulkan capability profile: Phase 3 Vulkan Bootstrap Presentation V1, qualification=Bootstrap",
     "Vulkan capability state: Timeline Synchronization advertised=yes, enabled=yes, implemented=yes",
+    "Vulkan capability state: Timestamps advertised=yes, enabled=yes, implemented=yes, exercised=no",
     "Vulkan capability state: Buffer Device Address advertised=",
     "Editor renderer capability diagnostics ready: profile=Phase 3 Vulkan Bootstrap Presentation V1, qualification=Bootstrap",
     "Renderer capability group: group=Phase3FrameTimingV1, profile=Phase 3 Frame Timing V1, preferredPath=GpuTimestamps, selectedPath=CpuSteadyClock, implemented=yes, exercised=no",
@@ -70,6 +71,7 @@ $RequiredMarkers = @(
     "Vulkan render smoke verified native ImGui presentation after resize",
     "RHIBufferTransitionSmokeV1 backend=Vulkan, invalid=rejected, lifecycle=pass, submission=pass, result=pass",
     "RHICompletionSmokeV1 backend=Vulkan, tokenValidation=pass, query=nonblocking-",
+    "RHITimestampQuerySmokeV1 backend=Vulkan, allocation=pass, periodNanoseconds=",
     "RHIQueueDependencySmokeV1 backend=Vulkan,",
     "RHIBufferOwnershipSmokeV1 backend=Vulkan,",
     "RHITextureOwnershipSmokeV1 backend=Vulkan,",
@@ -100,6 +102,9 @@ if (($InlineRecordingJoinedLog -notmatch 'SceneRasterPreparationV1 mode=single-t
 }
 if ($JoinedLog -notmatch 'RHICompletionSmokeV1 backend=Vulkan, tokenValidation=pass, query=nonblocking-(incomplete|complete), wait=pass, reuse=pass, result=pass') {
     throw "Vulkan render smoke did not prove completion-token retirement and recording reuse."
+}
+if ($JoinedLog -notmatch 'RHITimestampQuerySmokeV1 backend=Vulkan, allocation=pass, periodNanoseconds=[0-9]+(?:\.[0-9]+)?, writeResolve=pass, pending=pass, readback=pass, reuse=retired-pass, destruction=retained-pass, result=pass') {
+    throw "Vulkan render smoke did not prove native timestamp allocation, resolve, retirement, reuse, and destruction."
 }
 if ($JoinedLog -notmatch 'RenderGraphExecutionSmokeV1 backend=Vulkan, barriers=3, callbacks=ordered-pass, undeclared=rejected, submission=pass, topology=(independent-copy|graphics-fallback), dependency=(gpu-wait|ordered-elided), readback=pass, reuse=retired-same-context, result=pass') {
     throw "Vulkan render smoke did not prove topology-adaptive RenderGraph queue execution, readback, and aggregate retirement."
