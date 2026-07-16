@@ -11,6 +11,7 @@
 #include "Engine/RHI/NVRHI/VulkanQueueAdmission.h"
 #include "Engine/Renderer/CapabilityDiagnostics.h"
 #include "Engine/Renderer/FramePacingPolicy.h"
+#include "Engine/Renderer/FramePacingBenchmark.h"
 #include "Engine/Renderer/Renderer.h"
 #include "Engine/Renderer/AsyncShaderPackageService.h"
 #include "Engine/Renderer/PortableShaderContract.h"
@@ -185,6 +186,77 @@ namespace
 
         return Expect(valid && vulkanWaitsRejected && vulkanWaitsAccepted && outOfOrderRejected && unavailableStateRequired && inputLatencyUnavailableRequired,
             "frame lifecycle telemetry preserves phase order, no-delay intent, and truthful unavailable feedback states");
+    }
+
+    bool TestFramePacingBenchmarkRetentionStatisticsAndStableExport()
+    {
+        Engine::FramePacingBenchmarkCapture capture(1000);
+        Engine::FramePacingBenchmarkCondition condition;
+        condition.Backend = "test";
+        condition.Adapter = "adapter\"quoted\tvalue";
+        condition.TargetFramesPerSecond = 120.0;
+        condition.PresentationMode = "flip-discard";
+        condition.SyncMode = "driver-vsync";
+        condition.VrrMode = "enabled";
+        condition.TearingMode = "disabled";
+        capture.Begin(condition);
+        for (Engine::u64 index = 0; index <= 1000; ++index)
+        {
+            Engine::RendererFrameTiming timing;
+            timing.FrameIndex = index;
+            timing.StartToStartMilliseconds = index == 1000 ? 10000.0 : (index == 999 ? 100.0 : 10.0);
+            timing.CpuMilliseconds = 4.0;
+            timing.CpuActiveMilliseconds = index <= 500 ? 1.0 : (index <= 950 ? 2.0 : 3.0);
+            timing.IntentionalPacingMilliseconds = index <= 500 ? 0.0 : (index <= 950 ? 1.0 : 2.0);
+            timing.Lifecycle = {
+                { Engine::RendererFrameLifecyclePhase::FrameStart, 0.0 },
+                { Engine::RendererFrameLifecyclePhase::InputSimulation, 0.25 },
+                { Engine::RendererFrameLifecyclePhase::RenderSubmission, 1.5 },
+                { Engine::RendererFrameLifecyclePhase::PresentBegin, 2.0 },
+                { Engine::RendererFrameLifecyclePhase::PresentEnd, 2.5 }
+            };
+            timing.Waits = { { Engine::RendererFrameWaitKind::MandatoryDxgiFrameLatency, true, 3.5 } };
+            if (index == 1000)
+                timing.Waits.push_back({ Engine::RendererFrameWaitKind::IntentionalPacing, true, 2.0, Engine::SmoothFrametimeCandidate::InterFrame, true, 10.0, 12.0 });
+            timing.HasGpuCompletionObservation = index > 1;
+            timing.LastGpuCompletionObservedFrameIndex = index > 1 ? index - 2 : 0;
+            capture.Record(timing);
+        }
+        const auto snapshot = capture.GetSnapshot();
+        const std::filesystem::path path = TestFilePath("frame-pacing-benchmark");
+        std::string error;
+        const bool wrote = snapshot && Engine::FramePacingBenchmarkCapture::WriteArtifacts(*snapshot, path, error);
+        std::string csv, json;
+        if (wrote)
+        {
+            std::ifstream csvFile(path / "frame-pacing-benchmark.csv");
+            std::ifstream jsonFile(path / "frame-pacing-benchmark.json");
+            csv.assign(std::istreambuf_iterator<char>(csvFile), {});
+            json.assign(std::istreambuf_iterator<char>(jsonFile), {});
+        }
+        std::filesystem::remove_all(path);
+        bool continuous = snapshot && snapshot->Frames.size() == 1000;
+        for (size_t index = 0; continuous && index < snapshot->Frames.size(); ++index)
+            continuous = snapshot->Frames[index].FrameIndex == index + 1;
+        return Expect(continuous && snapshot->Frames.back().StartToStartMilliseconds == 10000.0
+                && snapshot->Summary.SampleCount == 1000 && snapshot->Summary.StartToStartP99Milliseconds == 10.0
+                && snapshot->Summary.CpuActiveP50Milliseconds == 1.0 && snapshot->Summary.CpuActiveP95Milliseconds == 2.0
+                && snapshot->Summary.CpuActiveP99Milliseconds == 3.0 && snapshot->Summary.IntentionalWaitP50Milliseconds == 0.0
+                && snapshot->Summary.IntentionalWaitP95Milliseconds == 1.0 && snapshot->Summary.IntentionalWaitP99Milliseconds == 2.0
+                && std::abs(snapshot->Summary.OnePercentLowFramesPerSecond - 100.0) < 0.0001
+                && std::abs(snapshot->Summary.PointOnePercentLowFramesPerSecond - 10.0) < 0.0001
+                && snapshot->Summary.DeadlineMissCount == 1 && snapshot->Summary.DeadlineOvershootP99Milliseconds == 2.0,
+                "frame pacing benchmark retains continuous raw spikes and aggregates deterministic cadence, work, wait, low, and deadline statistics")
+            && Expect(wrote && csv.find("\"adapter\"\"quoted\tvalue\"") != std::string::npos
+                && csv.find("{\"\"phase\"\":\"\"PresentEnd\"\",\"\"ms\"\":2.5}") != std::string::npos
+                && csv.find("{\"\"kind\"\":\"\"MandatoryDxgiFrameLatency\"\",\"\"applied\"\":true,\"\"ms\"\":3.5") != std::string::npos
+                && json.find("adapter\\\"quoted\\tvalue") != std::string::npos
+                && json.find("\"presentationMode\":\"flip-discard\",\"sync\":\"driver-vsync\",\"vrr\":\"enabled\",\"tearing\":\"disabled\"") != std::string::npos
+                && json.find("\"phase\":\"PresentEnd\",\"ms\":2.5") != std::string::npos
+                && json.find("\"kind\":\"MandatoryDxgiFrameLatency\",\"applied\":true,\"ms\":3.5") != std::string::npos
+                && json.find("\"gpuCompletionFrame\":998") != std::string::npos
+                && json.find("\"display\":\"unavailable\",\"replacementDrop\":\"unavailable\",\"inputLatency\":\"unavailable\",\"gpuHeadroom\":\"unavailable\"") != std::string::npos,
+                "frame pacing benchmark exports stable CSV/JSON lifecycle, wait, completion, escaping, and unavailable-field records");
     }
 
     bool MatricesNear(const Engine::Math::Mat4& left, const Engine::Math::Mat4& right, float tolerance = 0.001f)
@@ -3903,6 +3975,7 @@ int main()
         { "Frame pacing policy resolves overrides and validates targets", TestFramePacingPolicyResolutionAndValidation },
         { "Smooth Frametime pacer preserves deadlines overruns and mode switches", TestSmoothFrametimePacerDeadlinesAndModeSwitch },
         { "Frame lifecycle telemetry orders phases and retains unavailable feedback", TestFrameLifecycleTelemetryOrderAndUnavailableStates },
+        { "Frame pacing benchmark retains, aggregates, and exports stable capture artifacts", TestFramePacingBenchmarkRetentionStatisticsAndStableExport },
         { "Slang compiler emits validated portable shader packages", TestSlangShaderCompilerProducesPortableValidatedPackages },
         { "Async shader publication is nonblocking deduplicated and atomic", TestAsyncShaderPackagePublicationIsNonblockingDeduplicatedAndAtomic },
         { "Async shader failure retention inline equivalence and shutdown safety", TestAsyncShaderFailureRetentionInlineEquivalenceAndShutdownSafety },

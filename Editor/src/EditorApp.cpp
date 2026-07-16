@@ -34,13 +34,14 @@ Engine::Application* Engine::CreateApplication(ApplicationCommandLineArgs args)
         || args.HasFlag("--frame-task-graph-smoke")
         || args.HasFlag("--frame-lifecycle-telemetry-smoke")
         || args.HasFlag("--smooth-frametime-candidate-smoke")
+        || args.HasFlag("--frame-pacing-benchmark")
         || args.HasFlag("--scene-authoring-smoke")
         || args.HasFlag("--scene-render-snapshot-smoke")
         || args.HasFlag("--scene-origin-raster-smoke");
     specification.MaxFrames = args.HasFlag("--vulkan-render-smoke")
         ? 60
-        : ((args.HasFlag("--frame-lifecycle-telemetry-smoke") || args.HasFlag("--smooth-frametime-candidate-smoke")) ? 12
-            : (args.HasFlag("--scene-origin-raster-smoke") ? 5 : (extendedSmoke ? 4 : (args.HasFlag("--smoke-test") ? 2 : 0))));
+        : (args.HasFlag("--frame-pacing-benchmark") ? 542 : ((args.HasFlag("--frame-lifecycle-telemetry-smoke") || args.HasFlag("--smooth-frametime-candidate-smoke")) ? 12
+            : (args.HasFlag("--scene-origin-raster-smoke") ? 5 : (extendedSmoke ? 4 : (args.HasFlag("--smoke-test") ? 2 : 0)))));
 
     return new EditorApplication(specification);
 }

@@ -3,6 +3,7 @@
 #include "Engine/Core/Log.h"
 #include "Engine/Jobs/FrameTaskGraph.h"
 #include "Engine/Renderer/Renderer.h"
+#include "Engine/Renderer/FramePacingBenchmark.h"
 #include "Engine/UI/ImGuiLayer.h"
 
 #include <chrono>
@@ -36,7 +37,19 @@ namespace Engine
 
         void ApplySmoothFrametimeSmokePolicy(const ApplicationCommandLineArgs& args)
         {
-            if (!args.HasFlag("--smooth-frametime-candidate-smoke"))
+            if (args.HasFlag("--frame-pacing-benchmark-responsive"))
+            {
+                ResolvedFramePacingPolicy responsive = Renderer::GetFramePacingPolicy();
+                responsive.ProjectMode = FramePacingMode::Responsive;
+                responsive.RuntimeOverride = FramePacingOverride::Responsive;
+                responsive.EffectiveMode = FramePacingMode::Responsive;
+                responsive.SmoothTargetFramesPerSecond.reset();
+                responsive.Behavior = "no-intentional-wait";
+                Renderer::SetFramePacingPolicy(responsive);
+                return;
+            }
+            if ((!args.HasFlag("--smooth-frametime-candidate-smoke") && !args.HasFlag("--frame-pacing-benchmark"))
+                || args.HasFlag("--frame-pacing-benchmark-responsive"))
                 return;
 
             ResolvedFramePacingPolicy policy = Renderer::GetFramePacingPolicy();
@@ -143,6 +156,20 @@ namespace Engine
         while (m_Running && !m_Window->ShouldClose())
         {
             ApplySmoothFrametimeSmokePolicy(m_Specification.CommandLineArgs);
+            constexpr u32 benchmarkWarmupFrames = 30;
+            if (m_Specification.CommandLineArgs.HasFlag("--frame-pacing-benchmark") && !m_FramePacingBenchmarkStarted && m_FrameIndex >= benchmarkWarmupFrames)
+            {
+                const std::string_view targetValue = m_Specification.CommandLineArgs.GetOptionValue("--smooth-frametime-target-fps");
+                const auto conditionValue = [&](std::string_view option)
+                {
+                    const std::string_view value = m_Specification.CommandLineArgs.GetOptionValue(option);
+                    return value.empty() ? std::string("unknown") : std::string(value);
+                };
+                Renderer::BeginFramePacingBenchmark(512, targetValue.empty() ? 0.0 : std::strtod(std::string(targetValue).c_str(), nullptr), benchmarkWarmupFrames,
+                    conditionValue("--frame-pacing-benchmark-presentation"), conditionValue("--frame-pacing-benchmark-sync"),
+                    conditionValue("--frame-pacing-benchmark-vrr"), conditionValue("--frame-pacing-benchmark-tearing"));
+                m_FramePacingBenchmarkStarted = true;
+            }
             const FramePacingWaitResult preFramePacing = Renderer::WaitForInterFrameBeforeFrame();
             const auto now = std::chrono::steady_clock::now();
             const std::chrono::duration<float> delta = now - lastFrameTime;
@@ -195,6 +222,10 @@ namespace Engine
                 renderLayers.Dependencies = { prepareSceneRasterTask };
                 renderLayers.Execute = [&]()
                 {
+                    // Editor settings publish during InputSimulation. Reapply the
+                    // explicit benchmark condition before render/submission so the
+                    // recorded condition cannot silently drift to project UI state.
+                    ApplySmoothFrametimeSmokePolicy(m_Specification.CommandLineArgs);
                     for (auto& layer : m_LayerStack)
                         layer->OnRender();
                 };
@@ -343,6 +374,16 @@ namespace Engine
         if ((m_Specification.CommandLineArgs.HasFlag("--frame-lifecycle-telemetry-smoke")
                 || m_Specification.CommandLineArgs.HasFlag("--smooth-frametime-candidate-smoke")) && !m_FrameLifecycleTelemetrySmokeComplete)
             throw std::runtime_error("frame lifecycle telemetry smoke did not observe GPU completion within its frame budget");
+        if (m_Specification.CommandLineArgs.HasFlag("--frame-pacing-benchmark"))
+        {
+            const std::shared_ptr<const FramePacingBenchmarkSnapshot> snapshot = Renderer::GetFramePacingBenchmarkSnapshot();
+            const std::string_view output = m_Specification.CommandLineArgs.GetOptionValue("--frame-pacing-benchmark-output");
+            std::string error;
+            if (!snapshot || snapshot->Frames.size() < 2 || output.empty() || !FramePacingBenchmarkCapture::WriteArtifacts(*snapshot, std::filesystem::path(output), error))
+                throw std::runtime_error("frame pacing benchmark capture did not produce a complete artifact: " + error);
+            Log::Info("FramePacingBenchmarkV1 frames=", snapshot->Frames.size(), " p99Ms=", snapshot->Summary.StartToStartP99Milliseconds,
+                " display=unavailable inputLatency=unavailable gpuHeadroom=unavailable result=pass");
+        }
 
         Log::Info("Application stopped after ", m_FrameIndex, " frame(s)");
     }

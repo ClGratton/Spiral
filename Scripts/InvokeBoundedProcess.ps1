@@ -81,16 +81,22 @@ function Invoke-BoundedProcess {
                 [PSCustomObject]@{ Task = $StandardOutputRead; Stream = "StandardOutput" },
                 [PSCustomObject]@{ Task = $StandardErrorRead; Stream = "StandardError" }
             )) {
-                if ($Read.Task.IsCompleted) {
+                # A headed child can log faster than the 100 ms supervision cadence.
+                # Drain every already-completed line before sleeping so redirected
+                # pipes cannot fill and prevent the child from reaching its own exit.
+                while ($Read.Task.IsCompleted) {
                     $Line = $Read.Task.GetAwaiter().GetResult()
-                    if ($null -ne $Line) {
-                        $Lines.Add($Line)
-                        Write-Host $Line
-                        if ($Read.Stream -eq "StandardOutput") {
-                            $StandardOutputRead = $StandardOutputReader.ReadLineAsync()
-                        } else {
-                            $StandardErrorRead = $StandardErrorReader.ReadLineAsync()
-                        }
+                    if ($null -eq $Line) {
+                        break
+                    }
+                    $Lines.Add($Line)
+                    Write-Host $Line
+                    if ($Read.Stream -eq "StandardOutput") {
+                        $StandardOutputRead = $StandardOutputReader.ReadLineAsync()
+                        $Read.Task = $StandardOutputRead
+                    } else {
+                        $StandardErrorRead = $StandardErrorReader.ReadLineAsync()
+                        $Read.Task = $StandardErrorRead
                     }
                 }
             }

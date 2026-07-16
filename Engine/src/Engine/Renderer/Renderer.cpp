@@ -1,4 +1,5 @@
 #include "Engine/Renderer/Renderer.h"
+#include "Engine/Renderer/FramePacingBenchmark.h"
 
 #include "Engine/Core/Application.h"
 #include "Engine/Core/Log.h"
@@ -69,6 +70,7 @@ namespace Engine
         bool s_Initialized = false;
         bool s_HasDeviceCapabilities = false;
         bool s_RendererFrameTimingActive = false;
+        Scope<FramePacingBenchmarkCapture> s_FramePacingBenchmark;
 
         bool HasNativeWindow()
         {
@@ -501,6 +503,8 @@ namespace Engine
         backend->RenderImGuiDrawData(drawData, s_ClearColor, window.GetWidth(), window.GetHeight());
         AddPassTiming("Native viewport + ImGui present", Clock::now() - passStart);
         RefreshPresentationTiming();
+        if (s_FramePacingBenchmark)
+            s_FramePacingBenchmark->Record(s_FrameTiming);
     }
 
     void Renderer::SetClearColor(const ClearColor& color)
@@ -667,6 +671,32 @@ namespace Engine
                 " frame=", s_FrameTiming.FrameIndex);
         }
         return result;
+    }
+
+    void Renderer::BeginFramePacingBenchmark(size_t capacity, double targetFramesPerSecond, u32 warmupFrames,
+        std::string presentationMode, std::string syncMode, std::string vrrMode, std::string tearingMode)
+    {
+        FramePacingBenchmarkCondition condition;
+        condition.Backend = GetActiveBackendName();
+        condition.TargetFramesPerSecond = targetFramesPerSecond;
+        condition.WarmupFrames = warmupFrames;
+        condition.Policy = s_FramePacingPolicy;
+        condition.PresentationMode = std::move(presentationMode);
+        condition.SyncMode = std::move(syncMode);
+        condition.VrrMode = std::move(vrrMode);
+        condition.TearingMode = std::move(tearingMode);
+        if (s_HasDeviceCapabilities)
+        {
+            condition.Adapter = s_DeviceCapabilities.Identity.Name;
+            condition.AdapterStableId = s_DeviceCapabilities.Identity.StableId;
+        }
+        s_FramePacingBenchmark = CreateScope<FramePacingBenchmarkCapture>(capacity);
+        s_FramePacingBenchmark->Begin(std::move(condition));
+    }
+
+    std::shared_ptr<const FramePacingBenchmarkSnapshot> Renderer::GetFramePacingBenchmarkSnapshot()
+    {
+        return s_FramePacingBenchmark ? s_FramePacingBenchmark->GetSnapshot() : nullptr;
     }
 
     void Renderer::RecordGpuCompletionObservation(u64 completedApplicationFrameIndex)

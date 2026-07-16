@@ -66,6 +66,7 @@ namespace Engine
         bool m_Minimized = false;
         u64 m_FrameIndex = 0;
         bool m_FrameLifecycleTelemetrySmokeComplete = false;
+        bool m_FramePacingBenchmarkStarted = false;
 
         static Application* s_Instance;
 

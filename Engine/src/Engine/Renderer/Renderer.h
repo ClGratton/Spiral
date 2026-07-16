@@ -20,6 +20,8 @@ namespace Engine::RHI
 
 namespace Engine
 {
+    class FramePacingBenchmarkCapture;
+    struct FramePacingBenchmarkSnapshot;
     struct ClearColor
     {
         float R = 0.08f;
@@ -235,6 +237,9 @@ namespace Engine
         static void RecordFrameLifecyclePhase(u64 applicationFrameIndex, RendererFrameLifecyclePhase phase);
         static void RecordFrameWait(u64 applicationFrameIndex, RendererFrameWaitKind kind, bool applied, double milliseconds);
         static FramePacingWaitResult ApplySmoothFrametimeCandidate(SmoothFrametimeCandidate candidate);
+        static void BeginFramePacingBenchmark(size_t capacity, double targetFramesPerSecond, u32 warmupFrames,
+            std::string presentationMode, std::string syncMode, std::string vrrMode, std::string tearingMode);
+        static std::shared_ptr<const FramePacingBenchmarkSnapshot> GetFramePacingBenchmarkSnapshot();
         static void RecordGpuCompletionObservation(u64 completedApplicationFrameIndex);
         static void PublishSceneRenderSnapshot(SceneRenderSnapshot snapshot);
         static std::shared_ptr<const SceneRenderSnapshot> GetSceneRenderSnapshot();
