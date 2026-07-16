@@ -1482,9 +1482,8 @@ void EditorLayer::DrawViewportPanel()
     m_ViewportFocused = ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
     const ImGuiIO& io = ImGui::GetIO();
     m_ViewportNavigationInputEnabled = m_WindowFocused
-        && (m_CursorCaptured || (m_ViewportHovered && m_ViewportFocused))
         && !io.WantTextInput
-        && !ImGui::IsAnyItemActive();
+        && (m_CursorCaptured || (m_ViewportHovered && m_ViewportFocused && !ImGui::IsAnyItemActive()));
 
     const ImVec2 min = ImGui::GetItemRectMin();
     const ImVec2 max = ImGui::GetItemRectMax();
@@ -2378,6 +2377,19 @@ void EditorLayer::RunViewportNavigationSmoke()
     m_ViewportNavigationSmokeCompleted = true;
     const Engine::Math::DVec3 before = m_EditorCamera.GetPosition();
     m_ViewportNavigationInputEnabled = true;
+    Engine::MouseButtonPressedEvent leftPress(0);
+    OnEvent(leftPress);
+    Engine::MouseMovedEvent firstLeftMotion(100.0f, 100.0f);
+    OnEvent(firstLeftMotion);
+    Engine::MouseMovedEvent leftMotion(110.0f, 110.0f);
+    OnEvent(leftMotion);
+    UpdateViewportNavigation(Engine::Timestep(1.0f));
+    Engine::MouseButtonReleasedEvent leftRelease(0);
+    OnEvent(leftRelease);
+    const bool leftDragMoved = m_EditorCamera.GetPosition().Z != before.Z
+        && m_EditorCamera.GetRotationDegrees().Y != 0.0f;
+
+    m_ViewportNavigationInputEnabled = true;
     m_RightMouseDown = true;
     m_KeyDown[static_cast<size_t>('W')] = true;
     UpdateViewportNavigation(Engine::Timestep(1.0f));
@@ -2401,10 +2413,10 @@ void EditorLayer::RunViewportNavigationSmoke()
     OnEvent(focusLost);
     const bool focusLossReleased = !m_CursorCaptured && !m_RightMouseDown
         && !m_KeyDown[static_cast<size_t>('W')] && m_MouseDeltaX == 0.0f && m_MouseDeltaY == 0.0f;
-    if (!sceneMatches || !moved || !focusDiscontinuous || !focusLossReleased)
+    if (!leftDragMoved || !sceneMatches || !moved || !focusDiscontinuous || !focusLossReleased)
         throw std::runtime_error("Viewport navigation smoke failed");
 
-    Engine::Log::Info("ViewportNavigationSmokeV1 dvec3=pass sceneAuthority=pass focusDiscontinuity=pass focusLossRelease=pass result=pass");
+    Engine::Log::Info("ViewportNavigationSmokeV1 leftDrag=pass dvec3=pass sceneAuthority=pass focusDiscontinuity=pass focusLossRelease=pass result=pass");
     m_ConsoleLines.emplace_back("Viewport navigation smoke passed");
 }
 
