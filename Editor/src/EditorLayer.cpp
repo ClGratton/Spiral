@@ -1260,7 +1260,8 @@ void EditorLayer::BeginViewportCursorCapture()
     window.GetCursorPosition(m_CursorRestoreX, m_CursorRestoreY);
     window.SetCursorMode(Engine::CursorMode::Disabled);
     m_CursorCaptured = true;
-    m_HasMousePosition = false;
+    window.GetCursorPosition(m_MouseX, m_MouseY);
+    m_HasMousePosition = true;
     m_MouseDeltaX = 0.0f;
     m_MouseDeltaY = 0.0f;
 }
@@ -2376,18 +2377,19 @@ void EditorLayer::RunViewportNavigationSmoke()
 
     m_ViewportNavigationSmokeCompleted = true;
     const Engine::Math::DVec3 before = m_EditorCamera.GetPosition();
+    const auto beforeRotation = m_EditorCamera.GetRotationDegrees();
     m_ViewportNavigationInputEnabled = true;
     Engine::MouseButtonPressedEvent leftPress(0);
     OnEvent(leftPress);
-    Engine::MouseMovedEvent firstLeftMotion(100.0f, 100.0f);
-    OnEvent(firstLeftMotion);
     Engine::MouseMovedEvent leftMotion(110.0f, 110.0f);
     OnEvent(leftMotion);
     UpdateViewportNavigation(Engine::Timestep(1.0f));
     Engine::MouseButtonReleasedEvent leftRelease(0);
     OnEvent(leftRelease);
-    const bool leftDragMoved = m_EditorCamera.GetPosition().Z != before.Z
-        && m_EditorCamera.GetRotationDegrees().Y != 0.0f;
+    const Engine::Math::DVec3 afterLeftDrag = m_EditorCamera.GetPosition();
+    const auto afterLeftDragRotation = m_EditorCamera.GetRotationDegrees();
+    const bool leftDragMoved = (afterLeftDrag.X != before.X || afterLeftDrag.Y != before.Y || afterLeftDrag.Z != before.Z)
+        && afterLeftDragRotation.Y != beforeRotation.Y;
 
     m_ViewportNavigationInputEnabled = true;
     m_RightMouseDown = true;
@@ -2402,7 +2404,10 @@ void EditorLayer::RunViewportNavigationSmoke()
         && scenePosition.X == m_EditorCamera.GetPosition().X
         && scenePosition.Y == m_EditorCamera.GetPosition().Y
         && scenePosition.Z == m_EditorCamera.GetPosition().Z;
-    const bool moved = m_EditorCamera.GetPosition().Z > before.Z;
+    const Engine::Math::DVec3 afterKeyboardNavigation = m_EditorCamera.GetPosition();
+    const bool moved = afterKeyboardNavigation.X != afterLeftDrag.X
+        || afterKeyboardNavigation.Y != afterLeftDrag.Y
+        || afterKeyboardNavigation.Z != afterLeftDrag.Z;
     m_SelectedEntity = m_PrototypeMeshEntity;
     FocusSelectedEntity();
     const bool focusDiscontinuous = m_ViewportDiscontinuousRelocationPending;
@@ -2413,7 +2418,9 @@ void EditorLayer::RunViewportNavigationSmoke()
     OnEvent(focusLost);
     const bool focusLossReleased = !m_CursorCaptured && !m_RightMouseDown
         && !m_KeyDown[static_cast<size_t>('W')] && m_MouseDeltaX == 0.0f && m_MouseDeltaY == 0.0f;
-    if (!leftDragMoved || !sceneMatches || !moved || !focusDiscontinuous || !focusLossReleased)
+    if (!leftDragMoved)
+        throw std::runtime_error("Viewport navigation LMB drag smoke failed");
+    if (!sceneMatches || !moved || !focusDiscontinuous || !focusLossReleased)
         throw std::runtime_error("Viewport navigation smoke failed");
 
     Engine::Log::Info("ViewportNavigationSmokeV1 leftDrag=pass dvec3=pass sceneAuthority=pass focusDiscontinuity=pass focusLossRelease=pass result=pass");
