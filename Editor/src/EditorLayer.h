@@ -41,6 +41,7 @@ private:
     void SyncEditorCameraStateFromMainCamera(bool discontinuousRelocation = false);
     void UpdateViewportNavigation(Engine::Timestep timestep);
     void BeginViewportCursorCapture();
+    void ArmViewportCursorCapture();
     void EndViewportCursorCapture();
     void ClearViewportNavigationInput();
     bool IsShiftNavigationModifierDown() const;
@@ -153,6 +154,8 @@ private:
     bool m_ViewportNavigationInputEnabled = false;
     bool m_WindowFocused = true;
     bool m_CursorCaptured = false;
+    bool m_CursorCapturePending = false;
+    bool m_CursorCaptureBaselineArmed = false;
     bool m_LeftMouseDown = false;
     bool m_RightMouseDown = false;
     bool m_MiddleMouseDown = false;

@@ -679,7 +679,7 @@ void EditorLayer::OnEvent(Engine::Event& event)
     else if (event.GetEventType() == Engine::EventType::MouseMoved)
     {
         const auto& mouseEvent = static_cast<const Engine::MouseMovedEvent&>(event);
-        if (m_HasMousePosition && m_CursorCaptured)
+        if (m_HasMousePosition && m_CursorCaptured && m_CursorCaptureBaselineArmed)
         {
             m_MouseDeltaX += mouseEvent.GetX() - static_cast<float>(m_MouseX);
             m_MouseDeltaY += mouseEvent.GetY() - static_cast<float>(m_MouseY);
@@ -1421,28 +1421,56 @@ void EditorLayer::SyncEditorCameraStateFromMainCamera(bool discontinuousRelocati
 
 void EditorLayer::BeginViewportCursorCapture()
 {
-    if (m_CursorCaptured)
+    if (m_CursorCaptured || m_CursorCapturePending)
         return;
 
     Engine::Window& window = Engine::Application::Get().GetWindow();
     window.GetCursorPosition(m_CursorRestoreX, m_CursorRestoreY);
-    window.SetCursorMode(Engine::CursorMode::Disabled);
-    m_CursorCaptured = true;
-    window.GetCursorPosition(m_MouseX, m_MouseY);
-    m_HasMousePosition = true;
+    m_CursorCapturePending = true;
+    m_CursorCaptureBaselineArmed = false;
+    m_HasMousePosition = false;
     m_MouseDeltaX = 0.0f;
     m_MouseDeltaY = 0.0f;
 }
 
-void EditorLayer::EndViewportCursorCapture()
+void EditorLayer::ArmViewportCursorCapture()
 {
-    if (!m_CursorCaptured)
+    if (!m_CursorCapturePending)
         return;
 
+    if (!m_LeftMouseDown && !m_RightMouseDown && !m_MiddleMouseDown)
+    {
+        m_CursorCapturePending = false;
+        return;
+    }
+
     Engine::Window& window = Engine::Application::Get().GetWindow();
-    window.SetCursorMode(Engine::CursorMode::Normal);
-    window.SetCursorPosition(m_CursorRestoreX, m_CursorRestoreY);
+    m_CursorCaptured = true;
+    m_CursorCapturePending = false;
+    m_CursorCaptureBaselineArmed = false;
+    m_HasMousePosition = false;
+    m_MouseDeltaX = 0.0f;
+    m_MouseDeltaY = 0.0f;
+    window.SetCursorMode(Engine::CursorMode::Disabled);
+    window.GetCursorPosition(m_MouseX, m_MouseY);
+    m_HasMousePosition = true;
+    m_CursorCaptureBaselineArmed = true;
+}
+
+void EditorLayer::EndViewportCursorCapture()
+{
+    if (!m_CursorCaptured && !m_CursorCapturePending)
+        return;
+
+    if (m_CursorCaptured)
+    {
+        Engine::Window& window = Engine::Application::Get().GetWindow();
+        window.SetCursorMode(Engine::CursorMode::Normal);
+        window.SetCursorPosition(m_CursorRestoreX, m_CursorRestoreY);
+    }
     m_CursorCaptured = false;
+    m_CursorCapturePending = false;
+    m_CursorCaptureBaselineArmed = false;
     m_HasMousePosition = false;
     m_MouseDeltaX = 0.0f;
     m_MouseDeltaY = 0.0f;
@@ -1607,6 +1635,8 @@ void EditorLayer::UpdateViewportNavigation(Engine::Timestep timestep)
         m_MouseWheelDelta = 0.0f;
         return;
     }
+
+    ArmViewportCursorCapture();
 
     const auto keyDown = [this](int key)
     {
@@ -2895,6 +2925,97 @@ void EditorLayer::RunViewportNavigationSmoke()
     m_RightMouseDown = false;
     const bool fusionRightNoOp = !cameraChanged(fusionBefore, fusionBeforeRotation);
 
+    m_MouseX = 320.0;
+    m_MouseY = 240.0;
+    m_HasMousePosition = true;
+    const Engine::Math::DVec3 beforeStaleCaptureMotion = m_EditorCamera.GetPosition();
+    const Engine::Math::DVec3 beforeStaleCapturePivot = m_FusionNavigationPivot;
+    m_MiddleMouseDown = true;
+    BeginViewportCursorCapture();
+    Engine::MouseMovedEvent staleCaptureMotion(1400.0f, 800.0f);
+    OnEvent(staleCaptureMotion);
+    UpdateViewportNavigation(Engine::Timestep(1.0f));
+    const bool staleCaptureMotionIgnored = sameVector(m_EditorCamera.GetPosition(), beforeStaleCaptureMotion)
+        && sameVector(m_FusionNavigationPivot, beforeStaleCapturePivot) && m_CursorCaptured && m_CursorCaptureBaselineArmed;
+    m_MiddleMouseDown = false;
+    EndViewportCursorCapture();
+
+    m_MiddleMouseDown = true;
+    BeginViewportCursorCapture();
+    m_MiddleMouseDown = false;
+    EndViewportCursorCapture();
+    const bool quickReleaseBeforeCaptureArm = !m_CursorCaptured && !m_CursorCapturePending && !m_CursorCaptureBaselineArmed
+        && m_MouseDeltaX == 0.0f && m_MouseDeltaY == 0.0f;
+
+    m_MiddleMouseDown = true;
+    BeginViewportCursorCapture();
+    Engine::WindowFocusEvent pendingCaptureFocusLost(false);
+    OnEvent(pendingCaptureFocusLost);
+    const bool pendingCaptureFocusLossReleased = !m_CursorCaptured && !m_CursorCapturePending && !m_CursorCaptureBaselineArmed
+        && !m_MiddleMouseDown;
+    Engine::WindowFocusEvent focusRestored(true);
+    OnEvent(focusRestored);
+    m_ViewportNavigationInputEnabled = true;
+
+    const double worldUnitsPerPixel = 2.0 * 12.0
+        * std::tan(Engine::Math::DegreesToRadians(m_EditorCamera.GetProjection().VerticalFovDegrees) * 0.5)
+        / m_ViewportImageHeight;
+    const auto expectedPanTranslation = [&right, &up, worldUnitsPerPixel](float deltaX, float deltaY)
+    {
+        return Engine::Math::DVec3 {
+            -right.X * deltaX * worldUnitsPerPixel + up.X * deltaY * worldUnitsPerPixel,
+            -right.Y * deltaX * worldUnitsPerPixel + up.Y * deltaY * worldUnitsPerPixel,
+            -right.Z * deltaX * worldUnitsPerPixel + up.Z * deltaY * worldUnitsPerPixel
+        };
+    };
+    const Engine::Math::DVec3 beforeTransitionCaptureMotion = m_EditorCamera.GetPosition();
+    const Engine::Math::DVec3 beforeTransitionCapturePivot = m_FusionNavigationPivot;
+    m_MiddleMouseDown = true;
+    BeginViewportCursorCapture();
+    UpdateViewportNavigation(Engine::Timestep(1.0f));
+    m_CursorCaptureBaselineArmed = false;
+    m_HasMousePosition = false;
+    Engine::MouseMovedEvent transitionCaptureMotion(1200.0f, 50.0f);
+    OnEvent(transitionCaptureMotion);
+    m_CursorCaptureBaselineArmed = true;
+    Engine::MouseMovedEvent firstRealCaptureMotion(1208.0f, 45.0f);
+    OnEvent(firstRealCaptureMotion);
+    UpdateViewportNavigation(Engine::Timestep(1.0f));
+    const Engine::Math::DVec3 expectedFirstCaptureTranslation = expectedPanTranslation(8.0f, -5.0f);
+    const Engine::Math::DVec3 firstCaptureTranslation {
+        m_EditorCamera.GetPosition().X - beforeTransitionCaptureMotion.X,
+        m_EditorCamera.GetPosition().Y - beforeTransitionCaptureMotion.Y,
+        m_EditorCamera.GetPosition().Z - beforeTransitionCaptureMotion.Z
+    };
+    const Engine::Math::DVec3 firstCapturePivotTranslation {
+        m_FusionNavigationPivot.X - beforeTransitionCapturePivot.X,
+        m_FusionNavigationPivot.Y - beforeTransitionCapturePivot.Y,
+        m_FusionNavigationPivot.Z - beforeTransitionCapturePivot.Z
+    };
+    const bool transitionCaptureMotionIgnored = sameVector(firstCaptureTranslation, expectedFirstCaptureTranslation)
+        && sameVector(firstCapturePivotTranslation, expectedFirstCaptureTranslation);
+    m_MiddleMouseDown = false;
+    EndViewportCursorCapture();
+
+    const Engine::Math::DVec3 beforeNormalCaptureMotion = m_EditorCamera.GetPosition();
+    m_MiddleMouseDown = true;
+    BeginViewportCursorCapture();
+    UpdateViewportNavigation(Engine::Timestep(1.0f));
+    m_MouseX = 400.0;
+    m_MouseY = 300.0;
+    m_HasMousePosition = true;
+    Engine::MouseMovedEvent normalCaptureMotion(406.0f, 297.0f);
+    OnEvent(normalCaptureMotion);
+    UpdateViewportNavigation(Engine::Timestep(1.0f));
+    const Engine::Math::DVec3 normalCaptureTranslation {
+        m_EditorCamera.GetPosition().X - beforeNormalCaptureMotion.X,
+        m_EditorCamera.GetPosition().Y - beforeNormalCaptureMotion.Y,
+        m_EditorCamera.GetPosition().Z - beforeNormalCaptureMotion.Z
+    };
+    const bool normalCaptureDrag = sameVector(normalCaptureTranslation, expectedPanTranslation(6.0f, -3.0f));
+    m_MiddleMouseDown = false;
+    EndViewportCursorCapture();
+
     const Engine::Math::DVec3 cameraBeforePan = m_EditorCamera.GetPosition();
     const Engine::Math::DVec3 pivotBeforePan = m_FusionNavigationPivot;
     m_MiddleMouseDown = true;
@@ -3039,12 +3160,14 @@ void EditorLayer::RunViewportNavigationSmoke()
     const bool focusLossReleased = !m_CursorCaptured && !m_RightMouseDown
         && !m_KeyDown[static_cast<size_t>('W')] && m_MouseDeltaX == 0.0f && m_MouseDeltaY == 0.0f;
     m_ViewportNavigationPreset = previousPreset;
-    if (!fusionLeftNoOp || !fusionRightNoOp || !fusionCameraPlanePan || !fusionCursorZoom || !fusionOrbitContinuous || !fusionWheelWhileMiddleHeld)
+    if (!fusionLeftNoOp || !fusionRightNoOp || !staleCaptureMotionIgnored || !quickReleaseBeforeCaptureArm
+        || !pendingCaptureFocusLossReleased || !transitionCaptureMotionIgnored || !normalCaptureDrag
+        || !fusionCameraPlanePan || !fusionCursorZoom || !fusionOrbitContinuous || !fusionWheelWhileMiddleHeld)
         throw std::runtime_error("Viewport navigation Fusion preset smoke failed");
     if (!unrealLeftDragMoved || !sceneMatches || !unrealFlyMoved || !focusDiscontinuous || !focusLossReleased)
         throw std::runtime_error("Viewport navigation smoke failed");
 
-    Engine::Log::Info("ViewportNavigationSmokeV4 fusionPlanePan=pass cursorZoom=pass orbitContinuity=pass wheelHeld=pass stablePivot=pass unreal=pass dvec3=pass sceneAuthority=pass focusDiscontinuity=pass focusLossRelease=pass result=pass");
+    Engine::Log::Info("ViewportNavigationSmokeV5 deferredCapture=pass fusionPlanePan=pass cursorZoom=pass orbitContinuity=pass wheelHeld=pass stablePivot=pass unreal=pass dvec3=pass sceneAuthority=pass focusDiscontinuity=pass focusLossRelease=pass result=pass");
     m_ConsoleLines.emplace_back("Viewport navigation smoke passed");
 }
 
