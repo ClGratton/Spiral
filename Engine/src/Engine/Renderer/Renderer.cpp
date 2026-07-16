@@ -55,12 +55,16 @@ namespace Engine
         RendererBuildInfo s_BuildInfo;
         RendererFrameTiming s_FrameTiming;
         ResolvedFramePacingPolicy s_FramePacingPolicy;
+        SystemFramePacingClock s_FramePacingClock;
+        SmoothFrametimePacer s_SmoothFrametimePacer;
         AtomicSharedPointer<SceneRenderSnapshot> s_SceneRenderSnapshot;
         AtomicSharedPointer<SceneRasterFrame> s_PreparedSceneRasterFrame;
         AtomicSharedPointer<SceneRasterFrame> s_SceneRasterFrame;
         Scope<RenderBackend> s_Backend;
         std::vector<RendererBackendOption> s_BackendOptions;
         Clock::time_point s_RendererFrameStart;
+        std::optional<Clock::time_point> s_PreviousRendererFrameStart;
+        double s_InFrameIntentionalPacingMilliseconds = 0.0;
         RendererBackend s_ActiveBackend = RendererBackend::Headless;
         bool s_Initialized = false;
         bool s_HasDeviceCapabilities = false;
@@ -202,18 +206,28 @@ namespace Engine
             group->Qualification = RHI::QualificationLevel::Presentation;
         }
 
-        void BeginTimingFrame(u64 applicationFrameIndex)
+        void BeginTimingFrame(u64 applicationFrameIndex, const FramePacingWaitResult& preFramePacing)
         {
             s_FrameTiming = {};
             s_FrameTiming.FrameIndex = applicationFrameIndex;
             s_FrameTiming.FramePacingPolicy = s_FramePacingPolicy;
             s_FrameTiming.GpuStatus = GetBackendGpuTimingStatus();
             s_RendererFrameStart = Clock::now();
+            if (s_PreviousRendererFrameStart)
+                s_FrameTiming.StartToStartMilliseconds = ToMilliseconds(s_RendererFrameStart - *s_PreviousRendererFrameStart);
+            s_PreviousRendererFrameStart = s_RendererFrameStart;
+            s_InFrameIntentionalPacingMilliseconds = 0.0;
             s_RendererFrameTimingActive = true;
             s_FrameTiming.Lifecycle.push_back({ RendererFrameLifecyclePhase::FrameStart, 0.0 });
-            // This prerequisite deliberately performs no pacing. Keep its
-            // zero/not-applied record distinct from mandatory presentation waits.
+            // Baseline no-intentional-wait record used by Responsive validation;
+            // an opted-in candidate adds a separately classified record.
             s_FrameTiming.Waits.push_back({ RendererFrameWaitKind::IntentionalPacing, false, 0.0 });
+            if (s_FramePacingPolicy.EffectiveMode == FramePacingMode::SmoothFrametime && s_FramePacingPolicy.Candidate == SmoothFrametimeCandidate::InterFrame)
+            {
+                s_FrameTiming.Waits.push_back({ RendererFrameWaitKind::IntentionalPacing, preFramePacing.Applied, preFramePacing.WaitMilliseconds,
+                    SmoothFrametimeCandidate::InterFrame, preFramePacing.DeadlineMissed, preFramePacing.RequestedDeadlineMilliseconds, preFramePacing.ActualReleaseMilliseconds });
+                s_FrameTiming.IntentionalPacingMilliseconds += preFramePacing.WaitMilliseconds;
+            }
         }
 
         void AddLifecyclePhase(RendererFrameLifecyclePhase phase)
@@ -229,6 +243,7 @@ namespace Engine
                 return;
 
             s_FrameTiming.CpuMilliseconds = ToMilliseconds(Clock::now() - s_RendererFrameStart);
+            s_FrameTiming.CpuActiveMilliseconds = std::max(0.0, s_FrameTiming.CpuMilliseconds - s_InFrameIntentionalPacingMilliseconds);
         }
 
         void AddPassTiming(std::string name, Clock::duration cpuDuration)
@@ -337,6 +352,8 @@ namespace Engine
             return;
 
         s_DeviceCapabilities = {};
+        s_PreviousRendererFrameStart.reset();
+        s_SmoothFrametimePacer.Reset();
         s_HasDeviceCapabilities = false;
 
         if (HasNativeWindow() && HasNVRHI())
@@ -397,6 +414,8 @@ namespace Engine
         s_SceneRenderSnapshot.Store({});
         s_PreparedSceneRasterFrame.Store({});
         s_SceneRasterFrame.Store({});
+        s_PreviousRendererFrameStart.reset();
+        s_SmoothFrametimePacer.Reset();
         if (!s_Initialized)
             return;
 
@@ -416,12 +435,17 @@ namespace Engine
         s_Initialized = false;
     }
 
-    void Renderer::BeginFrame(u64 applicationFrameIndex)
+    FramePacingWaitResult Renderer::WaitForInterFrameBeforeFrame()
+    {
+        return s_SmoothFrametimePacer.Apply(s_FramePacingPolicy, SmoothFrametimeCandidate::InterFrame, s_FramePacingClock);
+    }
+
+    void Renderer::BeginFrame(u64 applicationFrameIndex, const FramePacingWaitResult& preFramePacing)
     {
         if (!s_Initialized || !s_Backend)
             return;
 
-        BeginTimingFrame(applicationFrameIndex);
+        BeginTimingFrame(applicationFrameIndex, preFramePacing);
         const Clock::time_point passStart = Clock::now();
         s_Backend->BeginFrame(s_ClearColor);
         AddPassTiming("Renderer BeginFrame", Clock::now() - passStart);
@@ -617,6 +641,32 @@ namespace Engine
         if (s_FrameTiming.FrameIndex != applicationFrameIndex)
             return;
         s_FrameTiming.Waits.push_back({ kind, applied, milliseconds });
+    }
+
+    FramePacingWaitResult Renderer::ApplySmoothFrametimeCandidate(SmoothFrametimeCandidate candidate)
+    {
+        FramePacingWaitResult result;
+        if (!s_RendererFrameTimingActive)
+            return result;
+
+        const ResolvedFramePacingPolicy& framePolicy = s_FrameTiming.FramePacingPolicy;
+        result = s_SmoothFrametimePacer.Apply(framePolicy, candidate, s_FramePacingClock);
+        if (framePolicy.EffectiveMode == FramePacingMode::SmoothFrametime
+            && framePolicy.Candidate == candidate)
+        {
+            s_FrameTiming.Waits.push_back({ RendererFrameWaitKind::IntentionalPacing, result.Applied,
+                result.WaitMilliseconds, candidate, result.DeadlineMissed,
+                result.RequestedDeadlineMilliseconds, result.ActualReleaseMilliseconds });
+            s_FrameTiming.IntentionalPacingMilliseconds += result.WaitMilliseconds;
+            s_InFrameIntentionalPacingMilliseconds += result.WaitMilliseconds;
+            AddLifecyclePhase(RendererFrameLifecyclePhase::IntentionalPacingWait);
+            RefreshTimingFrameTotal();
+            Log::Info("SmoothFrametimeCandidateV1 candidate=", ToString(candidate),
+                " control=", candidate == SmoothFrametimeCandidate::InterFrame ? "after-prior-present-before-input" : "pre-native-submit",
+                " waitMs=", result.WaitMilliseconds, " missed=", result.DeadlineMissed ? "yes" : "no",
+                " frame=", s_FrameTiming.FrameIndex);
+        }
+        return result;
     }
 
     void Renderer::RecordGpuCompletionObservation(u64 completedApplicationFrameIndex)

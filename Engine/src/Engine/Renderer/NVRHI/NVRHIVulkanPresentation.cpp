@@ -253,6 +253,14 @@ namespace Engine
             submitInfo.pCommandBuffers = &frame.CommandBuffer;
             submitInfo.signalSemaphoreCount = 1;
             submitInfo.pSignalSemaphores = &semaphores.RenderCompleteSemaphore;
+            const FramePacingWaitResult pacing = Renderer::ApplySmoothFrametimeCandidate(SmoothFrametimeCandidate::SubmissionGate);
+            if (Renderer::GetLastFrameTiming().FramePacingPolicy.EffectiveMode == FramePacingMode::SmoothFrametime
+                && Renderer::GetLastFrameTiming().FramePacingPolicy.Candidate == SmoothFrametimeCandidate::SubmissionGate)
+            {
+                Log::Info("SmoothFrametimeNativeV1 backend=Vulkan candidate=SubmissionGate control=pre-vkQueueSubmit ",
+                    "waitMs=", pacing.WaitMilliseconds, " missed=", pacing.DeadlineMissed ? "yes" : "no",
+                    " frame=", Renderer::GetLastFrameTiming().FrameIndex);
+            }
             if (VULKAN_HPP_DEFAULT_DISPATCHER.vkQueueSubmit(m_GraphicsQueue, 1, &submitInfo, frame.Fence) != VK_SUCCESS)
                 return;
             const u64 applicationFrameIndex = Renderer::GetLastFrameTiming().FrameIndex;

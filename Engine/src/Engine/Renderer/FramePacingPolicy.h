@@ -1,8 +1,10 @@
 #pragma once
 
 #include <cmath>
+#include <chrono>
 #include <optional>
 #include <string>
+#include <thread>
 
 namespace Engine
 {
@@ -21,6 +23,15 @@ namespace Engine
         SmoothFrametime
     };
 
+    // This is a developer-only experimental control-point selector. It is not
+    // serialized as a product presentation setting: both candidates consume
+    // the same resolved opt-in policy target and are compared independently.
+    enum class SmoothFrametimeCandidate
+    {
+        InterFrame,
+        SubmissionGate
+    };
+
     struct FramePacingPolicy
     {
         FramePacingMode Mode = FramePacingMode::Responsive;
@@ -33,6 +44,7 @@ namespace Engine
         FramePacingOverride RuntimeOverride = FramePacingOverride::InheritProject;
         FramePacingMode EffectiveMode = FramePacingMode::Responsive;
         std::optional<double> SmoothTargetFramesPerSecond;
+        SmoothFrametimeCandidate Candidate = SmoothFrametimeCandidate::InterFrame;
         const char* Behavior = "policy-only";
     };
 
@@ -59,6 +71,16 @@ namespace Engine
             case FramePacingOverride::SmoothFrametime: return "Smooth Frametime";
         }
 
+        return "Unknown";
+    }
+
+    inline const char* ToString(SmoothFrametimeCandidate candidate)
+    {
+        switch (candidate)
+        {
+            case SmoothFrametimeCandidate::InterFrame: return "InterFrame";
+            case SmoothFrametimeCandidate::SubmissionGate: return "SubmissionGate";
+        }
         return "Unknown";
     }
 
@@ -89,7 +111,12 @@ namespace Engine
                 ? FramePacingMode::Responsive
                 : FramePacingMode::SmoothFrametime);
         if (resolved.EffectiveMode == FramePacingMode::SmoothFrametime)
+        {
             resolved.SmoothTargetFramesPerSecond = projectPolicy.SmoothTargetFramesPerSecond;
+            resolved.Behavior = "experimental-inter-frame";
+        }
+        else
+            resolved.Behavior = "no-intentional-wait";
         return resolved;
     }
 
@@ -112,11 +139,114 @@ namespace Engine
 
         ResolvedFramePacingPolicy Resolve(const FramePacingPolicy& projectPolicy) const
         {
-            return ResolveFramePacingPolicy(projectPolicy, m_RuntimeOverride);
+            ResolvedFramePacingPolicy resolved = ResolveFramePacingPolicy(projectPolicy, m_RuntimeOverride);
+            resolved.Candidate = m_Candidate;
+            if (resolved.EffectiveMode == FramePacingMode::SmoothFrametime)
+                resolved.Behavior = resolved.Candidate == SmoothFrametimeCandidate::InterFrame
+                    ? "experimental-inter-frame" : "experimental-submission-gate";
+            return resolved;
         }
+
+        SmoothFrametimeCandidate GetCandidate() const { return m_Candidate; }
+        void SetCandidate(SmoothFrametimeCandidate candidate) { m_Candidate = candidate; }
 
     private:
         FramePacingOverride m_RuntimeOverride = FramePacingOverride::InheritProject;
+        SmoothFrametimeCandidate m_Candidate = SmoothFrametimeCandidate::InterFrame;
+    };
+
+    // A deliberately small, backend-neutral deadline state machine. The system
+    // clock uses steady_clock/sleep_until; tests inject this interface and never
+    // sleep. A late frame advances from its observed release time, never drops
+    // work or fabricates a cadence sample.
+    class FramePacingClock
+    {
+    public:
+        virtual ~FramePacingClock() = default;
+        virtual double NowMilliseconds() = 0;
+        virtual void WaitUntilMilliseconds(double deadlineMilliseconds) = 0;
+    };
+
+    class SystemFramePacingClock final : public FramePacingClock
+    {
+    public:
+        double NowMilliseconds() override
+        {
+            return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - m_Origin).count();
+        }
+
+        void WaitUntilMilliseconds(double deadlineMilliseconds) override
+        {
+            std::this_thread::sleep_until(m_Origin + std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                std::chrono::duration<double, std::milli>(deadlineMilliseconds)));
+        }
+
+    private:
+        std::chrono::steady_clock::time_point m_Origin = std::chrono::steady_clock::now();
+    };
+
+    struct FramePacingWaitResult
+    {
+        bool Applied = false;
+        bool DeadlineMissed = false;
+        double RequestedDeadlineMilliseconds = 0.0;
+        double ActualReleaseMilliseconds = 0.0;
+        double WaitMilliseconds = 0.0;
+    };
+
+    class SmoothFrametimePacer
+    {
+    public:
+        FramePacingWaitResult Apply(const ResolvedFramePacingPolicy& policy, SmoothFrametimeCandidate controlPoint, FramePacingClock& clock)
+        {
+            FramePacingWaitResult result;
+            if (policy.EffectiveMode != FramePacingMode::SmoothFrametime || policy.Candidate != controlPoint
+                || !policy.SmoothTargetFramesPerSecond || !IsValidSmoothTargetFramesPerSecond(*policy.SmoothTargetFramesPerSecond))
+            {
+                if (policy.EffectiveMode == FramePacingMode::Responsive)
+                    Reset();
+                return result;
+            }
+
+            const double now = clock.NowMilliseconds();
+            const double cadence = 1000.0 / *policy.SmoothTargetFramesPerSecond;
+            std::optional<double>& nextDeadline = controlPoint == SmoothFrametimeCandidate::InterFrame
+                ? m_NextInterFrameDeadlineMilliseconds : m_NextSubmissionDeadlineMilliseconds;
+            if (!nextDeadline)
+            {
+                nextDeadline = now + cadence;
+                result.ActualReleaseMilliseconds = now;
+                return result;
+            }
+
+            result.RequestedDeadlineMilliseconds = *nextDeadline;
+            result.DeadlineMissed = now >= *nextDeadline;
+            if (!result.DeadlineMissed)
+            {
+                clock.WaitUntilMilliseconds(*nextDeadline);
+                const double released = clock.NowMilliseconds();
+                result.Applied = true;
+                result.ActualReleaseMilliseconds = released;
+                result.WaitMilliseconds = released - now;
+                nextDeadline = released + cadence;
+            }
+            else
+            {
+                result.ActualReleaseMilliseconds = now;
+                nextDeadline = now + cadence;
+            }
+            return result;
+        }
+
+        void Reset()
+        {
+            m_NextInterFrameDeadlineMilliseconds.reset();
+            m_NextSubmissionDeadlineMilliseconds.reset();
+        }
+
+    private:
+        std::optional<double> m_NextInterFrameDeadlineMilliseconds;
+        std::optional<double> m_NextSubmissionDeadlineMilliseconds;
     };
 
     inline std::string DescribeFramePacingPolicy(const ResolvedFramePacingPolicy& policy)
@@ -131,6 +261,8 @@ namespace Engine
         {
             description += ", targetFps=" + std::to_string(*policy.SmoothTargetFramesPerSecond);
         }
+        description += ", candidate=";
+        description += ToString(policy.Candidate);
         description += ", behavior=";
         description += policy.Behavior;
         return description;

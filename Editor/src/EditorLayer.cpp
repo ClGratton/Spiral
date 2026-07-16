@@ -464,7 +464,6 @@ void EditorLayer::OnUiRender()
     DrawConsolePanel();
     DrawProfilerPanel();
     DrawProjectPanel();
-    DrawProjectSettingsPanel();
     DrawNewProjectDialog();
 
     if (m_CaptureViewportRequested && !m_CaptureViewportComplete && m_FrameCounter >= 2)
@@ -709,6 +708,47 @@ void EditorLayer::DrawMainMenuBar()
 
     if (ImGui::BeginMenu("Settings"))
     {
+        ImGui::TextUnformatted("Project");
+        ImGui::TextUnformatted("Frame Pacing");
+        ImGui::TextDisabled("Responsive has no intentional pacing wait.");
+        ImGui::TextDisabled("Smooth Frametime is opt-in experimental pacing; VSync/VRR/tearing stay separate.");
+
+        const Engine::FramePacingMode modes[] = {
+            Engine::FramePacingMode::Responsive,
+            Engine::FramePacingMode::SmoothFrametime
+        };
+        if (ImGui::BeginCombo("Project default", Engine::ToString(m_ProjectFramePacingPolicy.Mode)))
+        {
+            for (Engine::FramePacingMode mode : modes)
+            {
+                const bool selected = mode == m_ProjectFramePacingPolicy.Mode;
+                if (ImGui::Selectable(Engine::ToString(mode), selected))
+                    m_ProjectFramePacingPolicy.Mode = mode;
+                if (selected)
+                    ImGui::SetItemDefaultFocus();
+            }
+            ImGui::EndCombo();
+        }
+
+        double target = m_ProjectFramePacingPolicy.SmoothTargetFramesPerSecond;
+        if (ImGui::InputDouble("Smooth target FPS", &target, 1.0, 10.0, "%.2f")
+            && Engine::IsValidSmoothTargetFramesPerSecond(target))
+        {
+            m_ProjectFramePacingPolicy.SmoothTargetFramesPerSecond = target;
+        }
+        if (!Engine::IsValidSmoothTargetFramesPerSecond(target))
+            ImGui::TextDisabled("Target must be finite and between %.0f and %.0f FPS; current saved value remains unchanged.",
+                Engine::kMinimumSmoothTargetFramesPerSecond, Engine::kMaximumSmoothTargetFramesPerSecond);
+
+        if (ImGui::Button("Save Project Settings"))
+        {
+            if (SaveProject())
+                m_ConsoleLines.emplace_back("Project frame-pacing policy saved: "
+                    + Engine::DescribeFramePacingPolicy(m_GameFramePacingSettings.Resolve(m_ProjectFramePacingPolicy)));
+        }
+        PublishFramePacingPolicy();
+
+        ImGui::Separator();
         ImGui::TextUnformatted("Rendering");
         ImGui::Text("Active backend: %s", Engine::Renderer::GetActiveBackendName());
         DrawRendererBackendSelector();
@@ -1264,16 +1304,9 @@ void EditorLayer::DrawProfilerPanel()
     if (timing.GpuStatus == Engine::RendererTimingStatus::Pending)
         ImGui::TextDisabled("Timestamp query API is present; backend resolve path is next.");
 
-    const Engine::ResolvedFramePacingPolicy framePacing =
-        m_GameFramePacingSettings.Resolve(m_ProjectFramePacingPolicy);
     ImGui::Separator();
     ImGui::TextUnformatted("Frame pacing policy");
-    ImGui::Text("Project: %s", Engine::ToString(framePacing.ProjectMode));
-    ImGui::Text("Runtime override: %s", Engine::ToString(framePacing.RuntimeOverride));
-    ImGui::Text("Effective: %s", Engine::ToString(framePacing.EffectiveMode));
-    if (framePacing.SmoothTargetFramesPerSecond)
-        ImGui::Text("Target: %.2f FPS", *framePacing.SmoothTargetFramesPerSecond);
-    ImGui::TextDisabled("behavior=%s; no pacing, cap, wait, or discard is active", framePacing.Behavior);
+    bool framePacingChanged = false;
     const Engine::FramePacingOverride runtimeOptions[] = {
         Engine::FramePacingOverride::InheritProject,
         Engine::FramePacingOverride::Responsive,
@@ -1284,16 +1317,55 @@ void EditorLayer::DrawProfilerPanel()
         for (Engine::FramePacingOverride option : runtimeOptions)
         {
             const bool selected = option == m_GameFramePacingSettings.GetRuntimeOverride();
-            if (ImGui::Selectable(Engine::ToString(option), selected)
-                && !m_GameFramePacingSettings.SetRuntimeOverride(option, m_ProjectFramePacingPolicy))
+            if (ImGui::Selectable(Engine::ToString(option), selected))
             {
-                m_ConsoleLines.emplace_back("Runtime Smooth Frametime override rejected: invalid project target");
+                if (m_GameFramePacingSettings.SetRuntimeOverride(option, m_ProjectFramePacingPolicy))
+                    framePacingChanged = true;
+                else
+                    m_ConsoleLines.emplace_back("Runtime Smooth Frametime override rejected: invalid project target");
             }
             if (selected)
                 ImGui::SetItemDefaultFocus();
         }
         ImGui::EndCombo();
     }
+
+    const Engine::SmoothFrametimeCandidate candidates[] = {
+        Engine::SmoothFrametimeCandidate::InterFrame,
+        Engine::SmoothFrametimeCandidate::SubmissionGate
+    };
+    if (ImGui::BeginCombo("Smooth candidate", Engine::ToString(m_GameFramePacingSettings.GetCandidate())))
+    {
+        for (Engine::SmoothFrametimeCandidate candidate : candidates)
+        {
+            const bool selected = candidate == m_GameFramePacingSettings.GetCandidate();
+            if (ImGui::Selectable(Engine::ToString(candidate), selected))
+            {
+                m_GameFramePacingSettings.SetCandidate(candidate);
+                framePacingChanged = true;
+            }
+            if (selected)
+                ImGui::SetItemDefaultFocus();
+        }
+        ImGui::EndCombo();
+    }
+    if (m_GameFramePacingSettings.GetCandidate() == Engine::SmoothFrametimeCandidate::InterFrame)
+        ImGui::TextDisabled("InterFrame: after prior Present before next input.");
+    else
+        ImGui::TextDisabled("SubmissionGate: pre-native-submit; not FES/current-Present delay.");
+
+    if (framePacingChanged)
+        PublishFramePacingPolicy();
+
+    const Engine::ResolvedFramePacingPolicy framePacing =
+        m_GameFramePacingSettings.Resolve(m_ProjectFramePacingPolicy);
+    const std::string framePacingDescription = Engine::DescribeFramePacingPolicy(framePacing);
+    ImGui::Text("Project: %s", Engine::ToString(framePacing.ProjectMode));
+    ImGui::Text("Runtime override: %s", Engine::ToString(framePacing.RuntimeOverride));
+    ImGui::Text("Effective: %s", Engine::ToString(framePacing.EffectiveMode));
+    if (framePacing.SmoothTargetFramesPerSecond)
+        ImGui::Text("Target: %.2f FPS", *framePacing.SmoothTargetFramesPerSecond);
+    ImGui::TextWrapped("%s", framePacingDescription.c_str());
 
     const Engine::RendererPresentationTiming& presentation = timing.Presentation;
     if (presentation.UsesWaitableSwapchain)
@@ -1666,49 +1738,6 @@ void EditorLayer::DrawProjectPanel()
         m_AssetWatcher.GetTrackedCount(),
         m_AssetWatcher.GetMissingCount(),
         m_ReimportRequestCount);
-    ImGui::End();
-}
-
-void EditorLayer::DrawProjectSettingsPanel()
-{
-    ImGui::Begin("Project Settings");
-    ImGui::TextUnformatted("Frame Pacing");
-    ImGui::TextDisabled("Policy only: it does not currently sleep, cap, pace, or discard frames.");
-
-    const Engine::FramePacingMode modes[] = {
-        Engine::FramePacingMode::Responsive,
-        Engine::FramePacingMode::SmoothFrametime
-    };
-    if (ImGui::BeginCombo("Project default", Engine::ToString(m_ProjectFramePacingPolicy.Mode)))
-    {
-        for (Engine::FramePacingMode mode : modes)
-        {
-            const bool selected = mode == m_ProjectFramePacingPolicy.Mode;
-            if (ImGui::Selectable(Engine::ToString(mode), selected))
-                m_ProjectFramePacingPolicy.Mode = mode;
-            if (selected)
-                ImGui::SetItemDefaultFocus();
-        }
-        ImGui::EndCombo();
-    }
-
-    double target = m_ProjectFramePacingPolicy.SmoothTargetFramesPerSecond;
-    if (ImGui::InputDouble("Smooth target FPS", &target, 1.0, 10.0, "%.2f")
-        && Engine::IsValidSmoothTargetFramesPerSecond(target))
-    {
-        m_ProjectFramePacingPolicy.SmoothTargetFramesPerSecond = target;
-    }
-    if (!Engine::IsValidSmoothTargetFramesPerSecond(target))
-        ImGui::TextDisabled("Target must be finite and between %.0f and %.0f FPS; current saved value remains unchanged.",
-            Engine::kMinimumSmoothTargetFramesPerSecond, Engine::kMaximumSmoothTargetFramesPerSecond);
-
-    if (ImGui::Button("Save Project Settings"))
-    {
-        if (SaveProject())
-            m_ConsoleLines.emplace_back("Project frame-pacing policy saved: "
-                + Engine::DescribeFramePacingPolicy(m_GameFramePacingSettings.Resolve(m_ProjectFramePacingPolicy)));
-    }
-    PublishFramePacingPolicy();
     ImGui::End();
 }
 
@@ -2094,7 +2123,7 @@ void EditorLayer::RunFramePacingPolicySmoke()
     const Engine::ResolvedFramePacingPolicy resolved = m_GameFramePacingSettings.Resolve(m_ProjectFramePacingPolicy);
     Engine::Log::Info("FramePacingPolicySmokeV1 legacy=pass invalid=transactional-rejected saveReopen=pass ",
         Engine::DescribeFramePacingPolicy(resolved), " result=pass");
-    m_ConsoleLines.emplace_back("Frame pacing policy smoke passed: behavior=policy-only");
+    m_ConsoleLines.emplace_back("Frame pacing policy smoke passed: " + Engine::DescribeFramePacingPolicy(resolved));
 }
 
 bool EditorLayer::SaveProject()

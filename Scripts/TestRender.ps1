@@ -51,6 +51,15 @@ if ($RenderResult.ExitCode -ne 0) {
     throw "Editor render smoke run failed with exit code $($RenderResult.ExitCode)."
 }
 
+foreach ($Candidate in @("inter-frame", "submission-gate")) {
+    $PacingResult = Invoke-BoundedProcess -FilePath $Editor -Arguments @("--smoke-test", "--smooth-frametime-candidate-smoke", "--smooth-frametime-candidate=$Candidate", "--smooth-frametime-target-fps=5") -Label "D3D12 Smooth Frametime $Candidate" -TimeoutSeconds $ChildTimeoutSeconds
+    if ($PacingResult.TimedOut -or $PacingResult.ExitCode -ne 0) { throw "D3D12 Smooth Frametime $Candidate smoke failed." }
+    $PacingLog = $PacingResult.Output -join "`n"
+    $CandidateMarker = if ($Candidate -eq "inter-frame") { "InterFrame" } else { "SubmissionGate" }
+    if (($PacingLog -notmatch "SmoothFrametimeCandidateSmokeV1 backend=NVRHI D3D12") -or ($PacingLog -notmatch "candidate=$CandidateMarker")) { throw "D3D12 pacing smoke did not emit candidate telemetry for $Candidate." }
+    if ($Candidate -eq "submission-gate" -and $PacingLog -notmatch "SmoothFrametimeNativeV1 backend=D3D12 candidate=SubmissionGate control=pre-ExecuteCommandLists") { throw "D3D12 submission-gate smoke did not prove the pre-submit seam." }
+}
+
 $InlineRecordingResult = Invoke-BoundedProcess -FilePath $Editor -Arguments @("--smoke-test", "--scene-raster-preparation-smoke", "--scene-viewport-render-graph-smoke", "--frame-task-single-thread") -Label "Editor render graph inline recording smoke" -TimeoutSeconds $ChildTimeoutSeconds
 $InlineRecordingLog = $InlineRecordingResult.Output
 if ($InlineRecordingResult.TimedOut) {

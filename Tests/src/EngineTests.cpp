@@ -66,6 +66,11 @@ namespace
         const Engine::ResolvedFramePacingPolicy overridden = gameSettings.Resolve(responsiveProject);
         gameSettings.ClearRuntimeOverride();
         const Engine::ResolvedFramePacingPolicy cleared = gameSettings.Resolve(smoothProject);
+        gameSettings.SetCandidate(Engine::SmoothFrametimeCandidate::InterFrame);
+        const Engine::ResolvedFramePacingPolicy interFrameSnapshot = gameSettings.Resolve(smoothProject);
+        gameSettings.SetCandidate(Engine::SmoothFrametimeCandidate::SubmissionGate);
+        gameSettings.SetRuntimeOverride(Engine::FramePacingOverride::Responsive, smoothProject);
+        const Engine::ResolvedFramePacingPolicy nextFrameSnapshot = gameSettings.Resolve(smoothProject);
 
         Engine::FramePacingPolicy invalidSmoothProject = smoothProject;
         invalidSmoothProject.SmoothTargetFramesPerSecond = 0.0;
@@ -75,8 +80,8 @@ namespace
 
         return Expect(inherited.EffectiveMode == Engine::FramePacingMode::Responsive
                 && !inherited.SmoothTargetFramesPerSecond
-                && std::string_view(inherited.Behavior) == "policy-only",
-                "Responsive project default resolves as policy-only without an engine target")
+                && std::string_view(inherited.Behavior) == "no-intentional-wait",
+                "Responsive project default resolves without an intentional wait or engine target")
             && Expect(smoothProjectValid && invalidTargetRejected,
                 "Smooth Frametime target validation accepts maintainable targets and rejects invalid targets")
             && Expect(smoothOverrideApplied
@@ -89,9 +94,60 @@ namespace
                     && cleared.SmoothTargetFramesPerSecond
                     && *cleared.SmoothTargetFramesPerSecond == 120.0,
                 "clearing the runtime override restores the project default")
+            && Expect(interFrameSnapshot.Candidate == Engine::SmoothFrametimeCandidate::InterFrame
+                    && interFrameSnapshot.EffectiveMode == Engine::FramePacingMode::SmoothFrametime
+                    && nextFrameSnapshot.Candidate == Engine::SmoothFrametimeCandidate::SubmissionGate
+                    && nextFrameSnapshot.EffectiveMode == Engine::FramePacingMode::Responsive,
+                "resolved frame-pacing policies are immutable value snapshots across runtime changes")
             && Expect(invalidOverrideRejected
                     && gameSettings.GetRuntimeOverride() == beforeRejectedUpdate,
                 "invalid Smooth Frametime override updates leave the prior runtime state unchanged");
+    }
+
+    class FakeFramePacingClock final : public Engine::FramePacingClock
+    {
+    public:
+        double NowMilliseconds() override { return Now; }
+        void WaitUntilMilliseconds(double deadlineMilliseconds) override
+        {
+            Waits.push_back(deadlineMilliseconds);
+            Now = deadlineMilliseconds + OvershootMilliseconds;
+        }
+
+        double Now = 0.0;
+        double OvershootMilliseconds = 0.0;
+        std::vector<double> Waits;
+    };
+
+    bool TestSmoothFrametimePacerDeadlinesAndModeSwitch()
+    {
+        Engine::ResolvedFramePacingPolicy policy;
+        policy.EffectiveMode = Engine::FramePacingMode::SmoothFrametime;
+        policy.SmoothTargetFramesPerSecond = 100.0;
+        policy.Candidate = Engine::SmoothFrametimeCandidate::InterFrame;
+        Engine::SmoothFrametimePacer pacer;
+        FakeFramePacingClock clock;
+
+        const Engine::FramePacingWaitResult first = pacer.Apply(policy, policy.Candidate, clock);
+        clock.Now = 2.0;
+        clock.OvershootMilliseconds = 0.5;
+        const Engine::FramePacingWaitResult waited = pacer.Apply(policy, policy.Candidate, clock);
+        clock.Now = 30.0;
+        const Engine::FramePacingWaitResult late = pacer.Apply(policy, policy.Candidate, clock);
+        policy.EffectiveMode = Engine::FramePacingMode::Responsive;
+        const Engine::FramePacingWaitResult responsive = pacer.Apply(policy, policy.Candidate, clock);
+        policy.EffectiveMode = Engine::FramePacingMode::SmoothFrametime;
+        const Engine::FramePacingWaitResult afterReset = pacer.Apply(policy, policy.Candidate, clock);
+        policy.Candidate = Engine::SmoothFrametimeCandidate::SubmissionGate;
+        const Engine::FramePacingWaitResult separateGate = pacer.Apply(policy, policy.Candidate, clock);
+
+        return Expect(!first.Applied && clock.Waits.size() == 1 && waited.Applied
+                && waited.WaitMilliseconds == 8.5 && !waited.DeadlineMissed,
+                "Smooth Frametime waits deterministically until the target deadline")
+            && Expect(late.DeadlineMissed && !late.Applied && late.WaitMilliseconds == 0.0,
+                "late Smooth Frametime frames do not wait or discard work")
+            && Expect(!responsive.Applied && !afterReset.Applied && !separateGate.Applied,
+                "Responsive resets pacing state and submission gate keeps an independent deadline");
     }
 
     bool TestFrameLifecycleTelemetryOrderAndUnavailableStates()
@@ -123,8 +179,11 @@ namespace
         trace.Lifecycle[2].Phase = Engine::RendererFrameLifecyclePhase::RenderSubmission;
         trace.Presentation.DisplayCadenceAvailable = true;
         const bool unavailableStateRequired = !Engine::HasValidFrameLifecycleTelemetry(trace);
+        trace.Presentation.DisplayCadenceAvailable = false;
+        trace.Presentation.InputLatencyAvailable = true;
+        const bool inputLatencyUnavailableRequired = !Engine::HasValidFrameLifecycleTelemetry(trace);
 
-        return Expect(valid && vulkanWaitsRejected && vulkanWaitsAccepted && outOfOrderRejected && unavailableStateRequired,
+        return Expect(valid && vulkanWaitsRejected && vulkanWaitsAccepted && outOfOrderRejected && unavailableStateRequired && inputLatencyUnavailableRequired,
             "frame lifecycle telemetry preserves phase order, no-delay intent, and truthful unavailable feedback states");
     }
 
@@ -3842,6 +3901,7 @@ int main()
 
     const std::vector<std::pair<std::string_view, TestFunction>> tests = {
         { "Frame pacing policy resolves overrides and validates targets", TestFramePacingPolicyResolutionAndValidation },
+        { "Smooth Frametime pacer preserves deadlines overruns and mode switches", TestSmoothFrametimePacerDeadlinesAndModeSwitch },
         { "Frame lifecycle telemetry orders phases and retains unavailable feedback", TestFrameLifecycleTelemetryOrderAndUnavailableStates },
         { "Slang compiler emits validated portable shader packages", TestSlangShaderCompilerProducesPortableValidatedPackages },
         { "Async shader publication is nonblocking deduplicated and atomic", TestAsyncShaderPackagePublicationIsNonblockingDeduplicatedAndAtomic },

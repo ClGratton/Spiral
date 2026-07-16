@@ -34,12 +34,12 @@ Use the editor's single default sans/monospace-compatible UI font at a compact, 
 - Center: renderer-owned viewport.
 - Right: selection-scoped Inspector only.
 - Bottom: Console and Profiler as sibling tabs.
-- Top menu: global renderer backend selection.
+- Top-bar Settings menu: serialized project configuration, including the frame-pacing default and save action, plus clearly separated global renderer backend selection. Profiler owns non-serialized runtime pacing experiments. Standalone duplicate settings panels are forbidden.
 
 ## Interaction Contracts
 
 - Inspector content follows the selected entity or asset.
-- Camera projection and background color live on the selected camera in the Inspector. The top-bar Settings menu is limited to global renderer backend selection.
+- Camera projection and background color live on the selected camera in the Inspector. The top-bar Settings menu owns serialized project configuration and global renderer backend selection; Profiler owns non-serialized runtime pacing experiments. Neither moves selection-scoped controls out of the Inspector or duplicates that authority in a dockable panel.
 - Camera-bearing entities omit the ineffective Transform Scale control; camera zoom uses Field of View or the applicable projection setting. The Inspector does not reset stored scale because an entity may also carry a component for which scale is meaningful.
 - Unsupported backends are visibly disabled and explain why.
 - Destructive hierarchy actions are contextual, undoable, and protect the primary camera.

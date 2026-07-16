@@ -62,8 +62,10 @@ namespace Engine
         double PresentMilliseconds = 0.0;
         bool DisplayCadenceAvailable = false;
         bool ReplacementDropStatusAvailable = false;
+        bool InputLatencyAvailable = false;
         const char* DisplayCadenceDetail = "unavailable: no display-feedback API path is implemented";
         const char* ReplacementDropDetail = "unavailable: no frame replacement/drop API path is implemented";
+        const char* InputLatencyDetail = "unavailable: no input-to-photon measurement path is implemented";
     };
 
     enum class RendererFrameLifecyclePhase
@@ -73,6 +75,7 @@ namespace Engine
         RenderSubmission,
         PresentBegin,
         PresentEnd,
+        IntentionalPacingWait,
         GpuCompletionObservation
     };
 
@@ -95,12 +98,19 @@ namespace Engine
         RendererFrameWaitKind Kind = RendererFrameWaitKind::IntentionalPacing;
         bool Applied = false;
         double Milliseconds = 0.0;
+        SmoothFrametimeCandidate Candidate = SmoothFrametimeCandidate::InterFrame;
+        bool DeadlineMissed = false;
+        double RequestedDeadlineMilliseconds = 0.0;
+        double ActualReleaseMilliseconds = 0.0;
     };
 
     struct RendererFrameTiming
     {
         u64 FrameIndex = 0;
         double CpuMilliseconds = 0.0;
+        double CpuActiveMilliseconds = 0.0;
+        double IntentionalPacingMilliseconds = 0.0;
+        double StartToStartMilliseconds = 0.0;
         double GpuMilliseconds = 0.0;
         RendererTimingStatus GpuStatus = RendererTimingStatus::Unavailable;
         RendererPresentationTiming Presentation;
@@ -145,7 +155,8 @@ namespace Engine
             && (!requireDxgiWait || dxgiWait)
             && (!requireVulkanWaits || (vulkanAcquire && vulkanFence))
             && !timing.Presentation.DisplayCadenceAvailable
-            && !timing.Presentation.ReplacementDropStatusAvailable;
+            && !timing.Presentation.ReplacementDropStatusAvailable
+            && !timing.Presentation.InputLatencyAvailable;
     }
 
     struct RendererBuildInfo
@@ -194,7 +205,8 @@ namespace Engine
     public:
         static void Initialize();
         static void Shutdown();
-        static void BeginFrame(u64 applicationFrameIndex);
+        static FramePacingWaitResult WaitForInterFrameBeforeFrame();
+        static void BeginFrame(u64 applicationFrameIndex, const FramePacingWaitResult& preFramePacing = {});
         static void EndFrame();
         static bool InitializeImGui(void* nativeWindow);
         static void ShutdownImGui();
@@ -222,6 +234,7 @@ namespace Engine
         static ResolvedFramePacingPolicy GetFramePacingPolicy();
         static void RecordFrameLifecyclePhase(u64 applicationFrameIndex, RendererFrameLifecyclePhase phase);
         static void RecordFrameWait(u64 applicationFrameIndex, RendererFrameWaitKind kind, bool applied, double milliseconds);
+        static FramePacingWaitResult ApplySmoothFrametimeCandidate(SmoothFrametimeCandidate candidate);
         static void RecordGpuCompletionObservation(u64 completedApplicationFrameIndex);
         static void PublishSceneRenderSnapshot(SceneRenderSnapshot snapshot);
         static std::shared_ptr<const SceneRenderSnapshot> GetSceneRenderSnapshot();

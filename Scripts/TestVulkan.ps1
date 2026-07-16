@@ -30,6 +30,15 @@ if ($VulkanResult.ExitCode -ne 0) {
     throw "Vulkan render smoke failed with exit code $($VulkanResult.ExitCode)."
 }
 
+foreach ($Candidate in @("inter-frame", "submission-gate")) {
+    $PacingResult = Invoke-BoundedProcess -FilePath $Executable -Arguments @("--vulkan-render-smoke", "--smooth-frametime-candidate-smoke", "--smooth-frametime-candidate=$Candidate", "--smooth-frametime-target-fps=5") -Label "Vulkan Smooth Frametime $Candidate" -TimeoutSeconds $ChildTimeoutSeconds
+    if ($PacingResult.TimedOut -or $PacingResult.ExitCode -ne 0) { throw "Vulkan Smooth Frametime $Candidate smoke failed." }
+    $PacingLog = $PacingResult.Output -join "`n"
+    $CandidateMarker = if ($Candidate -eq "inter-frame") { "InterFrame" } else { "SubmissionGate" }
+    if (($PacingLog -notmatch "SmoothFrametimeCandidateSmokeV1 backend=NVRHI Vulkan") -or ($PacingLog -notmatch "candidate=$CandidateMarker")) { throw "Vulkan pacing smoke did not emit candidate telemetry for $Candidate." }
+    if ($Candidate -eq "submission-gate" -and $PacingLog -notmatch "SmoothFrametimeNativeV1 backend=Vulkan candidate=SubmissionGate control=pre-vkQueueSubmit") { throw "Vulkan submission-gate smoke did not prove the pre-submit seam." }
+}
+
 $InlineRecordingResult = Invoke-BoundedProcess -FilePath $Executable -Arguments @("--vulkan-render-smoke", "--scene-raster-preparation-smoke", "--scene-viewport-render-graph-smoke", "--frame-task-single-thread") -Label "Editor Vulkan inline recording smoke" -TimeoutSeconds $ChildTimeoutSeconds
 $InlineRecordingLog = $InlineRecordingResult.Output
 if ($InlineRecordingResult.TimedOut) {

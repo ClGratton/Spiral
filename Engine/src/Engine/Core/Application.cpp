@@ -6,6 +6,7 @@
 #include "Engine/UI/ImGuiLayer.h"
 
 #include <chrono>
+#include <cstdlib>
 #include <filesystem>
 #include <optional>
 #include <stdexcept>
@@ -31,6 +32,32 @@ namespace Engine
                     return result.TaskErrors[index];
             }
             return "a dependency did not succeed";
+        }
+
+        void ApplySmoothFrametimeSmokePolicy(const ApplicationCommandLineArgs& args)
+        {
+            if (!args.HasFlag("--smooth-frametime-candidate-smoke"))
+                return;
+
+            ResolvedFramePacingPolicy policy = Renderer::GetFramePacingPolicy();
+            policy.EffectiveMode = FramePacingMode::SmoothFrametime;
+            policy.ProjectMode = FramePacingMode::SmoothFrametime;
+            policy.RuntimeOverride = FramePacingOverride::SmoothFrametime;
+            const std::string_view targetValue = args.GetOptionValue("--smooth-frametime-target-fps");
+            const double target = targetValue.empty() ? 5.0 : std::strtod(std::string(targetValue).c_str(), nullptr);
+            if (!IsValidSmoothTargetFramesPerSecond(target))
+                throw std::runtime_error("Smooth Frametime candidate smoke target is invalid");
+            policy.SmoothTargetFramesPerSecond = target;
+            const std::string_view candidate = args.GetOptionValue("--smooth-frametime-candidate");
+            if (candidate == "submission-gate")
+                policy.Candidate = SmoothFrametimeCandidate::SubmissionGate;
+            else if (candidate.empty() || candidate == "inter-frame")
+                policy.Candidate = SmoothFrametimeCandidate::InterFrame;
+            else
+                throw std::runtime_error("Smooth Frametime candidate smoke selector is invalid");
+            policy.Behavior = policy.Candidate == SmoothFrametimeCandidate::InterFrame
+                ? "experimental-inter-frame" : "experimental-submission-gate";
+            Renderer::SetFramePacingPolicy(policy);
         }
     }
 
@@ -115,6 +142,8 @@ namespace Engine
 
         while (m_Running && !m_Window->ShouldClose())
         {
+            ApplySmoothFrametimeSmokePolicy(m_Specification.CommandLineArgs);
+            const FramePacingWaitResult preFramePacing = Renderer::WaitForInterFrameBeforeFrame();
             const auto now = std::chrono::steady_clock::now();
             const std::chrono::duration<float> delta = now - lastFrameTime;
             lastFrameTime = now;
@@ -122,7 +151,7 @@ namespace Engine
 
             if (!m_Minimized)
             {
-                Renderer::BeginFrame(m_FrameIndex);
+                Renderer::BeginFrame(m_FrameIndex, preFramePacing);
 
                 FramePublication<ApplicationFrameInput> frameInput;
                 FrameTaskGraph frameTasks;
@@ -237,7 +266,8 @@ namespace Engine
 
             m_Window->OnUpdate();
 
-            if (m_Specification.CommandLineArgs.HasFlag("--frame-lifecycle-telemetry-smoke")
+            if ((m_Specification.CommandLineArgs.HasFlag("--frame-lifecycle-telemetry-smoke")
+                    || m_Specification.CommandLineArgs.HasFlag("--smooth-frametime-candidate-smoke"))
                 && !m_FrameLifecycleTelemetrySmokeComplete
                 && Renderer::GetLastFrameTiming().HasGpuCompletionObservation)
             {
@@ -248,14 +278,23 @@ namespace Engine
                 {
                     throw std::runtime_error("frame lifecycle telemetry smoke did not preserve the required trace/fallback contract");
                 }
-                Log::Info("FrameLifecycleTelemetryV1 backend=", Renderer::GetActiveBackendName(),
+                const bool pacingSmoke = m_Specification.CommandLineArgs.HasFlag("--smooth-frametime-candidate-smoke");
+                bool intentionalWaitApplied = !pacingSmoke;
+                for (const RendererFrameWaitTiming& wait : timing.Waits)
+                    intentionalWaitApplied |= wait.Kind == RendererFrameWaitKind::IntentionalPacing && wait.Applied && wait.Milliseconds > 0.0;
+                if (pacingSmoke && !intentionalWaitApplied)
+                    throw std::runtime_error("Smooth Frametime candidate smoke did not observe a nonzero intentional wait");
+                Log::Info(pacingSmoke ? "SmoothFrametimeCandidateSmokeV1 backend=" : "FrameLifecycleTelemetryV1 backend=", Renderer::GetActiveBackendName(),
                     " frame=", timing.FrameIndex,
                     " phases=frame-start,input-simulation,render-submission,present-begin,present-end",
-                    " intentionalWait=not-applied:0",
+                    " candidate=", ToString(timing.FramePacingPolicy.Candidate),
+                    " intentionalWait=", pacingSmoke ? std::to_string(timing.IntentionalPacingMilliseconds) : "not-applied:0",
+                    " startToStartMs=", timing.StartToStartMilliseconds,
+                    " cpuActiveMs=", timing.CpuActiveMilliseconds,
                     " gpuCompletion=observed completedFrame=", timing.LastGpuCompletionObservedFrameIndex,
                     " completionSwapchainGeneration=", timing.Presentation.SwapchainGeneration,
                     " mandatoryWaits=", d3d12 ? "dxgi-latency" : "vulkan-acquire+fence",
-                    " display=unavailable replacementDrop=unavailable result=pass");
+                    " inputLatency=unavailable display=unavailable replacementDrop=unavailable result=pass");
                 m_FrameLifecycleTelemetrySmokeComplete = true;
             }
 
@@ -270,8 +309,10 @@ namespace Engine
             if (m_Specification.CommandLineArgs.HasFlag("--vulkan-render-smoke"))
             {
                 const RendererPresentationTiming& presentation = Renderer::GetLastFrameTiming().Presentation;
+                const bool requiresLifecycleObservation = m_Specification.CommandLineArgs.HasFlag("--frame-lifecycle-telemetry-smoke")
+                    || m_Specification.CommandLineArgs.HasFlag("--smooth-frametime-candidate-smoke");
                 if (Renderer::GetActiveBackend() == RendererBackend::NVRHIVulkan
-                    && (!m_Specification.CommandLineArgs.HasFlag("--frame-lifecycle-telemetry-smoke") || m_FrameLifecycleTelemetrySmokeComplete)
+                    && (!requiresLifecycleObservation || m_FrameLifecycleTelemetrySmokeComplete)
                     && presentation.SwapchainGeneration >= 2
                     && presentation.LastSuccessfulPresentGeneration == presentation.SwapchainGeneration)
                 {
@@ -299,7 +340,8 @@ namespace Engine
             }
             Log::Info("Vulkan render smoke verified native ImGui presentation after resize");
         }
-        if (m_Specification.CommandLineArgs.HasFlag("--frame-lifecycle-telemetry-smoke") && !m_FrameLifecycleTelemetrySmokeComplete)
+        if ((m_Specification.CommandLineArgs.HasFlag("--frame-lifecycle-telemetry-smoke")
+                || m_Specification.CommandLineArgs.HasFlag("--smooth-frametime-candidate-smoke")) && !m_FrameLifecycleTelemetrySmokeComplete)
             throw std::runtime_error("frame lifecycle telemetry smoke did not observe GPU completion within its frame budget");
 
         Log::Info("Application stopped after ", m_FrameIndex, " frame(s)");

@@ -368,6 +368,14 @@ namespace Engine
             }
 
             ID3D12CommandList* commandLists[] = { m_CommandList.Get() };
+            const FramePacingWaitResult pacing = Renderer::ApplySmoothFrametimeCandidate(SmoothFrametimeCandidate::SubmissionGate);
+            if (Renderer::GetLastFrameTiming().FramePacingPolicy.EffectiveMode == FramePacingMode::SmoothFrametime
+                && Renderer::GetLastFrameTiming().FramePacingPolicy.Candidate == SmoothFrametimeCandidate::SubmissionGate)
+            {
+                Log::Info("SmoothFrametimeNativeV1 backend=D3D12 candidate=SubmissionGate control=pre-ExecuteCommandLists ",
+                    "waitMs=", pacing.WaitMilliseconds, " missed=", pacing.DeadlineMissed ? "yes" : "no",
+                    " frame=", Renderer::GetLastFrameTiming().FrameIndex);
+            }
             m_GraphicsQueue->ExecuteCommandLists(1, commandLists);
             Renderer::RecordFrameLifecyclePhase(Renderer::GetLastFrameTiming().FrameIndex, RendererFrameLifecyclePhase::RenderSubmission);
 
