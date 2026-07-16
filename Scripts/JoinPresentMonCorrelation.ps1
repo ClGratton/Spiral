@@ -67,8 +67,8 @@ $engineHashBefore = Get-Sha256 $enginePath
 $presentMonHashBefore = Get-Sha256 $presentMonPath
 
 $engine = Get-Content -LiteralPath $enginePath -Raw | ConvertFrom-Json
-if ($engine.schema -ne 2 -or $null -eq $engine.condition -or $null -eq $engine.frames) {
-    throw "Engine input must be a schema-2 frame-pacing benchmark artifact"
+if ($engine.schema -notin @(2, 3) -or $null -eq $engine.condition -or $null -eq $engine.frames) {
+    throw "Engine input must be a schema-2 or schema-3 frame-pacing benchmark artifact"
 }
 $processId = Convert-ToUInt64 $engine.condition.processId "Engine condition processId"
 $qpcFrequency = Convert-ToUInt64 $engine.condition.qpcFrequency "Engine condition qpcFrequency"

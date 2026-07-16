@@ -708,6 +708,9 @@ namespace Engine
             Log::Error("Renderer GPU timing exact-frame publication failed: ", error);
             return false;
         }
+        if (s_FramePacingBenchmark && !s_FramePacingBenchmark->AmendGpuTiming(publication))
+            Log::Warn("BenchmarkGpuTimingDropV1 frame=", publication.FrameIndex,
+                " status=Unavailable reason=frame-not-retained result=ignored");
 
         RHI::CapabilityPath selectedPath = RHI::CapabilityPath::CpuSteadyClock;
         if (publication.Status == RendererTimingStatus::Ready && s_HasDeviceCapabilities)

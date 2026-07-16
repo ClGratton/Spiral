@@ -7,8 +7,9 @@
 #include "Engine/Renderer/FramePacingBenchmark.h"
 #include "Engine/UI/ImGuiLayer.h"
 
-#include <chrono>
+#include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -522,8 +523,10 @@ namespace Engine
             std::string error;
             if (!snapshot || snapshot->Frames.size() < 2 || output.empty() || !FramePacingBenchmarkCapture::WriteArtifacts(*snapshot, std::filesystem::path(output), error))
                 throw std::runtime_error("frame pacing benchmark capture did not produce a complete artifact: " + error);
+            const size_t gpuHeadroomFrames = static_cast<size_t>(std::count_if(snapshot->Frames.begin(), snapshot->Frames.end(), [](const RendererFrameTiming& timing)
+                { return timing.GpuHeadroomMilliseconds.has_value(); }));
             Log::Info("FramePacingBenchmarkV1 frames=", snapshot->Frames.size(), " p99Ms=", snapshot->Summary.StartToStartP99Milliseconds,
-                " display=unavailable inputLatency=unavailable gpuHeadroom=unavailable result=pass");
+                " display=unavailable inputLatency=unavailable gpuHeadroomFrames=", gpuHeadroomFrames, " result=pass");
         }
 
         Log::Info("Application stopped after ", m_FrameIndex, " frame(s)");

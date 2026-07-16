@@ -8,6 +8,7 @@
 #include "Engine/Scene/SceneRenderSnapshot.h"
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -120,6 +121,7 @@ namespace Engine
         double StartToStartMilliseconds = 0.0;
         double GpuMilliseconds = 0.0;
         RendererTimingStatus GpuStatus = RendererTimingStatus::Unavailable;
+        std::optional<double> GpuHeadroomMilliseconds;
         RendererPresentationTiming Presentation;
         ResolvedFramePacingPolicy FramePacingPolicy;
         std::vector<RendererFrameLifecycleEvent> Lifecycle;

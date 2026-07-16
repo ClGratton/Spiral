@@ -278,6 +278,8 @@ namespace
         condition.Backend = "test";
         condition.Adapter = "adapter\"quoted\tvalue";
         condition.TargetFramesPerSecond = 120.0;
+        condition.Policy.EffectiveMode = Engine::FramePacingMode::SmoothFrametime;
+        condition.Policy.SmoothTargetFramesPerSecond = 120.0;
         condition.PresentationMode = "flip-discard";
         condition.SyncMode = "driver-vsync";
         condition.VrrMode = "enabled";
@@ -291,6 +293,9 @@ namespace
             timing.CpuMilliseconds = 4.0;
             timing.CpuActiveMilliseconds = index <= 500 ? 1.0 : (index <= 950 ? 2.0 : 3.0);
             timing.IntentionalPacingMilliseconds = index <= 500 ? 0.0 : (index <= 950 ? 1.0 : 2.0);
+            timing.FramePacingPolicy = condition.Policy;
+            if (index == 997)
+                timing.FramePacingPolicy.SmoothTargetFramesPerSecond = 0.0;
             timing.Lifecycle = {
                 { Engine::RendererFrameLifecyclePhase::FrameStart, 0.0, 100 },
                 { Engine::RendererFrameLifecyclePhase::InputSimulation, 0.25, 125 },
@@ -305,6 +310,22 @@ namespace
             timing.LastGpuCompletionObservedFrameIndex = index > 1 ? index - 2 : 0;
             capture.Record(timing);
         }
+        const auto gpuPublication = [](Engine::u64 frame, Engine::RendererTimingStatus status, double milliseconds)
+        {
+            Engine::RendererGpuTimingPublication publication;
+            publication.FrameIndex = frame;
+            publication.Status = status;
+            publication.GpuMilliseconds = milliseconds;
+            publication.Passes.push_back({ "Raster", 0.0, status == Engine::RendererTimingStatus::Ready ? milliseconds : 0.0, status });
+            return publication;
+        };
+        const bool readyApplied = capture.AmendGpuTiming(gpuPublication(999, Engine::RendererTimingStatus::Ready, 4.0));
+        const bool disjointApplied = capture.AmendGpuTiming(gpuPublication(998, Engine::RendererTimingStatus::Disjoint, 0.0));
+        const bool nonpositiveTargetApplied = capture.AmendGpuTiming(gpuPublication(997, Engine::RendererTimingStatus::Ready, 3.0));
+        const bool pendingApplied = capture.AmendGpuTiming(gpuPublication(996, Engine::RendererTimingStatus::Pending, 0.0));
+        const bool unavailableApplied = capture.AmendGpuTiming(gpuPublication(995, Engine::RendererTimingStatus::Unavailable, 0.0));
+        const bool evictedRejected = !capture.AmendGpuTiming(gpuPublication(0, Engine::RendererTimingStatus::Ready, 1.0));
+        const bool mismatchedRejected = !capture.AmendGpuTiming(gpuPublication(1002, Engine::RendererTimingStatus::Ready, 1.0));
         const auto snapshot = capture.GetSnapshot();
         const std::filesystem::path path = TestFilePath("frame-pacing-benchmark");
         std::string error;
@@ -321,7 +342,20 @@ namespace
         bool continuous = snapshot && snapshot->Frames.size() == 1000;
         for (size_t index = 0; continuous && index < snapshot->Frames.size(); ++index)
             continuous = snapshot->Frames[index].FrameIndex == index + 1;
-        return Expect(continuous && snapshot->Frames.back().StartToStartMilliseconds == 10000.0
+        const auto findFrame = [&](Engine::u64 frame) -> const Engine::RendererFrameTiming*
+        {
+            if (!snapshot) return nullptr;
+            const auto found = std::find_if(snapshot->Frames.begin(), snapshot->Frames.end(), [&](const Engine::RendererFrameTiming& timing)
+                { return timing.FrameIndex == frame; });
+            return found == snapshot->Frames.end() ? nullptr : &*found;
+        };
+        const Engine::RendererFrameTiming* readyFrame = findFrame(999);
+        const Engine::RendererFrameTiming* disjointFrame = findFrame(998);
+        const Engine::RendererFrameTiming* nonpositiveTargetFrame = findFrame(997);
+        const Engine::RendererFrameTiming* pendingFrame = findFrame(996);
+        const Engine::RendererFrameTiming* unavailableFrame = findFrame(995);
+        return Expect(continuous && readyApplied && disjointApplied && nonpositiveTargetApplied && pendingApplied && unavailableApplied
+                && evictedRejected && mismatchedRejected && snapshot->Frames.back().StartToStartMilliseconds == 10000.0
                 && snapshot->Summary.SampleCount == 1000 && snapshot->Summary.StartToStartP99Milliseconds == 10.0
                 && snapshot->Summary.CpuActiveP50Milliseconds == 1.0 && snapshot->Summary.CpuActiveP95Milliseconds == 2.0
                 && snapshot->Summary.CpuActiveP99Milliseconds == 3.0 && snapshot->Summary.IntentionalWaitP50Milliseconds == 0.0
@@ -330,7 +364,17 @@ namespace
                 && std::abs(snapshot->Summary.PointOnePercentLowFramesPerSecond - 10.0) < 0.0001
                 && snapshot->Summary.DeadlineMissCount == 1 && snapshot->Summary.DeadlineOvershootP99Milliseconds == 2.0,
                 "frame pacing benchmark retains continuous raw spikes and aggregates deterministic cadence, work, wait, low, and deadline statistics")
+            && Expect(readyFrame && readyFrame->GpuStatus == Engine::RendererTimingStatus::Ready
+                    && std::abs(readyFrame->GpuMilliseconds - 4.0) < 0.0001
+                    && readyFrame->GpuHeadroomMilliseconds
+                    && std::abs(*readyFrame->GpuHeadroomMilliseconds - (1000.0 / 120.0 - 4.0)) < 0.0001
+                    && disjointFrame && disjointFrame->GpuStatus == Engine::RendererTimingStatus::Disjoint && !disjointFrame->GpuHeadroomMilliseconds
+                    && nonpositiveTargetFrame && nonpositiveTargetFrame->GpuStatus == Engine::RendererTimingStatus::Ready && !nonpositiveTargetFrame->GpuHeadroomMilliseconds
+                    && pendingFrame && pendingFrame->GpuStatus == Engine::RendererTimingStatus::Pending && !pendingFrame->GpuHeadroomMilliseconds
+                    && unavailableFrame && unavailableFrame->GpuStatus == Engine::RendererTimingStatus::Unavailable && !unavailableFrame->GpuHeadroomMilliseconds,
+                "benchmark GPU amendment derives exact-frame target headroom and preserves unavailable status and target cases")
             && Expect(wrote && csv.find("\"adapter\"\"quoted\tvalue\"") != std::string::npos
+                && csv.find("gpuTimingStatus,gpuDurationMs,gpuHeadroom") != std::string::npos
                 && csv.find("{\"\"phase\"\":\"\"PresentEnd\"\",\"\"ms\"\":2.5,\"\"qpc\"\":350}") != std::string::npos
                 && csv.find("{\"\"kind\"\":\"\"MandatoryDxgiFrameLatency\"\",\"\"applied\"\":true,\"\"ms\"\":3.5") != std::string::npos
                 && json.find("adapter\\\"quoted\\tvalue") != std::string::npos
@@ -339,8 +383,10 @@ namespace
                 && json.find("\"phase\":\"PresentEnd\",\"ms\":2.5,\"qpc\":350") != std::string::npos
                 && json.find("\"kind\":\"MandatoryDxgiFrameLatency\",\"applied\":true,\"ms\":3.5") != std::string::npos
                 && json.find("\"gpuCompletionFrame\":998") != std::string::npos
-                && json.find("\"display\":\"unavailable\",\"replacementDrop\":\"unavailable\",\"inputLatency\":\"unavailable\",\"gpuHeadroom\":\"unavailable\"") != std::string::npos,
-                "frame pacing benchmark exports stable CSV/JSON lifecycle, wait, completion, escaping, and unavailable-field records");
+                && json.find("\"schema\":3") != std::string::npos
+                && json.find("\"gpuTimingStatus\":\"Ready\",\"gpuDurationMs\":4.000000,\"gpuHeadroom\":4.333333") != std::string::npos
+                && json.find("\"gpuTimingStatus\":\"Disjoint\",\"gpuDurationMs\":\"unavailable\",\"gpuHeadroom\":\"unavailable\"") != std::string::npos,
+                "frame pacing benchmark exports stable schema-3 CSV/JSON exact-frame GPU duration, headroom, and unavailable records");
     }
 
     bool TestFramePacingAttachmentReadinessAndReleaseValidation()

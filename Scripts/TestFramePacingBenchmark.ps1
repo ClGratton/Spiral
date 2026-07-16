@@ -102,7 +102,7 @@ function Invoke-AttachmentCase([ValidateSet("release", "mismatch", "timeout")][s
         if ($Mode -eq "release") {
             if ($Log -notmatch "FramePacingAttachmentV1 state=released" -or $Log -notmatch "FramePacingBenchmarkV1 frames=512") { throw "Attachment release launch failed: $Backend" }
             $Json = Get-Content -Raw (Join-Path $Artifact "frame-pacing-benchmark.json") | ConvertFrom-Json
-            if ($Json.schema -ne 2 -or $Json.condition.runId -ne $Readiness.runId -or $Json.condition.processId -ne $Process.Id -or $Json.condition.qpcFrequency -ne $Readiness.qpcFrequency -or $Json.frames.Count -ne 512 -or @($Json.frames | Where-Object { @($_.lifecycle | Where-Object { $_.qpc -le 0 }).Count -ne 0 }).Count -ne 0) { throw "Attachment release artifact did not retain QPC/run identity: $Backend" }
+            if ($Json.schema -ne 3 -or $Json.condition.runId -ne $Readiness.runId -or $Json.condition.processId -ne $Process.Id -or $Json.condition.qpcFrequency -ne $Readiness.qpcFrequency -or $Json.frames.Count -ne 512 -or @($Json.frames | Where-Object { @($_.lifecycle | Where-Object { $_.qpc -le 0 }).Count -ne 0 }).Count -ne 0) { throw "Attachment release artifact did not retain QPC/run identity: $Backend" }
             Write-Host "Frame pacing attachment passed: $Backend release runId=$($Readiness.runId)"
         } else {
             $Expected = if ($Mode -eq "mismatch") { "state=rejected" } else { "state=timeout" }
@@ -142,9 +142,11 @@ foreach ($Target in $TargetFramesPerSecond) {
         $ExpectedCandidate = if ($Candidate -eq "responsive") { "InterFrame" } elseif ($Candidate -eq "inter-frame") { "InterFrame" } else { "SubmissionGate" }
         $ExpectedBackend = if ($Backend -eq "Vulkan") { "NVRHI Vulkan" } else { "NVRHI D3D12" }
         $EffectiveTargetMismatch = if ($Candidate -eq "responsive") { $null -ne $Json.condition.effectiveTargetFps } else { $Json.condition.effectiveTargetFps -ne $Target }
-        if ($Json.schema -ne 2 -or $Json.condition.backend -ne $ExpectedBackend -or $Json.condition.targetFps -ne $Target -or $EffectiveTargetMismatch -or $Json.condition.warmupFrames -ne 30 -or $Json.condition.mode -ne $ExpectedMode -or $Json.condition.candidate -ne $ExpectedCandidate -or $Json.condition.presentationMode -ne $PresentationMode -or $Json.condition.sync -ne $SyncMode -or $Json.condition.vrr -ne $VrrMode -or $Json.condition.tearing -ne $TearingMode -or $Json.frames.Count -ne 512 -or $Csv.Count -ne 512 -or $null -eq $Json.summary.p50Ms -or $null -eq $Json.summary.p95Ms -or $null -eq $Json.summary.p99Ms -or $null -eq $Json.summary.cpuActiveP50Ms -or $null -eq $Json.summary.cpuActiveP95Ms -or $null -eq $Json.summary.cpuActiveP99Ms -or $null -eq $Json.summary.intentionalWaitP50Ms -or $null -eq $Json.summary.intentionalWaitP95Ms -or $null -eq $Json.summary.intentionalWaitP99Ms -or $null -eq $Json.summary.deadlineMisses -or $null -eq $Json.summary.deadlineOvershootP99Ms -or $null -eq $Json.summary.onePercentLowFps -or $null -eq $Json.summary.pointOnePercentLowFps) {
+        if ($Json.schema -ne 3 -or $Json.condition.backend -ne $ExpectedBackend -or $Json.condition.targetFps -ne $Target -or $EffectiveTargetMismatch -or $Json.condition.warmupFrames -ne 30 -or $Json.condition.mode -ne $ExpectedMode -or $Json.condition.candidate -ne $ExpectedCandidate -or $Json.condition.presentationMode -ne $PresentationMode -or $Json.condition.sync -ne $SyncMode -or $Json.condition.vrr -ne $VrrMode -or $Json.condition.tearing -ne $TearingMode -or $Json.frames.Count -ne 512 -or $Csv.Count -ne 512 -or $null -eq $Json.summary.p50Ms -or $null -eq $Json.summary.p95Ms -or $null -eq $Json.summary.p99Ms -or $null -eq $Json.summary.cpuActiveP50Ms -or $null -eq $Json.summary.cpuActiveP95Ms -or $null -eq $Json.summary.cpuActiveP99Ms -or $null -eq $Json.summary.intentionalWaitP50Ms -or $null -eq $Json.summary.intentionalWaitP95Ms -or $null -eq $Json.summary.intentionalWaitP99Ms -or $null -eq $Json.summary.deadlineMisses -or $null -eq $Json.summary.deadlineOvershootP99Ms -or $null -eq $Json.summary.onePercentLowFps -or $null -eq $Json.summary.pointOnePercentLowFps) {
             throw "Benchmark condition manifest did not retain ${Candidate}: $Backend $Target"
         }
+        $ReadyGpuFrames = @($Json.frames | Where-Object { $_.gpuTimingStatus -eq "Ready" -and $_.gpuDurationMs -ne "unavailable" })
+        if ($ReadyGpuFrames.Count -eq 0) { throw "Benchmark retained no ready exact-frame GPU duration: $Backend $Target $Candidate" }
         for ($FrameIndex = 0; $FrameIndex -lt $Json.frames.Count; ++$FrameIndex) {
             $Frame = $Json.frames[$FrameIndex]
             if ($FrameIndex -gt 0 -and [uint64]$Frame.frame -ne ([uint64]$Json.frames[$FrameIndex - 1].frame + 1)) {
@@ -154,14 +156,38 @@ foreach ($Target in $TargetFramesPerSecond) {
             foreach ($RequiredPhase in @("FrameStart", "InputSimulation", "RenderSubmission", "PresentBegin", "PresentEnd")) {
                 if ($RequiredPhase -notin $Phases) { throw "Benchmark lifecycle is incomplete: $Backend $Target $Candidate frame=$($Frame.frame) phase=$RequiredPhase" }
             }
-            if ($null -eq $Frame.waits -or $Frame.display -ne "unavailable" -or $Frame.replacementDrop -ne "unavailable" -or $Frame.inputLatency -ne "unavailable" -or $Frame.gpuHeadroom -ne "unavailable") {
+            if ($null -eq $Frame.waits -or $Frame.display -ne "unavailable" -or $Frame.replacementDrop -ne "unavailable" -or $Frame.inputLatency -ne "unavailable" -or $null -eq $Frame.gpuTimingStatus -or $null -eq $Frame.gpuDurationMs -or $null -eq $Frame.gpuHeadroom) {
                 throw "Benchmark raw fields are incomplete: $Backend $Target $Candidate frame=$($Frame.frame)"
+            }
+            if ($Frame.gpuTimingStatus -eq "Ready") {
+                if ($Frame.gpuDurationMs -eq "unavailable") { throw "Ready GPU timing omitted its duration: $Backend $Target $Candidate frame=$($Frame.frame)" }
+                if ($Candidate -eq "responsive") {
+                    if ($Frame.gpuHeadroom -ne "unavailable") { throw "Responsive frame invented target-budget headroom: $Backend $Target frame=$($Frame.frame)" }
+                } else {
+                    $ExpectedHeadroom = 1000.0 / $Target - [double]$Frame.gpuDurationMs
+                    if ($Frame.gpuHeadroom -eq "unavailable" -or [Math]::Abs([double]$Frame.gpuHeadroom - $ExpectedHeadroom) -gt 0.001) {
+                        throw "GPU headroom did not use the matching-frame target budget and duration: $Backend $Target $Candidate frame=$($Frame.frame)"
+                    }
+                }
+            } elseif ($Frame.gpuDurationMs -ne "unavailable" -or $Frame.gpuHeadroom -ne "unavailable") {
+                throw "Non-ready GPU timing published duration/headroom: $Backend $Target $Candidate frame=$($Frame.frame)"
             }
         }
         $CsvLifecycle = @($Csv[0].lifecycleJson | ConvertFrom-Json)
         $CsvWaits = @($Csv[0].waitsJson | ConvertFrom-Json)
-        if ($CsvLifecycle.Count -eq 0 -or $null -eq $CsvWaits -or $Csv[0].display -ne "unavailable" -or $Csv[0].replacementDrop -ne "unavailable" -or $Csv[0].inputLatency -ne "unavailable" -or $Csv[0].gpuHeadroom -ne "unavailable") {
+        $ReadyGpuCsv = @($Csv | Where-Object { $_.gpuTimingStatus -eq "Ready" -and $_.gpuDurationMs -ne "unavailable" })
+        if ($CsvLifecycle.Count -eq 0 -or $null -eq $CsvWaits -or $Csv[0].display -ne "unavailable" -or $Csv[0].replacementDrop -ne "unavailable" -or $Csv[0].inputLatency -ne "unavailable" -or $ReadyGpuCsv.Count -eq 0) {
             throw "Benchmark CSV raw fields are incomplete: $Backend $Target $Candidate"
+        }
+        foreach ($Frame in $ReadyGpuCsv) {
+            if ($Candidate -eq "responsive") {
+                if ($Frame.gpuHeadroom -ne "unavailable") { throw "Responsive CSV invented target-budget headroom: $Backend $Target" }
+            } else {
+                $ExpectedHeadroom = 1000.0 / $Target - [double]$Frame.gpuDurationMs
+                if ($Frame.gpuHeadroom -eq "unavailable" -or [Math]::Abs([double]$Frame.gpuHeadroom - $ExpectedHeadroom) -gt 0.001) {
+                    throw "CSV GPU headroom did not match its frame duration: $Backend $Target $Candidate"
+                }
+            }
         }
     }
 }
