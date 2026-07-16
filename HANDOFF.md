@@ -199,4 +199,4 @@ The initial V3 controller evidence found an off-center zoom-to-orbit continuity 
 
 ## Working State
 
-This continuity correction is ready to commit from base head `0f8e3f7`; generated captures, the portable diagnostic tool, raw streams, reports, and focused logs remain under ignored `output/`.
+Head `19d0c65` is on local `main` and `origin/main`; the working tree is clean except for this exact-head handoff correction. Generated captures, the portable diagnostic tool, raw streams, reports, and focused logs remain under ignored `output/`.
