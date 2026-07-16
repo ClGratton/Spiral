@@ -61,6 +61,7 @@ namespace Engine::RHI
     // parallel recording uses distinct bounded logical pools.
     class TimestampQueryPool;
     class TimestampQueryTransaction;
+    class TimestampQueryPoolState;
 
     class TimestampQueryRecording
     {
@@ -73,10 +74,11 @@ namespace Engine::RHI
     private:
         friend class TimestampQueryPool;
         friend class TimestampQueryTransaction;
-        TimestampQueryRecording(TimestampQueryPool* pool, u64 baseGeneration, std::vector<bool> reset,
+        friend class TimestampQueryPoolState;
+        TimestampQueryRecording(std::shared_ptr<TimestampQueryPoolState> pool, u64 baseGeneration, std::vector<bool> reset,
             std::vector<bool> written, std::vector<bool> resolved);
 
-        TimestampQueryPool* m_Pool = nullptr;
+        std::shared_ptr<TimestampQueryPoolState> m_Pool;
         u64 m_BaseGeneration = 0;
         std::vector<bool> m_Reset;
         std::vector<bool> m_Written;
@@ -99,6 +101,8 @@ namespace Engine::RHI
         explicit TimestampQueryRetirementQueue(u64 ownerDeviceId) : m_OwnerDeviceId(ownerDeviceId) {}
 
         bool IsRetained(const NativeQueryState& state) const;
+        bool Complete(const NativeQueryState& state, const CompletionToken& token, CompletionStatus status,
+            const std::vector<u64>& values = {});
         bool Retire(const CompletionToken& token, CompletionStatus status);
         size_t GetPendingRetirementCount() const { return m_Pending.size(); }
 
@@ -106,17 +110,25 @@ namespace Engine::RHI
         friend class TimestampQueryTransaction;
         struct RetainedState
         {
+            std::shared_ptr<TimestampQueryPoolState> Pool;
             NativeQueryState State;
             CompletionToken Token;
         };
 
-        bool Reserve(const NativeQueryState& state);
+        struct ReservedState
+        {
+            std::shared_ptr<TimestampQueryPoolState> Pool;
+            NativeQueryState State;
+        };
+
+        bool Reserve(const std::shared_ptr<TimestampQueryPoolState>& pool, const NativeQueryState& state);
         void ReleaseReservation(const NativeQueryState& state);
-        bool CanPublish(const NativeQueryState& state, const CompletionToken& token) const;
-        void Publish(const NativeQueryState& state, const CompletionToken& token);
+        bool CanPrepare(const std::shared_ptr<TimestampQueryPoolState>& pool, const NativeQueryState& state) const;
+        bool CanPublish(const std::shared_ptr<TimestampQueryPoolState>& pool, const NativeQueryState& state, const CompletionToken& token) const;
+        void Publish(const std::shared_ptr<TimestampQueryPoolState>& pool, const NativeQueryState& state, const CompletionToken& token);
 
         u64 m_OwnerDeviceId = 0;
-        std::vector<NativeQueryState> m_Reserved;
+        std::vector<ReservedState> m_Reserved;
         std::deque<RetainedState> m_Pending;
     };
 
@@ -139,20 +151,22 @@ namespace Engine::RHI
         bool Reset(u32 firstQuery, u32 queryCount, const std::function<bool()>& nativeOperation);
         bool Write(u32 queryIndex, const std::function<bool()>& nativeOperation);
         bool Resolve(u32 firstQuery, u32 queryCount, const std::function<bool()>& nativeOperation);
+        bool PrepareForSubmit();
         bool Publish(const CompletionToken& token);
         bool IsValid() const;
 
     private:
-        TimestampQueryTransaction(TimestampQueryPool& pool, TimestampQueryRetirementQueue& retirements,
+        TimestampQueryTransaction(std::shared_ptr<TimestampQueryPoolState> pool, TimestampQueryRetirementQueue& retirements,
             TimestampQueryRecording recording, NativeQueryState nativeState);
         bool Record(const std::function<bool(TimestampQueryRecording&)>& logicalOperation,
             const std::function<bool()>& nativeOperation);
         void ReleaseReservation();
 
-        TimestampQueryPool* m_Pool = nullptr;
+        std::shared_ptr<TimestampQueryPoolState> m_Pool;
         TimestampQueryRetirementQueue* m_Retirements = nullptr;
         std::optional<TimestampQueryRecording> m_Recording;
         NativeQueryState m_NativeState;
+        bool m_Prepared = false;
         bool m_Published = false;
     };
 
@@ -164,36 +178,21 @@ namespace Engine::RHI
 
         static Scope<TimestampQueryPool> Create(u64 ownerDeviceId, const QueryPoolDescription& description);
 
-        const QueryPoolDescription& GetDescription() const override { return m_Description; }
+        const QueryPoolDescription& GetDescription() const override;
         QueryResult ReadResult(u32 queryIndex) const override;
         QueryResult ReadResult(u32 queryIndex, u64 generation) const override;
-        u64 GetGeneration() const { return m_Generation; }
-        u64 GetOwnerDeviceId() const { return m_OwnerDeviceId; }
+        u64 GetGeneration() const;
+        u64 GetOwnerDeviceId() const;
 
         TimestampQueryRecording BeginRecording();
         bool Publish(TimestampQueryRecording& recording, const CompletionToken& token);
         bool Complete(const CompletionToken& token, CompletionStatus status, const std::vector<u64>& values = {});
-        size_t GetRetainedGenerationCount() const { return m_History.size(); }
+        size_t GetRetainedGenerationCount() const;
 
     private:
         friend class TimestampQueryRecording;
-        struct Generation
-        {
-            u64 Id = 0;
-            CompletionToken Token;
-            std::vector<bool> Resolved;
-            std::vector<QueryResult> Results;
-        };
-
         TimestampQueryPool(u64 ownerDeviceId, QueryPoolDescription description);
-        bool IsRangeValid(u32 firstQuery, u32 queryCount) const;
-        const Generation* FindGeneration(u64 generation) const;
-        Generation* FindGeneration(const CompletionToken& token);
-
-        u64 m_OwnerDeviceId = 0;
-        QueryPoolDescription m_Description;
-        u64 m_Generation = 0;
-        std::deque<Generation> m_History;
+        std::shared_ptr<TimestampQueryPoolState> m_State;
     };
 
     inline const char* ToString(QueryResultStatus status)

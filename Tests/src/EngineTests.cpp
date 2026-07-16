@@ -2779,7 +2779,7 @@ float4 main(VertexInput input) : SV_Position
             acceptedPublication = transaction && transaction->Reset(0, 1, [&] { ++callbackCount; return true; })
                 && transaction->Write(0, [&] { ++callbackCount; return true; })
                 && transaction->Resolve(0, 1, [&] { ++callbackCount; return true; })
-                && !transaction->Publish({}) && transaction->Publish(accepted);
+                && transaction->PrepareForSubmit() && !transaction->Publish({}) && transaction->Publish(accepted);
         }
         const bool exactTokenPublication = acceptedPublication && pool && pool->GetGeneration() == 1
             && pool->ReadResult(0, 1).Status == QueryResultStatus::Pending && retirements.IsRetained(nativeState);
@@ -2802,13 +2802,17 @@ float4 main(VertexInput input) : SV_Position
             auto transaction = destructionPool ? TimestampQueryTransaction::Begin(*destructionPool, retirements, destructionState) : std::nullopt;
             destructionPublished = transaction && transaction->Reset(0, 1, [] { return true; })
                 && transaction->Write(0, [] { return true; }) && transaction->Resolve(0, 1, [] { return true; })
-                && transaction->Publish(destructionToken);
+                && transaction->PrepareForSubmit() && transaction->Publish(destructionToken);
         }
         destructionPool.reset();
+        NativeQueryState destructionCompletionState = destructionState;
         destructionState.reset();
-        const bool publicWrapperDestruction = destructionPublished && !weakDestructionState.expired()
-            && retirements.GetPendingRetirementCount() == 1 && retirements.Retire(destructionToken, CompletionStatus::Complete)
-            && weakDestructionState.expired();
+        const bool destructionRetained = destructionPublished && !weakDestructionState.expired()
+            && retirements.GetPendingRetirementCount() == 1
+            && retirements.Complete(destructionCompletionState, destructionToken, CompletionStatus::Failed)
+            && retirements.Retire(destructionToken, CompletionStatus::Failed);
+        destructionCompletionState.reset();
+        const bool publicWrapperDestruction = destructionRetained && weakDestructionState.expired();
         nativeState.reset();
         invalidState.reset();
         rollbackState.reset();
@@ -2824,21 +2828,94 @@ float4 main(VertexInput input) : SV_Position
             auto transaction = pools.back() ? TimestampQueryTransaction::Begin(*pools.back(), retirements, states.back()) : std::nullopt;
             const CompletionToken token { deviceId, 100 + index };
             boundedRetirement = transaction && transaction->Reset(0, 1, [] { return true; })
-                && transaction->Write(0, [] { return true; }) && transaction->Resolve(0, 1, [] { return true; }) && transaction->Publish(token);
+                && transaction->Write(0, [] { return true; }) && transaction->Resolve(0, 1, [] { return true; })
+                && transaction->PrepareForSubmit() && transaction->Publish(token);
         }
         Scope<TimestampQueryPool> overflowPool = TimestampQueryPool::Create(deviceId, description);
         NativeQueryState overflowState = std::make_shared<FakeNativeQueryState>(destructionCount);
         const bool boundedCapacity = boundedRetirement && retirements.GetPendingRetirementCount() == TimestampQueryRetirementQueue::kMaximumPendingRetirements
             && overflowPool && !TimestampQueryTransaction::Begin(*overflowPool, retirements, overflowState).has_value();
         for (u64 index = 0; boundedRetirement && index < TimestampQueryRetirementQueue::kMaximumPendingRetirements; ++index)
-            boundedRetirement = retirements.Retire({ deviceId, 100 + index }, CompletionStatus::Complete);
+        {
+            const CompletionToken token { deviceId, 100 + index };
+            boundedRetirement = retirements.Complete(states[index], token, CompletionStatus::Complete, { 300 + index })
+                && retirements.Retire(token, CompletionStatus::Complete);
+        }
         states.clear();
         const bool boundedRelease = boundedCapacity && boundedRetirement && retirements.GetPendingRetirementCount() == 0;
+
+        Scope<TimestampQueryPool> preSubmitPool = TimestampQueryPool::Create(deviceId, description);
+        NativeQueryState preSubmitState = std::make_shared<FakeNativeQueryState>(destructionCount);
+        std::weak_ptr<void> weakPreSubmitState = preSubmitState;
+        auto preSubmitTransaction = preSubmitPool ? TimestampQueryTransaction::Begin(*preSubmitPool, retirements, preSubmitState) : std::nullopt;
+        const bool recordedBeforeWrapperDestruction = preSubmitTransaction && preSubmitTransaction->Reset(0, 1, [] { return true; })
+            && preSubmitTransaction->Write(0, [] { return true; }) && preSubmitTransaction->Resolve(0, 1, [] { return true; });
+        preSubmitPool.reset();
+        const CompletionToken preSubmitToken { deviceId, 200 };
+        const bool preSubmitPublishedAfterWrapperDestruction = recordedBeforeWrapperDestruction && preSubmitTransaction
+            && preSubmitTransaction->PrepareForSubmit() && !preSubmitTransaction->Write(0, [] { return true; })
+            && !preSubmitTransaction->Publish({}) && !preSubmitTransaction->Publish({ deviceId + 1, 200 })
+            && preSubmitTransaction->Publish(preSubmitToken) && !weakPreSubmitState.expired();
+        NativeQueryState preSubmitCompletionState = preSubmitState;
+        preSubmitState.reset();
+        const bool preSubmitOwnershipAndFreeze = preSubmitPublishedAfterWrapperDestruction
+            && retirements.Complete(preSubmitCompletionState, preSubmitToken, CompletionStatus::Complete, { 123 })
+            && retirements.Retire(preSubmitToken, CompletionStatus::Complete);
+        preSubmitCompletionState.reset();
+        const bool preSubmitReleased = preSubmitOwnershipAndFreeze && weakPreSubmitState.expired();
+        preSubmitTransaction.reset();
+
+        Scope<TimestampQueryPool> incompletePool = TimestampQueryPool::Create(deviceId, description);
+        NativeQueryState incompleteState = std::make_shared<FakeNativeQueryState>(destructionCount);
+        bool simulatedNativeSubmitCalled = false;
+        {
+            auto incomplete = incompletePool ? TimestampQueryTransaction::Begin(*incompletePool, retirements, incompleteState) : std::nullopt;
+            const bool incompleteRecorded = incomplete && incomplete->Reset(0, 1, [] { return true; });
+            const bool incompletePrepared = incompleteRecorded && incomplete->PrepareForSubmit();
+            if (incompletePrepared) simulatedNativeSubmitCalled = true;
+        }
+        const bool incompleteBeforeSubmit = !simulatedNativeSubmitCalled && retirements.GetPendingRetirementCount() == 0;
+
+        Scope<TimestampQueryPool> firstDuplicatePool = TimestampQueryPool::Create(deviceId, description);
+        Scope<TimestampQueryPool> secondDuplicatePool = TimestampQueryPool::Create(deviceId, description);
+        NativeQueryState firstDuplicateState = std::make_shared<FakeNativeQueryState>(destructionCount);
+        NativeQueryState secondDuplicateState = std::make_shared<FakeNativeQueryState>(destructionCount);
+        const CompletionToken duplicateToken { deviceId, 201 };
+        bool firstDuplicatePublished = false;
+        bool crossPoolTokenAccepted = false;
+        {
+            auto firstDuplicate = firstDuplicatePool ? TimestampQueryTransaction::Begin(*firstDuplicatePool, retirements, firstDuplicateState) : std::nullopt;
+            firstDuplicatePublished = firstDuplicate && firstDuplicate->Reset(0, 1, [] { return true; })
+                && firstDuplicate->Write(0, [] { return true; }) && firstDuplicate->Resolve(0, 1, [] { return true; })
+                && firstDuplicate->PrepareForSubmit() && firstDuplicate->Publish(duplicateToken);
+            auto secondDuplicate = secondDuplicatePool ? TimestampQueryTransaction::Begin(*secondDuplicatePool, retirements, secondDuplicateState) : std::nullopt;
+            crossPoolTokenAccepted = secondDuplicate && secondDuplicate->Reset(0, 1, [] { return true; })
+                && secondDuplicate->Write(0, [] { return true; }) && secondDuplicate->Resolve(0, 1, [] { return true; })
+                && secondDuplicate->PrepareForSubmit() && secondDuplicate->Publish(duplicateToken);
+        }
+        const bool crossPoolCompleted = firstDuplicatePublished && crossPoolTokenAccepted
+            && retirements.GetPendingRetirementCount() == 2
+            && retirements.Complete(firstDuplicateState, duplicateToken, CompletionStatus::Complete, { 211 })
+            && retirements.Complete(secondDuplicateState, duplicateToken, CompletionStatus::Complete, { 212 })
+            && retirements.Retire(duplicateToken, CompletionStatus::Complete)
+            && firstDuplicatePool->ReadResult(0, 1).Value == 211 && secondDuplicatePool->ReadResult(0, 1).Value == 212;
+        bool samePoolDuplicateRejected = false;
+        {
+            NativeQueryState samePoolState = std::make_shared<FakeNativeQueryState>(destructionCount);
+            auto samePoolDuplicate = TimestampQueryTransaction::Begin(*firstDuplicatePool, retirements, samePoolState);
+            samePoolDuplicateRejected = samePoolDuplicate && samePoolDuplicate->Reset(0, 1, [] { return true; })
+                && samePoolDuplicate->Write(0, [] { return true; }) && samePoolDuplicate->Resolve(0, 1, [] { return true; })
+                && samePoolDuplicate->PrepareForSubmit() && !samePoolDuplicate->Publish(duplicateToken);
+        }
+        const bool duplicateTokenBoundary = crossPoolCompleted && samePoolDuplicateRejected
+            && retirements.GetPendingRetirementCount() == 0;
 
         return Expect(validationBeforeCallback && rollback && failedSubmissionRollback,
                 "query transactions validate before native callbacks and roll back failed recording or submission")
             && Expect(exactTokenPublication && completionGatedReuse, "query transactions publish only accepted exact tokens and gate native reuse on retirement")
-            && Expect(publicWrapperDestruction && boundedRelease, "query retirement retains native state past public destruction and bounds pending records");
+            && Expect(publicWrapperDestruction && boundedRelease, "query retirement retains native state past public destruction and bounds pending records")
+            && Expect(preSubmitReleased && incompleteBeforeSubmit && duplicateTokenBoundary,
+                "query preflight retains logical state, freezes recording, and isolates token publication failures");
     }
 
     class RenderGraphTestTexture final : public Engine::RHI::Texture
