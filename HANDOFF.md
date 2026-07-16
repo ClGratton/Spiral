@@ -164,6 +164,8 @@ The first unchecked `PLAN.md` item is:
 
 Both engine candidates now exist and have low-target control-point evidence. The remaining work is the real bake-off: maintainable 60/120/refresh-relative targets, multiple-frame distributions, deadline overshoot, GPU headroom, PresentMon display attribution on Windows, external RTSS `ASYNC`, presentation-mode/VRR conditions, and an appropriate input-latency path. Do not select InterFrame or SubmissionGate as the production default from the current 5 FPS smoke, `Present` cadence, or an engine/overlay graph alone. GPU timestamp-query implementation remains a later separate PLAN item and is not required to explain that current native draws already execute on the GPU.
 
+The GPU-timing roadmap prerequisite is now explicitly backend-neutral and gates Phase 3E: D3D12 query heaps, Vulkan query pools, non-stalling resolve/readback, frame/pass identity, RenderGraph scopes, Profiler `GpuMilliseconds`, and native qualification must exist before Forward+/clustered lighting, PBR, lights, shadows, or sky/atmosphere begins. CPU steady-clock timing remains a fallback but cannot qualify GPU-cost claims.
+
 ## Working State
 
-Implementation commit `8bb678e` is on local `main`; `origin/main` is at `d16184b`. The working tree contains only this handoff refresh. Commit it, push the batch, and perform one exact-head CI status check, then stop as the user requested. Local acceptance is complete, so detach hosted CI unless it immediately reports a failure. Generated captures and CI artifacts remain under ignored `output/`.
+Implementation commit `8bb678e` and pacing handoff commit `dc6393c` are on `main` and `origin/main`. The working tree contains only the GPU-timing roadmap/architecture/handoff clarification requested after that slice. Commit and push this documentation change; no runtime behavior or checkbox changed. Generated captures and CI artifacts remain under ignored `output/`.
