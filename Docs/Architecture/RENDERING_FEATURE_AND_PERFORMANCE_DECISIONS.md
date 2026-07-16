@@ -299,6 +299,14 @@ Before that bake-off, the engine needs a bounded benchmark-capture artifact rath
 
 The implemented capture publishes immutable renderer snapshots and schema-1 CSV/JSON. Percentiles use sorted nearest-rank samples; the 1% and 0.1% low FPS summaries are `1000 / p99` and `1000 / p99.9` start-to-start frametime. Requested and effective policy targets are separate manifest fields. Presentation/sync/VRR/tearing strings are explicit runner inputs that default to `unknown`, and display/replacement/input/GPU-headroom stay literal unavailable fields until an external measurement source provides them.
 
+### Windows PresentMon Correlation Prerequisite
+
+Windows production-pacing measurement requires a separate PresentMon source stream rather than treating engine `Present` timestamps as display feedback. The supervisor starts a uniquely named PresentMon session before the benchmark editor, records the exact child PID/path and PresentMon path/version/arguments, and owns bounded cleanup of both process trees. Engine lifecycle export uses explicit QueryPerformanceCounter ticks plus frequency; it does not assume that `std::chrono::steady_clock` shares PresentMon's epoch.
+
+Only PresentMon rows whose `ProcessId` matches the launched editor may enter the run. Raw engine and PresentMon CSV data remain separate. A deterministic join report pairs ordered engine `PresentBegin` observations with PresentMon presents in the common QPC domain and rejects missing, ambiguous, non-monotonic, or reused rows instead of guessing. The runner asserts the exact headers produced by the installed PresentMon binary before interpreting `MsBetweenPresents`, display-change/display-latency fields, presentation mode, or displayed/dropped classification.
+
+PresentMon correlation may qualify present/display cadence and row classification for the exact captured process. It does not by itself identify the physical monitor, prove VRR state, prove RTSS/FES/frame-generation configuration, provide engine GPU timestamps/headroom, define replacement semantics, or measure click-to-photon latency. Those conditions remain declared `unknown` or `unavailable` until separately observed.
+
 ### Required Frame-Lifecycle Telemetry Prerequisite
 
 The prerequisite trace now carries the resolved project/runtime policy and one authoritative application frame ID across frame start, input/simulation, render submission, `Present` begin/end, and GPU-completion observation. It distinguishes intentional pacing wait from mandatory DXGI latency-object waiting and Vulkan acquire/fence correctness waiting. Backend capability/fallback diagnostics publish display cadence, replacement/drop, and input-to-photon latency as unavailable when those observations do not exist; a `Present` timestamp is not display feedback.

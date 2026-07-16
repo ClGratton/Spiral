@@ -4,7 +4,7 @@ Updated 2026-07-16. This is a recovery aid; `PLAN.md` remains the sole roadmap a
 
 ## Objective And Stop Condition
 
-Phase 3C expected-before RHI transitions, P2 worker-safe recording, the parent multithreaded preparation/recording integration, the project-owned frame-pacing policy/runtime override, shared frame-lifecycle telemetry, both experimental Smooth Frametime control points, and bounded benchmark capture are implemented and locally accepted. The user authorized continued ordered work down to a hard 25%-remaining weekly floor. The latest reliable meter reports 55% used / 45% remaining. Production pacing selection remains first unchecked and still needs external display/present evidence, GPU headroom, and an appropriate input-latency path; do not select a default from the engine-only artifacts.
+Phase 3C expected-before RHI transitions, P2 worker-safe recording, the parent multithreaded preparation/recording integration, the project-owned frame-pacing policy/runtime override, shared frame-lifecycle telemetry, both experimental Smooth Frametime control points, and bounded benchmark capture are implemented and locally accepted. The user authorized continued ordered work down to a hard 25%-remaining weekly floor. The latest reliable meter reports 58% used / 42% remaining. A read-only exact-Terra gate established Windows PresentMon correlation as the first unchecked prerequisite; production selection remains later and still needs external RTSS/VRR/input/GPU-headroom evidence.
 
 ## Token-Efficiency Baseline And Required Next-Session Audit (2026-07-15)
 
@@ -170,12 +170,14 @@ Exact-head CI run `29430304670` passed real Windows D3D12, Ubuntu Vulkan/lavapip
 
 The first unchecked `PLAN.md` item is:
 
-> Measure, compare, and select the production `Smooth Frametime` behavior at maintainable target cadences through DXGI waitable-swapchain and Vulkan presentation paths.
+> Phase 3 production-pacing measurement prerequisite — Windows PresentMon correlation.
 
-PresentMon is installed at `C:\Program Files\NVIDIA Corporation\FrameViewSDK\bin\PresentMon_x64.exe` and can support the next bounded Windows present/display-source stream, which must remain separate from engine rows and join by explicit process/time evidence. RTSS is installed but no safe non-interactive per-process ASYNC/FES configuration path was found; do not mutate its global binary state. The local display is 2560x1440 at 200 Hz, but VRR enabled/disabled state is not evidenced and no click-to-photon hardware is available. The next feasible slice is a read-only design/feasibility gate for PresentMon capture/join and honest condition control; external RTSS and input-latency conditions remain manual/blocking evidence, so production selection may need to stay unchecked after that prerequisite.
+PresentMon `1.7.12119.0` is installed at `C:\Program Files\NVIDIA Corporation\FrameViewSDK\bin\PresentMon_x64.exe`. The accepted implementation boundary is renderer artifact/QPC provenance plus a Windows supervisor: start a unique PresentMon session before the editor; record run identity, child PID/path, QPC frequency, PresentMon version/arguments, and declared conditions; retain separate raw streams; filter exact child PID; and fail closed on ambiguous ordered QPC joins or incomplete dual-process cleanup. Do not use `--stop_existing_session` or mutate shared PresentMon/RTSS state.
+
+RTSS is installed but no safe non-interactive per-process ASYNC/FES configuration path was found; do not mutate its global binary state. The local display is 2560x1440 at 200 Hz, but VRR enabled/disabled state is not evidenced and no click-to-photon hardware is available. PresentMon may add present/display cadence, mode, and displayed/dropped row evidence for the exact process, but monitor identity, VRR, RTSS/FES state, input latency, replacement semantics, and GPU headroom remain unavailable unless separately observed. Production selection must remain unchecked after this prerequisite unless those independent conditions are genuinely supplied.
 
 The GPU-timing roadmap prerequisite is now explicitly backend-neutral and gates Phase 3E: D3D12 query heaps, Vulkan query pools, non-stalling resolve/readback, frame/pass identity, RenderGraph scopes, Profiler `GpuMilliseconds`, and native qualification must exist before Forward+/clustered lighting, PBR, lights, shadows, or sky/atmosphere begins. CPU steady-clock timing remains a fallback but cannot qualify GPU-cost claims.
 
 ## Working State
 
-GPU-timing planning commit `df6590c` is on `origin/main`. Benchmark scheduling commit `d6f2456` and accepted implementation commit `6a06f53` are on local `main`, ready to push as one batch. The working tree is clean except for this handoff refresh. Generated captures and focused logs remain under ignored `output/`.
+Head `81b1598` is on `main` and `origin/main`; exact-head CI run `29510382649` and dependency submission `29510382467` were queued at the one allowed initial check and are deliberately detached because local evidence accepts the benchmark slice. The working tree contains only the PresentMon prerequisite scheduling/contract/handoff update. Generated captures and focused logs remain under ignored `output/`.
