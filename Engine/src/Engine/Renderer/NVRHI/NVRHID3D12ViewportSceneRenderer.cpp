@@ -217,6 +217,15 @@ namespace Engine
                 Log::Error("D3D12 Scene viewport RenderGraph retirement failed: ", retirement.Error);
                 return false;
             }
+            if (Application::Get().GetSpecification().CommandLineArgs.HasFlag("--scene-viewport-render-graph-smoke"))
+                for (const SubmittedRenderGraphFrameOwner::RetiredFrame& frame : retirement.Retired)
+                    if (!frame.TimestampScopes.empty())
+                    {
+                        const bool ready = std::all_of(frame.TimestampScopes.begin(), frame.TimestampScopes.end(), [](const RenderGraph::RawTimestampScope& scope)
+                            { return scope.Start.Status == RHI::QueryResultStatus::Ready && scope.End.Status == RHI::QueryResultStatus::Ready; });
+                        Log::Info("RenderGraphTimestampScopesV1 backend=D3D12 frame=", frame.FrameIndex, " scopes=", frame.TimestampScopes.size(),
+                            " raw=", ready ? "ready" : "disjoint", " cpuWaitBetween=no result=", ready ? "pass" : "fail");
+                    }
             if (!m_SubmittedGraphFrames.HasCapacity())
             {
                 Log::Error("D3D12 Scene viewport RenderGraph retirement capacity exhausted without a CPU wait");
@@ -327,7 +336,7 @@ namespace Engine
             graph->SetPassCallback(handoffPass, [](RenderGraph::ExecutionContext& context) { return context.GetTexture({ 0 }) != nullptr; });
             graph->SetPassWorkerRecordingEligible(handoffPass);
             const RenderGraph::CompileResult compiled = graph->Compile();
-            RenderGraph::ExecuteOptions executeOptions; executeOptions.RecordingMode = Application::Get().GetSpecification().CommandLineArgs.HasFlag("--frame-task-single-thread") ? FrameTaskExecutionMode::DeterministicSingleThread : FrameTaskExecutionMode::Parallel;
+            RenderGraph::ExecuteOptions executeOptions; executeOptions.RecordingMode = Application::Get().GetSpecification().CommandLineArgs.HasFlag("--frame-task-single-thread") ? FrameTaskExecutionMode::DeterministicSingleThread : FrameTaskExecutionMode::Parallel; executeOptions.EnableTimestampScopes = m_RHIDevice->GetCapabilities().GetFeature(RHI::DeviceFeature::Timestamps).IsUsable();
             const RenderGraph::ExecuteResult executed = graph->BindTexture(color, colorTexture) && graph->BindTexture(depth, depthTexture)
                 ? graph->Execute(*m_RHIDevice, compiled, executeOptions) : RenderGraph::ExecuteResult {};
             if (Application::Get().GetSpecification().CommandLineArgs.HasFlag("--scene-viewport-render-graph-smoke")) Log::Info("RenderGraphRecordingV1 backend=D3D12 mode=", executeOptions.RecordingMode == FrameTaskExecutionMode::Parallel ? "worker" : "inline", " workerPasses=", executed.WorkerRecordedPassCount, " overlap=", executed.WorkerRecordingOverlapObserved ? "yes" : "no", " submitted=", executed.AcceptedPassCount, " result=", executed.Success ? "pass" : "fail");

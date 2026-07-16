@@ -2962,12 +2962,29 @@ float4 main(VertexInput input) : SV_Position
         Engine::RHI::QueueType m_QueueOwner = Engine::RHI::QueueType::Graphics;
     };
 
+    class RenderGraphTestQueryPool final : public Engine::RHI::QueryPool
+    {
+    public:
+        RenderGraphTestQueryPool(Engine::u64 ownerId, const Engine::RHI::QueryPoolDescription& description)
+            : m_OwnerId(ownerId), m_Description(description), m_Logical(Engine::RHI::TimestampQueryPool::Create(ownerId, description)) {}
+        const Engine::RHI::QueryPoolDescription& GetDescription() const override { return m_Description; }
+        Engine::RHI::QueryResult ReadResult(Engine::u32 index) const override { return m_Logical ? m_Logical->ReadResult(index) : Engine::RHI::QueryResult {}; }
+        Engine::RHI::QueryResult ReadResult(Engine::u32 index, Engine::u64 generation) const override { return m_Logical ? m_Logical->ReadResult(index, generation) : Engine::RHI::QueryResult {}; }
+        double GetTimestampPeriodNanoseconds() const override { return 1.0; }
+        Engine::u64 GetOwnerId() const { return m_OwnerId; }
+        Engine::RHI::TimestampQueryPool* Logical() const { return m_Logical.get(); }
+    private:
+        Engine::u64 m_OwnerId = 0;
+        Engine::RHI::QueryPoolDescription m_Description;
+        Engine::Scope<Engine::RHI::TimestampQueryPool> m_Logical;
+    };
+
     class RenderGraphTestCommandList final : public Engine::RHI::CommandList
     {
     public:
-        RenderGraphTestCommandList(Engine::u32 id, Engine::RHI::QueueType queue, int& beginCount, std::vector<Engine::u32>& begunIds,
+        RenderGraphTestCommandList(Engine::u64 ownerId, Engine::u32 id, Engine::RHI::QueueType queue, int& beginCount, std::vector<Engine::u32>& begunIds,
             std::vector<std::string>& events, std::mutex& instrumentationMutex)
-            : m_Id(id), m_Queue(queue), m_BeginCount(beginCount), m_BegunIds(begunIds), m_Events(events), m_InstrumentationMutex(instrumentationMutex) {}
+            : m_OwnerId(ownerId), m_Id(id), m_Queue(queue), m_BeginCount(beginCount), m_BegunIds(begunIds), m_Events(events), m_InstrumentationMutex(instrumentationMutex) {}
 
         Engine::RHI::QueueType GetQueueType() const override { return m_Queue; }
         bool Begin() override
@@ -2979,6 +2996,8 @@ float4 main(VertexInput input) : SV_Position
             m_BufferTransitions.clear();
             m_BufferOwnershipOperations.clear();
             m_TextureOwnershipOperations.clear();
+            m_QueryPool = nullptr;
+            m_QueryRecording.reset();
             {
                 std::scoped_lock lock(m_InstrumentationMutex);
                 ++m_BeginCount;
@@ -3077,9 +3096,12 @@ float4 main(VertexInput input) : SV_Position
         void SetIndexBuffer(Engine::RHI::Buffer&, Engine::RHI::IndexFormat) override {}
         bool CopyBuffer(Engine::RHI::Buffer&, Engine::u64, Engine::RHI::Buffer&, Engine::u64, Engine::u64) override { return m_Recording; }
         void DrawIndexed(Engine::u32, Engine::u32, Engine::u32, int, Engine::u32) override {}
-        bool ResetQueryPool(Engine::RHI::QueryPool&, Engine::u32, Engine::u32) override { return false; }
-        bool WriteTimestamp(Engine::RHI::QueryPool&, Engine::u32) override { return false; }
-        bool ResolveQueryPool(Engine::RHI::QueryPool&, Engine::u32, Engine::u32) override { return false; }
+        bool ResetQueryPool(Engine::RHI::QueryPool& pool, Engine::u32 first, Engine::u32 count) override
+        { return RecordQuery(pool, "query:reset", [&](Engine::RHI::TimestampQueryRecording& recording) { return recording.Reset(first, count); }); }
+        bool WriteTimestamp(Engine::RHI::QueryPool& pool, Engine::u32 index) override
+        { return RecordQuery(pool, "query:write:" + std::to_string(index), [&](Engine::RHI::TimestampQueryRecording& recording) { return recording.Write(index); }); }
+        bool ResolveQueryPool(Engine::RHI::QueryPool& pool, Engine::u32 first, Engine::u32 count) override
+        { return RecordQuery(pool, "query:resolve", [&](Engine::RHI::TimestampQueryRecording& recording) { return recording.Resolve(first, count); }); }
 
         Engine::u32 GetId() const { return m_Id; }
         bool Commit()
@@ -3091,7 +3113,16 @@ float4 main(VertexInput input) : SV_Position
                 if (transition.Expected != Engine::RHI::ResourceState::Unknown && transition.Resource->GetState() != transition.Expected) return false;
             for (const TextureTransition& transition : m_TextureTransitions) transition.Resource->SetState(transition.State);
             for (const BufferTransition& transition : m_BufferTransitions) transition.Resource->SetState(transition.State);
+            return true;
+        }
+        bool PublishTimestamp(const Engine::RHI::CompletionToken& token, RenderGraphTestQueryPool*& pool)
+        {
+            pool = m_QueryPool;
+            if (!m_QueryPool) { m_Closed = false; return true; }
+            if (!m_Closed || !m_QueryRecording || !m_QueryPool->Logical()
+                || !m_QueryPool->Logical()->Publish(*m_QueryRecording, token)) return false;
             m_Closed = false;
+            m_QueryRecording.reset();
             return true;
         }
         enum class BufferOwnershipOperationKind { Release, Acquire };
@@ -3120,8 +3151,18 @@ float4 main(VertexInput input) : SV_Position
         const std::vector<TextureOwnershipOperation>& TextureOwnershipOperations() const { return m_TextureOwnershipOperations; }
 
     private:
+        template <typename Operation>
+        bool RecordQuery(Engine::RHI::QueryPool& pool, std::string event, Operation&& operation)
+        {
+            auto* timestamp = dynamic_cast<RenderGraphTestQueryPool*>(&pool);
+            if (!m_Recording || !timestamp || timestamp->GetOwnerId() != m_OwnerId || (m_QueryPool && m_QueryPool != timestamp)) return false;
+            if (!m_QueryPool) { m_QueryPool = timestamp; m_QueryRecording.emplace(timestamp->Logical()->BeginRecording()); }
+            if (!m_QueryRecording || !operation(*m_QueryRecording)) return false;
+            std::scoped_lock lock(m_InstrumentationMutex); m_Events.emplace_back(std::move(event)); return true;
+        }
         struct TextureTransition { RenderGraphTestTexture* Resource = nullptr; Engine::RHI::ResourceState State = Engine::RHI::ResourceState::Unknown; Engine::RHI::ResourceState Expected = Engine::RHI::ResourceState::Unknown; };
         struct BufferTransition { RenderGraphTestBuffer* Resource = nullptr; Engine::RHI::ResourceState State = Engine::RHI::ResourceState::Unknown; Engine::RHI::ResourceState Expected = Engine::RHI::ResourceState::Unknown; };
+        Engine::u64 m_OwnerId = 0;
         Engine::u32 m_Id = 0;
         Engine::RHI::QueueType m_Queue = Engine::RHI::QueueType::Graphics;
         int& m_BeginCount;
@@ -3134,6 +3175,8 @@ float4 main(VertexInput input) : SV_Position
         std::vector<BufferTransition> m_BufferTransitions;
         std::vector<BufferOwnershipOperation> m_BufferOwnershipOperations;
         std::vector<TextureOwnershipOperation> m_TextureOwnershipOperations;
+        RenderGraphTestQueryPool* m_QueryPool = nullptr;
+        std::optional<Engine::RHI::TimestampQueryRecording> m_QueryRecording;
     };
 
     class RenderGraphTestDevice final : public Engine::RHI::Device
@@ -3192,11 +3235,14 @@ float4 main(VertexInput input) : SV_Position
         { const auto* texture = dynamic_cast<const RenderGraphTestTexture*>(resource); if (!OwnsResource(resource) || !texture) return false; owner = texture->GetQueueOwner(); return true; }
         Engine::Scope<Engine::RHI::Shader> CreateShader(const Engine::RHI::ShaderDescription&) override { return nullptr; }
         Engine::Scope<Engine::RHI::Pipeline> CreatePipeline(const Engine::RHI::PipelineDescription&) override { return nullptr; }
-        Engine::Scope<Engine::RHI::QueryPool> CreateQueryPool(const Engine::RHI::QueryPoolDescription&) override { return nullptr; }
+        Engine::Scope<Engine::RHI::QueryPool> CreateQueryPool(const Engine::RHI::QueryPoolDescription& description) override
+        { return Engine::CreateScope<RenderGraphTestQueryPool>(m_OwnerId, description); }
+        bool OwnsQueryPool(const Engine::RHI::QueryPool* pool) const override
+        { const auto* timestamp = dynamic_cast<const RenderGraphTestQueryPool*>(pool); return timestamp && timestamp->GetOwnerId() == m_OwnerId; }
         Engine::Scope<Engine::RHI::CommandList> CreateCommandList(Engine::RHI::QueueType queue, std::string_view) override
         {
             const Engine::u32 id = ++CreatedCommandListCount;
-            return Engine::CreateScope<RenderGraphTestCommandList>(id, queue, BeginCount, BegunCommandListIds, Events, m_InstrumentationMutex);
+            return Engine::CreateScope<RenderGraphTestCommandList>(m_OwnerId, id, queue, BeginCount, BegunCommandListIds, Events, m_InstrumentationMutex);
         }
         bool UploadBuffer(Engine::RHI::Buffer&, const void*, Engine::u64, Engine::u64) override { return false; }
         bool ReadbackTexture(Engine::RHI::Texture&, Engine::RHI::TextureReadback&) override { return false; }
@@ -3244,8 +3290,12 @@ float4 main(VertexInput input) : SV_Position
                     ++GpuWaitDependencyCount;
             }
             if (!list->Commit()) return {};
+            const Engine::RHI::CompletionToken token { m_OwnerId, submissionId };
+            RenderGraphTestQueryPool* timestampPool = nullptr;
+            if (!list->PublishTimestamp(token, timestampPool)) return {};
             m_Completions.push_back(Engine::RHI::CompletionStatus::Incomplete);
             m_SubmissionQueues.push_back(ResolveQueue(list->GetQueueType()).Effective);
+            m_TimestampPools.push_back(timestampPool);
             for (const auto& operation : list->BufferOwnershipOperations())
             {
                 PublishedBufferOwnershipOperations.push_back(operation.Resource);
@@ -3269,7 +3319,7 @@ float4 main(VertexInput input) : SV_Position
             ++SubmitCount;
             ++NativeSubmissionCount;
             SubmittedCommandListIds.push_back(list->GetId());
-            return { m_OwnerId, submissionId };
+            return token;
         }
         Engine::RHI::CompletionStatus QueryCompletion(const Engine::RHI::CompletionToken& token) override
         {
@@ -3293,7 +3343,16 @@ float4 main(VertexInput input) : SV_Position
         void SetCompletion(const Engine::RHI::CompletionToken& token, Engine::RHI::CompletionStatus status)
         {
             if (token.DeviceId == m_OwnerId && token.SubmissionId > 0 && token.SubmissionId < m_Completions.size())
+            {
                 m_Completions[static_cast<size_t>(token.SubmissionId)] = status;
+                RenderGraphTestQueryPool* pool = m_TimestampPools[static_cast<size_t>(token.SubmissionId)];
+                if (pool && pool->Logical())
+                {
+                    const Engine::u64 start = token.SubmissionId * 100;
+                    pool->Logical()->Complete(token, status, status == Engine::RHI::CompletionStatus::Complete
+                        ? std::vector<Engine::u64> { start, start + 10 } : std::vector<Engine::u64> {});
+                }
+            }
         }
 
         int BeginCount = 0;
@@ -3319,6 +3378,7 @@ float4 main(VertexInput input) : SV_Position
         std::mutex m_InstrumentationMutex;
         std::vector<Engine::RHI::CompletionStatus> m_Completions;
         std::vector<Engine::RHI::QueueType> m_SubmissionQueues { Engine::RHI::QueueType::Graphics };
+        std::vector<RenderGraphTestQueryPool*> m_TimestampPools { nullptr };
     };
 
     bool TestSubmittedRenderGraphFrameOwnerRetiresWithoutWaiting()
@@ -3417,6 +3477,116 @@ float4 main(VertexInput input) : SV_Position
             && recovered.Success && recovered.PendingCount == 0 && boundedFailure
             && boundedRetired.Success && boundedRetired.PendingCount == 0,
             "submitted RenderGraph frames retain graphs, payloads, labels, and exact tokens without a CPU wait");
+    }
+
+    bool TestRenderGraphTimestampScopesRetireWithExactFrameIdentity()
+    {
+        using namespace Engine;
+        using namespace Engine::RHI;
+
+        struct Submission
+        {
+            Scope<RenderGraph> Graph;
+            RenderGraph::CompileResult Compiled;
+            RenderGraph::ExecuteResult Executed;
+        };
+        RenderGraphTestDevice device(8352);
+        TextureDescription description;
+        description.DebugName = "timestamp-scopes";
+        description.Extent = { 4, 4 };
+        description.TextureFormat = Format::R8G8B8A8Unorm;
+        description.Usage = TextureUsage::ShaderResource;
+        description.InitialState = ResourceState::Common;
+        RenderGraphTestTexture texture(8352, description, ResourceState::Common);
+        const auto submit = [&](bool workerEligible, bool failSecond = false)
+        {
+            device.Events.clear();
+            Submission submission;
+            submission.Graph = CreateScope<RenderGraph>();
+            const auto resource = submission.Graph->AddTexture(description, RenderGraph::ResourceLifetimeKind::Imported);
+            for (int index = 0; index < 3; ++index)
+            {
+                const std::string label = std::string("Timed ") + static_cast<char>('A' + index);
+                const auto pass = submission.Graph->AddPass(label);
+                submission.Graph->AddRead(pass, resource, ResourceState::Common, ShaderStage::Pixel);
+                submission.Graph->SetPassCallback(pass, [&, index, label](RenderGraph::ExecutionContext&)
+                {
+                    device.Events.push_back("callback:" + label);
+                    return !(failSecond && index == 1);
+                });
+                submission.Graph->SetPassWorkerRecordingEligible(pass, workerEligible);
+            }
+            submission.Compiled = submission.Graph->Compile();
+            RenderGraph::ExecuteOptions options;
+            options.RecordingMode = FrameTaskExecutionMode::DeterministicSingleThread;
+            options.EnableTimestampScopes = true;
+            if (submission.Graph->BindTexture(resource, texture))
+                submission.Executed = submission.Graph->Execute(device, submission.Compiled, options);
+            return submission;
+        };
+
+        const std::vector<std::string> expectedEvents {
+            "query:reset", "query:write:0", "callback:Timed A", "query:write:1", "query:resolve",
+            "query:reset", "query:write:0", "callback:Timed B", "query:write:1", "query:resolve",
+            "query:reset", "query:write:0", "callback:Timed C", "query:write:1", "query:resolve"
+        };
+        Submission caller = submit(false);
+        const bool callerOrdering = caller.Executed.Success && device.Events == expectedEvents;
+        for (const CompletionToken& token : caller.Executed.Completions) device.SetCompletion(token, CompletionStatus::Complete);
+
+        Submission worker = submit(true);
+        const bool workerOrdering = worker.Executed.Success && worker.Executed.WorkerRecordedPassCount == 3
+            && device.Events == expectedEvents;
+        SubmittedRenderGraphFrameOwner owner;
+        const std::vector<CompletionToken> workerTokens = worker.Executed.Completions;
+        std::string error;
+        const bool retained = owner.Retain(73, std::move(worker.Graph), worker.Compiled, worker.Executed, {}, &error);
+        const auto incomplete = owner.Poll(device);
+        for (const CompletionToken& token : workerTokens) device.SetCompletion(token, CompletionStatus::Complete);
+        const auto ready = owner.Poll(device);
+        bool exactReady = retained && incomplete.Success && incomplete.PendingCount == 1 && incomplete.TimestampScopes.empty()
+            && ready.Success && ready.PendingCount == 0 && ready.Retired.size() == 1
+            && ready.Retired[0].FrameIndex == 73 && ready.Retired[0].TimestampScopes.size() == 3
+            && ready.TimestampScopes.size() == 3 && device.WaitCount == 0;
+        for (size_t index = 0; exactReady && index < ready.TimestampScopes.size(); ++index)
+        {
+            const RenderGraph::RawTimestampScope& scope = ready.TimestampScopes[index];
+            exactReady = scope.FrameIndex == 73 && scope.PassLabel == std::string("Timed ") + static_cast<char>('A' + index)
+                && scope.Token.DeviceId == workerTokens[index].DeviceId && scope.Token.SubmissionId == workerTokens[index].SubmissionId
+                && scope.EffectiveQueue == QueueType::Graphics && scope.PeriodNanoseconds == 1.0
+                && scope.Start.Status == QueryResultStatus::Ready && scope.End.Status == QueryResultStatus::Ready
+                && scope.Start.Generation == 1 && scope.End.Generation == 1 && scope.End.Value - scope.Start.Value == 10;
+        }
+
+        Submission failed = submit(false, true);
+        const bool acceptedPrefix = !failed.Executed.Success && failed.Executed.AcceptedPassCount == 1
+            && failed.Executed.Completions.size() == 1
+            && owner.Retain(74, std::move(failed.Graph), failed.Compiled, failed.Executed, {}, &error);
+        device.SetCompletion(failed.Executed.Completion, CompletionStatus::Failed);
+        const auto disjoint = owner.Poll(device);
+        const bool truthfulDisjoint = acceptedPrefix && !disjoint.Success && disjoint.PendingCount == 1
+            && disjoint.TimestampScopes.size() == 1
+            && disjoint.TimestampScopes[0].Start.Status == QueryResultStatus::Disjoint
+            && disjoint.TimestampScopes[0].End.Status == QueryResultStatus::Disjoint && device.WaitCount == 0;
+        device.WaitIdle();
+        owner.ReleaseAfterDeviceIdle();
+
+        RenderGraphTestDevice splitQueueDevice(8353, false, true);
+        RenderGraph splitQueueGraph;
+        const auto splitResource = splitQueueGraph.AddTexture(description, RenderGraph::ResourceLifetimeKind::Imported);
+        const auto copyPass = splitQueueGraph.AddPass("Copy timed", QueueType::Copy);
+        splitQueueGraph.AddRead(copyPass, splitResource, ResourceState::Common, ShaderStage::Pixel);
+        splitQueueGraph.SetPassCallback(copyPass, [](RenderGraph::ExecutionContext&) { return true; });
+        RenderGraphTestTexture splitTexture(8353, description, ResourceState::Common);
+        RenderGraph::ExecuteOptions splitOptions; splitOptions.EnableTimestampScopes = true;
+        const auto splitCompiled = splitQueueGraph.Compile();
+        const auto splitResult = splitQueueGraph.BindTexture(splitResource, splitTexture)
+            ? splitQueueGraph.Execute(splitQueueDevice, splitCompiled, splitOptions) : RenderGraph::ExecuteResult {};
+        const bool crossQueueRejected = !splitResult.Success && splitResult.AcceptedPassCount == 0
+            && splitQueueDevice.BeginCount == 0 && splitQueueDevice.WaitCount == 0;
+
+        return Expect(callerOrdering && workerOrdering && exactReady && truthfulDisjoint && crossQueueRejected,
+            "RenderGraph timestamp scopes preserve operation order, exact frame/pass/token generations, and no-wait terminal status");
     }
 
     bool TestRhiSubmissionDependencyValidation()
@@ -4594,6 +4764,7 @@ int main()
         { "Render graph executor preserves accepted prefix on missing producer token", TestRenderGraphExecutorRejectsMissingProducerTokenBeforeConsumer },
         { "Render graph worker recording preserves eligibility ordering and retirement", TestRenderGraphWorkerRecordingContract },
         { "Submitted render graph frames retire exact tokens without waiting", TestSubmittedRenderGraphFrameOwnerRetiresWithoutWaiting },
+        { "Render graph timestamp scopes retire exact frame and pass identity", TestRenderGraphTimestampScopesRetireWithExactFrameIdentity },
         { "RHI buffer transition contract rejects incompatible states", TestRhiBufferTransitionContract },
         { "RHI completion token contract rejects unissued identities", TestRhiCompletionTokenContract },
         { "RHI timestamp query lifecycle preserves generation-safe nonblocking results", TestTimestampQueryPoolLifecycleContract },

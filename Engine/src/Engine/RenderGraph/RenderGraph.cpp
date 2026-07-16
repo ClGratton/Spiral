@@ -20,6 +20,8 @@ namespace Engine
                 const RHI::CompletionStatus status = device.QueryCompletion(token);
                 if (status == RHI::CompletionStatus::Invalid || status == RHI::CompletionStatus::Failed)
                 {
+                    const std::vector<RenderGraph::RawTimestampScope> failedScopes = frame->Graph->CollectTimestampScopes(frame->Identity.FrameIndex);
+                    result.TimestampScopes.insert(result.TimestampScopes.end(), failedScopes.begin(), failedScopes.end());
                     result.Success = false;
                     result.Error = "Submitted RenderGraph frame " + std::to_string(frame->Identity.FrameIndex)
                         + " has an invalid or failed exact completion token.";
@@ -35,6 +37,22 @@ namespace Engine
                 continue;
             }
 
+            const std::vector<RenderGraph::RawTimestampScope> scopes = frame->Graph->CollectTimestampScopes(frame->Identity.FrameIndex);
+            for (const RenderGraph::RawTimestampScope& scope : scopes)
+            {
+                // Scope results are read before graph/pool destruction and only
+                // after their exact submission is terminal. A pending raw read
+                // is retained rather than converted to a made-up duration.
+                if (scope.Start.Status == RHI::QueryResultStatus::Pending || scope.End.Status == RHI::QueryResultStatus::Pending)
+                {
+                    complete = false;
+                    break;
+                }
+            }
+            if (!complete) { ++frame; continue; }
+
+            frame->Identity.TimestampScopes = scopes;
+            result.TimestampScopes.insert(result.TimestampScopes.end(), scopes.begin(), scopes.end());
             result.Retired.emplace_back(std::move(frame->Identity));
             frame = m_Frames.erase(frame);
         }
@@ -85,10 +103,40 @@ namespace Engine
         pending.Identity.PassLabels.reserve(executed.Completions.size());
         for (size_t index = 0; index < executed.Completions.size(); ++index)
             pending.Identity.PassLabels.push_back(compiled.Passes[index].DebugName);
+        if (!graph->m_TimestampScopes.empty() && graph->m_TimestampScopes.size() != executed.Completions.size())
+            return fail("A submitted RenderGraph frame has incomplete timestamp-scope identity.");
+        for (size_t index = 0; index < graph->m_TimestampScopes.size(); ++index)
+        {
+            const RenderGraph::RecordedTimestampScope& recorded = graph->m_TimestampScopes[index];
+            const RHI::CompletionToken& expected = executed.Completions[index];
+            if (!recorded.Pool || !recorded.Generation || recorded.PassLabel != compiled.Passes[index].DebugName
+                || recorded.EffectiveQueue != RHI::QueueType::Graphics || recorded.PeriodNanoseconds <= 0.0
+                || recorded.Token.DeviceId != expected.DeviceId || recorded.Token.SubmissionId != expected.SubmissionId)
+                return fail("A submitted RenderGraph frame has invalid timestamp-scope identity.");
+        }
         pending.Graph = std::move(graph);
         pending.RetainedPayloads = std::move(retainedPayloads);
         m_Frames.emplace_back(std::move(pending));
         return true;
+    }
+
+    std::vector<RenderGraph::RawTimestampScope> RenderGraph::CollectTimestampScopes(u64 frameIndex) const
+    {
+        std::vector<RawTimestampScope> scopes;
+        scopes.reserve(m_TimestampScopes.size());
+        for (const RecordedTimestampScope& recorded : m_TimestampScopes)
+        {
+            RawTimestampScope scope;
+            scope.FrameIndex = frameIndex;
+            scope.PassLabel = recorded.PassLabel;
+            scope.Token = recorded.Token;
+            scope.EffectiveQueue = recorded.EffectiveQueue;
+            scope.PeriodNanoseconds = recorded.PeriodNanoseconds;
+            scope.Start = recorded.Pool ? recorded.Pool->ReadResult(0, recorded.Generation) : RHI::QueryResult {};
+            scope.End = recorded.Pool ? recorded.Pool->ReadResult(1, recorded.Generation) : RHI::QueryResult {};
+            scopes.emplace_back(std::move(scope));
+        }
+        return scopes;
     }
 
     RHI::CapabilityGroupState RenderGraph::BuildTransientResourceCapabilityGroup(
@@ -254,6 +302,8 @@ namespace Engine
     {
         ExecuteResult result;
         if (!compiled.Success) { result.Error = "Cannot execute an unsuccessful render-graph compilation."; return result; }
+        if (options.EnableTimestampScopes && !m_TimestampScopes.empty())
+        { result.Error = "This RenderGraph already owns submitted timestamp scopes."; return result; }
         if (m_RecordingDevice && m_RecordingDevice != &device) { result.Error = "Render graph recording contexts belong to another RHI device."; return result; }
         if (compiled.Passes.size() != m_Passes.size() || m_Callbacks.size() != m_Passes.size()) { result.Error = "Compiled passes do not match this render graph."; return result; }
         if (compiled.ResourceLifetimes.size() != m_Resources.size()) { result.Error = "Compiled resource lifetimes do not match this render graph."; return result; }
@@ -429,6 +479,50 @@ namespace Engine
         std::vector<RHI::QueueResolution> resolutions(m_Passes.size());
         for (const CompiledPass& pass : compiled.Passes)
             resolutions[pass.Pass.Index] = device.ResolveQueue(pass.Queue);
+        std::vector<Scope<RHI::QueryPool>> timestampPools(m_Passes.size());
+        if (options.EnableTimestampScopes)
+        {
+            for (const CompiledPass& pass : compiled.Passes)
+            {
+                if (resolutions[pass.Pass.Index].Effective != RHI::QueueType::Graphics)
+                { result.Error = "RenderGraph timestamp scopes require one effective Graphics clock domain."; return result; }
+                RHI::QueryPoolDescription description;
+                description.DebugName = "RenderGraph Timestamp: " + pass.DebugName;
+                description.Type = RHI::QueryType::Timestamp;
+                description.Count = 2;
+                timestampPools[pass.Pass.Index] = device.CreateQueryPool(description);
+                if (!timestampPools[pass.Pass.Index] || timestampPools[pass.Pass.Index]->GetTimestampPeriodNanoseconds() <= 0.0)
+                { result.Error = "Could not allocate a usable timestamp query pool for RenderGraph pass '" + pass.DebugName + "'."; return result; }
+            }
+        }
+        const auto beginTimestampScope = [&](u32 passIndex, RHI::CommandList& commands)
+        {
+            RHI::QueryPool* pool = timestampPools[passIndex].get();
+            return !pool || (commands.ResetQueryPool(*pool, 0, 2) && commands.WriteTimestamp(*pool, 0));
+        };
+        const auto endTimestampScope = [&](u32 passIndex, RHI::CommandList& commands)
+        {
+            RHI::QueryPool* pool = timestampPools[passIndex].get();
+            return !pool || (commands.WriteTimestamp(*pool, 1) && commands.ResolveQueryPool(*pool, 0, 2));
+        };
+        const auto retainTimestampScope = [&](const CompiledPass& pass, const RHI::CompletionToken& token)
+        {
+            Scope<RHI::QueryPool>& pool = timestampPools[pass.Pass.Index];
+            if (!pool)
+                return true;
+            const RHI::QueryResult start = pool->ReadResult(0);
+            if (start.Status != RHI::QueryResultStatus::Pending || !start.Generation)
+                return false;
+            RecordedTimestampScope scope;
+            scope.PassLabel = pass.DebugName;
+            scope.Token = token;
+            scope.EffectiveQueue = resolutions[pass.Pass.Index].Effective;
+            scope.Generation = start.Generation;
+            scope.PeriodNanoseconds = pool->GetTimestampPeriodNanoseconds();
+            scope.Pool = std::move(pool);
+            m_TimestampScopes.emplace_back(std::move(scope));
+            return true;
+        };
         for (u32 index = 0; index < m_Resources.size(); ++index)
         {
             const ResourceDescription& resource = m_Resources[index];
@@ -517,6 +611,7 @@ namespace Engine
                 RecordingContext& context = m_RecordingContexts[workerContextIndices[passIndex]];
                 const CompiledPass& compiledPass = *std::find_if(compiled.Passes.begin(), compiled.Passes.end(), [passIndex](const CompiledPass& value) { return value.Pass.Index == passIndex; });
                 bool ok = context.CommandList->Begin();
+                if (ok) ok = beginTimestampScope(passIndex, *context.CommandList);
                 for (u32 barrierIndex = compiledPass.FirstBarrier; ok && barrierIndex < compiledPass.FirstBarrier + compiledPass.BarrierCount; ++barrierIndex)
                 {
                     const Barrier& barrier = compiled.Barriers[barrierIndex];
@@ -533,6 +628,7 @@ namespace Engine
                     catch (...) { recordingErrors[passIndex] = "A graph pass callback threw an exception."; ok = false; }
                     context.CommandList->EndDebugMarker();
                 }
+                if (ok) ok = endTimestampScope(passIndex, *context.CommandList);
                 if (ok) ok = context.CommandList->End();
                 if (!ok && recordingErrors[passIndex].empty()) recordingErrors[passIndex] = "A graph worker recording failed.";
                 recordedOnWorker[passIndex] = ok ? 1 : 2;
@@ -600,6 +696,7 @@ namespace Engine
                 const RHI::CompletionToken token = device.Submit(*context->CommandList, dependencies);
                 if (!token.IsValid()) { result.Error = "Could not submit worker-recorded graph pass '" + compiledPass.DebugName + "'."; discardContext(); return result; }
                 context->Completion = token; passTokens[compiledPass.Pass.Index] = token;
+                const bool timestampPublished = retainTimestampScope(compiledPass, token);
                 for (const ResourceUse& use : m_Passes[compiledPass.Pass.Index].Uses)
                 {
                     const u32 allocationIndex = allocationForResource[use.Resource.Index]; if (allocationIndex == InvalidIndex) continue;
@@ -607,9 +704,11 @@ namespace Engine
                     if (std::find_if(retirement.begin(), retirement.end(), [&](const RHI::CompletionToken& prior) { return prior.DeviceId == token.DeviceId && prior.SubmissionId == token.SubmissionId; }) == retirement.end()) retirement.push_back(token);
                 }
                 result.Completions.push_back(token); result.Completion = token; ++result.AcceptedPassCount;
+                if (!timestampPublished) { result.Error = "Accepted RenderGraph timestamp scope did not publish its exact generation."; return result; }
                 continue;
             }
-            if (!context->CommandList->Begin()) { result.Error = "Could not begin a GPU-retired graph recording context."; discardContext(); return result; }
+            if (!context->CommandList->Begin() || !beginTimestampScope(compiledPass.Pass.Index, *context->CommandList))
+            { result.Error = "Could not begin a GPU-retired graph recording context or timestamp scope."; discardContext(); return result; }
             for (const QueueTransition* transition : acquires[compiledPass.Pass.Index])
             {
                 const RHI::CompletionToken releaseToken = passTokens[transition->Producer.Index];
@@ -664,11 +763,13 @@ namespace Engine
                     : context->CommandList->ReleaseBufferOwnership({ m_BoundBuffers[transition->Resource.Index], transition->SourceQueue, transition->DestinationQueue, transition->Before, transition->After });
                 if (!released) { result.Error = "Could not record a compiled graph ownership release."; discardContext(); return result; }
             }
-            if (!context->CommandList->End()) { result.Error = "Could not close graph recording."; discardContext(); return result; }
+            if (!endTimestampScope(compiledPass.Pass.Index, *context->CommandList) || !context->CommandList->End())
+            { result.Error = "Could not close graph recording or its timestamp scope."; discardContext(); return result; }
             const RHI::CompletionToken token = device.Submit(*context->CommandList, dependencies);
             if (!token.IsValid()) { result.Error = "Could not submit graph recording for pass '" + compiledPass.DebugName + "'."; discardContext(); return result; }
             context->Completion = token;
             passTokens[compiledPass.Pass.Index] = token;
+            const bool timestampPublished = retainTimestampScope(compiledPass, token);
             // Publish retirement at the accepted-submission boundary. A later
             // graph failure must retain this exact token on every transient
             // physical object touched by the accepted pass.
@@ -684,6 +785,7 @@ namespace Engine
             result.Completions.push_back(token);
             result.Completion = token;
             ++result.AcceptedPassCount;
+            if (!timestampPublished) { result.Error = "Accepted RenderGraph timestamp scope did not publish its exact generation."; return result; }
         }
         for (u32 index = 0; index < m_Resources.size(); ++index)
         {

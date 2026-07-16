@@ -137,6 +137,21 @@ namespace Engine
         struct ExecuteOptions
         {
             FrameTaskExecutionMode RecordingMode = FrameTaskExecutionMode::Parallel;
+            // P3A is opt-in so existing graph users and deterministic tests do
+            // not allocate timestamp pools. Unsupported devices leave scopes
+            // absent rather than fabricating timing data.
+            bool EnableTimestampScopes = false;
+        };
+
+        struct RawTimestampScope
+        {
+            u64 FrameIndex = 0;
+            std::string PassLabel;
+            RHI::CompletionToken Token;
+            RHI::QueueType EffectiveQueue = RHI::QueueType::Graphics;
+            RHI::QueryResult Start;
+            RHI::QueryResult End;
+            double PeriodNanoseconds = 0.0;
         };
 
         struct ResourceLifetime
@@ -226,12 +241,22 @@ namespace Engine
         [[nodiscard]] static const char* ToString(RHI::ResourceState state);
 
     private:
+        friend class SubmittedRenderGraphFrameOwner;
         struct RecordingContext
         {
             Scope<RHI::CommandList> CommandList;
             RHI::CompletionToken Completion;
             RHI::QueueType EffectiveQueue = RHI::QueueType::Graphics;
             u32 PassIndex = InvalidIndex;
+        };
+        struct RecordedTimestampScope
+        {
+            std::string PassLabel;
+            RHI::CompletionToken Token;
+            RHI::QueueType EffectiveQueue = RHI::QueueType::Graphics;
+            Scope<RHI::QueryPool> Pool;
+            u64 Generation = 0;
+            double PeriodNanoseconds = 0.0;
         };
         struct TransientAllocation
         {
@@ -249,6 +274,7 @@ namespace Engine
         static bool Matches(const RHI::BufferDescription& expected, const RHI::BufferDescription& actual);
         static u64 EstimateLogicalBytes(const RHI::TextureDescription& description);
         static u64 EstimateLogicalBytes(const RHI::BufferDescription& description);
+        [[nodiscard]] std::vector<RawTimestampScope> CollectTimestampScopes(u64 frameIndex) const;
 
     private:
         std::vector<ResourceDescription> m_Resources;
@@ -261,6 +287,7 @@ namespace Engine
         std::vector<bool> m_AutoTransientBindings;
         std::vector<RecordingContext> m_RecordingContexts;
         std::vector<TransientAllocation> m_TransientAllocations;
+        std::vector<RecordedTimestampScope> m_TimestampScopes;
         RHI::Device* m_RecordingDevice = nullptr;
     };
 
@@ -276,6 +303,7 @@ namespace Engine
             u64 FrameIndex = 0;
             std::vector<std::string> PassLabels;
             std::vector<RHI::CompletionToken> Completions;
+            std::vector<RenderGraph::RawTimestampScope> TimestampScopes;
         };
 
         struct PollResult
@@ -283,6 +311,9 @@ namespace Engine
             bool Success = true;
             std::string Error;
             std::vector<RetiredFrame> Retired;
+            // Terminal raw observations are exposed even when a failed exact
+            // token keeps its frame retained for truthful P2D failure handling.
+            std::vector<RenderGraph::RawTimestampScope> TimestampScopes;
             size_t PendingCount = 0;
         };
 

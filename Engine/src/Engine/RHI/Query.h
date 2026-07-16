@@ -100,7 +100,10 @@ namespace Engine::RHI
     class TimestampQueryRetirementQueue
     {
     public:
-        static constexpr size_t kMaximumPendingRetirements = 4;
+        // P3A retains SubmittedRenderGraphFrameOwner::Capacity (4) production
+        // frames, each bounded to three Graphics pass transactions: 4 * 3 = 12.
+        // Keep this numeric RHI-local; RHI must not depend upward on RenderGraph.
+        static constexpr size_t kMaximumPendingRetirements = 12;
 
         explicit TimestampQueryRetirementQueue(u64 ownerDeviceId) : m_OwnerDeviceId(ownerDeviceId) {}
 
