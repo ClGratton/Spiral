@@ -791,6 +791,41 @@ namespace Engine::RHI
             ComPtr<ID3D12PipelineState> m_PipelineState;
         };
 
+        // Native query objects remain an implementation detail of the D3D12 adapter.
+        // The public pool owns only the P1 lifecycle state; this shared allocation is
+        // retained by the transaction/device until its exact submission retires.
+        struct D3D12TimestampQueryState
+        {
+            ComPtr<ID3D12QueryHeap> Heap;
+            ComPtr<ID3D12Resource> Readback;
+            u64 Frequency = 0;
+            u32 Count = 0;
+        };
+
+        class NVRHID3D12TimestampQueryPool final : public QueryPool
+        {
+        public:
+            NVRHID3D12TimestampQueryPool(Scope<TimestampQueryPool> logicalPool, std::shared_ptr<D3D12TimestampQueryState> state)
+                : m_LogicalPool(std::move(logicalPool)), m_State(std::move(state)) {}
+
+            const QueryPoolDescription& GetDescription() const override { return m_LogicalPool->GetDescription(); }
+            QueryResult ReadResult(u32 queryIndex) const override { return m_LogicalPool->ReadResult(queryIndex); }
+            QueryResult ReadResult(u32 queryIndex, u64 generation) const override { return m_LogicalPool->ReadResult(queryIndex, generation); }
+            double GetTimestampPeriodNanoseconds() const override
+            {
+                return m_State->Frequency == 0 ? 0.0 : 1'000'000'000.0 / static_cast<double>(m_State->Frequency);
+            }
+            u64 GetOwnerDeviceId() const { return m_LogicalPool->GetOwnerDeviceId(); }
+            u64 GetGeneration() const { return m_LogicalPool->GetGeneration(); }
+            TimestampQueryPool& GetLogicalPool() const { return *m_LogicalPool; }
+            NativeQueryState GetNativeState() const { return std::static_pointer_cast<void>(m_State); }
+            const std::shared_ptr<D3D12TimestampQueryState>& GetState() const { return m_State; }
+
+        private:
+            Scope<TimestampQueryPool> m_LogicalPool;
+            std::shared_ptr<D3D12TimestampQueryState> m_State;
+        };
+
         class NVRHID3D12CommandList final : public CommandList
         {
         public:
@@ -821,6 +856,7 @@ namespace Engine::RHI
                 ID3D12Device* device,
                 std::string debugName,
                 std::function<CompletionStatus(const CompletionToken&)> queryCompletion,
+                TimestampQueryRetirementQueue* timestampRetirements,
                 BufferOwnershipTracker* ownershipTracker,
                 TextureOwnershipTracker* textureOwnershipTracker,
                 std::function<QueueType(QueueType)> resolveQueue)
@@ -832,6 +868,7 @@ namespace Engine::RHI
                 , m_Device(device)
                 , m_DebugName(std::move(debugName))
                 , m_QueryCompletion(std::move(queryCompletion))
+                , m_TimestampRetirements(timestampRetirements)
                 , m_OwnershipTracker(ownershipTracker)
                 , m_TextureOwnershipTracker(textureOwnershipTracker)
                 , m_ResolveQueue(std::move(resolveQueue))
@@ -872,6 +909,8 @@ namespace Engine::RHI
                 m_TextureStates.clear();
                 m_BufferStates.clear();
                 m_UsedBuffers.clear();
+                m_TimestampTransactions.clear();
+                m_PublishedTimestampStates.clear();
                 m_OwnershipOperations.clear();
                 m_TextureOwnershipOperations.clear();
                 return true;
@@ -881,6 +920,15 @@ namespace Engine::RHI
             {
                 if (!m_OwnedCommandList || m_State != State::Recording)
                     return false;
+
+                for (PendingTimestampTransaction& transaction : m_TimestampTransactions)
+                {
+                    if (!transaction.Transaction.PrepareForSubmit())
+                    {
+                        m_State = State::Error;
+                        return false;
+                    }
+                }
 
                 const HRESULT result = m_OwnedCommandList->Close();
                 if (FAILED(result))
@@ -920,6 +968,15 @@ namespace Engine::RHI
             {
                 if (!token.IsValid() || !IsReadyToSubmit())
                     return false;
+                for (PendingTimestampTransaction& transaction : m_TimestampTransactions)
+                {
+                    if (!transaction.Transaction.Publish(token))
+                    {
+                        m_State = State::Error;
+                        return false;
+                    }
+                    m_PublishedTimestampStates.push_back(transaction.State);
+                }
                 m_LastSubmission = token;
                 CommitTrackedStates();
                 m_State = State::Submitted;
@@ -929,6 +986,11 @@ namespace Engine::RHI
             ID3D12CommandList* GetNativeCommandList() const
             {
                 return m_CommandList;
+            }
+
+            std::vector<NativeQueryState> TakePublishedTimestampStates()
+            {
+                return std::move(m_PublishedTimestampStates);
             }
 
             ID3D12GraphicsCommandList* GetNativeGraphicsCommandList() const
@@ -1336,28 +1398,77 @@ namespace Engine::RHI
 
             bool ResetQueryPool(QueryPool& queryPool, u32 firstQuery, u32 queryCount) override
             {
-                (void)queryPool;
-                (void)firstQuery;
-                (void)queryCount;
-                return false;
+                PendingTimestampTransaction* transaction = FindOrBeginTimestampTransaction(queryPool);
+                if (!transaction || !transaction->Transaction.Reset(firstQuery, queryCount, [] { return true; }))
+                {
+                    m_State = State::Error;
+                    return false;
+                }
+                return true;
             }
 
             bool WriteTimestamp(QueryPool& queryPool, u32 queryIndex) override
             {
-                (void)queryPool;
-                (void)queryIndex;
-                return false;
+                PendingTimestampTransaction* transaction = FindOrBeginTimestampTransaction(queryPool);
+                const auto state = transaction ? std::static_pointer_cast<D3D12TimestampQueryState>(transaction->State) : nullptr;
+                if (!transaction || !state || !m_CommandList
+                    || !transaction->Transaction.Write(queryIndex, [this, state, queryIndex]
+                        { m_CommandList->EndQuery(state->Heap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, queryIndex); return true; }))
+                {
+                    m_State = State::Error;
+                    return false;
+                }
+                return true;
             }
 
             bool ResolveQueryPool(QueryPool& queryPool, u32 firstQuery, u32 queryCount) override
             {
-                (void)queryPool;
-                (void)firstQuery;
-                (void)queryCount;
-                return false;
+                PendingTimestampTransaction* transaction = FindOrBeginTimestampTransaction(queryPool);
+                const auto state = transaction ? std::static_pointer_cast<D3D12TimestampQueryState>(transaction->State) : nullptr;
+                if (!transaction || !state || !m_CommandList
+                    || !transaction->Transaction.Resolve(firstQuery, queryCount, [this, state, firstQuery, queryCount]
+                        {
+                            m_CommandList->ResolveQueryData(state->Heap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, firstQuery, queryCount,
+                                state->Readback.Get(), static_cast<UINT64>(firstQuery) * sizeof(u64));
+                            return true;
+                        }))
+                {
+                    m_State = State::Error;
+                    return false;
+                }
+                return true;
             }
 
         private:
+            struct PendingTimestampTransaction
+            {
+                QueryPool* PublicPool = nullptr;
+                NativeQueryState State;
+                TimestampQueryTransaction Transaction;
+
+                PendingTimestampTransaction(QueryPool& publicPool, NativeQueryState state, TimestampQueryTransaction transaction)
+                    : PublicPool(&publicPool), State(std::move(state)), Transaction(std::move(transaction)) {}
+            };
+
+            PendingTimestampTransaction* FindOrBeginTimestampTransaction(QueryPool& queryPool)
+            {
+                if (m_State != State::Recording || m_EffectiveQueueType != QueueType::Graphics || !m_TimestampRetirements)
+                    return nullptr;
+                for (PendingTimestampTransaction& transaction : m_TimestampTransactions)
+                    if (transaction.PublicPool == &queryPool)
+                        return &transaction;
+
+                auto* pool = dynamic_cast<NVRHID3D12TimestampQueryPool*>(&queryPool);
+                if (!pool || pool->GetOwnerDeviceId() != m_TimestampRetirements->GetOwnerDeviceId())
+                    return nullptr;
+                NativeQueryState state = pool->GetNativeState();
+                auto transaction = TimestampQueryTransaction::Begin(pool->GetLogicalPool(), *m_TimestampRetirements, state);
+                if (!transaction)
+                    return nullptr;
+                m_TimestampTransactions.emplace_back(queryPool, std::move(state), std::move(*transaction));
+                return &m_TimestampTransactions.back();
+            }
+
             struct TextureState
             {
                 NVRHID3D12Texture* Resource = nullptr;
@@ -1442,6 +1553,7 @@ namespace Engine::RHI
             std::string m_DebugName;
             std::function<CompletionStatus(const CompletionToken&)> m_QueryCompletion;
             std::function<QueueType(QueueType)> m_ResolveQueue;
+            TimestampQueryRetirementQueue* m_TimestampRetirements = nullptr;
             BufferOwnershipTracker* m_OwnershipTracker = nullptr;
             TextureOwnershipTracker* m_TextureOwnershipTracker = nullptr;
             CompletionToken m_LastSubmission;
@@ -1449,6 +1561,8 @@ namespace Engine::RHI
             std::vector<BufferState> m_BufferStates;
             std::vector<Buffer*> m_UsedBuffers;
             std::vector<Texture*> m_UsedTextures;
+            std::vector<PendingTimestampTransaction> m_TimestampTransactions;
+            std::vector<NativeQueryState> m_PublishedTimestampStates;
             std::vector<RecordedBufferOwnershipOperation> m_OwnershipOperations;
             std::vector<RecordedTextureOwnershipOperation> m_TextureOwnershipOperations;
             bool m_AllowPendingTexture = false;
@@ -1462,6 +1576,7 @@ namespace Engine::RHI
                 : m_Description(std::move(description))
                 , m_CompletionDeviceId(s_NextCompletionDeviceId.fetch_add(1))
                 , m_ResourceOwnerId(s_NextResourceOwnerId.fetch_add(1))
+                , m_TimestampRetirements(m_CompletionDeviceId)
             {
             }
 
@@ -1569,6 +1684,12 @@ namespace Engine::RHI
                 return texture && texture->GetOwnerId() == m_ResourceOwnerId && m_TextureOwnership.IsLive(resource);
             }
 
+            bool OwnsQueryPool(const QueryPool* queryPool) const override
+            {
+                const auto* pool = dynamic_cast<const NVRHID3D12TimestampQueryPool*>(queryPool);
+                return pool && pool->GetOwnerDeviceId() == m_CompletionDeviceId;
+            }
+
             bool QueryResourceState(const Buffer* resource, ResourceState& state) const override
             {
                 const auto* buffer = dynamic_cast<const NVRHID3D12Buffer*>(resource);
@@ -1626,10 +1747,58 @@ namespace Engine::RHI
                 return pipeline;
             }
 
-            Scope<QueryPool> CreateQueryPool(const QueryPoolDescription&) override
+            Scope<QueryPool> CreateQueryPool(const QueryPoolDescription& description) override
             {
-                Log::Error("NVRHI D3D12 query pools are not implemented");
-                return nullptr;
+                if (description.Type != QueryType::Timestamp || description.Count == 0
+                    || description.Count > TimestampQueryPool::kMaximumQueryCount || m_GraphicsTimestampFrequency == 0)
+                    return nullptr;
+
+                Scope<TimestampQueryPool> logicalPool = TimestampQueryPool::Create(m_CompletionDeviceId, description);
+                if (!logicalPool)
+                    return nullptr;
+
+                auto state = std::make_shared<D3D12TimestampQueryState>();
+                state->Frequency = m_GraphicsTimestampFrequency;
+                state->Count = description.Count;
+
+                D3D12_QUERY_HEAP_DESC queryHeapDescription {};
+                queryHeapDescription.Type = D3D12_QUERY_HEAP_TYPE_TIMESTAMP;
+                queryHeapDescription.Count = description.Count;
+                HRESULT result = m_Device->CreateQueryHeap(&queryHeapDescription, IID_PPV_ARGS(&state->Heap));
+                if (FAILED(result))
+                {
+                    Log::Error("Could not create D3D12 timestamp query heap '", description.DebugName, "': ", HResultToString(result));
+                    return nullptr;
+                }
+
+                D3D12_HEAP_PROPERTIES heapProperties {};
+                heapProperties.Type = D3D12_HEAP_TYPE_READBACK;
+                heapProperties.CreationNodeMask = 1;
+                heapProperties.VisibleNodeMask = 1;
+                D3D12_RESOURCE_DESC readbackDescription {};
+                readbackDescription.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+                readbackDescription.Width = static_cast<u64>(description.Count) * sizeof(u64);
+                readbackDescription.Height = 1;
+                readbackDescription.DepthOrArraySize = 1;
+                readbackDescription.MipLevels = 1;
+                readbackDescription.Format = DXGI_FORMAT_UNKNOWN;
+                readbackDescription.SampleDesc.Count = 1;
+                readbackDescription.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+                result = m_Device->CreateCommittedResource(&heapProperties, D3D12_HEAP_FLAG_NONE, &readbackDescription,
+                    D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&state->Readback));
+                if (FAILED(result))
+                {
+                    Log::Error("Could not create D3D12 timestamp readback buffer '", description.DebugName, "': ", HResultToString(result));
+                    return nullptr;
+                }
+
+                const std::wstring name = Utf8ToWide(description.DebugName);
+                if (!name.empty())
+                {
+                    state->Heap->SetName((name + L" Query Heap").c_str());
+                    state->Readback->SetName((name + L" Readback").c_str());
+                }
+                return CreateScope<NVRHID3D12TimestampQueryPool>(std::move(logicalPool), std::move(state));
             }
 
             Scope<CommandList> CreateCommandList(QueueType queueType, std::string_view debugName) override
@@ -1668,7 +1837,8 @@ namespace Engine::RHI
                 const QueueType effectiveQueue = ResolveQueue(queueType).Effective;
                 return CreateScope<NVRHID3D12CommandList>(queueType, effectiveQueue, std::move(allocator), std::move(commandList),
                     m_Device.Get(), std::string(debugName), [this](const CompletionToken& token) { return QueryCompletion(token); },
-                    &m_BufferOwnership, &m_TextureOwnership, [this](QueueType requested) { return ResolveQueue(requested).Effective; });
+                    &m_TimestampRetirements, &m_BufferOwnership, &m_TextureOwnership,
+                    [this](QueueType requested) { return ResolveQueue(requested).Effective; });
             }
 
             bool UploadBuffer(Buffer& destination, const void* sourceData, u64 sizeBytes, u64 destinationOffset) override
@@ -1877,6 +2047,13 @@ namespace Engine::RHI
                     Log::Error("D3D12 RHI submission could not publish command-list state");
                     return {};
                 }
+                auto completion = m_CompletionEntries.find(token.SubmissionId);
+                if (completion == m_CompletionEntries.end())
+                {
+                    Log::Error("D3D12 RHI submission lost its completion entry");
+                    return {};
+                }
+                completion->second.TimestampStates = nativeCommandList->TakePublishedTimestampStates();
                 for (const auto& ownership : nativeCommandList->GetOwnershipOperations())
                 {
                     const bool published = ownership.Type == BufferOwnershipOperationType::Release
@@ -1899,12 +2076,22 @@ namespace Engine::RHI
 
             CompletionStatus QueryCompletion(const CompletionToken& token) override
             {
-                const CompletionEntry* entry = FindCompletionEntry(token);
+                CompletionEntry* entry = FindCompletionEntryMutable(token);
                 if (!entry)
                     return CompletionStatus::Invalid;
+                if (entry->TerminalStatus != CompletionStatus::Incomplete)
+                    return entry->TerminalStatus;
                 ID3D12Fence* fence = GetSubmissionFence(entry->Queue);
-                return !fence ? CompletionStatus::Failed
-                    : (fence->GetCompletedValue() >= entry->FenceValue ? CompletionStatus::Complete : CompletionStatus::Incomplete);
+                if (!fence)
+                {
+                    entry->TerminalStatus = CompletionStatus::Failed;
+                    return entry->TerminalStatus;
+                }
+                if (fence->GetCompletedValue() < entry->FenceValue)
+                    return CompletionStatus::Incomplete;
+                entry->TerminalStatus = FinalizeTimestampQueries(*entry, token)
+                    ? CompletionStatus::Complete : CompletionStatus::Failed;
+                return entry->TerminalStatus;
             }
 
             bool WaitForCompletion(const CompletionToken& token, u32 timeoutMilliseconds) override
@@ -1951,6 +2138,8 @@ namespace Engine::RHI
             {
                 QueueType Queue = QueueType::Graphics;
                 u64 FenceValue = 0;
+                std::vector<NativeQueryState> TimestampStates;
+                CompletionStatus TerminalStatus = CompletionStatus::Incomplete;
             };
 
             struct QueueCompletion
@@ -1971,6 +2160,48 @@ namespace Engine::RHI
                     return nullptr;
                 const auto found = m_CompletionEntries.find(token.SubmissionId);
                 return found == m_CompletionEntries.end() ? nullptr : &found->second;
+            }
+
+            CompletionEntry* FindCompletionEntryMutable(const CompletionToken& token)
+            {
+                if (!token.IsValid() || token.DeviceId != m_CompletionDeviceId)
+                    return nullptr;
+                const auto found = m_CompletionEntries.find(token.SubmissionId);
+                return found == m_CompletionEntries.end() ? nullptr : &found->second;
+            }
+
+            bool FinalizeTimestampQueries(CompletionEntry& entry, const CompletionToken& token)
+            {
+                if (entry.TimestampStates.empty())
+                    return true;
+
+                bool completed = true;
+                for (const NativeQueryState& nativeState : entry.TimestampStates)
+                {
+                    const auto state = std::static_pointer_cast<D3D12TimestampQueryState>(nativeState);
+                    std::vector<u64> values;
+                    CompletionStatus status = CompletionStatus::Failed;
+                    if (state && state->Readback && state->Count != 0)
+                    {
+                        const SIZE_T byteCount = static_cast<SIZE_T>(state->Count) * sizeof(u64);
+                        D3D12_RANGE readRange { 0, byteCount };
+                        void* mapped = nullptr;
+                        if (SUCCEEDED(state->Readback->Map(0, &readRange, &mapped)) && mapped)
+                        {
+                            values.resize(state->Count);
+                            std::memcpy(values.data(), mapped, byteCount);
+                            const D3D12_RANGE writtenRange { 0, 0 };
+                            state->Readback->Unmap(0, &writtenRange);
+                            status = CompletionStatus::Complete;
+                        }
+                    }
+                    if (!m_TimestampRetirements.Complete(nativeState, token, status, values))
+                        completed = false;
+                }
+                const CompletionStatus retirementStatus = completed ? CompletionStatus::Complete : CompletionStatus::Failed;
+                const bool retired = m_TimestampRetirements.Retire(token, retirementStatus);
+                entry.TimestampStates.clear();
+                return completed && retired;
             }
 
             ID3D12Fence* GetSubmissionFence(QueueType queueType) const
@@ -2436,6 +2667,10 @@ namespace Engine::RHI
 
             void QueryCapabilities()
             {
+                UINT64 timestampFrequency = 0;
+                m_GraphicsTimestampFrequency = m_GraphicsQueue
+                    && SUCCEEDED(m_GraphicsQueue->GetTimestampFrequency(&timestampFrequency))
+                    ? static_cast<u64>(timestampFrequency) : 0;
                 m_Capabilities.ActiveBackend = Backend::NVRHID3D12;
                 m_Capabilities.ProfileName = "Phase 3 D3D12 Bootstrap V1";
                 m_Capabilities.Qualification = QualificationLevel::Bootstrap;
@@ -2495,8 +2730,11 @@ namespace Engine::RHI
                     neuralShadersAdvertised, false, false, false,
                     "Reported by NVRHI; no engine neural-shader path is enabled or implemented");
                 m_Capabilities.GetFeature(DeviceFeature::Timestamps) = MakeCapabilityState(
-                    true, false, false, false,
-                    "Native D3D12 timestamp queries are advertised, but RHI recording and resolve remain a stub");
+                    m_GraphicsQueue != nullptr, m_GraphicsTimestampFrequency != 0, m_GraphicsTimestampFrequency != 0, false,
+                    m_GraphicsTimestampFrequency == 0
+                        ? "Selected D3D12 graphics queue did not expose a usable timestamp frequency"
+                        : "Native D3D12 timestamp query heap/resolve/readback path is usable; graphics queue frequency="
+                            + std::to_string(m_GraphicsTimestampFrequency) + " Hz; runtime exercise is reported separately");
                 m_Capabilities.GetFeature(DeviceFeature::TimelineSynchronization) = MakeCapabilityState(
                     true, true, true, false,
                     "D3D12 fence synchronization backs synchronous RHI queue submission; runtime exercise is reported separately");
@@ -2538,6 +2776,8 @@ namespace Engine::RHI
             std::array<QueueCompletion, 3> m_QueueCompletions;
             u64 m_CompletionDeviceId = 0;
             const u64 m_ResourceOwnerId;
+            TimestampQueryRetirementQueue m_TimestampRetirements;
+            u64 m_GraphicsTimestampFrequency = 0;
             u64 m_NextCompletionSubmissionId = 1;
             std::unordered_map<u64, CompletionEntry> m_CompletionEntries;
             BufferOwnershipTracker m_BufferOwnership;

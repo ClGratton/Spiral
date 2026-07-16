@@ -1706,7 +1706,7 @@ namespace
         capabilities.GetFeature(DeviceFeature::Timestamps) = MakeCapabilityState(
             true, true, true, true, "timestamp query path is exercised");
 
-        CapabilityGroupState group = BuildFrameTimingCapabilityGroup(capabilities);
+        CapabilityGroupState group = BuildFrameTimingCapabilityGroup(capabilities, true);
         return Expect(group.Group == CapabilityGroupId::Phase3FrameTimingV1,
                    "frame timing uses a stable versioned capability group")
             && Expect(group.PreferredPath == CapabilityPath::GpuTimestamps
@@ -1726,7 +1726,7 @@ namespace
         capabilities.GetFeature(DeviceFeature::Timestamps) = MakeCapabilityState(
             true, false, false, false, "advertised but the query path is not implemented");
 
-        CapabilityGroupState group = BuildFrameTimingCapabilityGroup(capabilities);
+        CapabilityGroupState group = BuildFrameTimingCapabilityGroup(capabilities, false);
         const bool selectedFallback = group.PreferredPath == CapabilityPath::GpuTimestamps
             && group.SelectedPath == CapabilityPath::CpuSteadyClock
             && group.Implemented && !group.Exercised;
@@ -1759,7 +1759,7 @@ namespace
         timestamps.Exercised = true;
         timestamps.Detail = "invalid synthetic lifecycle";
 
-        const CapabilityGroupState group = BuildFrameTimingCapabilityGroup(capabilities);
+        const CapabilityGroupState group = BuildFrameTimingCapabilityGroup(capabilities, false);
         return Expect(!timestamps.IsValid(), "the synthetic timestamp lifecycle is invalid")
             && Expect(group.SelectedPath == CapabilityPath::CpuSteadyClock,
                 "an invalid timestamp lifecycle cannot select GPU timing")

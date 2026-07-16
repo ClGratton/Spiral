@@ -28,7 +28,7 @@ namespace Engine
     }
 
     RHI::CapabilityGroupState BuildFrameTimingCapabilityGroup(
-        const RHI::DeviceCapabilities& capabilities)
+        const RHI::DeviceCapabilities& capabilities, bool gpuTimingConsumerImplemented)
     {
         RHI::CapabilityGroupState group;
         group.Group = RHI::CapabilityGroupId::Phase3FrameTimingV1;
@@ -36,7 +36,7 @@ namespace Engine
         group.PreferredPath = RHI::CapabilityPath::GpuTimestamps;
 
         const RHI::CapabilityState& timestamps = capabilities.GetFeature(RHI::DeviceFeature::Timestamps);
-        if (timestamps.IsUsable())
+        if (timestamps.IsUsable() && gpuTimingConsumerImplemented)
         {
             group.SelectedPath = RHI::CapabilityPath::GpuTimestamps;
             group.Implemented = true;
@@ -45,10 +45,20 @@ namespace Engine
 
         group.SelectedPath = RHI::CapabilityPath::CpuSteadyClock;
         group.Implemented = true;
-        group.UnsupportedReasons.emplace_back(timestamps.Detail.empty()
-            ? "GPU timestamps are not usable on the active device profile"
-            : timestamps.Detail);
-        group.Fallbacks.emplace_back("GPU timestamps are unavailable; selected portable CPU steady-clock timing");
+        if (timestamps.IsUsable())
+        {
+            group.UnsupportedReasons.emplace_back(
+                "Native RHI timestamps are usable, but whole-frame/pass instrumentation is not implemented yet");
+            group.Fallbacks.emplace_back(
+                "Renderer GPU timing consumer is unavailable; selected portable CPU steady-clock timing");
+        }
+        else
+        {
+            group.UnsupportedReasons.emplace_back(timestamps.Detail.empty()
+                ? "GPU timestamps are not usable on the active device profile"
+                : timestamps.Detail);
+            group.Fallbacks.emplace_back("GPU timestamps are unavailable; selected portable CPU steady-clock timing");
+        }
         return group;
     }
 }

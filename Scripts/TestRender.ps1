@@ -42,7 +42,7 @@ foreach ($Path in @($ResolvedCapturePath) + $SceneOriginCapturePaths) {
     }
 }
 
-$RenderResult = Invoke-BoundedProcess -FilePath $Editor -Arguments @("--capture-viewport", "--smoke-test", "--frame-lifecycle-telemetry-smoke", "--renderer-capability-smoke", "--scene-origin-raster-smoke", "--scene-raster-preparation-smoke", "--scene-viewport-render-graph-smoke", "--rhi-buffer-transition-smoke", "--rhi-completion-smoke", "--rhi-queue-dependency-smoke", "--rhi-buffer-ownership-smoke", "--rhi-texture-ownership-smoke", "--rhi-resource-ownership-smoke", "--rhi-resource-state-smoke", "--rhi-texture-readback-smoke", "--render-graph-execution-smoke") -Label "Editor render smoke" -TimeoutSeconds $ChildTimeoutSeconds
+$RenderResult = Invoke-BoundedProcess -FilePath $Editor -Arguments @("--capture-viewport", "--smoke-test", "--frame-lifecycle-telemetry-smoke", "--renderer-capability-smoke", "--scene-origin-raster-smoke", "--scene-raster-preparation-smoke", "--scene-viewport-render-graph-smoke", "--rhi-buffer-transition-smoke", "--rhi-completion-smoke", "--rhi-timestamp-query-smoke", "--rhi-queue-dependency-smoke", "--rhi-buffer-ownership-smoke", "--rhi-texture-ownership-smoke", "--rhi-resource-ownership-smoke", "--rhi-resource-state-smoke", "--rhi-texture-readback-smoke", "--render-graph-execution-smoke") -Label "Editor render smoke" -TimeoutSeconds $ChildTimeoutSeconds
 $Output = $RenderLog = $RenderResult.Output
 if ($RenderResult.TimedOut) {
     throw "Editor render smoke timed out after $ChildTimeoutSeconds seconds."
@@ -82,7 +82,7 @@ $RequiredMarkers = @(
     "NVRHI D3D12 device created on adapter:",
     "Selected D3D12 adapter for profile 'Phase 3 D3D12 Bootstrap V1':",
     "D3D12 capability state: Ray Tracing advertised=",
-    "D3D12 capability state: Timestamps advertised=yes, enabled=no, implemented=no, exercised=no",
+    "D3D12 capability state: Timestamps advertised=yes, enabled=yes, implemented=yes, exercised=no",
     "Editor renderer capability diagnostics ready: profile=Phase 3 D3D12 Bootstrap V1, qualification=Bootstrap",
     "Renderer capability group: group=Phase3FrameTimingV1, profile=Phase 3 Frame Timing V1, preferredPath=GpuTimestamps, selectedPath=CpuSteadyClock, implemented=yes, exercised=no",
     "Renderer capability group: group=Phase3TransientResourcesV1, profile=Phase 3 Transient Resources V1, preferredPath=PlacedAliasedTransient, selectedPath=NonAliasedGpuRetiredPool, implemented=yes, exercised=no",
@@ -98,6 +98,7 @@ $RequiredMarkers = @(
     "D3D12 scene origin raster smoke passed",
     "RHIBufferTransitionSmokeV1 backend=D3D12, invalid=rejected, lifecycle=pass, submission=pass, result=pass"
     "RHICompletionSmokeV1 backend=D3D12, tokenValidation=pass, query=nonblocking-"
+    "RHITimestampQuerySmokeV1 backend=D3D12, allocation=pass, periodNanoseconds="
     "RHIQueueDependencySmokeV1 backend=D3D12,"
     "RHIBufferOwnershipSmokeV1 backend=D3D12,"
     "RHITextureOwnershipSmokeV1 backend=D3D12,"
@@ -122,6 +123,9 @@ if (($InlineRecordingJoinedLog -notmatch 'SceneRasterPreparationV1 mode=single-t
 }
 if ($JoinedLog -notmatch 'RHICompletionSmokeV1 backend=D3D12, tokenValidation=pass, query=nonblocking-(incomplete|complete), wait=pass, reuse=pass, result=pass') {
     throw "D3D12 render smoke did not prove completion-token retirement and recording reuse."
+}
+if ($JoinedLog -notmatch 'RHITimestampQuerySmokeV1 backend=D3D12, allocation=pass, periodNanoseconds=[0-9]+(?:\.[0-9]+)?, writeResolve=pass, pending=pass, readback=pass, reuse=retired-pass, destruction=retained-pass, result=pass') {
+    throw "D3D12 render smoke did not prove native timestamp allocation, resolve, retirement, reuse, and destruction."
 }
 if ($JoinedLog -notmatch 'RenderGraphExecutionSmokeV1 backend=D3D12, barriers=3, callbacks=ordered-pass, undeclared=rejected, submission=pass, topology=(independent-copy|graphics-fallback), dependency=(gpu-wait|ordered-elided), readback=pass, reuse=retired-same-context, result=pass') {
     throw "D3D12 render smoke did not prove topology-adaptive RenderGraph queue execution, readback, and aggregate retirement."

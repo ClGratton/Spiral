@@ -406,7 +406,7 @@ namespace Engine
                 {
                     s_DeviceCapabilities = *capabilities;
                     s_DeviceCapabilities.CapabilityGroups.push_back(
-                        BuildFrameTimingCapabilityGroup(s_DeviceCapabilities));
+                        BuildFrameTimingCapabilityGroup(s_DeviceCapabilities, false));
                     s_DeviceCapabilities.CapabilityGroups.push_back(
                         RenderGraph::BuildTransientResourceCapabilityGroup(s_DeviceCapabilities));
                     s_HasDeviceCapabilities = true;

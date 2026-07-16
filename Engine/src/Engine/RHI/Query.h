@@ -53,6 +53,10 @@ namespace Engine::RHI
             const QueryResult result = ReadResult(queryIndex);
             return result.Generation == generation ? result : QueryResult {};
         }
+        // Zero means the backend has not exposed a usable timestamp scale.
+        // D3D12 derives this from the selected queue frequency; Vulkan exposes
+        // the physical-device timestampPeriod directly.
+        virtual double GetTimestampPeriodNanoseconds() const { return 0.0; }
     };
 
     // P1 owns only the backend-neutral state machine. P2 adapters translate
@@ -100,6 +104,7 @@ namespace Engine::RHI
 
         explicit TimestampQueryRetirementQueue(u64 ownerDeviceId) : m_OwnerDeviceId(ownerDeviceId) {}
 
+        u64 GetOwnerDeviceId() const { return m_OwnerDeviceId; }
         bool IsRetained(const NativeQueryState& state) const;
         bool Complete(const NativeQueryState& state, const CompletionToken& token, CompletionStatus status,
             const std::vector<u64>& values = {});

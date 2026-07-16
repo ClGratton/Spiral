@@ -170,6 +170,18 @@ Use the same canonical Debug build and complete deterministic suite as P1. The `
 
 The same deterministic case also proves P2A2: the transaction retains logical state when the public wrapper is destroyed after recording but before submit; unfinished/poisoned/stale/unreserved state fails a non-mutating publication preflight before the simulated native-submit callback; a successful preflight freezes further recording; invalid/cross-device and same-pool duplicate tokens reject while one submission token remains valid across distinct logical pools; per-state values complete both pools; and retirement rejects until every matching generation is terminal. Backend query methods and capability state remain unavailable.
 
+## Phase 3 GPU Timing P2B D3D12 Native Translation
+
+Run the canonical zero-warning Debug build, complete deterministic suite, and focused bounded native smoke:
+
+```powershell
+.\Scripts\Build.ps1 -Configuration Debug -Action vs2022
+.\bin\Debug-windows-x86_64\EngineTests\EngineTests.exe
+.\Scripts\TestD3D12Timestamps.ps1 -Configuration Debug -Action vs2022 -SkipBuild
+```
+
+The focused script must exit successfully, leave no Editor child alive, report D3D12 timestamps advertised/enabled/implemented with a nonzero graphics-queue frequency, and emit `RHITimestampQuerySmokeV1 ... allocation=pass ... writeResolve=pass, pending=pass, readback=pass, reuse=retired-pass, destruction=retained-pass, result=pass` with a positive `periodNanoseconds`. `Pending` is observed after accepted publication and before completion collection; mapping and logical completion occur only when the exact completion fence is terminal. This qualifies the D3D12 native RHI bridge only. `Phase3FrameTimingV1` must remain on `CpuSteadyClock` until P3 adds whole-frame/pass identity and asynchronous Profiler publication; the smoke is not GPU-headroom or pacing-selection evidence.
+
 ## Renderer Verification
 
 ## Render Graph Construction Verification

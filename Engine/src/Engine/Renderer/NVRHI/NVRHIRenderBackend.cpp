@@ -169,6 +169,12 @@ namespace Engine
                 m_Device.reset();
                 return false;
             }
+            if (args.HasFlag("--rhi-timestamp-query-smoke") && !RunRHITimestampQuerySmoke(*m_Device, "D3D12"))
+            {
+                Log::Error("D3D12 RHI timestamp-query smoke failed");
+                m_Device.reset();
+                return false;
+            }
             if (args.HasFlag("--rhi-queue-dependency-smoke") && !RunRHIQueueDependencySmoke(*m_Device, "D3D12"))
             {
                 Log::Error("D3D12 RHI queue-dependency smoke failed");
@@ -522,6 +528,69 @@ namespace Engine
             ", query=nonblocking-", initial == RHI::CompletionStatus::Incomplete ? "incomplete" : (initial == RHI::CompletionStatus::Complete ? "complete" : "failed"),
             ", wait=", finalComplete ? "pass" : "fail",
             ", reuse=", reuseRetired ? "pass" : "fail",
+            ", result=", passed ? "pass" : "fail");
+        return passed;
+    }
+
+    bool NVRHIRenderBackend::RunRHITimestampQuerySmoke(RHI::Device& device, std::string_view backendName)
+    {
+        RHI::QueryPoolDescription description;
+        description.DebugName = "RHITimestampQuerySmokeV1";
+        description.Type = RHI::QueryType::Timestamp;
+        description.Count = 2;
+        Scope<RHI::QueryPool> pool = device.CreateQueryPool(description);
+        const double periodNanoseconds = pool ? pool->GetTimestampPeriodNanoseconds() : 0.0;
+        const bool allocated = pool && device.OwnsQueryPool(pool.get()) && periodNanoseconds > 0.0;
+
+        Scope<RHI::CommandList> firstList = allocated
+            ? device.CreateCommandList(RHI::QueueType::Graphics, "RHITimestampQuerySmokeV1 First") : nullptr;
+        const bool firstRecorded = firstList && firstList->Begin() && firstList->ResetQueryPool(*pool, 0, 2)
+            && firstList->WriteTimestamp(*pool, 0) && firstList->WriteTimestamp(*pool, 1)
+            && firstList->ResolveQueryPool(*pool, 0, 2) && firstList->End();
+        const RHI::CompletionToken firstToken = firstRecorded ? device.Submit(*firstList) : RHI::CompletionToken {};
+        const RHI::QueryResult firstPending = firstToken.IsValid() ? pool->ReadResult(0) : RHI::QueryResult {};
+        const bool pending = firstPending.Status == RHI::QueryResultStatus::Pending;
+        const bool firstRetired = firstToken.IsValid() && device.WaitForCompletion(firstToken, 5000);
+        const RHI::QueryResult firstBegin = pool ? pool->ReadResult(0) : RHI::QueryResult {};
+        const RHI::QueryResult firstEnd = pool ? pool->ReadResult(1) : RHI::QueryResult {};
+        const bool readback = firstRetired && firstBegin.Status == RHI::QueryResultStatus::Ready
+            && firstEnd.Status == RHI::QueryResultStatus::Ready && firstEnd.Value >= firstBegin.Value;
+
+        Scope<RHI::CommandList> reuseList = readback
+            ? device.CreateCommandList(RHI::QueueType::Graphics, "RHITimestampQuerySmokeV1 Reuse") : nullptr;
+        const bool reuseRecorded = reuseList && reuseList->Begin() && reuseList->ResetQueryPool(*pool, 0, 2)
+            && reuseList->WriteTimestamp(*pool, 0) && reuseList->WriteTimestamp(*pool, 1)
+            && reuseList->ResolveQueryPool(*pool, 0, 2) && reuseList->End();
+        const RHI::CompletionToken reuseToken = reuseRecorded ? device.Submit(*reuseList) : RHI::CompletionToken {};
+        const bool reusePending = reuseToken.IsValid() && pool->ReadResult(0).Status == RHI::QueryResultStatus::Pending;
+        const bool reused = reusePending && device.WaitForCompletion(reuseToken, 5000)
+            && pool->ReadResult(0).Status == RHI::QueryResultStatus::Ready
+            && pool->ReadResult(0).Generation > firstBegin.Generation;
+
+        RHI::QueryPoolDescription destructionDescription = description;
+        destructionDescription.DebugName = "RHITimestampQuerySmokeV1 Destruction";
+        destructionDescription.Count = 1;
+        Scope<RHI::QueryPool> destructionPool = device.CreateQueryPool(destructionDescription);
+        Scope<RHI::CommandList> destructionList = destructionPool
+            ? device.CreateCommandList(RHI::QueueType::Graphics, "RHITimestampQuerySmokeV1 Destruction") : nullptr;
+        const bool destructionRecorded = destructionList && destructionList->Begin()
+            && destructionList->ResetQueryPool(*destructionPool, 0, 1)
+            && destructionList->WriteTimestamp(*destructionPool, 0)
+            && destructionList->ResolveQueryPool(*destructionPool, 0, 1) && destructionList->End();
+        const RHI::CompletionToken destructionToken = destructionRecorded
+            ? device.Submit(*destructionList) : RHI::CompletionToken {};
+        destructionPool.reset();
+        const bool destructionRetired = destructionToken.IsValid() && device.WaitForCompletion(destructionToken, 5000);
+
+        const bool passed = allocated && firstRecorded && pending && readback && reused && destructionRetired;
+        Log::Info("RHITimestampQuerySmokeV1 backend=", backendName,
+            ", allocation=", allocated ? "pass" : "fail",
+            ", periodNanoseconds=", periodNanoseconds,
+            ", writeResolve=", firstRecorded ? "pass" : "fail",
+            ", pending=", pending ? "pass" : "fail",
+            ", readback=", readback ? "pass" : "fail",
+            ", reuse=", reused ? "retired-pass" : "fail",
+            ", destruction=", destructionRetired ? "retained-pass" : "fail",
             ", result=", passed ? "pass" : "fail");
         return passed;
     }

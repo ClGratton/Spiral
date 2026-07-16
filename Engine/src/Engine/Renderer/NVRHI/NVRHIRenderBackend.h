@@ -34,6 +34,7 @@ namespace Engine
         bool RunVulkanRHICoreSmoke();
         bool RunRHIBufferTransitionSmoke(RHI::Device& device, std::string_view backendName);
         bool RunRHICompletionSmoke(RHI::Device& device, std::string_view backendName);
+        bool RunRHITimestampQuerySmoke(RHI::Device& device, std::string_view backendName);
         bool RunRHIQueueDependencySmoke(RHI::Device& device, std::string_view backendName);
         bool RunRHIBufferOwnershipSmoke(RHI::Device& device, std::string_view backendName);
         bool RunRHITextureOwnershipSmoke(RHI::Device& device, std::string_view backendName);
