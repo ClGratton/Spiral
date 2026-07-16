@@ -35,6 +35,7 @@ Engine::Application* Engine::CreateApplication(ApplicationCommandLineArgs args)
         || args.HasFlag("--frame-lifecycle-telemetry-smoke")
         || args.HasFlag("--smooth-frametime-candidate-smoke")
         || args.HasFlag("--frame-pacing-benchmark")
+        || args.HasFlag("--editor-settings-smoke")
         || args.HasFlag("--scene-authoring-smoke")
         || args.HasFlag("--scene-render-snapshot-smoke")
         || args.HasFlag("--scene-origin-raster-smoke");

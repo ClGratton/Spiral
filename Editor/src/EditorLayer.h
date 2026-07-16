@@ -10,6 +10,12 @@
 
 struct ImVec2;
 
+enum class ViewportNavigationPreset
+{
+    Fusion,
+    Unreal
+};
+
 class EditorLayer final : public Engine::Layer
 {
 public:
@@ -37,6 +43,11 @@ private:
     void BeginViewportCursorCapture();
     void EndViewportCursorCapture();
     void ClearViewportNavigationInput();
+    bool IsShiftNavigationModifierDown() const;
+    void BeginFusionOrbitPivot();
+    void ClearFusionOrbitPivot();
+    bool SaveEditorSettings();
+    void LoadEditorSettings();
     void FocusSelectedEntity();
     void DrawViewportPanel();
     void DrawConsolePanel();
@@ -53,6 +64,7 @@ private:
     void RunSceneAuthoringSmoke();
     void RunSceneRenderSnapshotSmoke();
     void RunFramePacingPolicySmoke();
+    void RunEditorSettingsSmoke();
     void RunViewportNavigationSmoke();
     void ConfigureSceneOriginRasterSmoke();
     void AdvanceSceneOriginRasterSmoke();
@@ -102,11 +114,14 @@ private:
     bool m_SceneOriginRasterSmokeCompleted = false;
     bool m_FramePacingPolicySmokeRequested = false;
     bool m_FramePacingPolicySmokeCompleted = false;
+    bool m_EditorSettingsSmokeRequested = false;
+    bool m_EditorSettingsSmokeCompleted = false;
     bool m_ViewportNavigationSmokeRequested = false;
     bool m_ViewportNavigationSmokeCompleted = false;
     bool m_ShowNewProjectDialog = false;
     std::string m_CaptureViewportPath = "output/captures/editor-viewport.bmp";
     std::string m_ProjectPath = "output/projects/default.spiralproject";
+    std::string m_EditorSettingsPath = "output/editor/engine-settings.spiralsettings";
     std::string m_ScenePath = "output/scenes/sample.spiral";
     std::string m_AssetRegistryPath = "output/assets/sample.assets";
     std::string m_AssetWatchSmokePath = "output/assets/watch-smoke.mesh";
@@ -141,6 +156,7 @@ private:
     bool m_RightMouseDown = false;
     bool m_MiddleMouseDown = false;
     bool m_HasMousePosition = false;
+    bool m_FusionOrbitPivotValid = false;
     std::array<bool, 512> m_KeyDown {};
     double m_MouseX = 0.0;
     double m_MouseY = 0.0;
@@ -150,6 +166,8 @@ private:
     float m_MouseDeltaY = 0.0f;
     float m_MouseWheelDelta = 0.0f;
     float m_ViewportNavigationSpeed = 4.0f;
+    ViewportNavigationPreset m_ViewportNavigationPreset = ViewportNavigationPreset::Fusion;
+    Engine::Math::DVec3 m_FusionOrbitPivot {};
     std::shared_ptr<const Engine::SceneRenderSnapshot> m_FirstSceneRenderSnapshot;
     std::array<double, 3> m_CameraPosition = { 0.0, 0.0, -3.35 };
     std::array<float, 3> m_CameraRotation = { 0.0f, 0.0f, 0.0f };

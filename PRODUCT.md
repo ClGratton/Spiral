@@ -27,7 +27,7 @@ Precise, capable, and calm. The engine should feel technically serious without b
 
 1. Selection determines context: the Inspector describes the selected entity or asset, never unrelated global state.
 2. Stable workspace geography: hierarchy, content, viewport, properties, and diagnostics keep predictable homes.
-3. Progressive depth: common authoring controls stay immediate; the top-bar Settings menu owns serialized project configuration and global renderer backend selection, while Profiler owns non-serialized runtime experiments.
+3. Progressive depth: common authoring controls stay immediate; the top-bar Settings menu separates Project Settings (serialized project frame pacing) from Engine Settings (global renderer backend and viewport-navigation preset), while Profiler owns non-serialized runtime experiments.
 4. Claims match behavior: labels, enabled states, roadmap status, and feedback must reflect what the engine actually supports.
 5. Automation validates workflows: editor features receive focused smoke coverage when practical.
 6. Project shape controls world shape: projects may choose bounded authored terrain, large streamed terrain, deterministic unbounded generation, learned-assisted generation, or hybrid geometry without inheriting an unnecessary infinite-world runtime.

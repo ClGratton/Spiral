@@ -21,6 +21,12 @@ namespace
 {
     constexpr const char* AssetDragPayloadType = "SPIRAL_ASSET_HANDLE";
     constexpr int ProjectFormatVersion = 2;
+    constexpr int EditorSettingsFormatVersion = 1;
+
+    struct EditorSettings
+    {
+        ViewportNavigationPreset ViewportNavigation = ViewportNavigationPreset::Fusion;
+    };
 
     struct AssetDragPayload
     {
@@ -34,6 +40,31 @@ namespace
         std::string AssetRegistryPath;
         Engine::FramePacingPolicy FramePacingPolicy;
     };
+
+    const char* ToEditorSettingsNavigationPreset(ViewportNavigationPreset preset)
+    {
+        switch (preset)
+        {
+            case ViewportNavigationPreset::Fusion: return "Fusion";
+            case ViewportNavigationPreset::Unreal: return "Unreal";
+        }
+        return "Fusion";
+    }
+
+    bool ParseEditorSettingsNavigationPreset(std::string_view text, ViewportNavigationPreset& outPreset)
+    {
+        if (text == "Fusion")
+        {
+            outPreset = ViewportNavigationPreset::Fusion;
+            return true;
+        }
+        if (text == "Unreal")
+        {
+            outPreset = ViewportNavigationPreset::Unreal;
+            return true;
+        }
+        return false;
+    }
 
     bool ParseFramePacingMode(std::string_view text, Engine::FramePacingMode& outMode)
     {
@@ -243,6 +274,97 @@ namespace
         return static_cast<bool>(output);
     }
 
+    bool WriteEditorSettings(const std::filesystem::path& path, const EditorSettings& settings)
+    {
+        std::error_code error;
+        const std::filesystem::path parent = path.parent_path();
+        if (!parent.empty())
+            std::filesystem::create_directories(parent, error);
+        if (error)
+            return false;
+
+        const std::filesystem::path temporaryPath = path.string() + ".tmp";
+        const std::filesystem::path backupPath = path.string() + ".bak";
+        std::filesystem::remove(temporaryPath, error);
+        error.clear();
+        std::filesystem::remove(backupPath, error);
+        error.clear();
+
+        {
+            std::ofstream output(temporaryPath, std::ios::out | std::ios::trunc);
+            if (!output)
+                return false;
+            output << "SpiralEditorSettings " << EditorSettingsFormatVersion << '\n';
+            output << "ViewportNavigationPreset " << ToEditorSettingsNavigationPreset(settings.ViewportNavigation) << '\n';
+            output.flush();
+            if (!output)
+            {
+                output.close();
+                std::filesystem::remove(temporaryPath, error);
+                return false;
+            }
+        }
+
+        const bool hadExistingSettings = std::filesystem::exists(path, error);
+        if (error)
+        {
+            std::filesystem::remove(temporaryPath, error);
+            return false;
+        }
+        if (hadExistingSettings)
+        {
+            std::filesystem::rename(path, backupPath, error);
+            if (error)
+            {
+                std::filesystem::remove(temporaryPath, error);
+                return false;
+            }
+        }
+
+        std::filesystem::rename(temporaryPath, path, error);
+        if (!error)
+        {
+            if (hadExistingSettings)
+                std::filesystem::remove(backupPath, error);
+            return true;
+        }
+
+        std::error_code ignored;
+        std::filesystem::remove(temporaryPath, ignored);
+        if (hadExistingSettings)
+            std::filesystem::rename(backupPath, path, ignored);
+        return false;
+    }
+
+    bool ReadEditorSettings(const std::filesystem::path& path, EditorSettings& outSettings)
+    {
+        std::ifstream input(path);
+        if (!input)
+            return false;
+
+        std::string magic;
+        int version = 0;
+        std::string key;
+        std::string preset;
+        if (!(input >> magic >> version >> key >> preset)
+            || magic != "SpiralEditorSettings" || version != EditorSettingsFormatVersion
+            || key != "ViewportNavigationPreset" || !input)
+        {
+            return false;
+        }
+
+        std::string unexpected;
+        if (input >> unexpected)
+            return false;
+
+        EditorSettings settings;
+        if (!ParseEditorSettingsNavigationPreset(preset, settings.ViewportNavigation))
+            return false;
+
+        outSettings = settings;
+        return true;
+    }
+
     bool WriteProjectManifest(const std::filesystem::path& path, const ProjectManifest& manifest)
     {
         std::error_code error;
@@ -327,6 +449,7 @@ void EditorLayer::OnAttach()
     m_ConsoleLines.emplace_back("GLFW window backend active");
     m_ConsoleLines.emplace_back(std::string("Renderer backend: ") + Engine::Renderer::GetActiveBackendName());
     const Engine::ApplicationCommandLineArgs& args = Engine::Application::Get().GetSpecification().CommandLineArgs;
+    LoadEditorSettings();
     m_RendererCapabilitySmokeRequested = args.HasFlag("--renderer-capability-smoke");
     const Engine::RHI::DeviceCapabilities* deviceCapabilities = Engine::Renderer::GetDeviceCapabilities();
     if (deviceCapabilities)
@@ -370,6 +493,8 @@ void EditorLayer::OnAttach()
         Engine::Application::Get().GetSpecification().CommandLineArgs.HasFlag("--scene-origin-raster-smoke");
     m_FramePacingPolicySmokeRequested =
         Engine::Application::Get().GetSpecification().CommandLineArgs.HasFlag("--frame-pacing-policy-smoke");
+    m_EditorSettingsSmokeRequested =
+        Engine::Application::Get().GetSpecification().CommandLineArgs.HasFlag("--editor-settings-smoke");
     m_ViewportNavigationSmokeRequested =
         Engine::Application::Get().GetSpecification().CommandLineArgs.HasFlag("--editor-viewport-navigation-smoke");
     if (m_SceneOriginRasterSmokeRequested)
@@ -421,6 +546,7 @@ void EditorLayer::OnUpdate(Engine::Timestep timestep)
     RunUndoRedoSmoke();
     RunSceneAuthoringSmoke();
     RunFramePacingPolicySmoke();
+    RunEditorSettingsSmoke();
     RunViewportNavigationSmoke();
     AdvanceSceneOriginRasterSmoke();
     HandleAssetWatchEvents();
@@ -527,8 +653,15 @@ void EditorLayer::OnEvent(Engine::Event& event)
         m_LeftMouseDown |= button == 0;
         m_RightMouseDown |= button == 1;
         m_MiddleMouseDown |= button == 2;
-        if (m_ViewportNavigationInputEnabled && (button == 0 || button == 1 || button == 2))
+        const bool capturesNavigation = m_ViewportNavigationPreset == ViewportNavigationPreset::Unreal
+            ? (button == 0 || button == 1 || button == 2)
+            : button == 2;
+        if (m_ViewportNavigationInputEnabled && capturesNavigation)
+        {
+            if (m_ViewportNavigationPreset == ViewportNavigationPreset::Fusion && IsShiftNavigationModifierDown())
+                BeginFusionOrbitPivot();
             BeginViewportCursorCapture();
+        }
     }
     else if (event.GetEventType() == Engine::EventType::MouseButtonReleased)
     {
@@ -779,53 +912,87 @@ void EditorLayer::DrawMainMenuBar()
 
     if (ImGui::BeginMenu("Settings"))
     {
-        ImGui::TextUnformatted("Project");
-        ImGui::TextUnformatted("Frame Pacing");
-        ImGui::TextDisabled("Responsive has no intentional pacing wait.");
-        ImGui::TextDisabled("Smooth Frametime is opt-in experimental pacing; VSync/VRR/tearing stay separate.");
-
-        const Engine::FramePacingMode modes[] = {
-            Engine::FramePacingMode::Responsive,
-            Engine::FramePacingMode::SmoothFrametime
-        };
-        if (ImGui::BeginCombo("Project default", Engine::ToString(m_ProjectFramePacingPolicy.Mode)))
+        if (ImGui::BeginMenu("Project Settings"))
         {
-            for (Engine::FramePacingMode mode : modes)
+            ImGui::TextUnformatted("Frame Pacing");
+            ImGui::TextDisabled("Responsive has no intentional pacing wait.");
+            ImGui::TextDisabled("Smooth Frametime is opt-in experimental pacing; VSync/VRR/tearing stay separate.");
+
+            const Engine::FramePacingMode modes[] = {
+                Engine::FramePacingMode::Responsive,
+                Engine::FramePacingMode::SmoothFrametime
+            };
+            if (ImGui::BeginCombo("Project default", Engine::ToString(m_ProjectFramePacingPolicy.Mode)))
             {
-                const bool selected = mode == m_ProjectFramePacingPolicy.Mode;
-                if (ImGui::Selectable(Engine::ToString(mode), selected))
-                    m_ProjectFramePacingPolicy.Mode = mode;
-                if (selected)
-                    ImGui::SetItemDefaultFocus();
+                for (Engine::FramePacingMode mode : modes)
+                {
+                    const bool selected = mode == m_ProjectFramePacingPolicy.Mode;
+                    if (ImGui::Selectable(Engine::ToString(mode), selected))
+                        m_ProjectFramePacingPolicy.Mode = mode;
+                    if (selected)
+                        ImGui::SetItemDefaultFocus();
+                }
+                ImGui::EndCombo();
             }
-            ImGui::EndCombo();
+
+            double target = m_ProjectFramePacingPolicy.SmoothTargetFramesPerSecond;
+            if (ImGui::InputDouble("Smooth target FPS", &target, 1.0, 10.0, "%.2f")
+                && Engine::IsValidSmoothTargetFramesPerSecond(target))
+            {
+                m_ProjectFramePacingPolicy.SmoothTargetFramesPerSecond = target;
+            }
+            if (!Engine::IsValidSmoothTargetFramesPerSecond(target))
+                ImGui::TextDisabled("Target must be finite and between %.0f and %.0f FPS; current saved value remains unchanged.",
+                    Engine::kMinimumSmoothTargetFramesPerSecond, Engine::kMaximumSmoothTargetFramesPerSecond);
+
+            if (ImGui::Button("Save Project Settings"))
+            {
+                if (SaveProject())
+                    m_ConsoleLines.emplace_back("Project frame-pacing policy saved: "
+                        + Engine::DescribeFramePacingPolicy(m_GameFramePacingSettings.Resolve(m_ProjectFramePacingPolicy)));
+            }
+            PublishFramePacingPolicy();
+            ImGui::EndMenu();
         }
 
-        double target = m_ProjectFramePacingPolicy.SmoothTargetFramesPerSecond;
-        if (ImGui::InputDouble("Smooth target FPS", &target, 1.0, 10.0, "%.2f")
-            && Engine::IsValidSmoothTargetFramesPerSecond(target))
+        if (ImGui::BeginMenu("Engine Settings"))
         {
-            m_ProjectFramePacingPolicy.SmoothTargetFramesPerSecond = target;
-        }
-        if (!Engine::IsValidSmoothTargetFramesPerSecond(target))
-            ImGui::TextDisabled("Target must be finite and between %.0f and %.0f FPS; current saved value remains unchanged.",
-                Engine::kMinimumSmoothTargetFramesPerSecond, Engine::kMaximumSmoothTargetFramesPerSecond);
+            ImGui::TextUnformatted("Rendering");
+            ImGui::Text("Active backend: %s", Engine::Renderer::GetActiveBackendName());
+            DrawRendererBackendSelector();
+            const Engine::RendererBuildInfo& buildInfo = Engine::Renderer::GetBuildInfo();
+            if (!buildInfo.HasNVRHID3D12)
+                ImGui::TextDisabled("Native viewport requires the Windows VS2022 build.");
 
-        if (ImGui::Button("Save Project Settings"))
-        {
-            if (SaveProject())
-                m_ConsoleLines.emplace_back("Project frame-pacing policy saved: "
-                    + Engine::DescribeFramePacingPolicy(m_GameFramePacingSettings.Resolve(m_ProjectFramePacingPolicy)));
+            ImGui::Separator();
+            ImGui::TextUnformatted("Viewport Navigation");
+            if (ImGui::BeginCombo("Preset", ToEditorSettingsNavigationPreset(m_ViewportNavigationPreset)))
+            {
+                const ViewportNavigationPreset presets[] = {
+                    ViewportNavigationPreset::Fusion,
+                    ViewportNavigationPreset::Unreal
+                };
+                for (ViewportNavigationPreset preset : presets)
+                {
+                    const bool selected = preset == m_ViewportNavigationPreset;
+                    if (ImGui::Selectable(ToEditorSettingsNavigationPreset(preset), selected))
+                    {
+                        const ViewportNavigationPreset previous = m_ViewportNavigationPreset;
+                        m_ViewportNavigationPreset = preset;
+                        ClearViewportNavigationInput();
+                        EndViewportCursorCapture();
+                        if (!SaveEditorSettings())
+                            m_ViewportNavigationPreset = previous;
+                    }
+                    if (selected)
+                        ImGui::SetItemDefaultFocus();
+                }
+                ImGui::EndCombo();
+            }
+            ImGui::TextDisabled("Global editor setting: %s", m_EditorSettingsPath.c_str());
+            ImGui::TextDisabled("Fusion: wheel dolly, MMB pan, Shift+MMB orbit. F focuses selected origin, not bounds fit.");
+            ImGui::EndMenu();
         }
-        PublishFramePacingPolicy();
-
-        ImGui::Separator();
-        ImGui::TextUnformatted("Rendering");
-        ImGui::Text("Active backend: %s", Engine::Renderer::GetActiveBackendName());
-        DrawRendererBackendSelector();
-        const Engine::RendererBuildInfo& buildInfo = Engine::Renderer::GetBuildInfo();
-        if (!buildInfo.HasNVRHID3D12)
-            ImGui::TextDisabled("Native viewport requires the Windows VS2022 build.");
 
         ImGui::EndMenu();
     }
@@ -1278,6 +1445,7 @@ void EditorLayer::EndViewportCursorCapture()
     m_HasMousePosition = false;
     m_MouseDeltaX = 0.0f;
     m_MouseDeltaY = 0.0f;
+    ClearFusionOrbitPivot();
 }
 
 void EditorLayer::ClearViewportNavigationInput()
@@ -1290,6 +1458,83 @@ void EditorLayer::ClearViewportNavigationInput()
     m_MouseDeltaY = 0.0f;
     m_MouseWheelDelta = 0.0f;
     m_HasMousePosition = false;
+    ClearFusionOrbitPivot();
+}
+
+bool EditorLayer::IsShiftNavigationModifierDown() const
+{
+    constexpr int leftShift = 340;
+    constexpr int rightShift = 344;
+    return m_KeyDown[static_cast<size_t>(leftShift)] || m_KeyDown[static_cast<size_t>(rightShift)];
+}
+
+void EditorLayer::BeginFusionOrbitPivot()
+{
+    if (m_FusionOrbitPivotValid)
+        return;
+
+    if (m_ActiveScene.TryGetEntityApproximateWorldPosition(m_SelectedEntity, m_FusionOrbitPivot))
+    {
+        m_FusionOrbitPivotValid = true;
+        return;
+    }
+
+    const float yaw = Engine::Math::DegreesToRadians(m_CameraRotation[1]);
+    const float pitch = Engine::Math::DegreesToRadians(m_CameraRotation[0]);
+    const Engine::Math::DVec3 forward {
+        std::sin(yaw) * std::cos(pitch),
+        -std::sin(pitch),
+        std::cos(yaw) * std::cos(pitch)
+    };
+    constexpr double fallbackDistance = 3.35;
+    m_FusionOrbitPivot = {
+        m_CameraPosition[0] + forward.X * fallbackDistance,
+        m_CameraPosition[1] + forward.Y * fallbackDistance,
+        m_CameraPosition[2] + forward.Z * fallbackDistance
+    };
+    m_FusionOrbitPivotValid = true;
+}
+
+void EditorLayer::ClearFusionOrbitPivot()
+{
+    m_FusionOrbitPivotValid = false;
+}
+
+bool EditorLayer::SaveEditorSettings()
+{
+    const EditorSettings settings { m_ViewportNavigationPreset };
+    if (WriteEditorSettings(m_EditorSettingsPath, settings))
+        return true;
+
+    Engine::Log::Error("Editor settings save failed: ", m_EditorSettingsPath);
+    m_ConsoleLines.emplace_back("Engine settings save failed: " + m_EditorSettingsPath);
+    return false;
+}
+
+void EditorLayer::LoadEditorSettings()
+{
+    m_ViewportNavigationPreset = ViewportNavigationPreset::Fusion;
+    std::error_code error;
+    if (!std::filesystem::exists(m_EditorSettingsPath, error))
+    {
+        Engine::Log::Info("Editor settings missing; using Fusion navigation default: ", m_EditorSettingsPath);
+        return;
+    }
+    if (error)
+    {
+        Engine::Log::Warn("Editor settings path unavailable; using Fusion navigation default: ", error.message());
+        return;
+    }
+
+    EditorSettings settings;
+    if (!ReadEditorSettings(m_EditorSettingsPath, settings))
+    {
+        Engine::Log::Warn("Editor settings read rejected; using Fusion navigation default: ", m_EditorSettingsPath);
+        return;
+    }
+
+    m_ViewportNavigationPreset = settings.ViewportNavigation;
+    Engine::Log::Info("Editor settings loaded: viewportNavigation=", ToEditorSettingsNavigationPreset(m_ViewportNavigationPreset));
 }
 
 void EditorLayer::FocusSelectedEntity()
@@ -1346,7 +1591,7 @@ void EditorLayer::UpdateViewportNavigation(Engine::Timestep timestep)
     const Engine::Math::DVec3 right { std::cos(yaw), 0.0, -std::sin(yaw) };
     bool changed = false;
 
-    if (m_RightMouseDown && m_MouseWheelDelta != 0.0f)
+    if (m_ViewportNavigationPreset == ViewportNavigationPreset::Unreal && m_RightMouseDown && m_MouseWheelDelta != 0.0f)
     {
         m_ViewportNavigationSpeed = std::clamp(m_ViewportNavigationSpeed + m_MouseWheelDelta, 0.25f, 128.0f);
         changed = true;
@@ -1361,7 +1606,41 @@ void EditorLayer::UpdateViewportNavigation(Engine::Timestep timestep)
     }
     m_MouseWheelDelta = 0.0f;
 
-    if ((m_LeftMouseDown && m_RightMouseDown) || m_MiddleMouseDown)
+    if (m_ViewportNavigationPreset == ViewportNavigationPreset::Fusion && m_MiddleMouseDown)
+    {
+        if (IsShiftNavigationModifierDown())
+        {
+            BeginFusionOrbitPivot();
+            const double offsetX = m_CameraPosition[0] - m_FusionOrbitPivot.X;
+            const double offsetY = m_CameraPosition[1] - m_FusionOrbitPivot.Y;
+            const double offsetZ = m_CameraPosition[2] - m_FusionOrbitPivot.Z;
+            const double distance = std::max(0.001, std::sqrt(offsetX * offsetX + offsetY * offsetY + offsetZ * offsetZ));
+            m_CameraRotation[0] = std::clamp(m_CameraRotation[0] + m_MouseDeltaY * 0.15f, -89.0f, 89.0f);
+            m_CameraRotation[1] += m_MouseDeltaX * 0.15f;
+            const float orbitYaw = Engine::Math::DegreesToRadians(m_CameraRotation[1]);
+            const float orbitPitch = Engine::Math::DegreesToRadians(m_CameraRotation[0]);
+            const Engine::Math::DVec3 orbitForward {
+                std::sin(orbitYaw) * std::cos(orbitPitch),
+                -std::sin(orbitPitch),
+                std::cos(orbitYaw) * std::cos(orbitPitch)
+            };
+            m_CameraPosition = {
+                m_FusionOrbitPivot.X - orbitForward.X * distance,
+                m_FusionOrbitPivot.Y - orbitForward.Y * distance,
+                m_FusionOrbitPivot.Z - orbitForward.Z * distance
+            };
+            changed |= m_MouseDeltaX != 0.0f || m_MouseDeltaY != 0.0f;
+        }
+        else
+        {
+            const double panScale = static_cast<double>(m_ViewportNavigationSpeed) * 0.01;
+            m_CameraPosition[0] += right.X * m_MouseDeltaX * panScale;
+            m_CameraPosition[1] -= m_MouseDeltaY * panScale;
+            m_CameraPosition[2] += right.Z * m_MouseDeltaX * panScale;
+            changed |= m_MouseDeltaX != 0.0f || m_MouseDeltaY != 0.0f;
+        }
+    }
+    else if (m_ViewportNavigationPreset == ViewportNavigationPreset::Unreal && ((m_LeftMouseDown && m_RightMouseDown) || m_MiddleMouseDown))
     {
         const double panScale = static_cast<double>(m_ViewportNavigationSpeed) * 0.01;
         m_CameraPosition[0] += right.X * m_MouseDeltaX * panScale;
@@ -1369,7 +1648,7 @@ void EditorLayer::UpdateViewportNavigation(Engine::Timestep timestep)
         m_CameraPosition[2] += right.Z * m_MouseDeltaX * panScale;
         changed |= m_MouseDeltaX != 0.0f || m_MouseDeltaY != 0.0f;
     }
-    else if (m_LeftMouseDown)
+    else if (m_ViewportNavigationPreset == ViewportNavigationPreset::Unreal && m_LeftMouseDown)
     {
         m_CameraRotation[1] += m_MouseDeltaX * 0.15f;
         const double distance = static_cast<double>(-m_MouseDeltaY) * m_ViewportNavigationSpeed * 0.025;
@@ -1378,7 +1657,7 @@ void EditorLayer::UpdateViewportNavigation(Engine::Timestep timestep)
         m_CameraPosition[2] += forward.Z * distance;
         changed |= m_MouseDeltaX != 0.0f || m_MouseDeltaY != 0.0f;
     }
-    else if (m_RightMouseDown)
+    else if (m_ViewportNavigationPreset == ViewportNavigationPreset::Unreal && m_RightMouseDown)
     {
         m_CameraRotation[0] = std::clamp(m_CameraRotation[0] + m_MouseDeltaY * 0.15f, -89.0f, 89.0f);
         m_CameraRotation[1] += m_MouseDeltaX * 0.15f;
@@ -1387,7 +1666,7 @@ void EditorLayer::UpdateViewportNavigation(Engine::Timestep timestep)
     m_MouseDeltaX = 0.0f;
     m_MouseDeltaY = 0.0f;
 
-    if (m_RightMouseDown)
+    if (m_ViewportNavigationPreset == ViewportNavigationPreset::Unreal && m_RightMouseDown)
     {
         const double distance = static_cast<double>(m_ViewportNavigationSpeed * timestep.GetSeconds());
         const auto translate = [&] (const Engine::Math::DVec3& direction)
@@ -2370,15 +2649,69 @@ void EditorLayer::RunFramePacingPolicySmoke()
     m_ConsoleLines.emplace_back("Frame pacing policy smoke passed: " + Engine::DescribeFramePacingPolicy(resolved));
 }
 
+void EditorLayer::RunEditorSettingsSmoke()
+{
+    if (!m_EditorSettingsSmokeRequested || m_EditorSettingsSmokeCompleted || m_FrameCounter < 1)
+        return;
+
+    m_EditorSettingsSmokeCompleted = true;
+    const std::filesystem::path smokeRoot = "output/editor-settings-smoke";
+    const std::filesystem::path missingPath = smokeRoot / "missing.spiralsettings";
+    const std::filesystem::path persistedPath = smokeRoot / "persisted.spiralsettings";
+    const std::filesystem::path invalidPath = smokeRoot / "invalid.spiralsettings";
+    const std::filesystem::path manifestPath = smokeRoot / "separation.spiralproject";
+    std::error_code error;
+    std::filesystem::remove(missingPath, error);
+
+    EditorSettings missingSettings;
+    const bool missingDefaultsToFusion = !ReadEditorSettings(missingPath, missingSettings)
+        && missingSettings.ViewportNavigation == ViewportNavigationPreset::Fusion;
+    const EditorSettings unrealSettings { ViewportNavigationPreset::Unreal };
+    EditorSettings persistedSettings;
+    const bool persisted = WriteEditorSettings(persistedPath, unrealSettings)
+        && ReadEditorSettings(persistedPath, persistedSettings)
+        && persistedSettings.ViewportNavigation == ViewportNavigationPreset::Unreal;
+    const bool invalidWritten = WriteTextFile(invalidPath,
+        "SpiralEditorSettings 1\nViewportNavigationPreset Unsupported\n");
+    EditorSettings unchangedOnInvalidRead { ViewportNavigationPreset::Unreal };
+    const bool invalidRejected = invalidWritten && !ReadEditorSettings(invalidPath, unchangedOnInvalidRead)
+        && unchangedOnInvalidRead.ViewportNavigation == ViewportNavigationPreset::Unreal;
+
+    const ProjectManifest manifest { "separation.spiral", "separation.spiralassets", {} };
+    const bool manifestSeparated = WriteProjectManifest(manifestPath, manifest);
+    std::ifstream manifestInput(manifestPath);
+    std::stringstream manifestContents;
+    manifestContents << manifestInput.rdbuf();
+    const bool projectManifestSeparated = manifestSeparated && manifestInput
+        && manifestContents.str().find("ViewportNavigationPreset") == std::string::npos;
+
+    if (!missingDefaultsToFusion || !persisted || !invalidRejected || !projectManifestSeparated)
+        throw std::runtime_error("Editor settings smoke failed");
+
+    Engine::Log::Info("EditorSettingsSmokeV1 missingFusion=pass persistence=pass invalidTransactional=pass projectManifestSeparate=pass result=pass");
+    m_ConsoleLines.emplace_back("Editor settings smoke passed");
+}
+
 void EditorLayer::RunViewportNavigationSmoke()
 {
     if (!m_ViewportNavigationSmokeRequested || m_ViewportNavigationSmokeCompleted || m_FrameCounter < 1)
         return;
 
     m_ViewportNavigationSmokeCompleted = true;
-    const Engine::Math::DVec3 before = m_EditorCamera.GetPosition();
-    const auto beforeRotation = m_EditorCamera.GetRotationDegrees();
+    const ViewportNavigationPreset previousPreset = m_ViewportNavigationPreset;
     m_ViewportNavigationInputEnabled = true;
+
+    const auto cameraChanged = [this](const Engine::Math::DVec3& beforePosition, const Engine::Math::Vec3& beforeRotation)
+    {
+        const Engine::Math::DVec3 afterPosition = m_EditorCamera.GetPosition();
+        const Engine::Math::Vec3 afterRotation = m_EditorCamera.GetRotationDegrees();
+        return afterPosition.X != beforePosition.X || afterPosition.Y != beforePosition.Y || afterPosition.Z != beforePosition.Z
+            || afterRotation.X != beforeRotation.X || afterRotation.Y != beforeRotation.Y || afterRotation.Z != beforeRotation.Z;
+    };
+
+    m_ViewportNavigationPreset = ViewportNavigationPreset::Fusion;
+    const Engine::Math::DVec3 fusionBefore = m_EditorCamera.GetPosition();
+    const Engine::Math::Vec3 fusionBeforeRotation = m_EditorCamera.GetRotationDegrees();
     Engine::MouseButtonPressedEvent leftPress(0);
     OnEvent(leftPress);
     Engine::MouseMovedEvent leftMotion(110.0f, 110.0f);
@@ -2386,12 +2719,71 @@ void EditorLayer::RunViewportNavigationSmoke()
     UpdateViewportNavigation(Engine::Timestep(1.0f));
     Engine::MouseButtonReleasedEvent leftRelease(0);
     OnEvent(leftRelease);
-    const Engine::Math::DVec3 afterLeftDrag = m_EditorCamera.GetPosition();
-    const auto afterLeftDragRotation = m_EditorCamera.GetRotationDegrees();
-    const bool leftDragMoved = (afterLeftDrag.X != before.X || afterLeftDrag.Y != before.Y || afterLeftDrag.Z != before.Z)
-        && afterLeftDragRotation.Y != beforeRotation.Y;
+    const bool fusionLeftNoOp = !cameraChanged(fusionBefore, fusionBeforeRotation);
 
+    Engine::MouseButtonPressedEvent rightPress(1);
+    OnEvent(rightPress);
+    Engine::MouseMovedEvent rightMotion(120.0f, 120.0f);
+    OnEvent(rightMotion);
+    UpdateViewportNavigation(Engine::Timestep(1.0f));
+    Engine::MouseButtonReleasedEvent rightRelease(1);
+    OnEvent(rightRelease);
+    const bool fusionRightNoOp = !cameraChanged(fusionBefore, fusionBeforeRotation);
+
+    Engine::MouseScrolledEvent wheel(0.0f, 1.0f);
+    OnEvent(wheel);
+    UpdateViewportNavigation(Engine::Timestep(1.0f));
+    const Engine::Math::DVec3 afterFusionWheel = m_EditorCamera.GetPosition();
+    const bool fusionWheelDollied = afterFusionWheel.X != fusionBefore.X || afterFusionWheel.Y != fusionBefore.Y || afterFusionWheel.Z != fusionBefore.Z;
+
+    Engine::MouseButtonPressedEvent middlePress(2);
+    OnEvent(middlePress);
+    Engine::MouseMovedEvent panMotion(130.0f, 120.0f);
+    OnEvent(panMotion);
+    UpdateViewportNavigation(Engine::Timestep(1.0f));
+    Engine::MouseButtonReleasedEvent middleRelease(2);
+    OnEvent(middleRelease);
+    const Engine::Math::DVec3 afterFusionPan = m_EditorCamera.GetPosition();
+    const bool fusionPanned = afterFusionPan.X != afterFusionWheel.X || afterFusionPan.Y != afterFusionWheel.Y || afterFusionPan.Z != afterFusionWheel.Z;
+
+    m_SelectedEntity = m_PrototypeMeshEntity;
+    Engine::KeyPressedEvent shiftPress(340, false);
+    OnEvent(shiftPress);
+    Engine::MouseButtonPressedEvent orbitPress(2);
+    OnEvent(orbitPress);
+    const Engine::Math::DVec3 orbitPivot = m_FusionOrbitPivot;
+    const double orbitDistanceBefore = std::sqrt(
+        std::pow(m_CameraPosition[0] - orbitPivot.X, 2.0)
+        + std::pow(m_CameraPosition[1] - orbitPivot.Y, 2.0)
+        + std::pow(m_CameraPosition[2] - orbitPivot.Z, 2.0));
+    Engine::MouseMovedEvent orbitMotion(140.0f, 130.0f);
+    OnEvent(orbitMotion);
+    UpdateViewportNavigation(Engine::Timestep(1.0f));
+    const double orbitDistanceAfter = std::sqrt(
+        std::pow(m_CameraPosition[0] - orbitPivot.X, 2.0)
+        + std::pow(m_CameraPosition[1] - orbitPivot.Y, 2.0)
+        + std::pow(m_CameraPosition[2] - orbitPivot.Z, 2.0));
+    Engine::MouseButtonReleasedEvent orbitRelease(2);
+    OnEvent(orbitRelease);
+    Engine::KeyReleasedEvent shiftRelease(340);
+    OnEvent(shiftRelease);
+    const bool fusionOrbited = orbitDistanceBefore > 0.0 && std::abs(orbitDistanceAfter - orbitDistanceBefore) < 0.001
+        && !m_FusionOrbitPivotValid;
+
+    m_ViewportNavigationPreset = ViewportNavigationPreset::Unreal;
+    const Engine::Math::DVec3 before = m_EditorCamera.GetPosition();
+    const Engine::Math::Vec3 beforeRotation = m_EditorCamera.GetRotationDegrees();
     m_ViewportNavigationInputEnabled = true;
+    Engine::MouseButtonPressedEvent unrealLeftPress(0);
+    OnEvent(unrealLeftPress);
+    Engine::MouseMovedEvent unrealLeftMotion(150.0f, 140.0f);
+    OnEvent(unrealLeftMotion);
+    UpdateViewportNavigation(Engine::Timestep(1.0f));
+    Engine::MouseButtonReleasedEvent unrealLeftRelease(0);
+    OnEvent(unrealLeftRelease);
+    const bool unrealLeftDragMoved = cameraChanged(before, beforeRotation);
+
+    const Engine::Math::DVec3 beforeKeyboardNavigation = m_EditorCamera.GetPosition();
     m_RightMouseDown = true;
     m_KeyDown[static_cast<size_t>('W')] = true;
     UpdateViewportNavigation(Engine::Timestep(1.0f));
@@ -2405,9 +2797,9 @@ void EditorLayer::RunViewportNavigationSmoke()
         && scenePosition.Y == m_EditorCamera.GetPosition().Y
         && scenePosition.Z == m_EditorCamera.GetPosition().Z;
     const Engine::Math::DVec3 afterKeyboardNavigation = m_EditorCamera.GetPosition();
-    const bool moved = afterKeyboardNavigation.X != afterLeftDrag.X
-        || afterKeyboardNavigation.Y != afterLeftDrag.Y
-        || afterKeyboardNavigation.Z != afterLeftDrag.Z;
+    const bool unrealFlyMoved = afterKeyboardNavigation.X != beforeKeyboardNavigation.X
+        || afterKeyboardNavigation.Y != beforeKeyboardNavigation.Y
+        || afterKeyboardNavigation.Z != beforeKeyboardNavigation.Z;
     m_SelectedEntity = m_PrototypeMeshEntity;
     FocusSelectedEntity();
     const bool focusDiscontinuous = m_ViewportDiscontinuousRelocationPending;
@@ -2418,12 +2810,13 @@ void EditorLayer::RunViewportNavigationSmoke()
     OnEvent(focusLost);
     const bool focusLossReleased = !m_CursorCaptured && !m_RightMouseDown
         && !m_KeyDown[static_cast<size_t>('W')] && m_MouseDeltaX == 0.0f && m_MouseDeltaY == 0.0f;
-    if (!leftDragMoved)
-        throw std::runtime_error("Viewport navigation LMB drag smoke failed");
-    if (!sceneMatches || !moved || !focusDiscontinuous || !focusLossReleased)
+    m_ViewportNavigationPreset = previousPreset;
+    if (!fusionLeftNoOp || !fusionRightNoOp || !fusionWheelDollied || !fusionPanned || !fusionOrbited)
+        throw std::runtime_error("Viewport navigation Fusion preset smoke failed");
+    if (!unrealLeftDragMoved || !sceneMatches || !unrealFlyMoved || !focusDiscontinuous || !focusLossReleased)
         throw std::runtime_error("Viewport navigation smoke failed");
 
-    Engine::Log::Info("ViewportNavigationSmokeV1 leftDrag=pass dvec3=pass sceneAuthority=pass focusDiscontinuity=pass focusLossRelease=pass result=pass");
+    Engine::Log::Info("ViewportNavigationSmokeV2 fusion=pass unreal=pass dvec3=pass sceneAuthority=pass focusDiscontinuity=pass focusLossRelease=pass result=pass");
     m_ConsoleLines.emplace_back("Viewport navigation smoke passed");
 }
 
