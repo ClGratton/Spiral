@@ -1,10 +1,10 @@
 # Current Handoff
 
-Updated 2026-07-15. This is a recovery aid; `PLAN.md` remains the sole roadmap and checkbox authority. A new agent must begin with `AGENTS.md`, `PLAN.md`, `Docs/README.md`, `Docs/ROADMAP_GOVERNANCE.md`, `Docs/VERIFICATION.md`, `Docs/Architecture/README.md`, and `Docs/Architecture/RENDER_GRAPH_ARCHITECTURE.md`.
+Updated 2026-07-16. This is a recovery aid; `PLAN.md` remains the sole roadmap and checkbox authority. A new agent must begin with `AGENTS.md`, `PLAN.md`, `Docs/README.md`, `Docs/ROADMAP_GOVERNANCE.md`, `Docs/VERIFICATION.md`, `Docs/Architecture/README.md`, and `Docs/Architecture/RENDER_GRAPH_ARCHITECTURE.md`.
 
 ## Objective And Stop Condition
 
-Transient allocation/reuse and the split Phase 3C-P1 worker-safe Scene preparation prerequisite are implemented and locally accepted in the current root task. The user lowered the hard weekly-allowance floor to 15%; the last reliable user-reported starting value was 29%, but this surface exposes no current weekly percentage, so do not invent a precise remaining value. Phase 3C-P2 worker-safe command recording is the next ordered item and is a large synchronization slice; do not begin it unless it can finish coherently above that floor. Continuation must remain in this main task and rely on Codex Desktop's transparent same-task compaction; never create, fork, or message another task for rollover.
+Phase 3C expected-before RHI transitions, P2 worker-safe recording, and the parent multithreaded preparation/recording integration are implemented and locally accepted. The user set a hard 25%-remaining weekly floor. Reliable telemetry at acceptance reports 14% used / 86% remaining, so further coherent work is authorized while the next slice can finish above 25% remaining. The first unchecked item is the project-owned frame-pacing policy/runtime override contract. Continuation must remain in this main task and rely on Codex Desktop's transparent same-task compaction; never create, fork, or message another task for rollover.
 
 ## Token-Efficiency Baseline And Required Next-Session Audit (2026-07-15)
 
@@ -46,6 +46,12 @@ The first P2 attempt used one fresh native `terra_medium` owner, one complete as
 
 Verdict: exact-role routing, root waits/resumptions, safe rollback, and weekly allowance cost are improved; owner feasibility discipline is not yet sufficient. `AGENTS.md` now requires a read-only control/publication and canonical-build gate before risky edits, treats make/revert churn as failed workflow evidence, and requires the same hot owner to resume with the corrected mechanism. For P2, retain the useful constraint: cross-queue token-dependent acquires remain caller-recorded after producer acceptance; worker recording may cover explicitly eligible passes only where their barriers/ownership operations are recordable from the execution-start state, with deterministic compiled-order submission and suffix discard.
 
+### Phase 3C-P2 Completed-Slice Workflow Audit (2026-07-16)
+
+The completed slice consumed about 14 weekly percentage points from a reset-window starting state, 430,421 tracked goal tokens, and 2,048 seconds (about 34 minutes). It used four confirmed native `terra_medium` sessions for one coherent roadmap outcome: the initial owner required three waits and still stopped partial; an acceptance owner used two waits and correctly exposed the real D3D12 state-tracker contradiction; the expected-before prerequisite owner was terminated by a user-message interruption after one aborted wait; the replacement owner completed the preserved work in two waits plus one acceptance correction. Total explicit owner waits were eight including the interrupted wait. All session metadata reported `agent_role=terra_medium`; routing was not the problem.
+
+Verdict: the revised workflow fixed root polling, generic-model routing, unsafe partial acceptance, and duplicate broad verification, but it did not fix total token/allowance waste for this task. One feature cost materially more than the earlier approximately six-point Scene-viewport slice because the parent patch crossed owners before its hidden RHI prerequisite was isolated. Real D3D12 evidence was valuable and prevented a false completion, but the prerequisite should have become a separate committed slice immediately. `AGENTS.md` now requires exactly that split when runtime evidence exposes missing synchronization/native-boundary infrastructure. For the next frame-pacing-policy item, use one fresh exact Terra owner, keep the slice to policy/settings/serialization only, and do not begin the separate presentation-timing implementation line in the same owner session.
+
 ## Completed Roadmap Work
 
 The following commits are on `main` and `origin/main`:
@@ -63,6 +69,8 @@ Latest accepted slice:
 - `02c86e0` - Phase 3 transient-resource capability prerequisite: separate RHI placed-resource/alias-barrier lifecycle reporting, truthful `PlacedAliasedTransient` versus `NonAliasedGpuRetiredPool` selection, selected-path diagnostics, deterministic coverage, and local backend smoke exercise without premature allocation.
 - `8634c8e` - GPU-retired transient allocation: compatible compiled lifetimes bind to non-aliased physical pool objects, accepted submissions publish exact retirement tokens immediately, completed history is bounded, unused lifetimes allocate nothing, and diagnostics report estimated logical rather than native heap bytes.
 - `aa35d11` - worker-safe immutable Scene raster preparation: the Application CPU task graph prepares the exact published snapshot on a worker, deterministic mode runs the same task inline, and D3D12/Vulkan production viewports reject stale or missing prepared frames.
+- `0a5cf0e` - owner-workflow feasibility gate and durable P2 first-attempt audit.
+- `1bf1e08` - expected-before D3D12/Vulkan transition validation plus explicit worker-safe RenderGraph recording, deterministic compiled-order submission/publication, and local end-to-end P1/P2 integration.
 
 `PLAN.md` is checked through the transient-resource capability group at line 262.
 
@@ -79,6 +87,8 @@ Latest accepted slice:
 - The per-frame graph currently waits for its final completion because its recording contexts are stack-owned. This is a safe lifetime bridge, not frame pacing or deliberate smoothing; persistent overlap remains later roadmap work.
 - `Phase3TransientResourcesV1` selects `PlacedAliasedTransient` only when both RHI `PlacedResources` and `AliasingBarriers` are usable. Current D3D12 and Vulkan/NVRHI adapters truthfully select `NonAliasedGpuRetiredPool`; unbound used transients now bind compatible pool objects, sequential same-effective-queue lifetimes may share one object when state hand-off is unchanged, and cross-execution reuse waits every exact accepted token. Diagnostics expose estimated logical allocated/pooled bytes, not native heap footprints. Native placed allocation and alias barriers remain unimplemented and fail explicitly if selected.
 - `Frame.PrepareSceneRaster` depends on caller-affine snapshot publication, runs immutable CPU raster preparation on the FrameTaskGraph worker lane, and atomically publishes one snapshot-frame-matched payload before caller-affine rendering. Deterministic single-thread mode executes the identical task inline. D3D12 and Vulkan production consumers fail stale/missing publications; only `RunVulkanSceneViewportRasterSmoke` synchronously prepares its synthetic snapshot outside an Application frame.
+- Graph pre-recording supplies compiler-owned texture/buffer `Before` and `After` states. D3D12 records native barriers against that private expected state; Vulkan seeds only the NVRHI command-list-local tracker. Submission validates the exact live wrapper/tracker state before native acceptance, fails closed on unsupported adapters or stale recordings, and publishes `After` only after acceptance.
+- RenderGraph callbacks remain caller-affine unless explicitly marked worker-recording-safe. Eligible same-effective passes without ownership operations pre-record on separate bounded contexts through FrameTaskGraph; dependent Output Handoff may record alongside Clear, while mutable Raster and cross-queue ownership acquire/release remain caller-recorded. Submission and publication stay in compiled order with exact producer tokens; false/throw failures accept only the earlier prefix and discard every unsubmitted suffix context.
 
 ## Evidence
 
@@ -93,6 +103,8 @@ Local Windows/MSVC Debug evidence on an RTX 3080 Ti:
 - The same marker passed Vulkan comparison at 48x36 (6,912 bytes), 64x48 (12,288 bytes), and the live/resized viewport outputs before native ImGui handoff.
 - Final `EngineTests` passed 58/58, including compatible lifetime reuse, incomplete-token blocking, accepted-prefix failure retention, repeated retired reuse, unused-lifetime elision, and mip/format logical-cost coverage. Local D3D12 and Vulkan scripts emitted `RenderGraphTransientAllocationSmokeV1 ... estimatedLogicalAllocatedBytes=64 ... retirement=exact-token-pass, reuse=retired-pass, result=pass`. No native placement/alias-barrier, native heap-footprint, hosted, or macOS claim is made for this slice.
 - Phase 3C-P1 local RTX 3080 Ti D3D12 and Vulkan runs passed in parallel and deterministic-inline modes. `SceneRasterPreparationV1` reported a real worker index versus `worker=caller`, and every run retained `SceneViewportRenderGraphV1 ... comparator=exact-byte-pass`. Root's final 58/58 regression, code style, and diff check passed. This is CPU preparation evidence only, not overlapping command-list recording or changed GPU submission.
+- Final `EngineTests` passed 59/59, including fail-closed unsupported expected-before adapters, stale-state rejection/no publication, explicit eligibility/default affinity, bounded no-sleep overlap, inline equivalence, same-effective dependency-token order, cross-queue deferral, false/throw accepted-prefix disposal, and exact retirement/reuse.
+- Local RTX 3080 Ti D3D12 and Vulkan parallel runs emitted `RenderGraphRecordingV1 ... workerPasses=2 overlap=yes submitted=3 result=pass`; inline companions emitted `overlap=no submitted=3 result=pass`. The same runs retained worker/caller `SceneRasterPreparationV1`, exact-byte `SceneViewportRenderGraphV1`, and `RHIQueueDependencySmokeV1 ... cpuWaitBetween=no`. MSVC Debug build completed with zero warnings/errors; style, diff, PowerShell, and bash syntax checks passed.
 
 Hosted evidence for behavior/harness head `7e5e80b`:
 
@@ -107,12 +119,12 @@ Exact-head CI run `29430304670` passed real Windows D3D12, Ubuntu Vulkan/lavapip
 
 ## Next Ordered Work
 
-The first unchecked `PLAN.md` item is Phase 3C prerequisite P2:
+The first unchecked `PLAN.md` item is:
 
-> Worker-safe graph recording contract: make pass-level worker-recording eligibility explicit and safe-by-default, then prove independent eligible render-graph preparation/recording overlaps on CPU workers while callbacks without that declaration remain caller-affine.
+> Project-owned frame-pacing policy with a developer-exposable runtime game-setting override.
 
-The following original end-to-end multithreaded-render line remains present and unchecked after Phase 3C-P2. This is a large concurrency/synchronization slice: it must use separate bounded RHI contexts, preserve deterministic compiled-order submission and accepted-prefix publication, retain cross-queue/transient exact-token authority, and run the identical declared work inline as the oracle. Do not infer arbitrary callback capture safety. With no current weekly-percentage telemetry and the 15% floor, stop here rather than leave P2 half-built.
+Keep this next slice bounded to policy/settings/serialization and deterministic behavior: `Responsive` remains the default with no smoothing delay/drop, `Smooth Frametime` remains opt-in, Project Settings owns the serialized default, and a runtime game-settings override can select it without coupling VSync/VRR/tearing, frame replacement, frames in flight, fixed simulation, or vendor latency modes. Do not implement the following DXGI/Vulkan timing paths in the same slice.
 
 ## Working State
 
-Implementation commit `aa35d11` is on local `main`; commit this handoff, push, and perform one exact-head CI status check. Local acceptance is complete, so hosted CI should be detached after that one check unless it immediately reports a failure. Leave the working tree clean. Generated captures and CI artifacts remain under ignored `output/`.
+Implementation commit `1bf1e08` and workflow commit `0a5cf0e` are on local `main`. Commit this handoff/rule update, push the batch, and perform one exact-head CI status check. Local acceptance is complete, so hosted CI should be detached after that one check unless it immediately reports a failure. Generated captures and CI artifacts remain under ignored `output/`.
