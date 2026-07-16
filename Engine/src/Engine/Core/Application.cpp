@@ -122,7 +122,7 @@ namespace Engine
 
             if (!m_Minimized)
             {
-                Renderer::BeginFrame();
+                Renderer::BeginFrame(m_FrameIndex);
 
                 FramePublication<ApplicationFrameInput> frameInput;
                 FrameTaskGraph frameTasks;
@@ -140,6 +140,7 @@ namespace Engine
                 updateLayers.Dependencies = { publishInputTask };
                 updateLayers.Execute = [&]()
                 {
+                    Renderer::RecordFrameLifecyclePhase(m_FrameIndex, RendererFrameLifecyclePhase::InputSimulation);
                     const std::shared_ptr<const ApplicationFrameInput> input = frameInput.Read();
                     if (!input)
                         throw std::logic_error("frame input was not published");
@@ -236,6 +237,28 @@ namespace Engine
 
             m_Window->OnUpdate();
 
+            if (m_Specification.CommandLineArgs.HasFlag("--frame-lifecycle-telemetry-smoke")
+                && !m_FrameLifecycleTelemetrySmokeComplete
+                && Renderer::GetLastFrameTiming().HasGpuCompletionObservation)
+            {
+                const RendererFrameTiming& timing = Renderer::GetLastFrameTiming();
+                const bool d3d12 = Renderer::GetActiveBackend() == RendererBackend::NVRHID3D12;
+                const bool vulkan = Renderer::GetActiveBackend() == RendererBackend::NVRHIVulkan;
+                if (!HasValidFrameLifecycleTelemetry(timing, d3d12, vulkan))
+                {
+                    throw std::runtime_error("frame lifecycle telemetry smoke did not preserve the required trace/fallback contract");
+                }
+                Log::Info("FrameLifecycleTelemetryV1 backend=", Renderer::GetActiveBackendName(),
+                    " frame=", timing.FrameIndex,
+                    " phases=frame-start,input-simulation,render-submission,present-begin,present-end",
+                    " intentionalWait=not-applied:0",
+                    " gpuCompletion=observed completedFrame=", timing.LastGpuCompletionObservedFrameIndex,
+                    " completionSwapchainGeneration=", timing.Presentation.SwapchainGeneration,
+                    " mandatoryWaits=", d3d12 ? "dxgi-latency" : "vulkan-acquire+fence",
+                    " display=unavailable replacementDrop=unavailable result=pass");
+                m_FrameLifecycleTelemetrySmokeComplete = true;
+            }
+
             if (m_Specification.CommandLineArgs.HasFlag("--vulkan-render-smoke") && m_FrameIndex == 0)
             {
                 const u32 resizedWidth = m_Window->GetWidth() > 128 ? m_Window->GetWidth() - 64 : m_Window->GetWidth();
@@ -248,6 +271,7 @@ namespace Engine
             {
                 const RendererPresentationTiming& presentation = Renderer::GetLastFrameTiming().Presentation;
                 if (Renderer::GetActiveBackend() == RendererBackend::NVRHIVulkan
+                    && (!m_Specification.CommandLineArgs.HasFlag("--frame-lifecycle-telemetry-smoke") || m_FrameLifecycleTelemetrySmokeComplete)
                     && presentation.SwapchainGeneration >= 2
                     && presentation.LastSuccessfulPresentGeneration == presentation.SwapchainGeneration)
                 {
@@ -275,6 +299,8 @@ namespace Engine
             }
             Log::Info("Vulkan render smoke verified native ImGui presentation after resize");
         }
+        if (m_Specification.CommandLineArgs.HasFlag("--frame-lifecycle-telemetry-smoke") && !m_FrameLifecycleTelemetrySmokeComplete)
+            throw std::runtime_error("frame lifecycle telemetry smoke did not observe GPU completion within its frame budget");
 
         Log::Info("Application stopped after ", m_FrameIndex, " frame(s)");
     }

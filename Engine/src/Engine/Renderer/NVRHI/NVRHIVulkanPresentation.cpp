@@ -9,6 +9,7 @@
 
     #include <chrono>
     #include <iterator>
+    #include <unordered_map>
 #endif
 
 namespace Engine
@@ -124,6 +125,7 @@ namespace Engine
 #if defined(GE_HAS_NVRHI_VULKAN)
             if (m_Device)
                 VULKAN_HPP_DEFAULT_DISPATCHER.vkDeviceWaitIdle(m_Device);
+            m_SubmittedFrameIds.clear();
             ReleaseViewportOutput();
             if (m_ImGuiInitialized)
                 ImGui_ImplVulkan_Shutdown();
@@ -184,6 +186,7 @@ namespace Engine
             m_WindowData.ClearValue.color.float32[3] = clearColor.A;
 
             ImGui_ImplVulkanH_FrameSemaphores& semaphores = m_WindowData.FrameSemaphores[m_WindowData.SemaphoreIndex];
+            const Clock::time_point acquireStart = Clock::now();
             VkResult result = VULKAN_HPP_DEFAULT_DISPATCHER.vkAcquireNextImageKHR(
                 m_Device,
                 m_WindowData.Swapchain,
@@ -191,6 +194,10 @@ namespace Engine
                 semaphores.ImageAcquiredSemaphore,
                 VK_NULL_HANDLE,
                 &m_WindowData.FrameIndex);
+            Renderer::RecordFrameWait(Renderer::GetLastFrameTiming().FrameIndex,
+                RendererFrameWaitKind::MandatoryVulkanAcquire,
+                result == VK_SUCCESS || result == VK_SUBOPTIMAL_KHR,
+                std::chrono::duration<double, std::milli>(Clock::now() - acquireStart).count());
             if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR)
             {
                 m_SwapchainInvalid = true;
@@ -204,8 +211,16 @@ namespace Engine
             }
 
             ImGui_ImplVulkanH_Frame& frame = m_WindowData.Frames[m_WindowData.FrameIndex];
+            const Clock::time_point fenceWaitStart = Clock::now();
             if (VULKAN_HPP_DEFAULT_DISPATCHER.vkWaitForFences(m_Device, 1, &frame.Fence, VK_TRUE, UINT64_MAX) != VK_SUCCESS)
                 return;
+            Renderer::RecordFrameWait(Renderer::GetLastFrameTiming().FrameIndex,
+                RendererFrameWaitKind::MandatoryVulkanFence,
+                true,
+                std::chrono::duration<double, std::milli>(Clock::now() - fenceWaitStart).count());
+            if (const auto completed = m_SubmittedFrameIds.find(m_WindowData.FrameIndex); completed != m_SubmittedFrameIds.end()
+                && completed->second.SwapchainGeneration == m_SwapchainGeneration)
+                Renderer::RecordGpuCompletionObservation(completed->second.ApplicationFrameIndex);
             VULKAN_HPP_DEFAULT_DISPATCHER.vkResetFences(m_Device, 1, &frame.Fence);
             VULKAN_HPP_DEFAULT_DISPATCHER.vkResetCommandPool(m_Device, frame.CommandPool, 0);
 
@@ -240,6 +255,9 @@ namespace Engine
             submitInfo.pSignalSemaphores = &semaphores.RenderCompleteSemaphore;
             if (VULKAN_HPP_DEFAULT_DISPATCHER.vkQueueSubmit(m_GraphicsQueue, 1, &submitInfo, frame.Fence) != VK_SUCCESS)
                 return;
+            const u64 applicationFrameIndex = Renderer::GetLastFrameTiming().FrameIndex;
+            m_SubmittedFrameIds[m_WindowData.FrameIndex] = { applicationFrameIndex, m_SwapchainGeneration };
+            Renderer::RecordFrameLifecyclePhase(applicationFrameIndex, RendererFrameLifecyclePhase::RenderSubmission);
 
             VkPresentInfoKHR presentInfo {};
             presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
@@ -249,9 +267,11 @@ namespace Engine
             presentInfo.pSwapchains = &m_WindowData.Swapchain;
             presentInfo.pImageIndices = &m_WindowData.FrameIndex;
 
+            Renderer::RecordFrameLifecyclePhase(applicationFrameIndex, RendererFrameLifecyclePhase::PresentBegin);
             const Clock::time_point presentStart = Clock::now();
             result = VULKAN_HPP_DEFAULT_DISPATCHER.vkQueuePresentKHR(m_GraphicsQueue, &presentInfo);
             m_Timing.PresentMilliseconds = std::chrono::duration<double, std::milli>(Clock::now() - presentStart).count();
+            Renderer::RecordFrameLifecyclePhase(applicationFrameIndex, RendererFrameLifecyclePhase::PresentEnd);
             if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR)
                 m_SwapchainInvalid = true;
             else if (result == VK_SUCCESS)
@@ -355,6 +375,7 @@ namespace Engine
             if (width == 0 || height == 0)
                 return false;
             VULKAN_HPP_DEFAULT_DISPATCHER.vkDeviceWaitIdle(m_Device);
+            m_SubmittedFrameIds.clear();
             ImGui_ImplVulkanH_CreateOrResizeWindow(
                 m_Instance,
                 m_PhysicalDevice,
@@ -394,6 +415,8 @@ namespace Engine
         u64 m_ViewportOutputGeneration = 0;
         u64 m_ViewportDescriptorGeneration = 0;
         bool m_ViewportTextureQueued = false;
+        struct SubmittedFrameAssociation { u64 ApplicationFrameIndex = 0; u64 SwapchainGeneration = 0; };
+        std::unordered_map<u32, SubmittedFrameAssociation> m_SubmittedFrameIds;
 #endif
         RendererPresentationTiming m_Timing;
         u64 m_SuccessfulPresentCount = 0;

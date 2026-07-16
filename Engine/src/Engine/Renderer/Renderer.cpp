@@ -54,13 +54,13 @@ namespace Engine
         RenderViewportRect s_ViewportRect;
         RendererBuildInfo s_BuildInfo;
         RendererFrameTiming s_FrameTiming;
+        ResolvedFramePacingPolicy s_FramePacingPolicy;
         AtomicSharedPointer<SceneRenderSnapshot> s_SceneRenderSnapshot;
         AtomicSharedPointer<SceneRasterFrame> s_PreparedSceneRasterFrame;
         AtomicSharedPointer<SceneRasterFrame> s_SceneRasterFrame;
         Scope<RenderBackend> s_Backend;
         std::vector<RendererBackendOption> s_BackendOptions;
         Clock::time_point s_RendererFrameStart;
-        u64 s_RendererTimingFrameIndex = 0;
         RendererBackend s_ActiveBackend = RendererBackend::Headless;
         bool s_Initialized = false;
         bool s_HasDeviceCapabilities = false;
@@ -202,13 +202,25 @@ namespace Engine
             group->Qualification = RHI::QualificationLevel::Presentation;
         }
 
-        void BeginTimingFrame()
+        void BeginTimingFrame(u64 applicationFrameIndex)
         {
             s_FrameTiming = {};
-            s_FrameTiming.FrameIndex = ++s_RendererTimingFrameIndex;
+            s_FrameTiming.FrameIndex = applicationFrameIndex;
+            s_FrameTiming.FramePacingPolicy = s_FramePacingPolicy;
             s_FrameTiming.GpuStatus = GetBackendGpuTimingStatus();
             s_RendererFrameStart = Clock::now();
             s_RendererFrameTimingActive = true;
+            s_FrameTiming.Lifecycle.push_back({ RendererFrameLifecyclePhase::FrameStart, 0.0 });
+            // This prerequisite deliberately performs no pacing. Keep its
+            // zero/not-applied record distinct from mandatory presentation waits.
+            s_FrameTiming.Waits.push_back({ RendererFrameWaitKind::IntentionalPacing, false, 0.0 });
+        }
+
+        void AddLifecyclePhase(RendererFrameLifecyclePhase phase)
+        {
+            if (!s_RendererFrameTimingActive)
+                return;
+            s_FrameTiming.Lifecycle.push_back({ phase, ToMilliseconds(Clock::now() - s_RendererFrameStart) });
         }
 
         void RefreshTimingFrameTotal()
@@ -404,12 +416,12 @@ namespace Engine
         s_Initialized = false;
     }
 
-    void Renderer::BeginFrame()
+    void Renderer::BeginFrame(u64 applicationFrameIndex)
     {
         if (!s_Initialized || !s_Backend)
             return;
 
-        BeginTimingFrame();
+        BeginTimingFrame(applicationFrameIndex);
         const Clock::time_point passStart = Clock::now();
         s_Backend->BeginFrame(s_ClearColor);
         AddPassTiming("Renderer BeginFrame", Clock::now() - passStart);
@@ -581,6 +593,37 @@ namespace Engine
     const RendererFrameTiming& Renderer::GetLastFrameTiming()
     {
         return s_FrameTiming;
+    }
+
+    void Renderer::SetFramePacingPolicy(const ResolvedFramePacingPolicy& policy)
+    {
+        s_FramePacingPolicy = policy;
+    }
+
+    ResolvedFramePacingPolicy Renderer::GetFramePacingPolicy()
+    {
+        return s_FramePacingPolicy;
+    }
+
+    void Renderer::RecordFrameLifecyclePhase(u64 applicationFrameIndex, RendererFrameLifecyclePhase phase)
+    {
+        if (s_FrameTiming.FrameIndex != applicationFrameIndex)
+            return;
+        AddLifecyclePhase(phase);
+    }
+
+    void Renderer::RecordFrameWait(u64 applicationFrameIndex, RendererFrameWaitKind kind, bool applied, double milliseconds)
+    {
+        if (s_FrameTiming.FrameIndex != applicationFrameIndex)
+            return;
+        s_FrameTiming.Waits.push_back({ kind, applied, milliseconds });
+    }
+
+    void Renderer::RecordGpuCompletionObservation(u64 completedApplicationFrameIndex)
+    {
+        s_FrameTiming.HasGpuCompletionObservation = true;
+        s_FrameTiming.LastGpuCompletionObservedFrameIndex = completedApplicationFrameIndex;
+        AddLifecyclePhase(RendererFrameLifecyclePhase::GpuCompletionObservation);
     }
 
     void Renderer::PublishSceneRenderSnapshot(SceneRenderSnapshot snapshot)

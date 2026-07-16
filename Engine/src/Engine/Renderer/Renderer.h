@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Engine/Core/Base.h"
+#include "Engine/Renderer/FramePacingPolicy.h"
 #include "Engine/RHI/RHICommon.h"
 #include "Engine/Renderer/SceneRasterPreparation.h"
 #include "Engine/Scene/SceneRenderSnapshot.h"
@@ -59,6 +60,41 @@ namespace Engine
         u64 LastSuccessfulPresentGeneration = 0;
         double FrameLatencyWaitMilliseconds = 0.0;
         double PresentMilliseconds = 0.0;
+        bool DisplayCadenceAvailable = false;
+        bool ReplacementDropStatusAvailable = false;
+        const char* DisplayCadenceDetail = "unavailable: no display-feedback API path is implemented";
+        const char* ReplacementDropDetail = "unavailable: no frame replacement/drop API path is implemented";
+    };
+
+    enum class RendererFrameLifecyclePhase
+    {
+        FrameStart,
+        InputSimulation,
+        RenderSubmission,
+        PresentBegin,
+        PresentEnd,
+        GpuCompletionObservation
+    };
+
+    enum class RendererFrameWaitKind
+    {
+        IntentionalPacing,
+        MandatoryDxgiFrameLatency,
+        MandatoryVulkanAcquire,
+        MandatoryVulkanFence
+    };
+
+    struct RendererFrameLifecycleEvent
+    {
+        RendererFrameLifecyclePhase Phase = RendererFrameLifecyclePhase::FrameStart;
+        double MillisecondsFromFrameStart = 0.0;
+    };
+
+    struct RendererFrameWaitTiming
+    {
+        RendererFrameWaitKind Kind = RendererFrameWaitKind::IntentionalPacing;
+        bool Applied = false;
+        double Milliseconds = 0.0;
     };
 
     struct RendererFrameTiming
@@ -68,8 +104,49 @@ namespace Engine
         double GpuMilliseconds = 0.0;
         RendererTimingStatus GpuStatus = RendererTimingStatus::Unavailable;
         RendererPresentationTiming Presentation;
+        ResolvedFramePacingPolicy FramePacingPolicy;
+        std::vector<RendererFrameLifecycleEvent> Lifecycle;
+        std::vector<RendererFrameWaitTiming> Waits;
+        bool HasGpuCompletionObservation = false;
+        u64 LastGpuCompletionObservedFrameIndex = 0;
         std::vector<RendererPassTiming> Passes;
     };
+
+    inline bool HasValidFrameLifecycleTelemetry(const RendererFrameTiming& timing, bool requireDxgiWait = false, bool requireVulkanWaits = false)
+    {
+        constexpr RendererFrameLifecyclePhase required[] = {
+            RendererFrameLifecyclePhase::FrameStart,
+            RendererFrameLifecyclePhase::InputSimulation,
+            RendererFrameLifecyclePhase::RenderSubmission,
+            RendererFrameLifecyclePhase::PresentBegin,
+            RendererFrameLifecyclePhase::PresentEnd
+        };
+        size_t requiredIndex = 0;
+        for (const RendererFrameLifecycleEvent& event : timing.Lifecycle)
+        {
+            if (requiredIndex < std::size(required) && event.Phase == required[requiredIndex])
+                ++requiredIndex;
+        }
+        bool dxgiWait = false;
+        bool vulkanAcquire = false;
+        bool vulkanFence = false;
+        for (const RendererFrameWaitTiming& wait : timing.Waits)
+        {
+            dxgiWait |= wait.Kind == RendererFrameWaitKind::MandatoryDxgiFrameLatency && wait.Applied;
+            vulkanAcquire |= wait.Kind == RendererFrameWaitKind::MandatoryVulkanAcquire && wait.Applied;
+            vulkanFence |= wait.Kind == RendererFrameWaitKind::MandatoryVulkanFence && wait.Applied;
+        }
+        return requiredIndex == std::size(required)
+            && !timing.Waits.empty()
+            && timing.Waits.front().Kind == RendererFrameWaitKind::IntentionalPacing
+            && !timing.Waits.front().Applied
+            && timing.Waits.front().Milliseconds == 0.0
+            && timing.HasGpuCompletionObservation
+            && (!requireDxgiWait || dxgiWait)
+            && (!requireVulkanWaits || (vulkanAcquire && vulkanFence))
+            && !timing.Presentation.DisplayCadenceAvailable
+            && !timing.Presentation.ReplacementDropStatusAvailable;
+    }
 
     struct RendererBuildInfo
     {
@@ -117,7 +194,7 @@ namespace Engine
     public:
         static void Initialize();
         static void Shutdown();
-        static void BeginFrame();
+        static void BeginFrame(u64 applicationFrameIndex);
         static void EndFrame();
         static bool InitializeImGui(void* nativeWindow);
         static void ShutdownImGui();
@@ -141,6 +218,11 @@ namespace Engine
         static const RHI::DeviceCapabilities* GetDeviceCapabilities();
         static const RendererBuildInfo& GetBuildInfo();
         static const RendererFrameTiming& GetLastFrameTiming();
+        static void SetFramePacingPolicy(const ResolvedFramePacingPolicy& policy);
+        static ResolvedFramePacingPolicy GetFramePacingPolicy();
+        static void RecordFrameLifecyclePhase(u64 applicationFrameIndex, RendererFrameLifecyclePhase phase);
+        static void RecordFrameWait(u64 applicationFrameIndex, RendererFrameWaitKind kind, bool applied, double milliseconds);
+        static void RecordGpuCompletionObservation(u64 completedApplicationFrameIndex);
         static void PublishSceneRenderSnapshot(SceneRenderSnapshot snapshot);
         static std::shared_ptr<const SceneRenderSnapshot> GetSceneRenderSnapshot();
         // CPU-only preparation is safe on a FrameTaskGraph worker: it consumes only

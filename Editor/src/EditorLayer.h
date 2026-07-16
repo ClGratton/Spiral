@@ -38,6 +38,7 @@ private:
     void DrawProfilerPanel();
     void DrawProjectPanel();
     void DrawProjectSettingsPanel();
+    void PublishFramePacingPolicy();
     void DrawNewProjectDialog();
     bool DrawMaterialAssetControls(Engine::AssetHandle handle);
     void HandleAssetWatchEvents();

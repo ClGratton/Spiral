@@ -171,6 +171,7 @@ namespace Engine
         {
             ComPtr<ID3D12CommandAllocator> CommandAllocator;
             u64 FenceValue = 0;
+            u64 ApplicationFrameIndex = 0;
         };
     }
 
@@ -277,6 +278,10 @@ namespace Engine
             const auto waitEnd = std::chrono::steady_clock::now();
             m_PresentationTiming.WaitedForFrameLatency = waitResult == WAIT_OBJECT_0;
             m_PresentationTiming.FrameLatencyWaitMilliseconds = std::chrono::duration<double, std::milli>(waitEnd - waitStart).count();
+            Renderer::RecordFrameWait(Renderer::GetLastFrameTiming().FrameIndex,
+                RendererFrameWaitKind::MandatoryDxgiFrameLatency,
+                waitResult == WAIT_OBJECT_0,
+                m_PresentationTiming.FrameLatencyWaitMilliseconds);
 
             if (waitResult == WAIT_TIMEOUT)
                 Log::Warn("D3D12 frame-latency wait timed out");
@@ -302,6 +307,8 @@ namespace Engine
             m_FrameIndex = m_Swapchain->GetCurrentBackBufferIndex();
             FrameContext& frame = m_Frames[m_FrameIndex];
             WaitForFenceValue(frame.FenceValue);
+            if (frame.FenceValue != 0)
+                Renderer::RecordGpuCompletionObservation(frame.ApplicationFrameIndex);
             frame.FenceValue = 0;
 
             HRESULT result = frame.CommandAllocator->Reset();
@@ -362,12 +369,15 @@ namespace Engine
 
             ID3D12CommandList* commandLists[] = { m_CommandList.Get() };
             m_GraphicsQueue->ExecuteCommandLists(1, commandLists);
+            Renderer::RecordFrameLifecyclePhase(Renderer::GetLastFrameTiming().FrameIndex, RendererFrameLifecyclePhase::RenderSubmission);
 
+            Renderer::RecordFrameLifecyclePhase(Renderer::GetLastFrameTiming().FrameIndex, RendererFrameLifecyclePhase::PresentBegin);
             const auto presentStart = std::chrono::steady_clock::now();
             result = m_Swapchain->Present(1, 0);
             const auto presentEnd = std::chrono::steady_clock::now();
             m_PresentationTiming.PresentMilliseconds = std::chrono::duration<double, std::milli>(presentEnd - presentStart).count();
             m_PresentationTiming.PresentSucceeded = SUCCEEDED(result);
+            Renderer::RecordFrameLifecyclePhase(Renderer::GetLastFrameTiming().FrameIndex, RendererFrameLifecyclePhase::PresentEnd);
             if (FAILED(result))
                 Log::Error("D3D12 swapchain present failed: ", HResultToString(result));
 
@@ -376,6 +386,7 @@ namespace Engine
             if (FAILED(result))
                 throw std::runtime_error("Could not signal D3D12 fence: " + HResultToString(result));
             frame.FenceValue = fenceValue;
+            frame.ApplicationFrameIndex = Renderer::GetLastFrameTiming().FrameIndex;
         }
 
         bool PrepareViewportTexture(u32 width, u32 height)

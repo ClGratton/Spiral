@@ -351,6 +351,7 @@ void EditorLayer::OnAttach()
     }
     if (!std::filesystem::exists(m_ProjectPath) || !LoadProject())
         EnsureDefaultSceneEntities();
+    PublishFramePacingPolicy();
     SyncEditorCameraStateFromMainCamera(true);
     m_CaptureViewportRequested = Engine::Application::Get().GetSpecification().CommandLineArgs.HasFlag("--capture-viewport");
     m_SaveSceneSmokeRequested = Engine::Application::Get().GetSpecification().CommandLineArgs.HasFlag("--save-scene-smoke");
@@ -405,6 +406,7 @@ void EditorLayer::OnUpdate(Engine::Timestep timestep)
 {
     ++m_FrameCounter;
     m_LastFrameMs = timestep.GetMilliseconds();
+    PublishFramePacingPolicy();
 
     RunAssetWatchSmokeMutation();
     RunGltfImportSmoke();
@@ -1706,7 +1708,13 @@ void EditorLayer::DrawProjectSettingsPanel()
             m_ConsoleLines.emplace_back("Project frame-pacing policy saved: "
                 + Engine::DescribeFramePacingPolicy(m_GameFramePacingSettings.Resolve(m_ProjectFramePacingPolicy)));
     }
+    PublishFramePacingPolicy();
     ImGui::End();
+}
+
+void EditorLayer::PublishFramePacingPolicy()
+{
+    Engine::Renderer::SetFramePacingPolicy(m_GameFramePacingSettings.Resolve(m_ProjectFramePacingPolicy));
 }
 
 void EditorLayer::DrawNewProjectDialog()
@@ -2267,6 +2275,7 @@ bool EditorLayer::LoadProject()
     m_ScenePath = std::move(manifest.ScenePath);
     m_AssetRegistryPath = std::move(manifest.AssetRegistryPath);
     m_ProjectFramePacingPolicy = manifest.FramePacingPolicy;
+    PublishFramePacingPolicy();
     m_AssetRegistry = std::move(loadedRegistry);
     m_MaterialLibrary = std::move(loadedMaterials);
     m_ActiveScene = std::move(loadedScene);

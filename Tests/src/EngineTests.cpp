@@ -11,6 +11,7 @@
 #include "Engine/RHI/NVRHI/VulkanQueueAdmission.h"
 #include "Engine/Renderer/CapabilityDiagnostics.h"
 #include "Engine/Renderer/FramePacingPolicy.h"
+#include "Engine/Renderer/Renderer.h"
 #include "Engine/Renderer/AsyncShaderPackageService.h"
 #include "Engine/Renderer/PortableShaderContract.h"
 #include "Engine/Renderer/SlangShaderCompiler.h"
@@ -91,6 +92,40 @@ namespace
             && Expect(invalidOverrideRejected
                     && gameSettings.GetRuntimeOverride() == beforeRejectedUpdate,
                 "invalid Smooth Frametime override updates leave the prior runtime state unchanged");
+    }
+
+    bool TestFrameLifecycleTelemetryOrderAndUnavailableStates()
+    {
+        Engine::RendererFrameTiming trace;
+        trace.FrameIndex = 0;
+        trace.Lifecycle = {
+            { Engine::RendererFrameLifecyclePhase::FrameStart, 0.0 },
+            { Engine::RendererFrameLifecyclePhase::InputSimulation, 0.1 },
+            { Engine::RendererFrameLifecyclePhase::RenderSubmission, 1.0 },
+            { Engine::RendererFrameLifecyclePhase::PresentBegin, 1.1 },
+            { Engine::RendererFrameLifecyclePhase::PresentEnd, 1.2 },
+            { Engine::RendererFrameLifecyclePhase::GpuCompletionObservation, 2.0 }
+        };
+        trace.Waits = {
+            { Engine::RendererFrameWaitKind::IntentionalPacing, false, 0.0 },
+            { Engine::RendererFrameWaitKind::MandatoryDxgiFrameLatency, true, 0.5 }
+        };
+        trace.HasGpuCompletionObservation = true;
+        trace.LastGpuCompletionObservedFrameIndex = 0;
+        const bool valid = Engine::HasValidFrameLifecycleTelemetry(trace, true, false);
+        const bool vulkanWaitsRejected = !Engine::HasValidFrameLifecycleTelemetry(trace, false, true);
+        trace.Waits.push_back({ Engine::RendererFrameWaitKind::MandatoryVulkanAcquire, true, 0.25 });
+        trace.Waits.push_back({ Engine::RendererFrameWaitKind::MandatoryVulkanFence, true, 0.25 });
+        const bool vulkanWaitsAccepted = Engine::HasValidFrameLifecycleTelemetry(trace, false, true);
+
+        trace.Lifecycle[2].Phase = Engine::RendererFrameLifecyclePhase::PresentBegin;
+        const bool outOfOrderRejected = !Engine::HasValidFrameLifecycleTelemetry(trace);
+        trace.Lifecycle[2].Phase = Engine::RendererFrameLifecyclePhase::RenderSubmission;
+        trace.Presentation.DisplayCadenceAvailable = true;
+        const bool unavailableStateRequired = !Engine::HasValidFrameLifecycleTelemetry(trace);
+
+        return Expect(valid && vulkanWaitsRejected && vulkanWaitsAccepted && outOfOrderRejected && unavailableStateRequired,
+            "frame lifecycle telemetry preserves phase order, no-delay intent, and truthful unavailable feedback states");
     }
 
     bool MatricesNear(const Engine::Math::Mat4& left, const Engine::Math::Mat4& right, float tolerance = 0.001f)
@@ -3807,6 +3842,7 @@ int main()
 
     const std::vector<std::pair<std::string_view, TestFunction>> tests = {
         { "Frame pacing policy resolves overrides and validates targets", TestFramePacingPolicyResolutionAndValidation },
+        { "Frame lifecycle telemetry orders phases and retains unavailable feedback", TestFrameLifecycleTelemetryOrderAndUnavailableStates },
         { "Slang compiler emits validated portable shader packages", TestSlangShaderCompilerProducesPortableValidatedPackages },
         { "Async shader publication is nonblocking deduplicated and atomic", TestAsyncShaderPackagePublicationIsNonblockingDeduplicatedAndAtomic },
         { "Async shader failure retention inline equivalence and shutdown safety", TestAsyncShaderFailureRetentionInlineEquivalenceAndShutdownSafety },

@@ -234,6 +234,8 @@ A backend claim requires that backend's smoke or a stronger representative scene
 
 Future frame-pacing/profiler completion requires a deterministic marker trace that carries one frame ID through engine `FrameStart`, input/simulation, render submission, `Present` begin/end, GPU completion, and display feedback where available. Tests must prove that the primary in-game frametime series is consecutive engine-start cadence, that intentional pacing wait and CPU active work are separate, and that injected inter-frame and pre-`Present` delays appear at their actual control points. A flat limiter/Afterburner/RTSS hook-local graph, average FPS, or present cadence alone is not completion evidence. When display feedback is unavailable, diagnostics must report it unavailable rather than substituting `Present` cadence.
 
+The current prerequisite is exercised by `FrameLifecycleTelemetryV1` in both headed scripts. It waits for an actual GPU-completion observation (including valid completed frame 0), requires the application frame ID, ordered start/input/submission/present markers, `intentionalWait=not-applied:0`, backend-specific mandatory waits, and explicit unavailable display/replacement status; D3D12 latency-object and Vulkan acquire/fence waits are mandatory classifications, not pacing evidence.
+
 ## Future AI And Automation Verification
 
 The accepted [AI and automation contract](Architecture/AI_AUTOMATION_ARCHITECTURE.md) is planning, not runtime evidence. Phase 13 tests must carry stable workflow/run/action IDs through preview, permission/precondition checks, apply, validation, the declared commit/rollback/compensation/external-result outcome, undo where supported, and provenance publication. Focused coverage must prove:
