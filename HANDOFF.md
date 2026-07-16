@@ -120,6 +120,7 @@ Latest accepted slice:
 - `8bb678e` - experimental InterFrame and SubmissionGate pacing candidates, released-FrameStart/active-work telemetry, top-bar serialized settings, Profiler runtime experiments, and removal of the duplicate Project Settings panel.
 - `6a06f53` - bounded immutable frame-pacing benchmark history, strict schema-1 CSV/JSON lifecycle/wait/completion export, deterministic distributions and low metrics, runner-supplied condition state, twelve-condition local D3D12/Vulkan capture verification, and bounded-process output-drain repair.
 - `56ce19f` - optional external-capture readiness/release gate with exact run/PID/path/QPC identity, schema-2 lifecycle QPC artifacts, stale/timeout rejection, attachment-only timing overhead, and focused D3D12/Vulkan process-tree-clean verification.
+- `188e6e2` - exact-header/hash/PID/QPC PresentMon raw-stream parser, causal one-to-one interval join, atomic provenance report, synthetic fail-closed fixtures, and real 512-pair D3D12 diagnostic acceptance.
 
 `PLAN.md` is checked through experimental presentation-pacing candidate implementation and native control-point qualification. Production selection remains unchecked.
 
@@ -192,4 +193,4 @@ The GPU-timing roadmap prerequisite is now explicitly backend-neutral and gates 
 
 ## Working State
 
-Head `ac852c9` is on local `main`; `d44b5c1` is on `origin/main`. The working tree contains only the accepted parser/report implementation and its documentation, ready for a scoped commit. Generated captures, the portable diagnostic tool, raw streams, reports, and focused logs remain under ignored `output/`.
+Head `188e6e2` is on local `main`; `d44b5c1` is on `origin/main`. The working tree is clean except for this exact-head handoff refresh. Generated captures, the portable diagnostic tool, raw streams, reports, and focused logs remain under ignored `output/`.
