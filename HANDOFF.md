@@ -199,4 +199,4 @@ The initial V3 controller evidence found an off-center zoom-to-orbit continuity 
 
 ## Working State
 
-This deferred-capture correction is ready to commit from base head `10122f1`; generated captures, the portable diagnostic tool, raw streams, reports, and focused logs remain under ignored `output/`.
+Head `b976b85` is on local `main` and `origin/main`; the working tree is clean except for this exact-head handoff correction. Generated captures, the portable diagnostic tool, raw streams, reports, and focused logs remain under ignored `output/`.
