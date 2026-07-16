@@ -17,7 +17,11 @@ namespace Engine
     // supplies measured evidence; they are never inferred from Present.
     struct FramePacingBenchmarkCondition
     {
-        static constexpr u32 SchemaVersion = 1;
+        static constexpr u32 SchemaVersion = 2;
+        std::string RunId = "unavailable";
+        u32 ProcessId = 0;
+        std::string ExecutablePath = "unavailable";
+        u64 QpcFrequency = 0;
         std::string Backend;
         std::string Adapter;
         std::string AdapterStableId;
@@ -28,6 +32,18 @@ namespace Engine
         std::string SyncMode = "unknown";
         std::string VrrMode = "unknown";
         std::string TearingMode = "unknown";
+    };
+
+    struct FramePacingBenchmarkAttachmentReadiness
+    {
+        static constexpr u32 SchemaVersion = 1;
+        std::string RunId;
+        u32 ProcessId = 0;
+        std::string ExecutablePath;
+        u64 QpcFrequency = 0;
+        u64 QpcTick = 0;
+        std::string BenchmarkArtifactPath;
+        FramePacingBenchmarkCondition Condition;
     };
 
     struct FramePacingBenchmarkSummary
@@ -96,6 +112,55 @@ namespace Engine
             const std::string json = Json(snapshot);
             return WriteAtomically(directory / "frame-pacing-benchmark.csv", csv, error)
                 && WriteAtomically(directory / "frame-pacing-benchmark.json", json, error);
+        }
+
+        static bool WriteAttachmentReadiness(const FramePacingBenchmarkAttachmentReadiness& readiness,
+            const std::filesystem::path& path, std::string& error)
+        {
+            if (readiness.RunId.empty() || readiness.ProcessId == 0 || readiness.ExecutablePath.empty()
+                || readiness.QpcFrequency == 0 || readiness.QpcTick == 0 || readiness.BenchmarkArtifactPath.empty())
+            {
+                error = "attachment readiness identity is incomplete";
+                return false;
+            }
+            std::error_code directoryError;
+            if (!path.parent_path().empty())
+            {
+                std::filesystem::create_directories(path.parent_path(), directoryError);
+                if (directoryError)
+                {
+                    error = "could not create attachment readiness directory";
+                    return false;
+                }
+            }
+            std::ostringstream out;
+            out << "{\n  \"schema\":" << FramePacingBenchmarkAttachmentReadiness::SchemaVersion
+                << ",\n  \"runId\":\"" << Escape(readiness.RunId)
+                << "\",\n  \"processId\":" << readiness.ProcessId
+                << ",\n  \"executablePath\":\"" << Escape(readiness.ExecutablePath)
+                << "\",\n  \"qpcFrequency\":" << readiness.QpcFrequency
+                << ",\n  \"qpcTick\":" << readiness.QpcTick
+                << ",\n  \"benchmarkArtifactPath\":\"" << Escape(readiness.BenchmarkArtifactPath)
+                << "\",\n  \"condition\":{\"backend\":\"" << Escape(readiness.Condition.Backend)
+                << "\",\"targetFps\":" << readiness.Condition.TargetFramesPerSecond
+                << ",\"candidate\":\"" << ToString(readiness.Condition.Policy.Candidate)
+                << "\",\"presentationMode\":\"" << Escape(readiness.Condition.PresentationMode)
+                << "\",\"sync\":\"" << Escape(readiness.Condition.SyncMode)
+                << "\",\"vrr\":\"" << Escape(readiness.Condition.VrrMode)
+                << "\",\"tearing\":\"" << Escape(readiness.Condition.TearingMode) << "\"}\n}\n";
+            return WriteAtomically(path, out.str(), error);
+        }
+
+        static bool IsValidAttachmentRelease(const FramePacingBenchmarkAttachmentReadiness& readiness,
+            std::string_view release, std::string& error)
+        {
+            const std::string expected = "schema=1\nrunId=" + readiness.RunId + "\npid=" + std::to_string(readiness.ProcessId) + "\n";
+            if (release != expected)
+            {
+                error = "attachment release does not match the published schema/run/process identity";
+                return false;
+            }
+            return true;
         }
 
     private:
@@ -175,16 +240,16 @@ namespace Engine
         static std::string Csv(const FramePacingBenchmarkSnapshot& snapshot)
         {
             std::ostringstream out; out << std::setprecision(12);
-            out << "schema,backend,adapter,adapterStableId,targetFps,effectiveTargetFps,warmupFrames,projectMode,runtimeOverride,mode,candidate,behavior,presentationMode,sync,vrr,tearing,frame,startToStartMs,cpuTotalMs,cpuActiveMs,intentionalWaitMs,gpuCompleteFrame,lifecycleJson,waitsJson,display,replacementDrop,inputLatency,gpuHeadroom\n";
+            out << "schema,runId,processId,executablePath,qpcFrequency,backend,adapter,adapterStableId,targetFps,effectiveTargetFps,warmupFrames,projectMode,runtimeOverride,mode,candidate,behavior,presentationMode,sync,vrr,tearing,frame,startToStartMs,cpuTotalMs,cpuActiveMs,intentionalWaitMs,gpuCompleteFrame,lifecycleJson,waitsJson,display,replacementDrop,inputLatency,gpuHeadroom\n";
             for (const RendererFrameTiming& f : snapshot.Frames)
             {
                 std::ostringstream lifecycle, waits;
                 lifecycle << std::setprecision(12) << '[';
                 waits << std::setprecision(12) << '[';
-                for (size_t i=0;i<f.Lifecycle.size();++i) { if(i) lifecycle << ','; lifecycle << "{\"phase\":\"" << PhaseName(f.Lifecycle[i].Phase) << "\",\"ms\":" << f.Lifecycle[i].MillisecondsFromFrameStart << '}'; }
+                for (size_t i=0;i<f.Lifecycle.size();++i) { if(i) lifecycle << ','; lifecycle << "{\"phase\":\"" << PhaseName(f.Lifecycle[i].Phase) << "\",\"ms\":" << f.Lifecycle[i].MillisecondsFromFrameStart << ",\"qpc\":" << f.Lifecycle[i].QpcTick << '}'; }
                 for (size_t i=0;i<f.Waits.size();++i) { if(i) waits << ','; const auto& w=f.Waits[i]; waits << "{\"kind\":\"" << WaitName(w.Kind) << "\",\"applied\":" << (w.Applied?"true":"false") << ",\"ms\":" << w.Milliseconds << ",\"candidate\":\"" << ToString(w.Candidate) << "\",\"deadlineMissed\":" << (w.DeadlineMissed?"true":"false") << ",\"requestedDeadlineMs\":" << w.RequestedDeadlineMilliseconds << ",\"actualReleaseMs\":" << w.ActualReleaseMilliseconds << '}'; }
                 lifecycle << ']'; waits << ']';
-                out << FramePacingBenchmarkCondition::SchemaVersion << ',' << CsvEscape(snapshot.Condition.Backend) << ',' << CsvEscape(snapshot.Condition.Adapter)
+                out << FramePacingBenchmarkCondition::SchemaVersion << ',' << CsvEscape(snapshot.Condition.RunId) << ',' << snapshot.Condition.ProcessId << ',' << CsvEscape(snapshot.Condition.ExecutablePath) << ',' << snapshot.Condition.QpcFrequency << ',' << CsvEscape(snapshot.Condition.Backend) << ',' << CsvEscape(snapshot.Condition.Adapter)
                     << ',' << CsvEscape(snapshot.Condition.AdapterStableId) << ',' << snapshot.Condition.TargetFramesPerSecond << ','
                     << (snapshot.Condition.Policy.SmoothTargetFramesPerSecond ? std::to_string(*snapshot.Condition.Policy.SmoothTargetFramesPerSecond) : "unavailable")
                     << ',' << snapshot.Condition.WarmupFrames << ',' << CsvEscape(ToString(snapshot.Condition.Policy.ProjectMode)) << ','
@@ -201,7 +266,7 @@ namespace Engine
         static std::string Json(const FramePacingBenchmarkSnapshot& s)
         {
             std::ostringstream out; out << std::setprecision(12);
-            out << "{\n  \"schema\":1,\n  \"condition\":{\"backend\":\"" << Escape(s.Condition.Backend) << "\",\"adapter\":\"" << Escape(s.Condition.Adapter)
+            out << "{\n  \"schema\":" << FramePacingBenchmarkCondition::SchemaVersion << ",\n  \"condition\":{\"runId\":\"" << Escape(s.Condition.RunId) << "\",\"processId\":" << s.Condition.ProcessId << ",\"executablePath\":\"" << Escape(s.Condition.ExecutablePath) << "\",\"qpcFrequency\":" << s.Condition.QpcFrequency << ",\"backend\":\"" << Escape(s.Condition.Backend) << "\",\"adapter\":\"" << Escape(s.Condition.Adapter)
                 << "\",\"adapterStableId\":\"" << Escape(s.Condition.AdapterStableId) << "\",\"targetFps\":" << s.Condition.TargetFramesPerSecond << ",\"warmupFrames\":" << s.Condition.WarmupFrames
                 << ",\"projectMode\":\"" << ToString(s.Condition.Policy.ProjectMode) << "\",\"runtimeOverride\":\"" << ToString(s.Condition.Policy.RuntimeOverride)
                 << "\",\"mode\":\"" << ToString(s.Condition.Policy.EffectiveMode) << "\",\"candidate\":\"" << ToString(s.Condition.Policy.Candidate)
@@ -209,7 +274,7 @@ namespace Engine
                 << (s.Condition.Policy.SmoothTargetFramesPerSecond ? std::to_string(*s.Condition.Policy.SmoothTargetFramesPerSecond) : "null")
                 << ",\"presentationMode\":\"" << Escape(s.Condition.PresentationMode) << "\",\"sync\":\"" << Escape(s.Condition.SyncMode) << "\",\"vrr\":\"" << Escape(s.Condition.VrrMode) << "\",\"tearing\":\"" << Escape(s.Condition.TearingMode)
                 << "\"},\n  \"summary\":{\"samples\":" << s.Summary.SampleCount << ",\"p50Ms\":" << s.Summary.StartToStartP50Milliseconds << ",\"p95Ms\":" << s.Summary.StartToStartP95Milliseconds << ",\"p99Ms\":" << s.Summary.StartToStartP99Milliseconds << ",\"cpuActiveP50Ms\":" << s.Summary.CpuActiveP50Milliseconds << ",\"cpuActiveP95Ms\":" << s.Summary.CpuActiveP95Milliseconds << ",\"cpuActiveP99Ms\":" << s.Summary.CpuActiveP99Milliseconds << ",\"intentionalWaitP50Ms\":" << s.Summary.IntentionalWaitP50Milliseconds << ",\"intentionalWaitP95Ms\":" << s.Summary.IntentionalWaitP95Milliseconds << ",\"intentionalWaitP99Ms\":" << s.Summary.IntentionalWaitP99Milliseconds << ",\"onePercentLowFps\":" << s.Summary.OnePercentLowFramesPerSecond << ",\"pointOnePercentLowFps\":" << s.Summary.PointOnePercentLowFramesPerSecond << ",\"deadlineMisses\":" << s.Summary.DeadlineMissCount << ",\"deadlineOvershootP99Ms\":" << s.Summary.DeadlineOvershootP99Milliseconds << "},\n  \"frames\":[\n";
-            for (size_t i = 0; i < s.Frames.size(); ++i) { const auto& f = s.Frames[i]; out << "    {\"frame\":" << f.FrameIndex << ",\"startToStartMs\":" << f.StartToStartMilliseconds << ",\"cpuTotalMs\":" << f.CpuMilliseconds << ",\"cpuActiveMs\":" << f.CpuActiveMilliseconds << ",\"intentionalWaitMs\":" << f.IntentionalPacingMilliseconds << ",\"lifecycle\":["; for(size_t e=0;e<f.Lifecycle.size();++e){if(e)out<<',';out<<"{\"phase\":\""<<PhaseName(f.Lifecycle[e].Phase)<<"\",\"ms\":"<<f.Lifecycle[e].MillisecondsFromFrameStart<<'}';} out<<"],\"waits\":["; for(size_t w=0;w<f.Waits.size();++w){if(w)out<<',';const auto& x=f.Waits[w];out<<"{\"kind\":\""<<WaitName(x.Kind)<<"\",\"applied\":"<<(x.Applied?"true":"false")<<",\"ms\":"<<x.Milliseconds<<",\"candidate\":\""<<ToString(x.Candidate)<<"\",\"deadlineMissed\":"<<(x.DeadlineMissed?"true":"false")<<",\"requestedDeadlineMs\":"<<x.RequestedDeadlineMilliseconds<<",\"actualReleaseMs\":"<<x.ActualReleaseMilliseconds<<'}';} out<<"],\"gpuCompletionFrame\":"<<(f.HasGpuCompletionObservation?std::to_string(f.LastGpuCompletionObservedFrameIndex):"null")<<",\"display\":\"unavailable\",\"replacementDrop\":\"unavailable\",\"inputLatency\":\"unavailable\",\"gpuHeadroom\":\"unavailable\"}" << (i + 1 == s.Frames.size() ? "\n" : ",\n"); }
+            for (size_t i = 0; i < s.Frames.size(); ++i) { const auto& f = s.Frames[i]; out << "    {\"frame\":" << f.FrameIndex << ",\"startToStartMs\":" << f.StartToStartMilliseconds << ",\"cpuTotalMs\":" << f.CpuMilliseconds << ",\"cpuActiveMs\":" << f.CpuActiveMilliseconds << ",\"intentionalWaitMs\":" << f.IntentionalPacingMilliseconds << ",\"lifecycle\":["; for(size_t e=0;e<f.Lifecycle.size();++e){if(e)out<<',';out<<"{\"phase\":\""<<PhaseName(f.Lifecycle[e].Phase)<<"\",\"ms\":"<<f.Lifecycle[e].MillisecondsFromFrameStart<<",\"qpc\":"<<f.Lifecycle[e].QpcTick<<'}';} out<<"],\"waits\":["; for(size_t w=0;w<f.Waits.size();++w){if(w)out<<',';const auto& x=f.Waits[w];out<<"{\"kind\":\""<<WaitName(x.Kind)<<"\",\"applied\":"<<(x.Applied?"true":"false")<<",\"ms\":"<<x.Milliseconds<<",\"candidate\":\""<<ToString(x.Candidate)<<"\",\"deadlineMissed\":"<<(x.DeadlineMissed?"true":"false")<<",\"requestedDeadlineMs\":"<<x.RequestedDeadlineMilliseconds<<",\"actualReleaseMs\":"<<x.ActualReleaseMilliseconds<<'}';} out<<"],\"gpuCompletionFrame\":"<<(f.HasGpuCompletionObservation?std::to_string(f.LastGpuCompletionObservedFrameIndex):"null")<<",\"display\":\"unavailable\",\"replacementDrop\":\"unavailable\",\"inputLatency\":\"unavailable\",\"gpuHeadroom\":\"unavailable\"}" << (i + 1 == s.Frames.size() ? "\n" : ",\n"); }
             return out.str() + "  ]\n}\n";
         }
 

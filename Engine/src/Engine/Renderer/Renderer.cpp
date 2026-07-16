@@ -4,6 +4,19 @@
 #include "Engine/Core/Application.h"
 #include "Engine/Core/Log.h"
 #include "Engine/RenderGraph/RenderGraph.h"
+
+#if defined(GE_PLATFORM_WINDOWS)
+    #ifndef WIN32_LEAN_AND_MEAN
+        #define WIN32_LEAN_AND_MEAN
+    #endif
+    #ifndef NOGDI
+        #define NOGDI
+    #endif
+    #ifndef NOMINMAX
+        #define NOMINMAX
+    #endif
+    #include <Windows.h>
+#endif
 #include "Engine/RHI/NVRHI/NVRHIAdapter.h"
 #include "Engine/Renderer/CapabilityDiagnostics.h"
 #include "Engine/Renderer/NVRHI/NVRHIRenderBackend.h"
@@ -70,7 +83,20 @@ namespace Engine
         bool s_Initialized = false;
         bool s_HasDeviceCapabilities = false;
         bool s_RendererFrameTimingActive = false;
+        bool s_FramePacingBenchmarkQpcActive = false;
         Scope<FramePacingBenchmarkCapture> s_FramePacingBenchmark;
+
+        u64 CurrentQpcTick()
+        {
+            if (!s_FramePacingBenchmarkQpcActive)
+                return 0;
+#if defined(GE_PLATFORM_WINDOWS)
+            LARGE_INTEGER tick {};
+            return QueryPerformanceCounter(&tick) ? static_cast<u64>(tick.QuadPart) : 0;
+#else
+            return 0;
+#endif
+        }
 
         bool HasNativeWindow()
         {
@@ -220,7 +246,7 @@ namespace Engine
             s_PreviousRendererFrameStart = s_RendererFrameStart;
             s_InFrameIntentionalPacingMilliseconds = 0.0;
             s_RendererFrameTimingActive = true;
-            s_FrameTiming.Lifecycle.push_back({ RendererFrameLifecyclePhase::FrameStart, 0.0 });
+            s_FrameTiming.Lifecycle.push_back({ RendererFrameLifecyclePhase::FrameStart, 0.0, CurrentQpcTick() });
             // Baseline no-intentional-wait record used by Responsive validation;
             // an opted-in candidate adds a separately classified record.
             s_FrameTiming.Waits.push_back({ RendererFrameWaitKind::IntentionalPacing, false, 0.0 });
@@ -236,7 +262,7 @@ namespace Engine
         {
             if (!s_RendererFrameTimingActive)
                 return;
-            s_FrameTiming.Lifecycle.push_back({ phase, ToMilliseconds(Clock::now() - s_RendererFrameStart) });
+            s_FrameTiming.Lifecycle.push_back({ phase, ToMilliseconds(Clock::now() - s_RendererFrameStart), CurrentQpcTick() });
         }
 
         void RefreshTimingFrameTotal()
@@ -418,6 +444,8 @@ namespace Engine
         s_SceneRasterFrame.Store({});
         s_PreviousRendererFrameStart.reset();
         s_SmoothFrametimePacer.Reset();
+        s_FramePacingBenchmark.reset();
+        s_FramePacingBenchmarkQpcActive = false;
         if (!s_Initialized)
             return;
 
@@ -674,8 +702,11 @@ namespace Engine
     }
 
     void Renderer::BeginFramePacingBenchmark(size_t capacity, double targetFramesPerSecond, u32 warmupFrames,
-        std::string presentationMode, std::string syncMode, std::string vrrMode, std::string tearingMode)
+        std::string presentationMode, std::string syncMode, std::string vrrMode, std::string tearingMode,
+        FramePacingBenchmarkIdentity identity)
     {
+        const bool attachmentQpcActive = !identity.RunId.empty() && identity.ProcessId != 0
+            && !identity.ExecutablePath.empty() && identity.QpcFrequency != 0;
         FramePacingBenchmarkCondition condition;
         condition.Backend = GetActiveBackendName();
         condition.TargetFramesPerSecond = targetFramesPerSecond;
@@ -685,6 +716,11 @@ namespace Engine
         condition.SyncMode = std::move(syncMode);
         condition.VrrMode = std::move(vrrMode);
         condition.TearingMode = std::move(tearingMode);
+        condition.RunId = identity.RunId.empty() ? "unavailable" : std::move(identity.RunId);
+        condition.ProcessId = identity.ProcessId;
+        condition.ExecutablePath = identity.ExecutablePath.empty() ? "unavailable" : std::move(identity.ExecutablePath);
+        condition.QpcFrequency = identity.QpcFrequency;
+        s_FramePacingBenchmarkQpcActive = attachmentQpcActive;
         if (s_HasDeviceCapabilities)
         {
             condition.Adapter = s_DeviceCapabilities.Identity.Name;

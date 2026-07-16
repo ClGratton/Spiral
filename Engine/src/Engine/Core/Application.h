@@ -67,6 +67,12 @@ namespace Engine
         u64 m_FrameIndex = 0;
         bool m_FrameLifecycleTelemetrySmokeComplete = false;
         bool m_FramePacingBenchmarkStarted = false;
+        bool m_FramePacingAttachmentCheckResolved = false;
+        bool m_FramePacingAttachmentReleased = false;
+        std::string m_FramePacingAttachmentRunId;
+        u32 m_FramePacingAttachmentProcessId = 0;
+        std::string m_FramePacingAttachmentExecutablePath;
+        u64 m_FramePacingAttachmentQpcFrequency = 0;
 
         static Application* s_Instance;
 

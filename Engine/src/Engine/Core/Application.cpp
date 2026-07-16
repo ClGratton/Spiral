@@ -2,15 +2,32 @@
 
 #include "Engine/Core/Log.h"
 #include "Engine/Jobs/FrameTaskGraph.h"
+#include "Engine/RHI/Device.h"
 #include "Engine/Renderer/Renderer.h"
 #include "Engine/Renderer/FramePacingBenchmark.h"
 #include "Engine/UI/ImGuiLayer.h"
 
 #include <chrono>
+#include <array>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <optional>
 #include <stdexcept>
+#include <thread>
+
+#if defined(GE_PLATFORM_WINDOWS)
+    #ifndef WIN32_LEAN_AND_MEAN
+        #define WIN32_LEAN_AND_MEAN
+    #endif
+    #ifndef NOGDI
+        #define NOGDI
+    #endif
+    #ifndef NOMINMAX
+        #define NOMINMAX
+    #endif
+    #include <Windows.h>
+#endif
 
 namespace Engine
 {
@@ -71,6 +88,112 @@ namespace Engine
             policy.Behavior = policy.Candidate == SmoothFrametimeCandidate::InterFrame
                 ? "experimental-inter-frame" : "experimental-submission-gate";
             Renderer::SetFramePacingPolicy(policy);
+        }
+
+        std::filesystem::path AbsoluteNormalizedPath(std::filesystem::path path)
+        {
+            std::error_code error;
+            const std::filesystem::path absolute = std::filesystem::absolute(std::move(path), error);
+            return error ? std::filesystem::path() : absolute.lexically_normal();
+        }
+
+        std::string ReadTextFile(const std::filesystem::path& path)
+        {
+            std::ifstream input(path, std::ios::binary);
+            return input ? std::string(std::istreambuf_iterator<char>(input), {}) : std::string();
+        }
+
+        u32 AttachmentTimeoutMilliseconds(const ApplicationCommandLineArgs& args)
+        {
+            const std::string_view value = args.GetOptionValue("--frame-pacing-benchmark-attachment-timeout-ms");
+            if (value.empty())
+                return 30000;
+            const std::string timeoutText(value);
+            char* end = nullptr;
+            const long parsed = std::strtol(timeoutText.c_str(), &end, 10);
+            if (end == timeoutText.c_str() || *end != '\0' || parsed < 100 || parsed > 60000)
+                throw std::runtime_error("frame pacing attachment timeout must be in the inclusive 100-60000 ms range");
+            return static_cast<u32>(parsed);
+        }
+
+        std::optional<FramePacingBenchmarkIdentity> WaitForFramePacingAttachment(const Application& application)
+        {
+            const ApplicationCommandLineArgs& args = application.GetSpecification().CommandLineArgs;
+            const std::string_view readinessValue = args.GetOptionValue("--frame-pacing-benchmark-attachment-readiness");
+            if (readinessValue.empty())
+                return std::nullopt;
+            if (!args.HasFlag("--frame-pacing-benchmark"))
+                throw std::runtime_error("frame pacing attachment requires --frame-pacing-benchmark");
+            const std::string_view releaseValue = args.GetOptionValue("--frame-pacing-benchmark-attachment-release");
+            const std::string_view artifactValue = args.GetOptionValue("--frame-pacing-benchmark-output");
+            if (releaseValue.empty() || artifactValue.empty())
+                throw std::runtime_error("frame pacing attachment requires release and benchmark-output paths");
+#if !defined(GE_PLATFORM_WINDOWS)
+            throw std::runtime_error("frame pacing attachment requires Windows QueryPerformanceCounter identity");
+#else
+            LARGE_INTEGER frequency {}, tick {};
+            if (!QueryPerformanceFrequency(&frequency) || !QueryPerformanceCounter(&tick) || frequency.QuadPart <= 0 || tick.QuadPart <= 0)
+                throw std::runtime_error("frame pacing attachment could not query Windows performance counter identity");
+            std::array<char, 32768> executable {};
+            const DWORD length = GetModuleFileNameA(nullptr, executable.data(), static_cast<DWORD>(std::size(executable)));
+            if (length == 0 || length >= std::size(executable))
+                throw std::runtime_error("frame pacing attachment could not resolve canonical executable path");
+            const std::filesystem::path readinessPath = AbsoluteNormalizedPath(std::filesystem::path(readinessValue));
+            const std::filesystem::path releasePath = AbsoluteNormalizedPath(std::filesystem::path(releaseValue));
+            const std::filesystem::path artifactPath = AbsoluteNormalizedPath(std::filesystem::path(artifactValue));
+            if (readinessPath.empty() || releasePath.empty() || artifactPath.empty())
+                throw std::runtime_error("frame pacing attachment paths must be resolvable");
+            const u32 processId = static_cast<u32>(GetCurrentProcessId());
+            const std::string runId = "frame-pacing-" + std::to_string(processId) + "-" + std::to_string(static_cast<u64>(tick.QuadPart));
+            FramePacingBenchmarkCondition condition;
+            condition.RunId = runId;
+            condition.ProcessId = processId;
+            condition.ExecutablePath = AbsoluteNormalizedPath(std::filesystem::path(executable.data())).string();
+            condition.QpcFrequency = static_cast<u64>(frequency.QuadPart);
+            condition.Backend = Renderer::GetActiveBackendName();
+            condition.TargetFramesPerSecond = std::strtod(std::string(args.GetOptionValue("--smooth-frametime-target-fps")).c_str(), nullptr);
+            condition.Policy = Renderer::GetFramePacingPolicy();
+            const auto conditionValue = [&](std::string_view option) { const std::string_view value = args.GetOptionValue(option); return value.empty() ? std::string("unknown") : std::string(value); };
+            condition.PresentationMode = conditionValue("--frame-pacing-benchmark-presentation");
+            condition.SyncMode = conditionValue("--frame-pacing-benchmark-sync");
+            condition.VrrMode = conditionValue("--frame-pacing-benchmark-vrr");
+            condition.TearingMode = conditionValue("--frame-pacing-benchmark-tearing");
+            if (const RHI::DeviceCapabilities* capabilities = Renderer::GetDeviceCapabilities())
+            {
+                condition.Adapter = capabilities->Identity.Name;
+                condition.AdapterStableId = capabilities->Identity.StableId;
+            }
+            FramePacingBenchmarkAttachmentReadiness readiness;
+            readiness.RunId = runId;
+            readiness.ProcessId = processId;
+            readiness.ExecutablePath = condition.ExecutablePath;
+            readiness.QpcFrequency = condition.QpcFrequency;
+            readiness.QpcTick = static_cast<u64>(tick.QuadPart);
+            readiness.BenchmarkArtifactPath = artifactPath.string();
+            readiness.Condition = std::move(condition);
+            std::string error;
+            if (!FramePacingBenchmarkCapture::WriteAttachmentReadiness(readiness, readinessPath, error))
+                throw std::runtime_error("frame pacing attachment readiness publish failed: " + error);
+            Log::Info("FramePacingAttachmentV1 state=ready runId=", readiness.RunId, " pid=", readiness.ProcessId,
+                " qpcFrequency=", readiness.QpcFrequency, " qpcTick=", readiness.QpcTick);
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(AttachmentTimeoutMilliseconds(args));
+            while (std::chrono::steady_clock::now() < deadline)
+            {
+                if (std::filesystem::exists(releasePath))
+                {
+                    if (!FramePacingBenchmarkCapture::IsValidAttachmentRelease(readiness, ReadTextFile(releasePath), error))
+                    {
+                        Log::Error("FramePacingAttachmentV1 state=rejected reason=", error);
+                        throw std::runtime_error("frame pacing attachment release rejected: " + error);
+                    }
+                    Log::Info("FramePacingAttachmentV1 state=released runId=", readiness.RunId, " pid=", readiness.ProcessId);
+                    return FramePacingBenchmarkIdentity { readiness.RunId, readiness.ProcessId, readiness.ExecutablePath, readiness.QpcFrequency };
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            }
+            Log::Error("FramePacingAttachmentV1 state=timeout runId=", readiness.RunId, " pid=", readiness.ProcessId);
+            throw std::runtime_error("frame pacing attachment timed out waiting for supervisor release");
+#endif
         }
     }
 
@@ -156,6 +279,18 @@ namespace Engine
         while (m_Running && !m_Window->ShouldClose())
         {
             ApplySmoothFrametimeSmokePolicy(m_Specification.CommandLineArgs);
+            if (!m_FramePacingAttachmentCheckResolved)
+            {
+                m_FramePacingAttachmentCheckResolved = true;
+                if (const std::optional<FramePacingBenchmarkIdentity> identity = WaitForFramePacingAttachment(*this))
+                {
+                    m_FramePacingAttachmentReleased = true;
+                    m_FramePacingAttachmentRunId = identity->RunId;
+                    m_FramePacingAttachmentProcessId = identity->ProcessId;
+                    m_FramePacingAttachmentExecutablePath = identity->ExecutablePath;
+                    m_FramePacingAttachmentQpcFrequency = identity->QpcFrequency;
+                }
+            }
             constexpr u32 benchmarkWarmupFrames = 30;
             if (m_Specification.CommandLineArgs.HasFlag("--frame-pacing-benchmark") && !m_FramePacingBenchmarkStarted && m_FrameIndex >= benchmarkWarmupFrames)
             {
@@ -167,7 +302,9 @@ namespace Engine
                 };
                 Renderer::BeginFramePacingBenchmark(512, targetValue.empty() ? 0.0 : std::strtod(std::string(targetValue).c_str(), nullptr), benchmarkWarmupFrames,
                     conditionValue("--frame-pacing-benchmark-presentation"), conditionValue("--frame-pacing-benchmark-sync"),
-                    conditionValue("--frame-pacing-benchmark-vrr"), conditionValue("--frame-pacing-benchmark-tearing"));
+                    conditionValue("--frame-pacing-benchmark-vrr"), conditionValue("--frame-pacing-benchmark-tearing"),
+                    { m_FramePacingAttachmentRunId, m_FramePacingAttachmentProcessId,
+                        m_FramePacingAttachmentExecutablePath, m_FramePacingAttachmentQpcFrequency });
                 m_FramePacingBenchmarkStarted = true;
             }
             const FramePacingWaitResult preFramePacing = Renderer::WaitForInterFrameBeforeFrame();

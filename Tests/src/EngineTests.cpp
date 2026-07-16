@@ -192,6 +192,10 @@ namespace
     {
         Engine::FramePacingBenchmarkCapture capture(1000);
         Engine::FramePacingBenchmarkCondition condition;
+        condition.RunId = "run-test-42";
+        condition.ProcessId = 42;
+        condition.ExecutablePath = "C:/test/Editor.exe";
+        condition.QpcFrequency = 10000000;
         condition.Backend = "test";
         condition.Adapter = "adapter\"quoted\tvalue";
         condition.TargetFramesPerSecond = 120.0;
@@ -209,11 +213,11 @@ namespace
             timing.CpuActiveMilliseconds = index <= 500 ? 1.0 : (index <= 950 ? 2.0 : 3.0);
             timing.IntentionalPacingMilliseconds = index <= 500 ? 0.0 : (index <= 950 ? 1.0 : 2.0);
             timing.Lifecycle = {
-                { Engine::RendererFrameLifecyclePhase::FrameStart, 0.0 },
-                { Engine::RendererFrameLifecyclePhase::InputSimulation, 0.25 },
-                { Engine::RendererFrameLifecyclePhase::RenderSubmission, 1.5 },
-                { Engine::RendererFrameLifecyclePhase::PresentBegin, 2.0 },
-                { Engine::RendererFrameLifecyclePhase::PresentEnd, 2.5 }
+                { Engine::RendererFrameLifecyclePhase::FrameStart, 0.0, 100 },
+                { Engine::RendererFrameLifecyclePhase::InputSimulation, 0.25, 125 },
+                { Engine::RendererFrameLifecyclePhase::RenderSubmission, 1.5, 250 },
+                { Engine::RendererFrameLifecyclePhase::PresentBegin, 2.0, 300 },
+                { Engine::RendererFrameLifecyclePhase::PresentEnd, 2.5, 350 }
             };
             timing.Waits = { { Engine::RendererFrameWaitKind::MandatoryDxgiFrameLatency, true, 3.5 } };
             if (index == 1000)
@@ -248,15 +252,51 @@ namespace
                 && snapshot->Summary.DeadlineMissCount == 1 && snapshot->Summary.DeadlineOvershootP99Milliseconds == 2.0,
                 "frame pacing benchmark retains continuous raw spikes and aggregates deterministic cadence, work, wait, low, and deadline statistics")
             && Expect(wrote && csv.find("\"adapter\"\"quoted\tvalue\"") != std::string::npos
-                && csv.find("{\"\"phase\"\":\"\"PresentEnd\"\",\"\"ms\"\":2.5}") != std::string::npos
+                && csv.find("{\"\"phase\"\":\"\"PresentEnd\"\",\"\"ms\"\":2.5,\"\"qpc\"\":350}") != std::string::npos
                 && csv.find("{\"\"kind\"\":\"\"MandatoryDxgiFrameLatency\"\",\"\"applied\"\":true,\"\"ms\"\":3.5") != std::string::npos
                 && json.find("adapter\\\"quoted\\tvalue") != std::string::npos
                 && json.find("\"presentationMode\":\"flip-discard\",\"sync\":\"driver-vsync\",\"vrr\":\"enabled\",\"tearing\":\"disabled\"") != std::string::npos
-                && json.find("\"phase\":\"PresentEnd\",\"ms\":2.5") != std::string::npos
+                && json.find("\"runId\":\"run-test-42\",\"processId\":42,\"executablePath\":\"C:/test/Editor.exe\",\"qpcFrequency\":10000000") != std::string::npos
+                && json.find("\"phase\":\"PresentEnd\",\"ms\":2.5,\"qpc\":350") != std::string::npos
                 && json.find("\"kind\":\"MandatoryDxgiFrameLatency\",\"applied\":true,\"ms\":3.5") != std::string::npos
                 && json.find("\"gpuCompletionFrame\":998") != std::string::npos
                 && json.find("\"display\":\"unavailable\",\"replacementDrop\":\"unavailable\",\"inputLatency\":\"unavailable\",\"gpuHeadroom\":\"unavailable\"") != std::string::npos,
                 "frame pacing benchmark exports stable CSV/JSON lifecycle, wait, completion, escaping, and unavailable-field records");
+    }
+
+    bool TestFramePacingAttachmentReadinessAndReleaseValidation()
+    {
+        const std::filesystem::path path = TestFilePath("frame-pacing-attachment");
+        Engine::FramePacingBenchmarkAttachmentReadiness readiness;
+        readiness.RunId = "run-attachment-7";
+        readiness.ProcessId = 77;
+        readiness.ExecutablePath = "C:/test/Editor.exe";
+        readiness.QpcFrequency = 10000000;
+        readiness.QpcTick = 1234567;
+        readiness.BenchmarkArtifactPath = "C:/test/output";
+        readiness.Condition.Backend = "NVRHI D3D12";
+        readiness.Condition.TargetFramesPerSecond = 120.0;
+        readiness.Condition.Policy.Candidate = Engine::SmoothFrametimeCandidate::SubmissionGate;
+        readiness.Condition.PresentationMode = "flip-discard";
+        readiness.Condition.SyncMode = "vsync";
+        readiness.Condition.VrrMode = "unknown";
+        readiness.Condition.TearingMode = "disabled";
+        std::string error;
+        const bool wrote = Engine::FramePacingBenchmarkCapture::WriteAttachmentReadiness(readiness, path / "ready.json", error);
+        const std::string ready = wrote ? [&] { std::ifstream input(path / "ready.json"); return std::string(std::istreambuf_iterator<char>(input), {}); }() : std::string();
+        const std::filesystem::path noParentPath = "frame-pacing-attachment-ready.json";
+        const bool wroteWithoutParent = Engine::FramePacingBenchmarkCapture::WriteAttachmentReadiness(readiness, noParentPath, error);
+        const bool valid = Engine::FramePacingBenchmarkCapture::IsValidAttachmentRelease(readiness, "schema=1\nrunId=run-attachment-7\npid=77\n", error);
+        const bool staleRejected = !Engine::FramePacingBenchmarkCapture::IsValidAttachmentRelease(readiness, "schema=1\nrunId=old-run\npid=77\n", error);
+        const bool wrongPidRejected = !Engine::FramePacingBenchmarkCapture::IsValidAttachmentRelease(readiness, "schema=1\nrunId=run-attachment-7\npid=78\n", error);
+        std::filesystem::remove_all(path);
+        std::filesystem::remove(noParentPath);
+        return Expect(wrote && wroteWithoutParent && ready.find("\"schema\":1,\n  \"runId\":\"run-attachment-7\"") != std::string::npos
+                && ready.find("\"processId\":77") != std::string::npos && ready.find("\"qpcFrequency\":10000000") != std::string::npos
+                && ready.find("\"candidate\":\"SubmissionGate\"") != std::string::npos,
+                "frame pacing attachment readiness exports ordered run, process, QPC, artifact, and condition identity")
+            && Expect(valid && staleRejected && wrongPidRejected,
+                "frame pacing attachment release accepts only the exact published run and process identity");
     }
 
     bool MatricesNear(const Engine::Math::Mat4& left, const Engine::Math::Mat4& right, float tolerance = 0.001f)
@@ -3976,6 +4016,7 @@ int main()
         { "Smooth Frametime pacer preserves deadlines overruns and mode switches", TestSmoothFrametimePacerDeadlinesAndModeSwitch },
         { "Frame lifecycle telemetry orders phases and retains unavailable feedback", TestFrameLifecycleTelemetryOrderAndUnavailableStates },
         { "Frame pacing benchmark retains, aggregates, and exports stable capture artifacts", TestFramePacingBenchmarkRetentionStatisticsAndStableExport },
+        { "Frame pacing attachment readiness and release preserve exact external identity", TestFramePacingAttachmentReadinessAndReleaseValidation },
         { "Slang compiler emits validated portable shader packages", TestSlangShaderCompilerProducesPortableValidatedPackages },
         { "Async shader publication is nonblocking deduplicated and atomic", TestAsyncShaderPackagePublicationIsNonblockingDeduplicatedAndAtomic },
         { "Async shader failure retention inline equivalence and shutdown safety", TestAsyncShaderFailureRetentionInlineEquivalenceAndShutdownSafety },

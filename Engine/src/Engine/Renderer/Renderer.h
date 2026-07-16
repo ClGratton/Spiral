@@ -93,6 +93,9 @@ namespace Engine
     {
         RendererFrameLifecyclePhase Phase = RendererFrameLifecyclePhase::FrameStart;
         double MillisecondsFromFrameStart = 0.0;
+        // Windows external collectors use this explicit QPC tick domain. Zero
+        // remains truthful on platforms where the benchmark has no QPC source.
+        u64 QpcTick = 0;
     };
 
     struct RendererFrameWaitTiming
@@ -122,6 +125,14 @@ namespace Engine
         bool HasGpuCompletionObservation = false;
         u64 LastGpuCompletionObservedFrameIndex = 0;
         std::vector<RendererPassTiming> Passes;
+    };
+
+    struct FramePacingBenchmarkIdentity
+    {
+        std::string RunId;
+        u32 ProcessId = 0;
+        std::string ExecutablePath;
+        u64 QpcFrequency = 0;
     };
 
     inline bool HasValidFrameLifecycleTelemetry(const RendererFrameTiming& timing, bool requireDxgiWait = false, bool requireVulkanWaits = false)
@@ -238,7 +249,8 @@ namespace Engine
         static void RecordFrameWait(u64 applicationFrameIndex, RendererFrameWaitKind kind, bool applied, double milliseconds);
         static FramePacingWaitResult ApplySmoothFrametimeCandidate(SmoothFrametimeCandidate candidate);
         static void BeginFramePacingBenchmark(size_t capacity, double targetFramesPerSecond, u32 warmupFrames,
-            std::string presentationMode, std::string syncMode, std::string vrrMode, std::string tearingMode);
+            std::string presentationMode, std::string syncMode, std::string vrrMode, std::string tearingMode,
+            FramePacingBenchmarkIdentity identity = {});
         static std::shared_ptr<const FramePacingBenchmarkSnapshot> GetFramePacingBenchmarkSnapshot();
         static void RecordGpuCompletionObservation(u64 completedApplicationFrameIndex);
         static void PublishSceneRenderSnapshot(SceneRenderSnapshot snapshot);
