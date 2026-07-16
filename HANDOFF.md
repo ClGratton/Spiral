@@ -40,6 +40,12 @@ One exact native `terra_medium` owner classified the original Phase 3C multithre
 
 The OpenAI goal measured 41,345 tokens and 549 seconds from goal creation through pre-commit acceptance; this is scoped goal telemetry, not a weekly-quota percentage. Root ran the final 58/58 deterministic regression, style, and diff check. The owner retained D3D12 evidence after the Vulkan-only correction and reran only Vulkan parallel/inline paths, matching the requested evidence boundary. This slice therefore improved the prior orchestration pattern: one owner, two waits before correction, one correction, and no broad repeated verification.
 
+### Phase 3C-P2 First-Attempt Workflow Audit (2026-07-16)
+
+The first P2 attempt used one fresh native `terra_medium` owner, one complete assignment, one root wait, and no reviewer or duplicate verification. Startup metadata confirms `agent_role=terra_medium`; goal telemetry at the first report was 14,456 tokens and 262 seconds, while the reliable weekly meter reported 2% used. Root overhead was therefore sharply lower than the historical baseline. The owner session itself still performed a wasteful make/revert loop: it issued 13 tool actions, repeatedly reread broad source/doc surfaces, generated a substantial worker-recording patch, then reverted it after recognizing that cross-queue ownership acquire recording needs the producer's accepted token. It also tried `cmake --build` even though `Docs/VERIFICATION.md` and `Scripts/Build.ps1` define the Windows Premake/MSBuild path. The final tree was clean and no verification was duplicated, but no feature was delivered.
+
+Verdict: exact-role routing, root waits/resumptions, safe rollback, and weekly allowance cost are improved; owner feasibility discipline is not yet sufficient. `AGENTS.md` now requires a read-only control/publication and canonical-build gate before risky edits, treats make/revert churn as failed workflow evidence, and requires the same hot owner to resume with the corrected mechanism. For P2, retain the useful constraint: cross-queue token-dependent acquires remain caller-recorded after producer acceptance; worker recording may cover explicitly eligible passes only where their barriers/ownership operations are recordable from the execution-start state, with deterministic compiled-order submission and suffix discard.
+
 ## Completed Roadmap Work
 
 The following commits are on `main` and `origin/main`:
