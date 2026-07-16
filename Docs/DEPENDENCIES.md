@@ -29,6 +29,10 @@ This file records third-party dependencies, why they exist, how they enter the r
 | Vulkan Loader | Homebrew `vulkan-loader` on macOS | Loads the MoltenVK ICD for the experimental hosted macOS presentation path. | Apache-2.0. | Installed by `Scripts/Setup.sh` on macOS; version 1.4.350.1 is verified in hosted CI. Shipping packaging and pinning remain pending. |
 | MoltenVK | Homebrew `molten-vk` on macOS, version 1.3.0 or newer required | Implements the Vulkan portability subset over Metal for the experimental NVRHI macOS presentation path. | Apache-2.0. | Installed by `Scripts/Setup.sh` on macOS; version 1.4.1 is verified for x86_64 editor presentation. The hosted Apple Paravirtual device requires argument buffers and `MTLHeap` allocation disabled. Apple Silicon, application bundling, normal hardware capabilities, and scene-renderer conformance remain pending. |
 
+## Diagnostic-Only Tools That Are Not Dependencies
+
+The official portable Intel/GameTechDev PresentMon 1.10.0 console executable used for local Windows frame-pacing evidence is not admitted, fetched, vendored, linked, staged, or shipped by this repository. A user-supplied copy may live only under ignored `output/tools/presentmon-diagnostic/`. `Scripts/CapturePresentMonCorrelation.ps1` requires its explicit path and caller-supplied SHA-256, checks that the executable reports exactly `PresentMon 1.10.0`, and records both values in the capture receipt. The locally inspected diagnostic asset has SHA-256 `e57a2f8ee1de1ef1a5516d875f1b115e881943cd729fe9c5a2f88b1dc79a8a3b`; the upstream release publishes no checksum and the binary is not Authenticode-signed, so this digest is provenance for that local evidence only, not a repository dependency pin or redistribution approval. The supervisor never downloads the tool, requests elevation, stops another ETW session, or mutates RTSS/driver state.
+
 ## GitHub Dependency Graph And SBOM
 
 GitHub's dependency graph is driven by supported package manifests, lockfiles, and dependency submissions. Premake files, vendored C++ source trees, and this prose ledger are not enough for GitHub to infer dependencies by themselves.
