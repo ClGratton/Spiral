@@ -164,6 +164,10 @@ P1 is deterministic backend-neutral contract evidence. Run the canonical Debug b
 
 The `RHI timestamp query lifecycle preserves generation-safe nonblocking results` case must prove timestamp-only nonzero bounded creation, exact-device ownership, overflow-safe ranges, reset/write/resolve order, poisoned failed recordings, failed-submission rollback, accepted exact-token `Pending` publication, no-CPU-wait completion-gated reuse, `Ready`/`Disjoint`, stale generation and duplicate-token/completion rejection, and a four-generation history bound. One logical pool is caller-serialized and has at most one pending generation; parallel command contexts use distinct bounded logical pools. Current D3D12/Vulkan query creation and query commands must continue to reject explicitly and timestamp capabilities must remain unimplemented until P2 native translation is qualified. A passing P1 test is not native timestamp, frame/pass timing, Profiler, or GPU-headroom evidence.
 
+## Phase 3 GPU Timing P2A Transaction And Retirement
+
+Use the same canonical Debug build and complete deterministic suite as P1. The `RHI timestamp query transactions retain native state through exact-token retirement` case must prove logical validation precedes every fake-native callback; native failure and a fully recorded but failed submission publish no generation; an accepted exact-device token publishes both logical generation and opaque shared state; invalid, cross-device, stale, incomplete, and duplicate-state operations reject; public-pool destruction cannot release the shared state before terminal completion; reuse requires both result completion and exact-token retirement; and reserved plus unresolved state is bounded at four. D3D12/Vulkan query creation and recording must still reject and capability state must remain unusable. P2A evidence does not qualify a native timestamp, frame/pass scope, Profiler duration, or pacing headroom.
+
 ## Renderer Verification
 
 ## Render Graph Construction Verification

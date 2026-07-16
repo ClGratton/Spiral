@@ -4,6 +4,9 @@
 #include "Engine/RHI/CompletionToken.h"
 
 #include <deque>
+#include <functional>
+#include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -57,6 +60,7 @@ namespace Engine::RHI
     // logical pool is caller-serialized and admits one pending generation;
     // parallel recording uses distinct bounded logical pools.
     class TimestampQueryPool;
+    class TimestampQueryTransaction;
 
     class TimestampQueryRecording
     {
@@ -68,6 +72,7 @@ namespace Engine::RHI
 
     private:
         friend class TimestampQueryPool;
+        friend class TimestampQueryTransaction;
         TimestampQueryRecording(TimestampQueryPool* pool, u64 baseGeneration, std::vector<bool> reset,
             std::vector<bool> written, std::vector<bool> resolved);
 
@@ -77,6 +82,78 @@ namespace Engine::RHI
         std::vector<bool> m_Written;
         std::vector<bool> m_Resolved;
         bool m_Failed = false;
+    };
+
+    // P2A retains a backend-private allocation/result object as opaque shared
+    // state. P2B and P2C may cast their private shared ownership to this type,
+    // but no native handle crosses the Engine::RHI contract.
+    using NativeQueryState = std::shared_ptr<void>;
+
+    // Device-owned retirement storage for P2B/P2C. Capacity is reserved before
+    // submission so an accepted submit can always retain its native state.
+    class TimestampQueryRetirementQueue
+    {
+    public:
+        static constexpr size_t kMaximumPendingRetirements = 4;
+
+        explicit TimestampQueryRetirementQueue(u64 ownerDeviceId) : m_OwnerDeviceId(ownerDeviceId) {}
+
+        bool IsRetained(const NativeQueryState& state) const;
+        bool Retire(const CompletionToken& token, CompletionStatus status);
+        size_t GetPendingRetirementCount() const { return m_Pending.size(); }
+
+    private:
+        friend class TimestampQueryTransaction;
+        struct RetainedState
+        {
+            NativeQueryState State;
+            CompletionToken Token;
+        };
+
+        bool Reserve(const NativeQueryState& state);
+        void ReleaseReservation(const NativeQueryState& state);
+        bool CanPublish(const NativeQueryState& state, const CompletionToken& token) const;
+        void Publish(const NativeQueryState& state, const CompletionToken& token);
+
+        u64 m_OwnerDeviceId = 0;
+        std::vector<NativeQueryState> m_Reserved;
+        std::deque<RetainedState> m_Pending;
+    };
+
+    // One closed command-list query transaction. It advances P1 logical state
+    // before invoking each native callback, then publishes only after Device
+    // has returned an accepted exact completion token. Failed recording and
+    // abandoned transactions release their reservation without publication.
+    class TimestampQueryTransaction
+    {
+    public:
+        static std::optional<TimestampQueryTransaction> Begin(TimestampQueryPool& pool,
+            TimestampQueryRetirementQueue& retirements, NativeQueryState nativeState);
+
+        TimestampQueryTransaction(const TimestampQueryTransaction&) = delete;
+        TimestampQueryTransaction& operator=(const TimestampQueryTransaction&) = delete;
+        TimestampQueryTransaction(TimestampQueryTransaction&&) noexcept = default;
+        TimestampQueryTransaction& operator=(TimestampQueryTransaction&&) = delete;
+        ~TimestampQueryTransaction();
+
+        bool Reset(u32 firstQuery, u32 queryCount, const std::function<bool()>& nativeOperation);
+        bool Write(u32 queryIndex, const std::function<bool()>& nativeOperation);
+        bool Resolve(u32 firstQuery, u32 queryCount, const std::function<bool()>& nativeOperation);
+        bool Publish(const CompletionToken& token);
+        bool IsValid() const;
+
+    private:
+        TimestampQueryTransaction(TimestampQueryPool& pool, TimestampQueryRetirementQueue& retirements,
+            TimestampQueryRecording recording, NativeQueryState nativeState);
+        bool Record(const std::function<bool(TimestampQueryRecording&)>& logicalOperation,
+            const std::function<bool()>& nativeOperation);
+        void ReleaseReservation();
+
+        TimestampQueryPool* m_Pool = nullptr;
+        TimestampQueryRetirementQueue* m_Retirements = nullptr;
+        std::optional<TimestampQueryRecording> m_Recording;
+        NativeQueryState m_NativeState;
+        bool m_Published = false;
     };
 
     class TimestampQueryPool final : public QueryPool

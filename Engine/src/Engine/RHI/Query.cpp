@@ -53,6 +53,114 @@ namespace Engine::RHI
         return true;
     }
 
+    bool TimestampQueryRetirementQueue::IsRetained(const NativeQueryState& state) const
+    {
+        if (!state) return false;
+        const auto matches = [&](const NativeQueryState& candidate) { return candidate.get() == state.get(); };
+        return std::any_of(m_Reserved.begin(), m_Reserved.end(), matches)
+            || std::any_of(m_Pending.begin(), m_Pending.end(), [&](const RetainedState& candidate) { return matches(candidate.State); });
+    }
+
+    bool TimestampQueryRetirementQueue::Reserve(const NativeQueryState& state)
+    {
+        if (!state || IsRetained(state) || m_Reserved.size() + m_Pending.size() >= kMaximumPendingRetirements) return false;
+        m_Reserved.push_back(state);
+        return true;
+    }
+
+    void TimestampQueryRetirementQueue::ReleaseReservation(const NativeQueryState& state)
+    {
+        const auto found = std::find_if(m_Reserved.begin(), m_Reserved.end(),
+            [&](const NativeQueryState& candidate) { return candidate.get() == state.get(); });
+        if (found != m_Reserved.end()) m_Reserved.erase(found);
+    }
+
+    bool TimestampQueryRetirementQueue::CanPublish(const NativeQueryState& state, const CompletionToken& token) const
+    {
+        return token.IsValid() && token.DeviceId == m_OwnerDeviceId && std::any_of(m_Reserved.begin(), m_Reserved.end(),
+            [&](const NativeQueryState& candidate) { return candidate.get() == state.get(); });
+    }
+
+    void TimestampQueryRetirementQueue::Publish(const NativeQueryState& state, const CompletionToken& token)
+    {
+        ReleaseReservation(state);
+        m_Pending.push_back({ state, token });
+    }
+
+    bool TimestampQueryRetirementQueue::Retire(const CompletionToken& token, CompletionStatus status)
+    {
+        if (!token.IsValid() || token.DeviceId != m_OwnerDeviceId || status == CompletionStatus::Invalid || status == CompletionStatus::Incomplete)
+            return false;
+        const auto first = std::find_if(m_Pending.begin(), m_Pending.end(), [&](const RetainedState& candidate)
+            { return candidate.Token.DeviceId == token.DeviceId && candidate.Token.SubmissionId == token.SubmissionId; });
+        if (first == m_Pending.end()) return false;
+        m_Pending.erase(std::remove_if(m_Pending.begin(), m_Pending.end(), [&](const RetainedState& candidate)
+            { return candidate.Token.DeviceId == token.DeviceId && candidate.Token.SubmissionId == token.SubmissionId; }), m_Pending.end());
+        return true;
+    }
+
+    std::optional<TimestampQueryTransaction> TimestampQueryTransaction::Begin(TimestampQueryPool& pool,
+        TimestampQueryRetirementQueue& retirements, NativeQueryState nativeState)
+    {
+        if (retirements.m_OwnerDeviceId == 0 || pool.GetOwnerDeviceId() != retirements.m_OwnerDeviceId) return std::nullopt;
+        TimestampQueryRecording recording = pool.BeginRecording();
+        if (!recording.IsValid() || !retirements.Reserve(nativeState)) return std::nullopt;
+        return TimestampQueryTransaction(pool, retirements, std::move(recording), std::move(nativeState));
+    }
+
+    TimestampQueryTransaction::TimestampQueryTransaction(TimestampQueryPool& pool, TimestampQueryRetirementQueue& retirements,
+        TimestampQueryRecording recording, NativeQueryState nativeState)
+        : m_Pool(&pool), m_Retirements(&retirements), m_Recording(std::move(recording)), m_NativeState(std::move(nativeState)) {}
+
+    TimestampQueryTransaction::~TimestampQueryTransaction()
+    {
+        ReleaseReservation();
+    }
+
+    bool TimestampQueryTransaction::IsValid() const
+    {
+        return !m_Published && m_Pool && m_Retirements && m_Recording && m_Recording->IsValid() && m_NativeState;
+    }
+
+    bool TimestampQueryTransaction::Record(const std::function<bool(TimestampQueryRecording&)>& logicalOperation,
+        const std::function<bool()>& nativeOperation)
+    {
+        if (!IsValid() || !logicalOperation(*m_Recording)) return false;
+        if (nativeOperation && nativeOperation()) return true;
+        m_Recording->m_Failed = true;
+        return false;
+    }
+
+    bool TimestampQueryTransaction::Reset(u32 firstQuery, u32 queryCount, const std::function<bool()>& nativeOperation)
+    {
+        return Record([firstQuery, queryCount](TimestampQueryRecording& recording) { return recording.Reset(firstQuery, queryCount); }, nativeOperation);
+    }
+
+    bool TimestampQueryTransaction::Write(u32 queryIndex, const std::function<bool()>& nativeOperation)
+    {
+        return Record([queryIndex](TimestampQueryRecording& recording) { return recording.Write(queryIndex); }, nativeOperation);
+    }
+
+    bool TimestampQueryTransaction::Resolve(u32 firstQuery, u32 queryCount, const std::function<bool()>& nativeOperation)
+    {
+        return Record([firstQuery, queryCount](TimestampQueryRecording& recording) { return recording.Resolve(firstQuery, queryCount); }, nativeOperation);
+    }
+
+    bool TimestampQueryTransaction::Publish(const CompletionToken& token)
+    {
+        if (!IsValid() || !m_Retirements->CanPublish(m_NativeState, token) || !m_Pool->Publish(*m_Recording, token)) return false;
+        m_Retirements->Publish(m_NativeState, token);
+        m_Recording.reset();
+        m_NativeState.reset();
+        m_Published = true;
+        return true;
+    }
+
+    void TimestampQueryTransaction::ReleaseReservation()
+    {
+        if (!m_Published && m_Retirements && m_NativeState) m_Retirements->ReleaseReservation(m_NativeState);
+    }
+
     Scope<TimestampQueryPool> TimestampQueryPool::Create(u64 ownerDeviceId, const QueryPoolDescription& description)
     {
         if (ownerDeviceId == 0 || description.Type != QueryType::Timestamp || description.Count == 0
