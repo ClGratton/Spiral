@@ -5,6 +5,7 @@
 #include "Engine/RHI/Device.h"
 #include "Engine/RHI/RHICommon.h"
 #include "Engine/RHI/Texture.h"
+#include "Engine/Jobs/FrameTaskGraph.h"
 
 #include <functional>
 #include <limits>
@@ -86,6 +87,9 @@ namespace Engine
             std::string DebugName;
             RHI::QueueType Queue = RHI::QueueType::Graphics;
             bool AllowCulling = false;
+            // Caller-affine unless the pass owner explicitly proves that its
+            // callback and captures may record on a worker-owned RHI context.
+            bool WorkerRecordingEligible = false;
             std::vector<ResourceUse> Uses;
         };
 
@@ -125,6 +129,13 @@ namespace Engine
             u32 TransientResourceCount = 0;
             u32 ReusedRetiredTransientCount = 0;
             u32 AcceptedPassCount = 0;
+            u32 WorkerRecordedPassCount = 0;
+            bool WorkerRecordingOverlapObserved = false;
+        };
+
+        struct ExecuteOptions
+        {
+            FrameTaskExecutionMode RecordingMode = FrameTaskExecutionMode::Parallel;
         };
 
         struct ResourceLifetime
@@ -185,9 +196,10 @@ namespace Engine
         ResourceHandle AddBuffer(RHI::BufferDescription description, ResourceLifetimeKind lifetime = ResourceLifetimeKind::Transient);
         PassHandle AddPass(std::string name, RHI::QueueType queue = RHI::QueueType::Graphics, bool allowCulling = false);
         void SetPassCallback(PassHandle pass, PassCallback callback);
+        void SetPassWorkerRecordingEligible(PassHandle pass, bool eligible = true);
         bool BindTexture(ResourceHandle resource, RHI::Texture& texture);
         bool BindBuffer(ResourceHandle resource, RHI::Buffer& buffer);
-        ExecuteResult Execute(RHI::Device& device, const CompileResult& compiled);
+        ExecuteResult Execute(RHI::Device& device, const CompileResult& compiled, const ExecuteOptions& options = {});
         void AddDebugPass(std::string name);
         void AddResourceUse(PassHandle pass, ResourceUse use);
         void AddDependency(PassHandle producer, PassHandle consumer);

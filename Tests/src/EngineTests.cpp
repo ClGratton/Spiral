@@ -2291,11 +2291,27 @@ float4 main(VertexInput input) : SV_Position
             m_Events.push_back("texture:" + resource->GetDescription().DebugName + ":" + Engine::RenderGraph::ToString(state));
             return true;
         }
+        bool TransitionTexture(Engine::RHI::Texture& texture, Engine::RHI::ResourceState expectedBefore, Engine::RHI::ResourceState state) override
+        {
+            auto* resource = dynamic_cast<RenderGraphTestTexture*>(&texture);
+            if (!m_Recording || !resource || expectedBefore == Engine::RHI::ResourceState::Unknown || state == Engine::RHI::ResourceState::Unknown) return false;
+            m_TextureTransitions.push_back({ resource, state, expectedBefore });
+            m_Events.push_back("texture:" + resource->GetDescription().DebugName + ":" + Engine::RenderGraph::ToString(state));
+            return true;
+        }
         bool TransitionBuffer(Engine::RHI::Buffer& buffer, Engine::RHI::ResourceState state) override
         {
             auto* resource = dynamic_cast<RenderGraphTestBuffer*>(&buffer);
             if (!m_Recording || !resource || state == Engine::RHI::ResourceState::Unknown) return false;
             m_BufferTransitions.push_back({ resource, state });
+            m_Events.push_back("buffer:" + resource->GetDescription().DebugName + ":" + Engine::RenderGraph::ToString(state));
+            return true;
+        }
+        bool TransitionBuffer(Engine::RHI::Buffer& buffer, Engine::RHI::ResourceState expectedBefore, Engine::RHI::ResourceState state) override
+        {
+            auto* resource = dynamic_cast<RenderGraphTestBuffer*>(&buffer);
+            if (!m_Recording || !resource || expectedBefore == Engine::RHI::ResourceState::Unknown || state == Engine::RHI::ResourceState::Unknown) return false;
+            m_BufferTransitions.push_back({ resource, state, expectedBefore });
             m_Events.push_back("buffer:" + resource->GetDescription().DebugName + ":" + Engine::RenderGraph::ToString(state));
             return true;
         }
@@ -2343,6 +2359,10 @@ float4 main(VertexInput input) : SV_Position
         bool Commit()
         {
             if (!m_Closed) return false;
+            for (const TextureTransition& transition : m_TextureTransitions)
+                if (transition.Expected != Engine::RHI::ResourceState::Unknown && transition.Resource->GetState() != transition.Expected) return false;
+            for (const BufferTransition& transition : m_BufferTransitions)
+                if (transition.Expected != Engine::RHI::ResourceState::Unknown && transition.Resource->GetState() != transition.Expected) return false;
             for (const TextureTransition& transition : m_TextureTransitions) transition.Resource->SetState(transition.State);
             for (const BufferTransition& transition : m_BufferTransitions) transition.Resource->SetState(transition.State);
             m_Closed = false;
@@ -2374,8 +2394,8 @@ float4 main(VertexInput input) : SV_Position
         const std::vector<TextureOwnershipOperation>& TextureOwnershipOperations() const { return m_TextureOwnershipOperations; }
 
     private:
-        struct TextureTransition { RenderGraphTestTexture* Resource = nullptr; Engine::RHI::ResourceState State = Engine::RHI::ResourceState::Unknown; };
-        struct BufferTransition { RenderGraphTestBuffer* Resource = nullptr; Engine::RHI::ResourceState State = Engine::RHI::ResourceState::Unknown; };
+        struct TextureTransition { RenderGraphTestTexture* Resource = nullptr; Engine::RHI::ResourceState State = Engine::RHI::ResourceState::Unknown; Engine::RHI::ResourceState Expected = Engine::RHI::ResourceState::Unknown; };
+        struct BufferTransition { RenderGraphTestBuffer* Resource = nullptr; Engine::RHI::ResourceState State = Engine::RHI::ResourceState::Unknown; Engine::RHI::ResourceState Expected = Engine::RHI::ResourceState::Unknown; };
         Engine::u32 m_Id = 0;
         Engine::RHI::QueueType m_Queue = Engine::RHI::QueueType::Graphics;
         int& m_BeginCount;
@@ -3140,6 +3160,162 @@ float4 main(VertexInput input) : SV_Position
                 "missing producer-token failure preserves the already accepted prefix without later submission");
     }
 
+    bool TestRenderGraphWorkerRecordingContract()
+    {
+        using namespace Engine;
+        using namespace Engine::RHI;
+        JobSystem& jobs = JobSystem::Get();
+        if (!jobs.IsRunning()) jobs.Initialize(2);
+        const u32 caller = jobs.GetCurrentWorkerIndex();
+        const TextureDescription description = MakeExecutionTexture("worker-recording", ResourceState::Common);
+
+        RenderGraph defaultGraph;
+        const auto defaultResource = defaultGraph.AddTexture(description, RenderGraph::ResourceLifetimeKind::Imported);
+        const auto defaultPass = defaultGraph.AddPass("Default caller affine");
+        defaultGraph.AddRead(defaultPass, defaultResource, ResourceState::Common, ShaderStage::Pixel);
+        u32 defaultWorker = 0;
+        defaultGraph.SetPassCallback(defaultPass, [&](RenderGraph::ExecutionContext&) { defaultWorker = jobs.GetCurrentWorkerIndex(); return true; });
+        RenderGraphTestDevice defaultDevice(8601);
+        RenderGraphTestTexture defaultTexture(8601, description, ResourceState::Common);
+        const auto defaultResult = defaultGraph.BindTexture(defaultResource, defaultTexture)
+            ? defaultGraph.Execute(defaultDevice, defaultGraph.Compile()) : RenderGraph::ExecuteResult {};
+
+        RenderGraph overlapGraph;
+        const auto firstResource = overlapGraph.AddTexture(description, RenderGraph::ResourceLifetimeKind::Imported);
+        TextureDescription secondDescription = description; secondDescription.DebugName = "worker-recording-second";
+        const auto secondResource = overlapGraph.AddTexture(secondDescription, RenderGraph::ResourceLifetimeKind::Imported);
+        const auto first = overlapGraph.AddPass("Eligible independent first");
+        const auto second = overlapGraph.AddPass("Eligible independent second");
+        overlapGraph.AddRead(first, firstResource, ResourceState::Common, ShaderStage::Pixel);
+        overlapGraph.AddRead(second, secondResource, ResourceState::Common, ShaderStage::Pixel);
+        overlapGraph.SetPassWorkerRecordingEligible(first);
+        overlapGraph.SetPassWorkerRecordingEligible(second);
+        std::mutex overlapMutex;
+        std::condition_variable overlapReady;
+        u32 entered = 0;
+        bool overlapObservedByCallbacks = false;
+        const auto overlapCallback = [&](RenderGraph::ExecutionContext&)
+        {
+            std::unique_lock lock(overlapMutex);
+            ++entered;
+            overlapReady.notify_all();
+            overlapObservedByCallbacks = overlapReady.wait_for(lock, std::chrono::seconds(2), [&]() { return entered == 2; });
+            return overlapObservedByCallbacks && jobs.GetCurrentWorkerIndex() != kInvalidJobWorkerIndex;
+        };
+        overlapGraph.SetPassCallback(first, overlapCallback);
+        overlapGraph.SetPassCallback(second, overlapCallback);
+        RenderGraphTestDevice overlapDevice(8602);
+        RenderGraphTestTexture firstTexture(8602, description, ResourceState::Common);
+        RenderGraphTestTexture secondTexture(8602, secondDescription, ResourceState::Common);
+        const auto overlapResult = overlapGraph.BindTexture(firstResource, firstTexture) && overlapGraph.BindTexture(secondResource, secondTexture)
+            ? overlapGraph.Execute(overlapDevice, overlapGraph.Compile()) : RenderGraph::ExecuteResult {};
+
+        RenderGraph inlineGraph;
+        const auto inlineResource = inlineGraph.AddTexture(description, RenderGraph::ResourceLifetimeKind::Imported);
+        const auto inlinePass = inlineGraph.AddPass("Eligible inline");
+        inlineGraph.AddRead(inlinePass, inlineResource, ResourceState::Common, ShaderStage::Pixel);
+        inlineGraph.SetPassWorkerRecordingEligible(inlinePass);
+        u32 inlineWorker = 0;
+        inlineGraph.SetPassCallback(inlinePass, [&](RenderGraph::ExecutionContext&) { inlineWorker = jobs.GetCurrentWorkerIndex(); return true; });
+        RenderGraphTestDevice inlineDevice(8603);
+        RenderGraphTestTexture inlineTexture(8603, description, ResourceState::Common);
+        RenderGraph::ExecuteOptions inlineOptions; inlineOptions.RecordingMode = FrameTaskExecutionMode::DeterministicSingleThread;
+        const auto inlineResult = inlineGraph.BindTexture(inlineResource, inlineTexture)
+            ? inlineGraph.Execute(inlineDevice, inlineGraph.Compile(), inlineOptions) : RenderGraph::ExecuteResult {};
+
+        RenderGraph dependencyGraph;
+        const auto dependencyResource = dependencyGraph.AddTexture(description, RenderGraph::ResourceLifetimeKind::Imported);
+        const auto producer = dependencyGraph.AddPass("Eligible producer");
+        const auto consumer = dependencyGraph.AddPass("Eligible same effective consumer");
+        dependencyGraph.AddRead(producer, dependencyResource, ResourceState::Common, ShaderStage::Pixel);
+        dependencyGraph.AddRead(consumer, dependencyResource, ResourceState::Common, ShaderStage::Pixel);
+        dependencyGraph.AddDependency(producer, consumer);
+        dependencyGraph.SetPassWorkerRecordingEligible(producer);
+        dependencyGraph.SetPassWorkerRecordingEligible(consumer);
+        dependencyGraph.SetPassCallback(producer, [](RenderGraph::ExecutionContext&) { return true; });
+        dependencyGraph.SetPassCallback(consumer, [](RenderGraph::ExecutionContext&) { return true; });
+        RenderGraphTestDevice dependencyDevice(8604);
+        RenderGraphTestTexture dependencyTexture(8604, description, ResourceState::Common);
+        const auto dependencyResult = dependencyGraph.BindTexture(dependencyResource, dependencyTexture)
+            ? dependencyGraph.Execute(dependencyDevice, dependencyGraph.Compile()) : RenderGraph::ExecuteResult {};
+
+        RenderGraph crossQueueGraph;
+        const auto crossQueueResource = crossQueueGraph.AddTexture(description, RenderGraph::ResourceLifetimeKind::Imported);
+        const auto graphics = crossQueueGraph.AddPass("Caller graphics", QueueType::Graphics);
+        const auto copy = crossQueueGraph.AddPass("Deferred acquire", QueueType::Copy);
+        crossQueueGraph.AddWrite(graphics, crossQueueResource, ResourceState::CopyDest);
+        crossQueueGraph.AddRead(copy, crossQueueResource, ResourceState::CopySource, ShaderStage::Compute);
+        crossQueueGraph.SetPassWorkerRecordingEligible(copy);
+        u32 acquireWorker = 0;
+        crossQueueGraph.SetPassCallback(graphics, [](RenderGraph::ExecutionContext&) { return true; });
+        crossQueueGraph.SetPassCallback(copy, [&](RenderGraph::ExecutionContext&) { acquireWorker = jobs.GetCurrentWorkerIndex(); return true; });
+        RenderGraphTestDevice crossQueueDevice(8605, false, true);
+        RenderGraphTestTexture crossQueueTexture(8605, description, ResourceState::Common);
+        const auto crossQueueResult = crossQueueGraph.BindTexture(crossQueueResource, crossQueueTexture)
+            ? crossQueueGraph.Execute(crossQueueDevice, crossQueueGraph.Compile()) : RenderGraph::ExecuteResult {};
+
+        // Model a competing accepted recording changing the wrapper state
+        // after this eligible list was closed but before its deterministic
+        // submission turn. The command-list-local expected-before value must
+        // reject the stale list without publishing its destination state.
+        RenderGraph mismatchGraph;
+        const auto mismatchResource = mismatchGraph.AddTexture(description, RenderGraph::ResourceLifetimeKind::Imported);
+        const auto mismatchPass = mismatchGraph.AddPass("Eligible stale expected-before");
+        mismatchGraph.AddWrite(mismatchPass, mismatchResource, ResourceState::CopyDest);
+        mismatchGraph.SetPassWorkerRecordingEligible(mismatchPass);
+        RenderGraphTestDevice mismatchDevice(8608);
+        RenderGraphTestTexture mismatchTexture(8608, description, ResourceState::Common);
+        mismatchGraph.SetPassCallback(mismatchPass, [&](RenderGraph::ExecutionContext&) { mismatchTexture.SetState(ResourceState::CopySource); return true; });
+        const auto mismatchResult = mismatchGraph.BindTexture(mismatchResource, mismatchTexture)
+            ? mismatchGraph.Execute(mismatchDevice, mismatchGraph.Compile()) : RenderGraph::ExecuteResult {};
+
+        const auto testFailure = [&](bool throws)
+        {
+            RenderGraph graph;
+            const auto resource = graph.AddTexture(description, RenderGraph::ResourceLifetimeKind::Imported);
+            const auto prefix = graph.AddPass("Eligible prefix");
+            const auto failing = graph.AddPass("Eligible failure");
+            const auto suffix = graph.AddPass("Eligible suffix");
+            graph.AddRead(prefix, resource, ResourceState::Common, ShaderStage::Pixel);
+            graph.AddRead(failing, resource, ResourceState::Common, ShaderStage::Pixel);
+            graph.AddRead(suffix, resource, ResourceState::Common, ShaderStage::Pixel);
+            graph.AddDependency(prefix, failing); graph.AddDependency(failing, suffix);
+            graph.SetPassWorkerRecordingEligible(prefix); graph.SetPassWorkerRecordingEligible(failing); graph.SetPassWorkerRecordingEligible(suffix);
+            int prefixCallbacks = 0, suffixCallbacks = 0;
+            graph.SetPassCallback(prefix, [&](RenderGraph::ExecutionContext&) { ++prefixCallbacks; return true; });
+            graph.SetPassCallback(failing, [throws](RenderGraph::ExecutionContext&) -> bool { if (throws) throw std::runtime_error("expected worker failure"); return false; });
+            graph.SetPassCallback(suffix, [&](RenderGraph::ExecutionContext&) { ++suffixCallbacks; return true; });
+            RenderGraphTestDevice device(throws ? 8607 : 8606);
+            RenderGraphTestTexture texture(throws ? 8607 : 8606, description, ResourceState::Common);
+            const auto result = graph.BindTexture(resource, texture) ? graph.Execute(device, graph.Compile()) : RenderGraph::ExecuteResult {};
+            // Eligible dependent callbacks may pre-record before the compiled
+            // submission stage observes the failure. Their closed contexts
+            // must still be discarded: only the accepted prefix publishes a
+            // token or wrapper state.
+            return !result.Success && result.AcceptedPassCount == 1 && result.Completions.size() == 1
+                && prefixCallbacks == 1 && suffixCallbacks == 1 && device.SubmitCount == 1 && device.CreatedCommandListCount == 3;
+        };
+
+        return Expect(defaultResult.Success && defaultResult.WorkerRecordedPassCount == 0 && defaultWorker == caller,
+                "callbacks remain caller-affine unless the pass explicitly opts into worker recording")
+            && Expect(overlapResult.Success && overlapResult.WorkerRecordedPassCount == 2 && overlapResult.WorkerRecordingOverlapObserved && overlapObservedByCallbacks,
+                "two independent explicitly eligible recordings overlap on bounded worker tasks")
+            && Expect(inlineResult.Success && inlineResult.WorkerRecordedPassCount == 1 && !inlineResult.WorkerRecordingOverlapObserved
+                && inlineWorker == caller, "deterministic single-thread recording executes the same eligible callback inline")
+            && Expect(dependencyResult.Success && dependencyResult.WorkerRecordedPassCount == 2 && dependencyResult.AcceptedPassCount == 2
+                && dependencyDevice.SubmittedCommandListIds.size() == 2 && dependencyDevice.DependencyOrder.size() == 1
+                && dependencyDevice.DependencyOrder[0].DeviceId == dependencyResult.Completions[0].DeviceId
+                && dependencyDevice.DependencyOrder[0].SubmissionId == dependencyResult.Completions[0].SubmissionId
+                && dependencyDevice.ElidedDependencyCount == 1,
+                "same-effective eligible dependent recording submits in compiled order with its exact producer token")
+            && Expect(crossQueueResult.Success && crossQueueResult.WorkerRecordedPassCount == 0 && acquireWorker == caller
+                && crossQueueDevice.GpuWaitDependencyCount == 1, "token-dependent cross-queue acquire remains caller-recorded until its producer submits")
+            && Expect(!mismatchResult.Success && mismatchResult.AcceptedPassCount == 0 && mismatchDevice.SubmitCount == 0
+                && mismatchTexture.GetState() == ResourceState::CopySource,
+                "a stale expected-before state rejects submission without publishing the recorded destination")
+            && Expect(testFailure(false) && testFailure(true), "later false and throwing pre-recorded callbacks submit only the earlier prefix and discard suffix contexts");
+    }
+
     class OwnershipTestBuffer final : public Engine::RHI::Buffer
     {
     public:
@@ -3373,6 +3549,10 @@ float4 main(VertexInput input) : SV_Position
 
         BufferOwnershipContractList blockedSource(tracker, QueueType::Graphics, true, true);
         BufferOwnershipContractList destination(tracker, QueueType::Copy, true, true);
+        BufferOwnershipContractList unsupportedExpectedBefore(tracker, QueueType::Graphics, true, true);
+        const bool expectedBeforeFailsClosed = unsupportedExpectedBefore.Begin()
+            && !static_cast<CommandList&>(unsupportedExpectedBefore).TransitionBuffer(second, ResourceState::CopyDest, ResourceState::CopySource)
+            && unsupportedExpectedBefore.End();
         BufferOwnershipAcquire acquire;
         static_cast<BufferOwnershipRelease&>(acquire) = release;
         acquire.ReleaseToken = releaseToken;
@@ -3403,6 +3583,7 @@ float4 main(VertexInput input) : SV_Position
         return Expect(registered && invalidRecording, "ownership release rejects null foreign same-effective wrong-queue state and usage inputs")
             && Expect(privateRecording && failedReleasePrivate, "release recording and failed acceptance publish no owner state or pending transfer")
             && Expect(releaseAccepted, "accepted release publishes only a token-bound pending transfer")
+            && Expect(expectedBeforeFailsClosed, "an adapter without expected-before validation rejects instead of using its legacy transition")
             && Expect(pendingGuards, "pending transfer blocks ordinary transition copy second release and duplicate acquire recording")
             && Expect(failedAcquirePersistent, "missing foreign and duplicate release-token dependencies preserve pending state")
             && Expect(acquireAccepted, "accepted exact-token acquire publishes destination owner and state exactly once");
@@ -3578,6 +3759,7 @@ int main()
         { "Render graph transient logical texture estimates cover mips and formats", TestRenderGraphTransientLogicalTextureCost },
         { "Render graph executor translates cross-queue ownership and fallback", TestRenderGraphExecutorCrossQueueOwnershipAndFallback },
         { "Render graph executor preserves accepted prefix on missing producer token", TestRenderGraphExecutorRejectsMissingProducerTokenBeforeConsumer },
+        { "Render graph worker recording preserves eligibility ordering and retirement", TestRenderGraphWorkerRecordingContract },
         { "RHI buffer transition contract rejects incompatible states", TestRhiBufferTransitionContract },
         { "RHI completion token contract rejects unissued identities", TestRhiCompletionTokenContract },
         { "RHI submission dependencies reject invalid token graphs", TestRhiSubmissionDependencyValidation },

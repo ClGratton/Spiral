@@ -59,9 +59,28 @@ namespace Engine::RHI
         virtual bool BindViewportOutputs(Texture& colorTarget, Texture* depthTarget) = 0;
         virtual bool ClearViewportOutputs(const ViewportClear& clear) = 0;
         virtual bool TransitionTexture(Texture& texture, ResourceState destinationState) = 0;
+        // Graph pre-recording supplies compiler-owned state intent. Implementations
+        // record against `expectedBefore` privately and validate it at submission;
+        // they must not publish wrapper state while recording.
+        virtual bool TransitionTexture(Texture& texture, ResourceState expectedBefore, ResourceState destinationState)
+        {
+            // An adapter without explicit expected-before validation must fail
+            // closed: forwarding to the legacy overload drops the contract.
+            (void)texture;
+            (void)expectedBefore;
+            (void)destinationState;
+            return false;
+        }
         // Records one explicit whole-buffer transition. Graph execution supplies
         // state intent; this API does not infer pass or native state policy.
         virtual bool TransitionBuffer(Buffer& buffer, ResourceState destinationState) = 0;
+        virtual bool TransitionBuffer(Buffer& buffer, ResourceState expectedBefore, ResourceState destinationState)
+        {
+            (void)buffer;
+            (void)expectedBefore;
+            (void)destinationState;
+            return false;
+        }
         virtual bool ReleaseBufferOwnership(const BufferOwnershipRelease& release) { (void)release; return false; }
         virtual bool AcquireBufferOwnership(const BufferOwnershipAcquire& acquire) { (void)acquire; return false; }
         virtual bool ReleaseTextureOwnership(const TextureOwnershipRelease& release) { (void)release; return false; }

@@ -51,6 +51,15 @@ if ($RenderResult.ExitCode -ne 0) {
     throw "Editor render smoke run failed with exit code $($RenderResult.ExitCode)."
 }
 
+$InlineRecordingResult = Invoke-BoundedProcess -FilePath $Editor -Arguments @("--smoke-test", "--scene-raster-preparation-smoke", "--scene-viewport-render-graph-smoke", "--frame-task-single-thread") -Label "Editor render graph inline recording smoke" -TimeoutSeconds $ChildTimeoutSeconds
+$InlineRecordingLog = $InlineRecordingResult.Output
+if ($InlineRecordingResult.TimedOut) {
+    throw "Editor render graph inline recording smoke timed out after $ChildTimeoutSeconds seconds."
+}
+if ($InlineRecordingResult.ExitCode -ne 0) {
+    throw "Editor render graph inline recording smoke failed with exit code $($InlineRecordingResult.ExitCode)."
+}
+
 $FallbackResult = Invoke-BoundedProcess -FilePath $Editor -Arguments @("--smoke-test", "--rhi-queue-dependency-smoke", "--rhi-buffer-ownership-smoke", "--rhi-texture-ownership-smoke", "--rhi-force-graphics-queue-fallback") -Label "Editor forced graphics-queue fallback smoke" -TimeoutSeconds $ChildTimeoutSeconds
 $FallbackOutput = $FallbackLog = $FallbackResult.Output
 if ($FallbackResult.TimedOut) {
@@ -91,6 +100,13 @@ foreach ($Marker in $RequiredMarkers) {
     if (!$JoinedLog.Contains($Marker)) {
         throw "D3D12 render smoke did not emit required marker: $Marker"
     }
+}
+if ($JoinedLog -notmatch 'RenderGraphRecordingV1 backend=D3D12 mode=worker workerPasses=2 overlap=(yes|no) submitted=3 result=pass') {
+    throw "D3D12 render smoke did not prove the parallel RenderGraph recording marker."
+}
+$InlineRecordingJoinedLog = $InlineRecordingLog -join "`n"
+if (($InlineRecordingJoinedLog -notmatch 'SceneRasterPreparationV1 mode=single-thread task=Frame.PrepareSceneRaster worker=caller') -or ($InlineRecordingJoinedLog -notmatch 'RenderGraphRecordingV1 backend=D3D12 mode=inline workerPasses=2 overlap=no submitted=3 result=pass') -or ($InlineRecordingJoinedLog -notmatch 'SceneViewportRenderGraphV1 backend=D3D12 passes=3 labels=clear,raster,output-handoff execution=pass reference=direct comparator=exact-byte-pass')) {
+    throw "D3D12 inline recording smoke did not preserve the deterministic recording and exact-byte viewport markers."
 }
 if ($JoinedLog -notmatch 'RHICompletionSmokeV1 backend=D3D12, tokenValidation=pass, query=nonblocking-(incomplete|complete), wait=pass, reuse=pass, result=pass') {
     throw "D3D12 render smoke did not prove completion-token retirement and recording reuse."

@@ -285,6 +285,7 @@ namespace Engine
                 return graphColor && graphDepth && context.GetCommandList().BindViewportOutputs(*graphColor, graphDepth)
                     && context.GetCommandList().ClearViewportOutputs(clear);
             });
+            graph.SetPassWorkerRecordingEligible(clearPass);
             const RenderGraph::PassHandle rasterPass = graph.AddPass("Scene Viewport Graph Raster", RHI::QueueType::Graphics);
             graph.AddWrite(rasterPass, color, RHI::ResourceState::RenderTarget);
             graph.AddWrite(rasterPass, depth, RHI::ResourceState::DepthWrite);
@@ -306,9 +307,12 @@ namespace Engine
             const RenderGraph::PassHandle handoffPass = graph.AddPass("Scene Viewport Graph Output Handoff", RHI::QueueType::Graphics);
             graph.AddRead(handoffPass, color, RHI::ResourceState::ShaderResource, RHI::ShaderStage::Pixel);
             graph.SetPassCallback(handoffPass, [](RenderGraph::ExecutionContext& context) { return context.GetTexture({ 0 }) != nullptr; });
+            graph.SetPassWorkerRecordingEligible(handoffPass);
             const RenderGraph::CompileResult compiled = graph.Compile();
+            RenderGraph::ExecuteOptions executeOptions; executeOptions.RecordingMode = Application::Get().GetSpecification().CommandLineArgs.HasFlag("--frame-task-single-thread") ? FrameTaskExecutionMode::DeterministicSingleThread : FrameTaskExecutionMode::Parallel;
             const RenderGraph::ExecuteResult executed = graph.BindTexture(color, colorTexture) && graph.BindTexture(depth, depthTexture)
-                ? graph.Execute(*m_RHIDevice, compiled) : RenderGraph::ExecuteResult {};
+                ? graph.Execute(*m_RHIDevice, compiled, executeOptions) : RenderGraph::ExecuteResult {};
+            if (Application::Get().GetSpecification().CommandLineArgs.HasFlag("--scene-viewport-render-graph-smoke")) Log::Info("RenderGraphRecordingV1 backend=D3D12 mode=", executeOptions.RecordingMode == FrameTaskExecutionMode::Parallel ? "worker" : "inline", " workerPasses=", executed.WorkerRecordedPassCount, " overlap=", executed.WorkerRecordingOverlapObserved ? "yes" : "no", " submitted=", executed.AcceptedPassCount, " result=", executed.Success ? "pass" : "fail");
             // This per-frame graph owns its recording contexts on the stack.
             // Retire the final graphics submission before graph destruction;
             // presentation remains the separate native ImGui consumer.

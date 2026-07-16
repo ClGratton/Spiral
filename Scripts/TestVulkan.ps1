@@ -30,6 +30,15 @@ if ($VulkanResult.ExitCode -ne 0) {
     throw "Vulkan render smoke failed with exit code $($VulkanResult.ExitCode)."
 }
 
+$InlineRecordingResult = Invoke-BoundedProcess -FilePath $Executable -Arguments @("--vulkan-render-smoke", "--scene-raster-preparation-smoke", "--scene-viewport-render-graph-smoke", "--frame-task-single-thread") -Label "Editor Vulkan inline recording smoke" -TimeoutSeconds $ChildTimeoutSeconds
+$InlineRecordingLog = $InlineRecordingResult.Output
+if ($InlineRecordingResult.TimedOut) {
+    throw "Vulkan inline recording smoke timed out after $ChildTimeoutSeconds seconds."
+}
+if ($InlineRecordingResult.ExitCode -ne 0) {
+    throw "Vulkan inline recording smoke failed with exit code $($InlineRecordingResult.ExitCode)."
+}
+
 $RequiredMarkers = @(
     "NVRHI Vulkan device created on adapter:",
     "Selected Vulkan adapter:",
@@ -68,6 +77,13 @@ foreach ($Marker in $RequiredMarkers) {
     if (!$JoinedLog.Contains($Marker)) {
         throw "Vulkan render smoke did not emit required marker: $Marker"
     }
+}
+if ($JoinedLog -notmatch 'RenderGraphRecordingV1 backend=Vulkan mode=worker workerPasses=2 overlap=(yes|no) submitted=3 result=pass') {
+    throw "Vulkan render smoke did not prove the parallel RenderGraph recording marker."
+}
+$InlineRecordingJoinedLog = $InlineRecordingLog -join "`n"
+if (($InlineRecordingJoinedLog -notmatch 'SceneRasterPreparationV1 mode=single-thread task=Frame.PrepareSceneRaster worker=caller') -or ($InlineRecordingJoinedLog -notmatch 'RenderGraphRecordingV1 backend=Vulkan mode=inline workerPasses=2 overlap=no submitted=3 result=pass') -or ($InlineRecordingJoinedLog -notmatch 'SceneViewportRenderGraphV1 backend=Vulkan passes=3 labels=clear,raster,output-handoff execution=pass reference=direct comparator=exact-byte-pass')) {
+    throw "Vulkan inline recording smoke did not preserve the deterministic recording and exact-byte viewport markers."
 }
 if ($JoinedLog -notmatch 'RHICompletionSmokeV1 backend=Vulkan, tokenValidation=pass, query=nonblocking-(incomplete|complete), wait=pass, reuse=pass, result=pass') {
     throw "Vulkan render smoke did not prove completion-token retirement and recording reuse."

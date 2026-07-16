@@ -315,6 +315,16 @@ namespace Engine::RHI
                 StageTextureState(*native, state);
                 return true;
             }
+            bool TransitionTexture(Texture& texture, ResourceState expectedBefore, ResourceState state) override
+            {
+                auto* native = dynamic_cast<VulkanTexture*>(&texture);
+                if (m_State != State::Recording || !native || expectedBefore == ResourceState::Unknown || state == ResourceState::Unknown
+                    || (!m_AllowPendingTexture && !CanUseTexture(&texture))) return false;
+                m_List->beginTrackingTextureState(native->Native(), nvrhi::AllSubresources, ConvertState(expectedBefore));
+                if (expectedBefore != state) { m_List->setTextureState(native->Native(), nvrhi::AllSubresources, ConvertState(state)); m_List->commitBarriers(); }
+                StageTextureState(*native, state, expectedBefore);
+                return true;
+            }
             bool ReleaseTextureOwnership(const TextureOwnershipRelease& release) override
             {
                 if (m_State != State::Recording || !m_TextureOwnershipTracker
@@ -355,6 +365,16 @@ namespace Engine::RHI
                 m_List->setBufferState(native->Native(), ConvertState(state));
                 m_List->commitBarriers();
                 StageBufferState(*native, state);
+                return true;
+            }
+            bool TransitionBuffer(Buffer& buffer, ResourceState expectedBefore, ResourceState state) override
+            {
+                auto* native = dynamic_cast<VulkanBuffer*>(&buffer);
+                if (m_State != State::Recording || !native || expectedBefore == ResourceState::Unknown
+                    || !CanUseBuffer(&buffer) || !IsBufferStateCompatible(buffer.GetDescription().Usage, buffer.GetDescription().CpuAccess, state)) return false;
+                m_List->beginTrackingBufferState(native->Native(), ConvertState(expectedBefore));
+                if (expectedBefore != state) { m_List->setBufferState(native->Native(), ConvertState(state)); m_List->commitBarriers(); }
+                StageBufferState(*native, state, expectedBefore);
                 return true;
             }
             bool ReleaseBufferOwnership(const BufferOwnershipRelease& release) override
@@ -438,6 +458,22 @@ namespace Engine::RHI
             void WriteTimestamp(QueryPool&, u32) override {}
             void ResolveQueryPool(QueryPool&, u32, u32) override {}
             bool Ready() const { return m_State == State::Closed; }
+            bool ValidateExpectedStates() const
+            {
+                for (const TextureState& state : m_TextureStates)
+                {
+                    ResourceState live = ResourceState::Unknown;
+                    if (state.Expected != ResourceState::Unknown && (!m_TextureOwnershipTracker
+                        || !m_TextureOwnershipTracker->QueryState(state.Resource, live) || live != state.Expected)) return false;
+                }
+                for (const BufferState& state : m_BufferStates)
+                {
+                    ResourceState live = ResourceState::Unknown;
+                    if (state.Expected != ResourceState::Unknown && (!m_OwnershipTracker
+                        || !m_OwnershipTracker->QueryState(state.Resource, live) || live != state.Expected)) return false;
+                }
+                return true;
+            }
             bool MarkSubmitted(const CompletionToken& token)
             {
                 if (!Ready() || !token.IsValid())
@@ -516,8 +552,8 @@ namespace Engine::RHI
             }
             bool CanUseBuffer(const Buffer* resource) const { return m_CanUseBuffer && m_CanUseBuffer(resource, m_QueueType); }
             bool CanUseTexture(const Texture* resource) const { return m_CanUseTexture && m_CanUseTexture(resource, m_QueueType); }
-            struct TextureState { VulkanTexture* Resource = nullptr; ResourceState State = ResourceState::Common; };
-            struct BufferState { VulkanBuffer* Resource = nullptr; ResourceState State = ResourceState::Common; };
+            struct TextureState { VulkanTexture* Resource = nullptr; ResourceState State = ResourceState::Common; ResourceState Expected = ResourceState::Unknown; };
+            struct BufferState { VulkanBuffer* Resource = nullptr; ResourceState State = ResourceState::Common; ResourceState Expected = ResourceState::Unknown; };
 
             ResourceState GetTextureState(const VulkanTexture& resource) const
             {
@@ -533,19 +569,19 @@ namespace Engine::RHI
                 return resource.GetCurrentState();
             }
 
-            void StageTextureState(VulkanTexture& resource, ResourceState state)
+            void StageTextureState(VulkanTexture& resource, ResourceState state, ResourceState expected = ResourceState::Unknown)
             {
                 for (TextureState& pending : m_TextureStates)
-                    if (pending.Resource == &resource) { pending.State = state; return; }
-                m_TextureStates.push_back({ &resource, state });
+                    if (pending.Resource == &resource) { pending.State = state; if (pending.Expected == ResourceState::Unknown) pending.Expected = expected; return; }
+                m_TextureStates.push_back({ &resource, state, expected });
                 m_UsedTextures.push_back(&resource);
             }
 
-            void StageBufferState(VulkanBuffer& resource, ResourceState state)
+            void StageBufferState(VulkanBuffer& resource, ResourceState state, ResourceState expected = ResourceState::Unknown)
             {
                 for (BufferState& pending : m_BufferStates)
-                    if (pending.Resource == &resource) { pending.State = state; return; }
-                m_BufferStates.push_back({ &resource, state });
+                    if (pending.Resource == &resource) { pending.State = state; if (pending.Expected == ResourceState::Unknown) pending.Expected = expected; return; }
+                m_BufferStates.push_back({ &resource, state, expected });
             }
 
             void CommitTrackedStates()
@@ -816,7 +852,7 @@ namespace Engine::RHI
             CompletionToken Submit(CommandList& commandList, const std::vector<CompletionToken>& dependencies) override
             {
                 auto* list = dynamic_cast<VulkanCommandList*>(&commandList);
-                if (!m_Device || !m_CompletionDevice || !list || !list->Ready())
+                if (!m_Device || !m_CompletionDevice || !list || !list->Ready() || !list->ValidateExpectedStates())
                     return {};
                 const SubmissionDependencyError dependencyError = ValidateSubmissionDependencies(
                     m_CompletionDeviceId, m_NextCompletionSubmissionId, dependencies,

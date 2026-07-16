@@ -133,6 +133,17 @@ The current real viewport consumer proves the first split multithreaded-render p
 
 `SceneRasterPreparationV1` must report `Frame.PrepareSceneRaster`, the current snapshot frame, immutable instance count, and `worker=<index>` in parallel versus `worker=caller` in deterministic mode. Both runs must also emit the backend's existing `SceneViewportRenderGraphV1 ... comparator=exact-byte-pass` marker: the graph consumes the prepared frame and still matches the direct recorder byte-for-byte. This proves one real worker-safe CPU preparation consumer and its inline oracle; it does not claim simultaneous preparation/recording, worker-safe callbacks, parallel RHI command-list recording, or changed GPU submission/retirement policy.
 
+## Phase 3C Expected-Before RHI Prerequisite And P2 Worker Recording
+
+Run the headed backend harnesses in both recording modes:
+
+```powershell
+.\Scripts\TestRender.ps1
+.\Scripts\TestVulkan.ps1
+```
+
+Each parallel run must emit `RenderGraphRecordingV1 backend=<D3D12|Vulkan> mode=worker workerPasses=2 overlap=yes submitted=3 result=pass`; its deterministic-inline companion must emit the same marker with `mode=inline`, `overlap=no`, and three submissions. Both modes also require `SceneRasterPreparationV1` for the corresponding lane and `SceneViewportRenderGraphV1 ... comparator=exact-byte-pass`. The bounded deterministic `EngineTests` contract separately requires caller-affine default callbacks, two explicitly eligible independent callbacks overlapping without a sleep gate, identical inline callback recording, same-effective producer-token submission order, cross-queue acquire deferral to caller recording, false/throw accepted-prefix handling with unsubmitted suffix disposal, stale expected-before rejection with no destination-state publication, fail-closed unsupported expected-before adapters, and exact-token context retirement/reuse. The same headed harness runs retain `RHIQueueDependencySmokeV1 ... cpuWaitBetween=no`, while the executor submits/publishes only in compiled order. Together this is the local D3D12/Vulkan evidence for the completed multithreaded render-preparation/recording line; cross-queue ownership acquire/release remains caller-recorded.
+
 Exercise real Editor-to-Renderer scene snapshot publication and retained epoch lifetime in both frame-task modes:
 
 ```powershell

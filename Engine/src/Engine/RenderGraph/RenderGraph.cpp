@@ -1,6 +1,9 @@
 #include "Engine/RenderGraph/RenderGraph.h"
 
 #include <algorithm>
+#include <atomic>
+#include <condition_variable>
+#include <mutex>
 #include <sstream>
 #include <utility>
 
@@ -92,6 +95,11 @@ namespace Engine
         if (IsValid(pass)) m_Callbacks[pass.Index] = std::move(callback);
     }
 
+    void RenderGraph::SetPassWorkerRecordingEligible(PassHandle pass, bool eligible)
+    {
+        if (IsValid(pass)) m_Passes[pass.Index].WorkerRecordingEligible = eligible;
+    }
+
     bool RenderGraph::BindTexture(ResourceHandle resource, RHI::Texture& texture)
     {
         if (!IsValid(resource) || m_Resources[resource.Index].Kind != ResourceKind::Texture || !Matches(m_Resources[resource.Index].Texture, texture.GetDescription())) return false;
@@ -160,7 +168,7 @@ namespace Engine
         m_AutoTransientBindings.clear();
     }
 
-    RenderGraph::ExecuteResult RenderGraph::Execute(RHI::Device& device, const CompileResult& compiled)
+    RenderGraph::ExecuteResult RenderGraph::Execute(RHI::Device& device, const CompileResult& compiled, const ExecuteOptions& options)
     {
         ExecuteResult result;
         if (!compiled.Success) { result.Error = "Cannot execute an unsuccessful render-graph compilation."; return result; }
@@ -393,15 +401,110 @@ namespace Engine
             contextIndex = static_cast<u32>(m_RecordingContexts.size() - 1);
             return &m_RecordingContexts.back();
         };
+        // A same-effective dependency does not itself forbid pre-recording:
+        // each RHI context starts from the immutable execution-start wrapper
+        // state. Token-dependent ownership acquisition still must wait for the
+        // producer submission below.
+        std::vector<u8> recordedOnWorker(m_Passes.size(), 0);
+        std::vector<std::string> recordingErrors(m_Passes.size());
+        std::vector<u32> workerContextIndices(m_Passes.size(), InvalidIndex);
+        std::vector<RHI::CommandList*> workerCommandLists(m_Passes.size(), nullptr);
+        std::vector<u32> workerCandidates;
+        for (const CompiledPass& pass : compiled.Passes)
+        {
+            const u32 passIndex = pass.Pass.Index;
+            const bool dependencyIsSameEffective = std::all_of(compiled.Dependencies.begin(), compiled.Dependencies.end(),
+                [&](const Dependency& dependency) { return dependency.Consumer.Index != passIndex || resolutions[dependency.Producer.Index].Effective == resolutions[passIndex].Effective; });
+            if (m_Passes[passIndex].WorkerRecordingEligible && dependencyIsSameEffective && acquires[passIndex].empty() && releases[passIndex].empty()) workerCandidates.push_back(passIndex);
+        }
+        for (u32 passIndex : workerCandidates)
+        {
+            u32 contextIndex = InvalidIndex;
+            if (!acquireContext(m_Passes[passIndex].Queue, resolutions[passIndex].Effective, passIndex, contextIndex))
+            { result.Error = "All bounded graph recording contexts are in flight or a completion query failed."; return result; }
+            workerContextIndices[passIndex] = contextIndex;
+            workerCommandLists[passIndex] = m_RecordingContexts[contextIndex].CommandList.get();
+        }
+        if (!workerCandidates.empty())
+        {
+            std::atomic<u32> active { 0 }, peak { 0 };
+            const auto recordWorkerCandidate = [&](u32 passIndex)
+            {
+                const u32 now = active.fetch_add(1) + 1;
+                u32 observed = peak.load(); while (observed < now && !peak.compare_exchange_weak(observed, now)) {}
+                RecordingContext& context = m_RecordingContexts[workerContextIndices[passIndex]];
+                const CompiledPass& compiledPass = *std::find_if(compiled.Passes.begin(), compiled.Passes.end(), [passIndex](const CompiledPass& value) { return value.Pass.Index == passIndex; });
+                bool ok = context.CommandList->Begin();
+                for (u32 barrierIndex = compiledPass.FirstBarrier; ok && barrierIndex < compiledPass.FirstBarrier + compiledPass.BarrierCount; ++barrierIndex)
+                {
+                    const Barrier& barrier = compiled.Barriers[barrierIndex];
+                    ok = m_Resources[barrier.Resource.Index].Kind == ResourceKind::Texture
+                        ? context.CommandList->TransitionTexture(*m_BoundTextures[barrier.Resource.Index], barrier.Before, barrier.After)
+                        : context.CommandList->TransitionBuffer(*m_BoundBuffers[barrier.Resource.Index], barrier.Before, barrier.After);
+                }
+                std::vector<bool> declared(m_Resources.size(), false); for (const ResourceUse& use : m_Passes[passIndex].Uses) declared[use.Resource.Index] = true;
+                if (ok)
+                {
+                    ExecutionContext execution(*context.CommandList, m_BoundTextures, m_BoundBuffers, declared);
+                    context.CommandList->BeginDebugMarker(m_Passes[passIndex].DebugName);
+                    try { ok = m_Callbacks[passIndex](execution); }
+                    catch (...) { recordingErrors[passIndex] = "A graph pass callback threw an exception."; ok = false; }
+                    context.CommandList->EndDebugMarker();
+                }
+                if (ok) ok = context.CommandList->End();
+                if (!ok && recordingErrors[passIndex].empty()) recordingErrors[passIndex] = "A graph worker recording failed.";
+                recordedOnWorker[passIndex] = ok ? 1 : 2;
+                active.fetch_sub(1);
+            };
+            // Recording is deliberately independent of submission dependencies.
+            // Every candidate was admitted only when it needs neither a
+            // cross-effective acquire nor a release; its compiler-supplied
+            // expected-before state is validated at its later compiled-order
+            // submission. This lets an eligible same-effective consumer (the
+            // Scene Output Handoff) pre-record beside its producer while the
+            // submission loop still supplies the producer token and publishes
+            // no state before native acceptance.
+            FrameTaskGraph recordingTasks;
+            for (u32 passIndex : workerCandidates)
+            {
+                FrameTaskDescription task; task.Name = "RenderGraph.Record:" + m_Passes[passIndex].DebugName; task.Lane = FrameTaskLane::Worker;
+                task.Execute = [&, passIndex] { recordWorkerCandidate(passIndex); };
+                recordingTasks.AddTask(std::move(task));
+            }
+            FrameTaskExecutionOptions recordingOptions; recordingOptions.Mode = options.RecordingMode;
+            const FrameTaskGraphResult recordingResult = recordingTasks.Execute(JobSystem::Get(), recordingOptions);
+            if (!recordingResult.Succeeded()) { result.Error = "Render graph worker-recording task failed."; return result; }
+            result.WorkerRecordedPassCount = static_cast<u32>(workerCandidates.size());
+            result.WorkerRecordingOverlapObserved = peak.load() > 1;
+        }
         for (const CompiledPass& compiledPass : compiled.Passes)
         {
+            const auto discardUnsubmittedWorkerContexts = [&]()
+            {
+                for (u32 index = static_cast<u32>(m_RecordingContexts.size()); index-- > 0;)
+                {
+                    const bool isUnsubmittedWorkerContext = std::any_of(workerCommandLists.begin(), workerCommandLists.end(),
+                        [&](RHI::CommandList* commandList) { return commandList == m_RecordingContexts[index].CommandList.get(); })
+                        && !m_RecordingContexts[index].Completion.IsValid();
+                    if (isUnsubmittedWorkerContext) m_RecordingContexts.erase(m_RecordingContexts.begin() + index);
+                }
+            };
+            if (recordedOnWorker[compiledPass.Pass.Index] == 2)
+            {
+                discardUnsubmittedWorkerContexts();
+                result.Error = recordingErrors[compiledPass.Pass.Index];
+                return result;
+            }
             const RHI::QueueResolution& resolution = resolutions[compiledPass.Pass.Index];
             u32 contextIndex = InvalidIndex;
-            RecordingContext* context = acquireContext(compiledPass.Queue, resolution.Effective, compiledPass.Pass.Index, contextIndex);
+            RecordingContext* context = recordedOnWorker[compiledPass.Pass.Index] == 1
+                ? &m_RecordingContexts[workerContextIndices[compiledPass.Pass.Index]]
+                : acquireContext(compiledPass.Queue, resolution.Effective, compiledPass.Pass.Index, contextIndex);
+            if (recordedOnWorker[compiledPass.Pass.Index] == 1)
+                contextIndex = workerContextIndices[compiledPass.Pass.Index];
             if (!context) { result.Error = "All bounded graph recording contexts are in flight or a completion query failed."; return result; }
             if (result.RecordingContextIndex == InvalidIndex) result.RecordingContextIndex = contextIndex;
             const auto discardContext = [this, contextIndex]() { m_RecordingContexts.erase(m_RecordingContexts.begin() + contextIndex); };
-            if (!context->CommandList->Begin()) { result.Error = "Could not begin a GPU-retired graph recording context."; discardContext(); return result; }
             std::vector<RHI::CompletionToken> dependencies;
             for (const Dependency& dependency : compiled.Dependencies)
                 if (dependency.Consumer.Index == compiledPass.Pass.Index)
@@ -410,6 +513,21 @@ namespace Engine
                     if (!producerToken.IsValid()) { result.Error = "A graph dependency has no accepted producer token."; discardContext(); return result; }
                     if (std::find_if(dependencies.begin(), dependencies.end(), [&](const RHI::CompletionToken& token) { return token.DeviceId == producerToken.DeviceId && token.SubmissionId == producerToken.SubmissionId; }) == dependencies.end()) dependencies.push_back(producerToken);
                 }
+            if (recordedOnWorker[compiledPass.Pass.Index] == 1)
+            {
+                const RHI::CompletionToken token = device.Submit(*context->CommandList, dependencies);
+                if (!token.IsValid()) { result.Error = "Could not submit worker-recorded graph pass '" + compiledPass.DebugName + "'."; discardContext(); return result; }
+                context->Completion = token; passTokens[compiledPass.Pass.Index] = token;
+                for (const ResourceUse& use : m_Passes[compiledPass.Pass.Index].Uses)
+                {
+                    const u32 allocationIndex = allocationForResource[use.Resource.Index]; if (allocationIndex == InvalidIndex) continue;
+                    std::vector<RHI::CompletionToken>& retirement = m_TransientAllocations[allocationIndex].RetirementTokens;
+                    if (std::find_if(retirement.begin(), retirement.end(), [&](const RHI::CompletionToken& prior) { return prior.DeviceId == token.DeviceId && prior.SubmissionId == token.SubmissionId; }) == retirement.end()) retirement.push_back(token);
+                }
+                result.Completions.push_back(token); result.Completion = token; ++result.AcceptedPassCount;
+                continue;
+            }
+            if (!context->CommandList->Begin()) { result.Error = "Could not begin a GPU-retired graph recording context."; discardContext(); return result; }
             for (const QueueTransition* transition : acquires[compiledPass.Pass.Index])
             {
                 const RHI::CompletionToken releaseToken = passTokens[transition->Producer.Index];
@@ -436,8 +554,8 @@ namespace Engine
                 if (ownershipAcquireTransitionsBarrier)
                     continue;
                 const bool transitioned = m_Resources[barrier.Resource.Index].Kind == ResourceKind::Texture
-                    ? context->CommandList->TransitionTexture(*m_BoundTextures[barrier.Resource.Index], barrier.After)
-                    : context->CommandList->TransitionBuffer(*m_BoundBuffers[barrier.Resource.Index], barrier.After);
+                    ? context->CommandList->TransitionTexture(*m_BoundTextures[barrier.Resource.Index], barrier.Before, barrier.After)
+                    : context->CommandList->TransitionBuffer(*m_BoundBuffers[barrier.Resource.Index], barrier.Before, barrier.After);
                 if (!transitioned) { result.Error = "Could not record a compiled graph transition."; discardContext(); return result; }
             }
             const PassDescription& pass = m_Passes[compiledPass.Pass.Index];
