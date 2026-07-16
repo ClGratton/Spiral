@@ -286,6 +286,12 @@ The project-owned policy is versioned in the `.spiralproject` manifest. `Respons
 
 This is a policy and diagnostics foundation only. Its diagnostic states project mode, runtime override/inherit, effective mode, relevant target, and `behavior=policy-only`. It contains no sleep, high-resolution wait, engine cap, submission gate, present delay, result replacement/drop, VSync/VRR/tearing change, maximum-frames-in-flight change, fixed-simulation change, or vendor-latency change. The following roadmap item must implement and measure the RTSS-ASYNC-inspired inter-frame and submission-gate candidates at their declared control points before any smoothness or latency claim.
 
+### Required Frame-Lifecycle Telemetry Prerequisite
+
+The pacing mechanisms cannot be implemented or compared honestly until the resolved project/runtime policy reaches the application/presentation path and one authoritative application frame ID crosses every relevant publication boundary. The prerequisite trace must identify frame start, input/simulation, render submission, `Present` begin/end, and GPU-completion observation. It must distinguish intentional pacing wait from mandatory DXGI latency-object waiting and Vulkan acquire/fence correctness waiting. Backend capability/fallback diagnostics must publish display cadence and replacement/drop as unavailable when those observations do not exist; a `Present` timestamp is not display feedback.
+
+This prerequisite performs no intentional Smooth Frametime delay. It creates the evidence and control boundary for the later inter-frame and submission-gate candidates without reclassifying the existing D3D12 maximum-latency wait, Vulkan acquire/fence waits, or a delay immediately before the current `Present` as smoothing. Deterministic trace tests must prove frame-ID continuity, phase ordering, unavailable-state truthfulness, and separation of mandatory versus intentional waits before native pacing measurements can check the following roadmap item.
+
 ### Presentation Measurement Rules
 
 Use PresentMon on Windows performance runs to compare `MsBetweenPresents`, `MsBetweenDisplayChange`, `MsUntilDisplayed`, `DisplayLatency`, and presentation mode with the engine's own markers. These metrics describe different pipeline stages; a stable `Present` cadence alone does not prove a stable display cadence.

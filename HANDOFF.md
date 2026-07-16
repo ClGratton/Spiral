@@ -4,7 +4,7 @@ Updated 2026-07-16. This is a recovery aid; `PLAN.md` remains the sole roadmap a
 
 ## Objective And Stop Condition
 
-Phase 3C expected-before RHI transitions, P2 worker-safe recording, the parent multithreaded preparation/recording integration, and the project-owned frame-pacing policy/runtime override are implemented and locally accepted. The user set a hard 25%-remaining weekly floor. The latest reliable meter reports 21% used / 79% remaining, so further coherent work is authorized while the next slice can finish above 25% remaining. The first unchecked item is the measured DXGI/Vulkan presentation-policy implementation. Continuation must remain in this main task and rely on Codex Desktop's transparent same-task compaction; never create, fork, or message another task for rollover.
+Phase 3C expected-before RHI transitions, P2 worker-safe recording, the parent multithreaded preparation/recording integration, and the project-owned frame-pacing policy/runtime override are implemented and locally accepted. The user set a hard 25%-remaining weekly floor. The latest reliable meter reports 21% used / 79% remaining, so further coherent work is authorized while the next slice can finish above 25% remaining. A read-only native-boundary feasibility gate found that the measured DXGI/Vulkan presentation-policy item requires a shared frame-lifecycle telemetry and policy-handoff prerequisite; that prerequisite is now the first unchecked item. Continuation must remain in this main task and rely on Codex Desktop's transparent same-task compaction; never create, fork, or message another task for rollover.
 
 ## Token-Efficiency Baseline And Required Next-Session Audit (2026-07-15)
 
@@ -134,10 +134,10 @@ Exact-head CI run `29430304670` passed real Windows D3D12, Ubuntu Vulkan/lavapip
 
 The first unchecked `PLAN.md` item is:
 
-> Implement and measure the selected presentation policy through DXGI waitable-swapchain and capability-gated Vulkan timing paths.
+> Phase 3 presentation-pacing prerequisite — shared frame lifecycle telemetry and policy handoff.
 
-This is a large native-boundary/performance slice. Its exact Terra owner must first perform the required read-only feasibility gate: map frame start, input/simulation, submission, `Present`, GPU completion, display-feedback, DXGI waitable-object, Vulkan acquire/present, and existing frame-ID telemetry boundaries; identify which candidate can be implemented and locally measured without claiming unavailable display feedback; and name the canonical D3D12/Vulkan harness commands. Preserve `Responsive` as the default, keep VSync/VRR/tearing and vendor latency independent, and do not silently substitute Front Edge Sync for either ASYNC-style control point.
+The read-only feasibility gate established the required split with no source edits: the resolved policy currently stops in `EditorLayer`; renderer timing owns a separate internal index; D3D12's latency-object wait and Vulkan's acquire/fence waits are mandatory correctness/latency controls rather than opt-in smooth pacing; and neither backend publishes attributable display/replacement feedback. Implement the prerequisite as its own no-delay slice, with authoritative application-frame-ID continuity, explicit phase/wait classification, truthful unavailable states, deterministic tests, and local D3D12/Vulkan trace evidence. Only then resume the existing candidate-comparison item; do not treat DXGI latency waiting, Vulkan acquire/fence waiting, `Present` cadence, or a delay immediately before `Present` as Smooth Frametime evidence.
 
 ## Working State
 
-Implementation commits `c364a56` and `4457d0b` are on local `main` after pushed handoff head `9d334a1`. Commit this handoff update, push the batch, and perform one exact-head CI status check. Local acceptance is complete, so hosted CI should be detached after that one check unless it immediately reports a failure. Generated captures and CI artifacts remain under ignored `output/`.
+Implementation commits `c364a56` and `4457d0b` plus workflow handoff commit `3cfd5bc` are on `main` and `origin/main`. The working tree contains only the prerequisite scheduling/contract update produced from the read-only pacing feasibility gate; commit it before resuming the same exact Terra owner on the new prerequisite. Exact-head CI runs `29503724382` and `29503724529` were in progress at the single post-push check and are deliberately detached because local acceptance already supports the committed slices. Generated captures and CI artifacts remain under ignored `output/`.
