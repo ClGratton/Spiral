@@ -2255,8 +2255,8 @@ float4 main(VertexInput input) : SV_Position
     {
     public:
         RenderGraphTestCommandList(Engine::u32 id, Engine::RHI::QueueType queue, int& beginCount, std::vector<Engine::u32>& begunIds,
-            std::vector<std::string>& events)
-            : m_Id(id), m_Queue(queue), m_BeginCount(beginCount), m_BegunIds(begunIds), m_Events(events) {}
+            std::vector<std::string>& events, std::mutex& instrumentationMutex)
+            : m_Id(id), m_Queue(queue), m_BeginCount(beginCount), m_BegunIds(begunIds), m_Events(events), m_InstrumentationMutex(instrumentationMutex) {}
 
         Engine::RHI::QueueType GetQueueType() const override { return m_Queue; }
         bool Begin() override
@@ -2268,8 +2268,11 @@ float4 main(VertexInput input) : SV_Position
             m_BufferTransitions.clear();
             m_BufferOwnershipOperations.clear();
             m_TextureOwnershipOperations.clear();
-            ++m_BeginCount;
-            m_BegunIds.push_back(m_Id);
+            {
+                std::scoped_lock lock(m_InstrumentationMutex);
+                ++m_BeginCount;
+                m_BegunIds.push_back(m_Id);
+            }
             return true;
         }
         bool End() override
@@ -2288,7 +2291,10 @@ float4 main(VertexInput input) : SV_Position
             auto* resource = dynamic_cast<RenderGraphTestTexture*>(&texture);
             if (!m_Recording || !resource || state == Engine::RHI::ResourceState::Unknown) return false;
             m_TextureTransitions.push_back({ resource, state });
-            m_Events.push_back("texture:" + resource->GetDescription().DebugName + ":" + Engine::RenderGraph::ToString(state));
+            {
+                std::scoped_lock lock(m_InstrumentationMutex);
+                m_Events.push_back("texture:" + resource->GetDescription().DebugName + ":" + Engine::RenderGraph::ToString(state));
+            }
             return true;
         }
         bool TransitionTexture(Engine::RHI::Texture& texture, Engine::RHI::ResourceState expectedBefore, Engine::RHI::ResourceState state) override
@@ -2296,7 +2302,10 @@ float4 main(VertexInput input) : SV_Position
             auto* resource = dynamic_cast<RenderGraphTestTexture*>(&texture);
             if (!m_Recording || !resource || expectedBefore == Engine::RHI::ResourceState::Unknown || state == Engine::RHI::ResourceState::Unknown) return false;
             m_TextureTransitions.push_back({ resource, state, expectedBefore });
-            m_Events.push_back("texture:" + resource->GetDescription().DebugName + ":" + Engine::RenderGraph::ToString(state));
+            {
+                std::scoped_lock lock(m_InstrumentationMutex);
+                m_Events.push_back("texture:" + resource->GetDescription().DebugName + ":" + Engine::RenderGraph::ToString(state));
+            }
             return true;
         }
         bool TransitionBuffer(Engine::RHI::Buffer& buffer, Engine::RHI::ResourceState state) override
@@ -2304,7 +2313,10 @@ float4 main(VertexInput input) : SV_Position
             auto* resource = dynamic_cast<RenderGraphTestBuffer*>(&buffer);
             if (!m_Recording || !resource || state == Engine::RHI::ResourceState::Unknown) return false;
             m_BufferTransitions.push_back({ resource, state });
-            m_Events.push_back("buffer:" + resource->GetDescription().DebugName + ":" + Engine::RenderGraph::ToString(state));
+            {
+                std::scoped_lock lock(m_InstrumentationMutex);
+                m_Events.push_back("buffer:" + resource->GetDescription().DebugName + ":" + Engine::RenderGraph::ToString(state));
+            }
             return true;
         }
         bool TransitionBuffer(Engine::RHI::Buffer& buffer, Engine::RHI::ResourceState expectedBefore, Engine::RHI::ResourceState state) override
@@ -2312,7 +2324,10 @@ float4 main(VertexInput input) : SV_Position
             auto* resource = dynamic_cast<RenderGraphTestBuffer*>(&buffer);
             if (!m_Recording || !resource || expectedBefore == Engine::RHI::ResourceState::Unknown || state == Engine::RHI::ResourceState::Unknown) return false;
             m_BufferTransitions.push_back({ resource, state, expectedBefore });
-            m_Events.push_back("buffer:" + resource->GetDescription().DebugName + ":" + Engine::RenderGraph::ToString(state));
+            {
+                std::scoped_lock lock(m_InstrumentationMutex);
+                m_Events.push_back("buffer:" + resource->GetDescription().DebugName + ":" + Engine::RenderGraph::ToString(state));
+            }
             return true;
         }
         bool ReleaseBufferOwnership(const Engine::RHI::BufferOwnershipRelease& release) override
@@ -2401,6 +2416,7 @@ float4 main(VertexInput input) : SV_Position
         int& m_BeginCount;
         std::vector<Engine::u32>& m_BegunIds;
         std::vector<std::string>& m_Events;
+        std::mutex& m_InstrumentationMutex;
         bool m_Recording = false;
         bool m_Closed = false;
         std::vector<TextureTransition> m_TextureTransitions;
@@ -2469,7 +2485,7 @@ float4 main(VertexInput input) : SV_Position
         Engine::Scope<Engine::RHI::CommandList> CreateCommandList(Engine::RHI::QueueType queue, std::string_view) override
         {
             const Engine::u32 id = ++CreatedCommandListCount;
-            return Engine::CreateScope<RenderGraphTestCommandList>(id, queue, BeginCount, BegunCommandListIds, Events);
+            return Engine::CreateScope<RenderGraphTestCommandList>(id, queue, BeginCount, BegunCommandListIds, Events, m_InstrumentationMutex);
         }
         bool UploadBuffer(Engine::RHI::Buffer&, const void*, Engine::u64, Engine::u64) override { return false; }
         bool ReadbackTexture(Engine::RHI::Texture&, Engine::RHI::TextureReadback&) override { return false; }
@@ -2587,6 +2603,7 @@ float4 main(VertexInput input) : SV_Position
         bool m_CopyIndependent = false;
         Engine::RHI::DeviceDescription m_Description;
         Engine::RHI::DeviceCapabilities m_Capabilities;
+        std::mutex m_InstrumentationMutex;
         std::vector<Engine::RHI::CompletionStatus> m_Completions;
         std::vector<Engine::RHI::QueueType> m_SubmissionQueues { Engine::RHI::QueueType::Graphics };
     };
