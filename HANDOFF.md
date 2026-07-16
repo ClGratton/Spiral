@@ -4,7 +4,7 @@ Updated 2026-07-16. This is a recovery aid; `PLAN.md` remains the sole roadmap a
 
 ## Objective And Stop Condition
 
-Phase 3C expected-before RHI transitions, P2 worker-safe recording, the parent multithreaded preparation/recording integration, the project-owned frame-pacing policy/runtime override, shared frame-lifecycle telemetry, both experimental Smooth Frametime control points, bounded benchmark capture, and the external-collector attachment/QPC identity boundary are implemented and locally accepted. The user authorized continued ordered work down to a hard 25%-remaining weekly floor. The latest reliable meter reports 67% used / 33% remaining. Windows PresentMon correlation is first unchecked but locally blocked by a collector that exits without CSV; the next medium slice cannot safely fit above the floor without first resolving that external tool state.
+Phase 3C expected-before RHI transitions, P2 worker-safe recording, the parent multithreaded preparation/recording integration, the project-owned frame-pacing policy/runtime override, shared frame-lifecycle telemetry, both experimental Smooth Frametime control points, bounded benchmark capture, and the external-collector attachment/QPC identity boundary are implemented and locally accepted. The user authorized continued ordered work down to a hard 25%-remaining weekly floor. The latest reliable meter reports 70% used / 30% remaining. Official portable PresentMon now produces exact-PID QPC CSV; the first unchecked work is the smaller deterministic parser/join prerequisite, which must finish before live collector supervision.
 
 ## Token-Efficiency Baseline And Required Next-Session Audit (2026-07-15)
 
@@ -180,9 +180,9 @@ Exact-head CI run `29430304670` passed real Windows D3D12, Ubuntu Vulkan/lavapip
 
 The first unchecked `PLAN.md` item is:
 
-> Phase 3 production-pacing measurement prerequisite — Windows PresentMon correlation.
+> Phase 3 PresentMon correlation prerequisite — deterministic raw-stream parser and join report.
 
-The engine-side gate is ready: launch the initialized editor, read exact run/PID/path/QPC readiness, attach a collector, then release warm-up/capture. PresentMon `1.7.12119.0` remains installed at `C:\Program Files\NVIDIA Corporation\FrameViewSDK\bin\PresentMon_x64.exe`, but it currently exits without CSV for both process-name and exact-PID local probes. Do not invent its header schema, use `--stop_existing_session`, elevate without user authority, replace tools, or mutate shared PresentMon/RTSS/driver state. Correlation remains unchecked until a real collector stream exists. Monitor identity, VRR, RTSS/FES state, input latency, replacement semantics, and GPU headroom remain unavailable.
+The official portable Intel/GameTechDev PresentMon `1.10.0` console asset was downloaded only under ignored `output/tools/presentmon-diagnostic/`; local SHA-256 is `e57a2f8ee1de1ef1a5516d875f1b115e881943cd729fe9c5a2f88b1dc79a8a3b`. It is official GitHub provenance but not Authenticode-signed and the release publishes no checksum, so it is diagnostic evidence rather than an admitted dependency. A bounded non-elevated exact-PID D3D12 run produced 528 CSV rows with the required present/display fields, 16 warm-up rows, and 512 causal rows for 512 retained engine presents. The next slice implements only the fail-closed parser/report against separate raw files. Live collector supervision remains the following unchecked item.
 
 The GPU-timing roadmap prerequisite is now explicitly backend-neutral and gates Phase 3E: D3D12 query heaps, Vulkan query pools, non-stalling resolve/readback, frame/pass identity, RenderGraph scopes, Profiler `GpuMilliseconds`, and native qualification must exist before Forward+/clustered lighting, PBR, lights, shadows, or sky/atmosphere begins. CPU steady-clock timing remains a fallback but cannot qualify GPU-cost claims.
 

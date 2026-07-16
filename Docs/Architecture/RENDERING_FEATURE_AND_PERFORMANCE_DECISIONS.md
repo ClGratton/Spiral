@@ -309,7 +309,7 @@ Only PresentMon rows whose `ProcessId` matches the launched editor may enter the
 
 PresentMon correlation may qualify present/display cadence and row classification for the exact captured process. It does not by itself identify the physical monitor, prove VRR state, prove RTSS/FES/frame-generation configuration, provide engine GPU timestamps/headroom, define replacement semantics, or measure click-to-photon latency. Those conditions remain declared `unknown` or `unavailable` until separately observed.
 
-Local FrameView PresentMon `1.7.12119.0` currently exits immediately without CSV for process-name waiting and exact-PID attachment in this account. That is a local collector blocker, not permission to fabricate headers or weaken the join contract. The engine-owned readiness/QPC prerequisite remains independently implementable and testable; PresentMon correlation stays unchecked until a collector produces real rows.
+The NVIDIA FrameView PresentMon `1.7.12119.0` build exits without CSV in this account, but the official portable Intel/GameTechDev PresentMon `1.10.0` console asset works non-elevated when attached through the readiness gate. A local D3D12 diagnostic produced 528 exact-PID QPC rows: 16 warm-up rows followed by 512 rows causally aligned with the retained engine presents. The parser/join contract is a separate prerequisite before live collector supervision: preserve both raw streams, require the exact observed header set and common QPC frequency/process identity, pair exactly one PresentMon row in each engine-present interval, bound the final row, and fail closed on missing, ambiguous, reused, non-monotonic, or noncausal input.
 
 ### Required Frame-Lifecycle Telemetry Prerequisite
 
