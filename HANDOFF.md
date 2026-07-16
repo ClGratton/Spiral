@@ -191,6 +191,12 @@ The official portable Intel/GameTechDev PresentMon `1.10.0` console asset was do
 
 The GPU-timing roadmap prerequisite is now explicitly backend-neutral and gates Phase 3E: D3D12 query heaps, Vulkan query pools, non-stalling resolve/readback, frame/pass identity, RenderGraph scopes, Profiler `GpuMilliseconds`, and native qualification must exist before Forward+/clustered lighting, PBR, lights, shadows, or sky/atmosphere begins. CPU steady-clock timing remains a fallback but cannot qualify GPU-cost claims.
 
+## Editor Viewport Navigation Slice (2026-07-16)
+
+The editor now owns Unreal-style perspective navigation over the real viewport image. A minimal public `Window` cursor boundary is implemented by GLFW and inert in headless mode; Editor never reaches GLFW directly. Plain LMB drag moves/yaws, RMB drag looks, LMB+RMB/MMB pan, wheel moves, RMB+wheel adjusts bounded speed, RMB+W/S/A/D/E/Q flies with arrow/Page aliases, and F focuses the existing selected entity origin. Navigation writes the Scene main camera through the existing public Scene path, keeps DVec3/canonical sector-local authority, and publishes focus as a discontinuity. Picking, multiselect, Alt pivot navigation, bounds framing, gizmos, orthographic navigation, piloting, and bindings remain deferred.
+
+Local Windows/MSVC Debug build passed with zero warnings/errors; `EngineTests` passed 64/64; `Editor.exe --headless --smoke-test --editor-viewport-navigation-smoke` emitted `ViewportNavigationSmokeV1 dvec3=pass sceneAuthority=pass focusDiscontinuity=pass result=pass`; `TestRender.ps1 -Configuration Debug -Action vs2022 -SkipBuild` passed the bounded headed RTX 3080 Ti D3D12 capture/regression; code style and `git diff --check` passed. The smoke proves controller motion, Scene authority, and focus publication, but not native cursor restoration or real ImGui hover/capture interaction. A manual bounded headed D3D12 interaction/capture remains required before checking the newly inserted PLAN prerequisite.
+
 ## Working State
 
 Head `188e6e2` is on local `main`; `d44b5c1` is on `origin/main`. The working tree is clean except for this exact-head handoff refresh. Generated captures, the portable diagnostic tool, raw streams, reports, and focused logs remain under ignored `output/`.

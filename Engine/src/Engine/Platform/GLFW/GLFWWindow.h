@@ -20,6 +20,9 @@ namespace Engine
         void RequestClose() override;
         void SetSize(u32 width, u32 height) override;
         void SwapBuffers() override;
+        void SetCursorMode(CursorMode mode) override;
+        void GetCursorPosition(double& outX, double& outY) const override;
+        void SetCursorPosition(double x, double y) override;
         void* GetNativeWindow() const override { return m_Window; }
         void SetEventCallback(EventCallbackFn callback) override { m_Data.EventCallback = std::move(callback); }
 

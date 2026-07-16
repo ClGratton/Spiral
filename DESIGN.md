@@ -41,6 +41,7 @@ Use the editor's single default sans/monospace-compatible UI font at a compact, 
 - Inspector content follows the selected entity or asset.
 - Camera projection and background color live on the selected camera in the Inspector. The top-bar Settings menu owns serialized project configuration and global renderer backend selection; Profiler owns non-serialized runtime pacing experiments. Neither moves selection-scoped controls out of the Inspector or duplicates that authority in a dockable panel.
 - Camera-bearing entities omit the ineffective Transform Scale control; camera zoom uses Field of View or the applicable projection setting. The Inspector does not reset stored scale because an entity may also carry a component for which scale is meaningful.
+- Perspective navigation is scoped to the focused viewport image. Plain LMB drags move/yaw, RMB drags look, LMB+RMB or MMB drags pan, wheel moves by increments, RMB+wheel adjusts bounded speed, RMB+W/S/A/D/E/Q flies, and F focuses the existing selection. Capture restores the exact cursor position on release or focus loss and never steals an active ImGui widget/text interaction. Selection picking, pivot navigation, gizmos, orthographic controls, camera piloting, and configurable bindings remain unavailable until their owning contracts exist.
 - Unsupported backends are visibly disabled and explain why.
 - Destructive hierarchy actions are contextual, undoable, and protect the primary camera.
 - New projects reject path collisions instead of silently overwriting existing manifests.

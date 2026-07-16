@@ -1,5 +1,8 @@
 #include "EditorLayer.h"
 
+#include "Engine/Events/KeyEvent.h"
+#include "Engine/Events/MouseEvent.h"
+
 #include <imgui.h>
 #include <imgui_internal.h>
 
@@ -367,6 +370,8 @@ void EditorLayer::OnAttach()
         Engine::Application::Get().GetSpecification().CommandLineArgs.HasFlag("--scene-origin-raster-smoke");
     m_FramePacingPolicySmokeRequested =
         Engine::Application::Get().GetSpecification().CommandLineArgs.HasFlag("--frame-pacing-policy-smoke");
+    m_ViewportNavigationSmokeRequested =
+        Engine::Application::Get().GetSpecification().CommandLineArgs.HasFlag("--editor-viewport-navigation-smoke");
     if (m_SceneOriginRasterSmokeRequested)
         ConfigureSceneOriginRasterSmoke();
     if (m_AssetWatchSmokeRequested)
@@ -414,8 +419,10 @@ void EditorLayer::OnUpdate(Engine::Timestep timestep)
     RunUndoRedoSmoke();
     RunSceneAuthoringSmoke();
     RunFramePacingPolicySmoke();
+    RunViewportNavigationSmoke();
     AdvanceSceneOriginRasterSmoke();
     HandleAssetWatchEvents();
+    UpdateViewportNavigation(timestep);
 
     Engine::TrackedCameraViewRequest viewportViewRequest;
     viewportViewRequest.StableViewId = 1;
@@ -487,6 +494,59 @@ void EditorLayer::OnEvent(Engine::Event& event)
     dispatcher.Dispatch<Engine::FileDropEvent>(GE_BIND_EVENT_FN(EditorLayer::OnFileDrop));
     if (event.Handled)
         return;
+
+    if (event.GetEventType() == Engine::EventType::KeyPressed)
+    {
+        const auto& keyEvent = static_cast<const Engine::KeyPressedEvent&>(event);
+        const int key = keyEvent.GetKeyCode();
+        if (key >= 0 && key < static_cast<int>(m_KeyDown.size()))
+            m_KeyDown[static_cast<size_t>(key)] = true;
+        if (!keyEvent.IsRepeat() && key == 'F' && m_ViewportNavigationInputEnabled)
+            FocusSelectedEntity();
+    }
+    else if (event.GetEventType() == Engine::EventType::KeyReleased)
+    {
+        const int key = static_cast<const Engine::KeyReleasedEvent&>(event).GetKeyCode();
+        if (key >= 0 && key < static_cast<int>(m_KeyDown.size()))
+            m_KeyDown[static_cast<size_t>(key)] = false;
+    }
+    else if (event.GetEventType() == Engine::EventType::MouseButtonPressed)
+    {
+        const int button = static_cast<const Engine::MouseButtonPressedEvent&>(event).GetMouseButton();
+        m_LeftMouseDown |= button == 0;
+        m_RightMouseDown |= button == 1;
+        m_MiddleMouseDown |= button == 2;
+        if (m_ViewportNavigationInputEnabled && (button == 0 || button == 1 || button == 2))
+            BeginViewportCursorCapture();
+    }
+    else if (event.GetEventType() == Engine::EventType::MouseButtonReleased)
+    {
+        const int button = static_cast<const Engine::MouseButtonReleasedEvent&>(event).GetMouseButton();
+        if (button == 0)
+            m_LeftMouseDown = false;
+        else if (button == 1)
+            m_RightMouseDown = false;
+        else if (button == 2)
+            m_MiddleMouseDown = false;
+        if (!m_LeftMouseDown && !m_RightMouseDown && !m_MiddleMouseDown)
+            EndViewportCursorCapture();
+    }
+    else if (event.GetEventType() == Engine::EventType::MouseMoved)
+    {
+        const auto& mouseEvent = static_cast<const Engine::MouseMovedEvent&>(event);
+        if (m_HasMousePosition && m_CursorCaptured)
+        {
+            m_MouseDeltaX += mouseEvent.GetX() - static_cast<float>(m_MouseX);
+            m_MouseDeltaY += mouseEvent.GetY() - static_cast<float>(m_MouseY);
+        }
+        m_MouseX = mouseEvent.GetX();
+        m_MouseY = mouseEvent.GetY();
+        m_HasMousePosition = true;
+    }
+    else if (event.GetEventType() == Engine::EventType::MouseScrolled)
+    {
+        m_MouseWheelDelta += static_cast<const Engine::MouseScrolledEvent&>(event).GetYOffset();
+    }
 
     Engine::Log::Trace("Editor received event: ", event.ToString());
 }
@@ -1180,6 +1240,155 @@ void EditorLayer::SyncEditorCameraStateFromMainCamera(bool discontinuousRelocati
     Engine::Renderer::SetClearColor({ camera.BackgroundColor.X, camera.BackgroundColor.Y, camera.BackgroundColor.Z, 1.0f });
 }
 
+void EditorLayer::BeginViewportCursorCapture()
+{
+    if (m_CursorCaptured)
+        return;
+
+    Engine::Window& window = Engine::Application::Get().GetWindow();
+    window.GetCursorPosition(m_CursorRestoreX, m_CursorRestoreY);
+    window.SetCursorMode(Engine::CursorMode::Disabled);
+    m_CursorCaptured = true;
+    m_HasMousePosition = false;
+    m_MouseDeltaX = 0.0f;
+    m_MouseDeltaY = 0.0f;
+}
+
+void EditorLayer::EndViewportCursorCapture()
+{
+    if (!m_CursorCaptured)
+        return;
+
+    Engine::Window& window = Engine::Application::Get().GetWindow();
+    window.SetCursorMode(Engine::CursorMode::Normal);
+    window.SetCursorPosition(m_CursorRestoreX, m_CursorRestoreY);
+    m_CursorCaptured = false;
+    m_HasMousePosition = false;
+    m_MouseDeltaX = 0.0f;
+    m_MouseDeltaY = 0.0f;
+}
+
+void EditorLayer::FocusSelectedEntity()
+{
+    Engine::Math::DVec3 focusPosition;
+    if (!m_ActiveScene.TryGetEntityApproximateWorldPosition(m_SelectedEntity, focusPosition))
+        return;
+
+    const float yaw = Engine::Math::DegreesToRadians(m_CameraRotation[1]);
+    const float pitch = Engine::Math::DegreesToRadians(m_CameraRotation[0]);
+    const Engine::Math::DVec3 forward {
+        std::sin(yaw) * std::cos(pitch),
+        -std::sin(pitch),
+        std::cos(yaw) * std::cos(pitch)
+    };
+    constexpr double focusDistance = 3.35;
+    m_CameraPosition = {
+        focusPosition.X - forward.X * focusDistance,
+        focusPosition.Y - forward.Y * focusDistance,
+        focusPosition.Z - forward.Z * focusDistance
+    };
+    m_EditorCamera.SetPosition({ m_CameraPosition[0], m_CameraPosition[1], m_CameraPosition[2] });
+    ApplyEditorCameraStateToScene();
+    m_ViewportDiscontinuousRelocationPending = true;
+}
+
+void EditorLayer::UpdateViewportNavigation(Engine::Timestep timestep)
+{
+    if (!m_ViewportNavigationInputEnabled)
+    {
+        EndViewportCursorCapture();
+        m_MouseWheelDelta = 0.0f;
+        return;
+    }
+
+    const auto keyDown = [this](int key)
+    {
+        return key >= 0 && key < static_cast<int>(m_KeyDown.size()) && m_KeyDown[static_cast<size_t>(key)];
+    };
+    constexpr int keyLeft = 263;
+    constexpr int keyRight = 262;
+    constexpr int keyDownArrow = 264;
+    constexpr int keyUp = 265;
+    constexpr int keyPageUp = 266;
+    constexpr int keyPageDown = 267;
+
+    const float yaw = Engine::Math::DegreesToRadians(m_CameraRotation[1]);
+    const float pitch = Engine::Math::DegreesToRadians(m_CameraRotation[0]);
+    const Engine::Math::DVec3 forward {
+        std::sin(yaw) * std::cos(pitch),
+        -std::sin(pitch),
+        std::cos(yaw) * std::cos(pitch)
+    };
+    const Engine::Math::DVec3 right { std::cos(yaw), 0.0, -std::sin(yaw) };
+    bool changed = false;
+
+    if (m_RightMouseDown && m_MouseWheelDelta != 0.0f)
+    {
+        m_ViewportNavigationSpeed = std::clamp(m_ViewportNavigationSpeed + m_MouseWheelDelta, 0.25f, 128.0f);
+        changed = true;
+    }
+    else if (m_MouseWheelDelta != 0.0f)
+    {
+        const double distance = static_cast<double>(m_MouseWheelDelta * m_ViewportNavigationSpeed * 0.25f);
+        m_CameraPosition[0] += forward.X * distance;
+        m_CameraPosition[1] += forward.Y * distance;
+        m_CameraPosition[2] += forward.Z * distance;
+        changed = true;
+    }
+    m_MouseWheelDelta = 0.0f;
+
+    if ((m_LeftMouseDown && m_RightMouseDown) || m_MiddleMouseDown)
+    {
+        const double panScale = static_cast<double>(m_ViewportNavigationSpeed) * 0.01;
+        m_CameraPosition[0] += right.X * m_MouseDeltaX * panScale;
+        m_CameraPosition[1] -= m_MouseDeltaY * panScale;
+        m_CameraPosition[2] += right.Z * m_MouseDeltaX * panScale;
+        changed |= m_MouseDeltaX != 0.0f || m_MouseDeltaY != 0.0f;
+    }
+    else if (m_LeftMouseDown)
+    {
+        m_CameraRotation[1] += m_MouseDeltaX * 0.15f;
+        const double distance = static_cast<double>(-m_MouseDeltaY) * m_ViewportNavigationSpeed * 0.025;
+        m_CameraPosition[0] += forward.X * distance;
+        m_CameraPosition[1] += forward.Y * distance;
+        m_CameraPosition[2] += forward.Z * distance;
+        changed |= m_MouseDeltaX != 0.0f || m_MouseDeltaY != 0.0f;
+    }
+    else if (m_RightMouseDown)
+    {
+        m_CameraRotation[0] = std::clamp(m_CameraRotation[0] + m_MouseDeltaY * 0.15f, -89.0f, 89.0f);
+        m_CameraRotation[1] += m_MouseDeltaX * 0.15f;
+        changed |= m_MouseDeltaX != 0.0f || m_MouseDeltaY != 0.0f;
+    }
+    m_MouseDeltaX = 0.0f;
+    m_MouseDeltaY = 0.0f;
+
+    if (m_RightMouseDown)
+    {
+        const double distance = static_cast<double>(m_ViewportNavigationSpeed * timestep.GetSeconds());
+        const auto translate = [&] (const Engine::Math::DVec3& direction)
+        {
+            m_CameraPosition[0] += direction.X * distance;
+            m_CameraPosition[1] += direction.Y * distance;
+            m_CameraPosition[2] += direction.Z * distance;
+            changed = true;
+        };
+        if (keyDown('W') || keyDown(keyUp)) translate(forward);
+        if (keyDown('S') || keyDown(keyDownArrow)) translate({ -forward.X, -forward.Y, -forward.Z });
+        if (keyDown('A') || keyDown(keyLeft)) translate({ -right.X, -right.Y, -right.Z });
+        if (keyDown('D') || keyDown(keyRight)) translate(right);
+        if (keyDown('E') || keyDown(keyPageUp)) translate({ 0.0, 1.0, 0.0 });
+        if (keyDown('Q') || keyDown(keyPageDown)) translate({ 0.0, -1.0, 0.0 });
+    }
+
+    if (!changed)
+        return;
+
+    m_EditorCamera.SetPosition({ m_CameraPosition[0], m_CameraPosition[1], m_CameraPosition[2] });
+    m_EditorCamera.SetRotationDegrees({ m_CameraRotation[0], m_CameraRotation[1], m_CameraRotation[2] });
+    ApplyEditorCameraStateToScene();
+}
+
 void EditorLayer::DrawRendererBackendSelector()
 {
     const std::vector<Engine::RendererBackendOption>& options = Engine::Renderer::GetBackendOptions();
@@ -1241,6 +1450,15 @@ void EditorLayer::DrawViewportPanel()
     }
     else
         ImGui::InvisibleButton("ViewportCanvas", size);
+
+    m_ViewportHovered = ImGui::IsItemHovered();
+    if (ImGui::IsItemClicked())
+        ImGui::SetWindowFocus();
+    m_ViewportFocused = ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
+    const ImGuiIO& io = ImGui::GetIO();
+    m_ViewportNavigationInputEnabled = (m_CursorCaptured || (m_ViewportHovered && m_ViewportFocused))
+        && !io.WantTextInput
+        && !ImGui::IsAnyItemActive();
 
     const ImVec2 min = ImGui::GetItemRectMin();
     const ImVec2 max = ImGui::GetItemRectMax();
@@ -2124,6 +2342,37 @@ void EditorLayer::RunFramePacingPolicySmoke()
     Engine::Log::Info("FramePacingPolicySmokeV1 legacy=pass invalid=transactional-rejected saveReopen=pass ",
         Engine::DescribeFramePacingPolicy(resolved), " result=pass");
     m_ConsoleLines.emplace_back("Frame pacing policy smoke passed: " + Engine::DescribeFramePacingPolicy(resolved));
+}
+
+void EditorLayer::RunViewportNavigationSmoke()
+{
+    if (!m_ViewportNavigationSmokeRequested || m_ViewportNavigationSmokeCompleted || m_FrameCounter < 1)
+        return;
+
+    m_ViewportNavigationSmokeCompleted = true;
+    const Engine::Math::DVec3 before = m_EditorCamera.GetPosition();
+    m_ViewportNavigationInputEnabled = true;
+    m_RightMouseDown = true;
+    m_KeyDown[static_cast<size_t>('W')] = true;
+    UpdateViewportNavigation(Engine::Timestep(1.0f));
+    m_KeyDown[static_cast<size_t>('W')] = false;
+    m_RightMouseDown = false;
+
+    Engine::Math::DVec3 scenePosition;
+    const bool sceneMatches = m_ActiveScene.TryGetEntityApproximateWorldPosition(
+        m_ActiveScene.GetMainCameraEntity(), scenePosition)
+        && scenePosition.X == m_EditorCamera.GetPosition().X
+        && scenePosition.Y == m_EditorCamera.GetPosition().Y
+        && scenePosition.Z == m_EditorCamera.GetPosition().Z;
+    const bool moved = m_EditorCamera.GetPosition().Z > before.Z;
+    m_SelectedEntity = m_PrototypeMeshEntity;
+    FocusSelectedEntity();
+    const bool focusDiscontinuous = m_ViewportDiscontinuousRelocationPending;
+    if (!sceneMatches || !moved || !focusDiscontinuous)
+        throw std::runtime_error("Viewport navigation smoke failed");
+
+    Engine::Log::Info("ViewportNavigationSmokeV1 dvec3=pass sceneAuthority=pass focusDiscontinuity=pass result=pass");
+    m_ConsoleLines.emplace_back("Viewport navigation smoke passed");
 }
 
 bool EditorLayer::SaveProject()

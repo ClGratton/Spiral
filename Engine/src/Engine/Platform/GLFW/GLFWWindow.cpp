@@ -232,4 +232,24 @@ namespace Engine
         if (m_Window && m_UsesOpenGLContext)
             glfwSwapBuffers(m_Window);
     }
+
+    void GLFWWindow::SetCursorMode(CursorMode mode)
+    {
+        if (m_Window)
+            glfwSetInputMode(m_Window, GLFW_CURSOR, mode == CursorMode::Disabled ? GLFW_CURSOR_DISABLED : GLFW_CURSOR_NORMAL);
+    }
+
+    void GLFWWindow::GetCursorPosition(double& outX, double& outY) const
+    {
+        outX = 0.0;
+        outY = 0.0;
+        if (m_Window)
+            glfwGetCursorPos(m_Window, &outX, &outY);
+    }
+
+    void GLFWWindow::SetCursorPosition(double x, double y)
+    {
+        if (m_Window)
+            glfwSetCursorPos(m_Window, x, y);
+    }
 }

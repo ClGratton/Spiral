@@ -15,6 +15,12 @@ namespace Engine
         None
     };
 
+    enum class CursorMode
+    {
+        Normal,
+        Disabled
+    };
+
     struct WindowSpecification
     {
         std::string Title = "Spiral";
@@ -39,6 +45,9 @@ namespace Engine
         virtual void RequestClose() = 0;
         virtual void SetSize(u32 width, u32 height) = 0;
         virtual void SwapBuffers() = 0;
+        virtual void SetCursorMode(CursorMode mode) = 0;
+        virtual void GetCursorPosition(double& outX, double& outY) const = 0;
+        virtual void SetCursorPosition(double x, double y) = 0;
         virtual void* GetNativeWindow() const = 0;
         virtual void SetEventCallback(EventCallbackFn callback) = 0;
 
