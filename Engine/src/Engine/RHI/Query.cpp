@@ -145,6 +145,7 @@ namespace Engine::RHI
     bool TimestampQueryRetirementQueue::IsRetained(const NativeQueryState& state) const
     {
         if (!state) return false;
+        std::scoped_lock lock(m_Mutex);
         const auto matches = [&](const NativeQueryState& candidate) { return candidate.get() == state.get(); };
         return std::any_of(m_Reserved.begin(), m_Reserved.end(), [&](const ReservedState& candidate) { return matches(candidate.State); })
             || std::any_of(m_Pending.begin(), m_Pending.end(), [&](const RetainedState& candidate) { return matches(candidate.State); });
@@ -152,13 +153,19 @@ namespace Engine::RHI
 
     bool TimestampQueryRetirementQueue::Reserve(const std::shared_ptr<TimestampQueryPoolState>& pool, const NativeQueryState& state)
     {
-        if (!pool || !state || IsRetained(state) || m_Reserved.size() + m_Pending.size() >= kMaximumPendingRetirements) return false;
+        if (!pool || !state) return false;
+        std::scoped_lock lock(m_Mutex);
+        const auto matches = [&](const NativeQueryState& candidate) { return candidate.get() == state.get(); };
+        if (std::any_of(m_Reserved.begin(), m_Reserved.end(), [&](const ReservedState& candidate) { return matches(candidate.State); })
+            || std::any_of(m_Pending.begin(), m_Pending.end(), [&](const RetainedState& candidate) { return matches(candidate.State); })
+            || m_Reserved.size() + m_Pending.size() >= kMaximumPendingRetirements) return false;
         m_Reserved.push_back({ pool, state });
         return true;
     }
 
     void TimestampQueryRetirementQueue::ReleaseReservation(const NativeQueryState& state)
     {
+        std::scoped_lock lock(m_Mutex);
         const auto found = std::find_if(m_Reserved.begin(), m_Reserved.end(),
             [&](const ReservedState& candidate) { return candidate.State.get() == state.get(); });
         if (found != m_Reserved.end()) m_Reserved.erase(found);
@@ -166,6 +173,7 @@ namespace Engine::RHI
 
     bool TimestampQueryRetirementQueue::CanPrepare(const std::shared_ptr<TimestampQueryPoolState>& pool, const NativeQueryState& state) const
     {
+        std::scoped_lock lock(m_Mutex);
         return pool && state && std::any_of(m_Reserved.begin(), m_Reserved.end(), [&](const ReservedState& candidate)
             { return candidate.Pool.get() == pool.get() && candidate.State.get() == state.get(); });
     }
@@ -173,19 +181,26 @@ namespace Engine::RHI
     bool TimestampQueryRetirementQueue::CanPublish(const std::shared_ptr<TimestampQueryPoolState>& pool, const NativeQueryState& state,
         const CompletionToken& token) const
     {
-        return CanPrepare(pool, state) && token.IsValid() && token.DeviceId == m_OwnerDeviceId;
+        if (!pool || !state || !token.IsValid() || token.DeviceId != m_OwnerDeviceId) return false;
+        std::scoped_lock lock(m_Mutex);
+        return std::any_of(m_Reserved.begin(), m_Reserved.end(), [&](const ReservedState& candidate)
+            { return candidate.Pool.get() == pool.get() && candidate.State.get() == state.get(); });
     }
 
     void TimestampQueryRetirementQueue::Publish(const std::shared_ptr<TimestampQueryPoolState>& pool, const NativeQueryState& state,
         const CompletionToken& token)
     {
-        ReleaseReservation(state);
+        std::scoped_lock lock(m_Mutex);
+        const auto found = std::find_if(m_Reserved.begin(), m_Reserved.end(),
+            [&](const ReservedState& candidate) { return candidate.State.get() == state.get(); });
+        if (found != m_Reserved.end()) m_Reserved.erase(found);
         m_Pending.push_back({ pool, state, token });
     }
 
     bool TimestampQueryRetirementQueue::Retire(const CompletionToken& token, CompletionStatus status)
     {
         if (!token.IsValid() || token.DeviceId != m_OwnerDeviceId || status == CompletionStatus::Invalid || status == CompletionStatus::Incomplete) return false;
+        std::scoped_lock lock(m_Mutex);
         const auto first = std::find_if(m_Pending.begin(), m_Pending.end(), [&](const RetainedState& candidate)
             { return candidate.Token.DeviceId == token.DeviceId && candidate.Token.SubmissionId == token.SubmissionId; });
         if (first == m_Pending.end()) return false;
@@ -201,11 +216,18 @@ namespace Engine::RHI
         CompletionStatus status, const std::vector<u64>& values)
     {
         if (!state || !token.IsValid() || token.DeviceId != m_OwnerDeviceId) return false;
+        std::scoped_lock lock(m_Mutex);
         const auto found = std::find_if(m_Pending.begin(), m_Pending.end(), [&](const RetainedState& candidate)
             { return candidate.State.get() == state.get() && candidate.Token.DeviceId == token.DeviceId
                 && candidate.Token.SubmissionId == token.SubmissionId; });
         if (found == m_Pending.end() || !found->Pool) return false;
         return found->Pool->Complete(token, status, values);
+    }
+
+    size_t TimestampQueryRetirementQueue::GetPendingRetirementCount() const
+    {
+        std::scoped_lock lock(m_Mutex);
+        return m_Pending.size();
     }
 
     std::optional<TimestampQueryTransaction> TimestampQueryTransaction::Begin(TimestampQueryPool& pool,

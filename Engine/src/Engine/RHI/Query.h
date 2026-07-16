@@ -5,6 +5,7 @@
 
 #include <deque>
 #include <functional>
+#include <mutex>
 #include <memory>
 #include <optional>
 #include <string>
@@ -112,7 +113,7 @@ namespace Engine::RHI
         bool Complete(const NativeQueryState& state, const CompletionToken& token, CompletionStatus status,
             const std::vector<u64>& values = {});
         bool Retire(const CompletionToken& token, CompletionStatus status);
-        size_t GetPendingRetirementCount() const { return m_Pending.size(); }
+        size_t GetPendingRetirementCount() const;
 
     private:
         friend class TimestampQueryTransaction;
@@ -136,6 +137,7 @@ namespace Engine::RHI
         void Publish(const std::shared_ptr<TimestampQueryPoolState>& pool, const NativeQueryState& state, const CompletionToken& token);
 
         u64 m_OwnerDeviceId = 0;
+        mutable std::mutex m_Mutex;
         std::vector<ReservedState> m_Reserved;
         std::deque<RetainedState> m_Pending;
     };

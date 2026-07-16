@@ -58,7 +58,7 @@ $RequiredMarkers = @(
     "Editor renderer capability diagnostics ready: profile=Phase 3 Vulkan Bootstrap Presentation V1, qualification=Bootstrap",
     "Renderer capability group: group=Phase3FrameTimingV1, profile=Phase 3 Frame Timing V1, preferredPath=GpuTimestamps, selectedPath=CpuSteadyClock, implemented=yes, exercised=no",
     "Renderer capability group: group=Phase3TransientResourcesV1, profile=Phase 3 Transient Resources V1, preferredPath=PlacedAliasedTransient, selectedPath=NonAliasedGpuRetiredPool, implemented=yes, exercised=no",
-    "Editor renderer capability group exercised: group=Phase3FrameTimingV1, profile=Phase 3 Frame Timing V1, preferredPath=GpuTimestamps, selectedPath=CpuSteadyClock, implemented=yes, exercised=yes, qualification=Presentation, deviceQualification=Bootstrap",
+    "Editor renderer capability group exercised: group=Phase3FrameTimingV1, profile=Phase 3 Frame Timing V1, preferredPath=GpuTimestamps",
     "Editor renderer capability group exercised: group=Phase3TransientResourcesV1, profile=Phase 3 Transient Resources V1, preferredPath=PlacedAliasedTransient, selectedPath=NonAliasedGpuRetiredPool, implemented=yes, exercised=yes, qualification=Presentation, deviceQualification=Bootstrap",
     "Renderer initialized with backend: NVRHI Vulkan",
     "FrameLifecycleTelemetryV1 backend=NVRHI Vulkan frame=",
@@ -87,6 +87,7 @@ $RequiredMarkers = @(
     "SceneViewportRenderGraphV1 backend=Vulkan passes=3 labels=clear,raster,output-handoff execution=pass reference=direct comparator=exact-byte-pass"
     "ProductionRenderGraphRetirementV1 backend=Vulkan"
     "RenderGraphTimestampScopesV1 backend=Vulkan"
+    "RendererGpuTimingV1 backend=NVRHI Vulkan"
 )
 
 $JoinedLog = $VulkanLog -join "`n"
@@ -105,6 +106,10 @@ if ($RetirementMatches.Count -lt 2) {
 $TimestampScopeMatches = [regex]::Matches($JoinedLog, 'RenderGraphTimestampScopesV1 backend=Vulkan frame=\d+ scopes=3 raw=ready cpuWaitBetween=no result=pass')
 if ($TimestampScopeMatches.Count -lt 2) {
     throw "Vulkan render smoke did not prove completion-gated raw timestamp scopes across consecutive frames."
+}
+$GpuTimingMatches = [regex]::Matches($JoinedLog, 'RendererGpuTimingV1 backend=NVRHI Vulkan frame=\d+ passes=3 wholeMs=[0-9]+(?:\.[0-9]+)? status=Ready capability=GpuTimestamps result=pass')
+if ($GpuTimingMatches.Count -lt 1) {
+    throw "Vulkan render smoke did not publish exact-frame GPU durations and promote the exercised capability path."
 }
 $InlineRecordingJoinedLog = $InlineRecordingLog -join "`n"
 if (($InlineRecordingJoinedLog -notmatch 'SceneRasterPreparationV1 mode=single-thread task=Frame.PrepareSceneRaster worker=caller') -or ($InlineRecordingJoinedLog -notmatch 'RenderGraphRecordingV1 backend=Vulkan mode=inline workerPasses=2 overlap=no submitted=3 result=pass') -or ($InlineRecordingJoinedLog -notmatch 'SceneViewportRenderGraphV1 backend=Vulkan passes=3 labels=clear,raster,output-handoff execution=pass reference=direct comparator=exact-byte-pass') -or ($InlineRecordingJoinedLog -notmatch 'ProductionRenderGraphRetirementV1 backend=Vulkan frame=\d+ passes=3 cpuWaitBetween=no pending=\d+ result=pass')) {

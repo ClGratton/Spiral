@@ -1978,16 +1978,19 @@ void EditorLayer::DrawProfilerPanel()
     if (m_RendererCapabilitySmokeRequested && !m_RendererCapabilitySmokeComplete)
         ImGui::SetNextWindowFocus();
     ImGui::Begin("Profiler");
-    const Engine::RendererFrameTiming& timing = Engine::Renderer::GetLastFrameTiming();
+    const Engine::RendererFrameTiming& timing = Engine::Renderer::GetLastCompletedFrameTiming();
 
     ImGui::Text("Frame: %u", m_FrameCounter);
     ImGui::Text("Last frame: %.3f ms", m_LastFrameMs);
     ImGui::Text("Workers: %u", Engine::JobSystem::Get().GetWorkerCount());
     ImGui::Separator();
     ImGui::Text("Renderer CPU: %.3f ms", timing.CpuMilliseconds);
+    ImGui::Text("Renderer timing frame: %llu", static_cast<unsigned long long>(timing.FrameIndex));
     ImGui::Text("GPU timestamps: %s", Engine::ToString(timing.GpuStatus));
     if (timing.GpuStatus == Engine::RendererTimingStatus::Pending)
-        ImGui::TextDisabled("Timestamp query API is present; backend resolve path is next.");
+        ImGui::TextDisabled("GPU timing for this exact frame has not retired yet.");
+    else if (timing.GpuStatus == Engine::RendererTimingStatus::Ready)
+        ImGui::Text("Renderer GPU: %.3f ms", timing.GpuMilliseconds);
 
     ImGui::Separator();
     ImGui::TextUnformatted("Frame pacing policy");

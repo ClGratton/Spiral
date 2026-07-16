@@ -189,6 +189,84 @@ namespace
             "frame lifecycle telemetry preserves phase order, no-delay intent, and truthful unavailable feedback states");
     }
 
+    bool TestRendererGpuTimingPublicationPreservesExactFrameAndStatuses()
+    {
+        using namespace Engine;
+        using namespace Engine::RHI;
+        const auto scope = [](u64 frame, std::string label, u64 submission,
+            QueryResultStatus status, u64 start, u64 end)
+        {
+            RenderGraph::RawTimestampScope value;
+            value.FrameIndex = frame;
+            value.PassLabel = std::move(label);
+            value.Token = { 41, submission };
+            value.EffectiveQueue = QueueType::Graphics;
+            value.Start = { status, start, 7 };
+            value.End = { status, end, 7 };
+            value.PeriodNanoseconds = 2.0;
+            return value;
+        };
+
+        std::vector<RenderGraph::RawTimestampScope> ready {
+            scope(19, "Clear", 1, QueryResultStatus::Ready, 100, 120),
+            scope(19, "Raster", 2, QueryResultStatus::Ready, 150, 350),
+            scope(19, "Output", 3, QueryResultStatus::Ready, 400, 450)
+        };
+        RendererGpuTimingPublication publication;
+        std::string error;
+        const bool converted = BuildRendererGpuTimingPublication(ready, publication, &error);
+        RendererFrameTiming retained;
+        retained.FrameIndex = 19;
+        retained.Passes.push_back({ "CPU frame", 1.0 });
+        const bool applied = converted && ApplyRendererGpuTimingPublication(retained, publication, &error);
+        RendererFrameTiming wrongFrame;
+        wrongFrame.FrameIndex = 20;
+        const bool mismatchRejected = !ApplyRendererGpuTimingPublication(wrongFrame, publication, &error);
+
+        std::vector<RenderGraph::RawTimestampScope> disjoint = ready;
+        disjoint[1].Start.Status = QueryResultStatus::Disjoint;
+        disjoint[1].End.Status = QueryResultStatus::Disjoint;
+        RendererGpuTimingPublication disjointPublication;
+        const bool disjointPreserved = BuildRendererGpuTimingPublication(disjoint, disjointPublication)
+            && disjointPublication.Status == RendererTimingStatus::Disjoint
+            && disjointPublication.Passes[1].GpuStatus == RendererTimingStatus::Disjoint;
+
+        std::vector<RenderGraph::RawTimestampScope> pending = ready;
+        pending[2].Start.Status = QueryResultStatus::Pending;
+        pending[2].End.Status = QueryResultStatus::Pending;
+        RendererGpuTimingPublication pendingPublication;
+        const bool pendingPreserved = BuildRendererGpuTimingPublication(pending, pendingPublication)
+            && pendingPublication.Status == RendererTimingStatus::Pending;
+
+        std::vector<RenderGraph::RawTimestampScope> unavailable = ready;
+        unavailable[0].Start.Status = QueryResultStatus::Unavailable;
+        unavailable[0].End.Status = QueryResultStatus::Unavailable;
+        RendererGpuTimingPublication unavailablePublication;
+        const bool unavailablePreserved = BuildRendererGpuTimingPublication(unavailable, unavailablePublication)
+            && unavailablePublication.Status == RendererTimingStatus::Unavailable;
+
+        std::vector<RenderGraph::RawTimestampScope> wrongQueue = ready;
+        wrongQueue[1].EffectiveQueue = QueueType::Compute;
+        RendererGpuTimingPublication rejected;
+        const bool crossClockRejected = !BuildRendererGpuTimingPublication(wrongQueue, rejected);
+        std::vector<RenderGraph::RawTimestampScope> wrongGeneration = ready;
+        wrongGeneration[1].End.Generation = 8;
+        const bool generationRejected = !BuildRendererGpuTimingPublication(wrongGeneration, rejected);
+
+        return Expect(applied && publication.FrameIndex == 19
+                && publication.Status == RendererTimingStatus::Ready
+                && publication.Passes.size() == 3
+                && std::abs(publication.Passes[1].GpuMilliseconds - 0.0004) < 0.0000001
+                && std::abs(publication.GpuMilliseconds - 0.0007) < 0.0000001
+                && retained.FrameIndex == 19 && retained.GpuStatus == RendererTimingStatus::Ready
+                && retained.Passes.size() == 4 && retained.Passes.back().Name == "Output",
+                "GPU timing converts named passes and the first-start-to-last-end interval without summing")
+            && Expect(mismatchRejected && crossClockRejected && generationRejected,
+                "GPU timing rejects mismatched retained frames, clocks, and generations")
+            && Expect(disjointPreserved && pendingPreserved && unavailablePreserved,
+                "GPU timing preserves explicit disjoint, pending, and unavailable states");
+    }
+
     bool TestFramePacingBenchmarkRetentionStatisticsAndStableExport()
     {
         Engine::FramePacingBenchmarkCapture capture(1000);
@@ -2918,6 +2996,56 @@ float4 main(VertexInput input) : SV_Position
                 "query preflight retains logical state, freezes recording, and isolates token publication failures");
     }
 
+    bool TestTimestampQueryRetirementQueueConcurrentReservations()
+    {
+        using namespace Engine;
+        using namespace Engine::RHI;
+        constexpr u64 deviceId = 9202;
+        constexpr size_t count = TimestampQueryRetirementQueue::kMaximumPendingRetirements;
+        TimestampQueryRetirementQueue retirements(deviceId);
+        QueryPoolDescription description { "concurrent-timestamp-reservation", QueryType::Timestamp, 2 };
+        std::vector<Scope<TimestampQueryPool>> pools;
+        std::vector<NativeQueryState> states;
+        std::vector<std::unique_ptr<TimestampQueryTransaction>> transactions(count);
+        pools.reserve(count);
+        states.reserve(count);
+        for (size_t index = 0; index < count; ++index)
+        {
+            pools.push_back(TimestampQueryPool::Create(deviceId, description));
+            states.push_back(std::make_shared<u64>(index));
+        }
+
+        std::atomic<size_t> ready = 0;
+        std::atomic<bool> start = false;
+        std::vector<std::thread> workers;
+        workers.reserve(count);
+        for (size_t index = 0; index < count; ++index)
+            workers.emplace_back([&, index]
+            {
+                ++ready;
+                while (!start.load(std::memory_order_acquire)) std::this_thread::yield();
+                auto transaction = pools[index]
+                    ? TimestampQueryTransaction::Begin(*pools[index], retirements, states[index]) : std::nullopt;
+                if (transaction)
+                    transactions[index] = std::make_unique<TimestampQueryTransaction>(std::move(*transaction));
+            });
+        while (ready.load(std::memory_order_acquire) != count) std::this_thread::yield();
+        start.store(true, std::memory_order_release);
+        for (std::thread& worker : workers) worker.join();
+
+        const bool allReserved = std::all_of(transactions.begin(), transactions.end(), [](const auto& transaction) { return transaction != nullptr; })
+            && std::all_of(states.begin(), states.end(), [&](const NativeQueryState& state) { return retirements.IsRetained(state); });
+        Scope<TimestampQueryPool> overflowPool = TimestampQueryPool::Create(deviceId, description);
+        NativeQueryState overflowState = std::make_shared<u64>(count);
+        const bool overflowRejected = overflowPool
+            && !TimestampQueryTransaction::Begin(*overflowPool, retirements, overflowState).has_value();
+        transactions.clear();
+        const bool released = std::none_of(states.begin(), states.end(), [&](const NativeQueryState& state) { return retirements.IsRetained(state); });
+
+        return Expect(allReserved && overflowRejected && released,
+            "concurrent per-pass timestamp reservations preserve the exact shared bound without racing device retirement state");
+    }
+
     class RenderGraphTestTexture final : public Engine::RHI::Texture
     {
     public:
@@ -4745,6 +4873,7 @@ int main()
         { "Frame pacing policy resolves overrides and validates targets", TestFramePacingPolicyResolutionAndValidation },
         { "Smooth Frametime pacer preserves deadlines overruns and mode switches", TestSmoothFrametimePacerDeadlinesAndModeSwitch },
         { "Frame lifecycle telemetry orders phases and retains unavailable feedback", TestFrameLifecycleTelemetryOrderAndUnavailableStates },
+        { "Renderer GPU timing preserves exact frame pass and status identity", TestRendererGpuTimingPublicationPreservesExactFrameAndStatuses },
         { "Frame pacing benchmark retains, aggregates, and exports stable capture artifacts", TestFramePacingBenchmarkRetentionStatisticsAndStableExport },
         { "Frame pacing attachment readiness and release preserve exact external identity", TestFramePacingAttachmentReadinessAndReleaseValidation },
         { "Slang compiler emits validated portable shader packages", TestSlangShaderCompilerProducesPortableValidatedPackages },
@@ -4769,6 +4898,7 @@ int main()
         { "RHI completion token contract rejects unissued identities", TestRhiCompletionTokenContract },
         { "RHI timestamp query lifecycle preserves generation-safe nonblocking results", TestTimestampQueryPoolLifecycleContract },
         { "RHI timestamp query transactions retain native state through exact-token retirement", TestTimestampQueryTransactionRetirementContract },
+        { "RHI timestamp query retirement serializes concurrent pass reservations", TestTimestampQueryRetirementQueueConcurrentReservations },
         { "RHI submission dependencies reject invalid token graphs", TestRhiSubmissionDependencyValidation },
         { "RHI queue topology submits dependencies without premature publication", TestRhiQueueTopologyDependencySubmissionContract },
         { "RHI resource-state query rejects null foreign and unknown resources", TestRhiResourceOwnershipContract },

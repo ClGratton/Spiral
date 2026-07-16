@@ -86,7 +86,7 @@ $RequiredMarkers = @(
     "Editor renderer capability diagnostics ready: profile=Phase 3 D3D12 Bootstrap V1, qualification=Bootstrap",
     "Renderer capability group: group=Phase3FrameTimingV1, profile=Phase 3 Frame Timing V1, preferredPath=GpuTimestamps, selectedPath=CpuSteadyClock, implemented=yes, exercised=no",
     "Renderer capability group: group=Phase3TransientResourcesV1, profile=Phase 3 Transient Resources V1, preferredPath=PlacedAliasedTransient, selectedPath=NonAliasedGpuRetiredPool, implemented=yes, exercised=no",
-    "Editor renderer capability group exercised: group=Phase3FrameTimingV1, profile=Phase 3 Frame Timing V1, preferredPath=GpuTimestamps, selectedPath=CpuSteadyClock, implemented=yes, exercised=yes, qualification=Presentation, deviceQualification=Bootstrap",
+    "Editor renderer capability group exercised: group=Phase3FrameTimingV1, profile=Phase 3 Frame Timing V1, preferredPath=GpuTimestamps",
     "Editor renderer capability group exercised: group=Phase3TransientResourcesV1, profile=Phase 3 Transient Resources V1, preferredPath=PlacedAliasedTransient, selectedPath=NonAliasedGpuRetiredPool, implemented=yes, exercised=yes, qualification=Presentation, deviceQualification=Bootstrap",
     "Renderer initialized with backend: NVRHI D3D12",
     "FrameLifecycleTelemetryV1 backend=NVRHI D3D12 frame=",
@@ -109,6 +109,7 @@ $RequiredMarkers = @(
     "SceneViewportRenderGraphV1 backend=D3D12 passes=3 labels=clear,raster,output-handoff execution=pass reference=direct comparator=exact-byte-pass"
     "ProductionRenderGraphRetirementV1 backend=D3D12"
     "RenderGraphTimestampScopesV1 backend=D3D12"
+    "RendererGpuTimingV1 backend=NVRHI D3D12"
 )
 $JoinedLog = $RenderLog -join "`n"
 foreach ($Marker in $RequiredMarkers) {
@@ -126,6 +127,10 @@ if ($RetirementMatches.Count -lt 2) {
 $TimestampScopeMatches = [regex]::Matches($JoinedLog, 'RenderGraphTimestampScopesV1 backend=D3D12 frame=\d+ scopes=3 raw=ready cpuWaitBetween=no result=pass')
 if ($TimestampScopeMatches.Count -lt 2) {
     throw "D3D12 render smoke did not prove completion-gated raw timestamp scopes across consecutive frames."
+}
+$GpuTimingMatches = [regex]::Matches($JoinedLog, 'RendererGpuTimingV1 backend=NVRHI D3D12 frame=\d+ passes=3 wholeMs=[0-9]+(?:\.[0-9]+)? status=Ready capability=GpuTimestamps result=pass')
+if ($GpuTimingMatches.Count -lt 2) {
+    throw "D3D12 render smoke did not publish exact-frame GPU durations and promote the exercised capability path."
 }
 $InlineRecordingJoinedLog = $InlineRecordingLog -join "`n"
 if (($InlineRecordingJoinedLog -notmatch 'SceneRasterPreparationV1 mode=single-thread task=Frame.PrepareSceneRaster worker=caller') -or ($InlineRecordingJoinedLog -notmatch 'RenderGraphRecordingV1 backend=D3D12 mode=inline workerPasses=2 overlap=no submitted=3 result=pass') -or ($InlineRecordingJoinedLog -notmatch 'SceneViewportRenderGraphV1 backend=D3D12 passes=3 labels=clear,raster,output-handoff execution=pass reference=direct comparator=exact-byte-pass') -or ($InlineRecordingJoinedLog -notmatch 'ProductionRenderGraphRetirementV1 backend=D3D12 frame=\d+ passes=3 cpuWaitBetween=no pending=\d+ result=pass')) {

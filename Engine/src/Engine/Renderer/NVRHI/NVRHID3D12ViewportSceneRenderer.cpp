@@ -217,6 +217,9 @@ namespace Engine
                 Log::Error("D3D12 Scene viewport RenderGraph retirement failed: ", retirement.Error);
                 return false;
             }
+            for (const SubmittedRenderGraphFrameOwner::RetiredFrame& frame : retirement.Retired)
+                if (!frame.TimestampScopes.empty() && !Renderer::PublishRenderGraphTimestampScopes(frame.TimestampScopes))
+                    return false;
             if (Application::Get().GetSpecification().CommandLineArgs.HasFlag("--scene-viewport-render-graph-smoke"))
                 for (const SubmittedRenderGraphFrameOwner::RetiredFrame& frame : retirement.Retired)
                     if (!frame.TimestampScopes.empty())

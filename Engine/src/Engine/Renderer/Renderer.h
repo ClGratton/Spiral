@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Engine/Core/Base.h"
+#include "Engine/RenderGraph/RenderGraph.h"
 #include "Engine/Renderer/FramePacingPolicy.h"
 #include "Engine/RHI/RHICommon.h"
 #include "Engine/Renderer/SceneRasterPreparation.h"
@@ -41,7 +42,8 @@ namespace Engine
     {
         Unavailable,
         Pending,
-        Ready
+        Ready,
+        Disjoint
     };
 
     struct RendererPassTiming
@@ -126,6 +128,20 @@ namespace Engine
         u64 LastGpuCompletionObservedFrameIndex = 0;
         std::vector<RendererPassTiming> Passes;
     };
+
+    struct RendererGpuTimingPublication
+    {
+        u64 FrameIndex = 0;
+        double GpuMilliseconds = 0.0;
+        RendererTimingStatus Status = RendererTimingStatus::Unavailable;
+        std::vector<RendererPassTiming> Passes;
+    };
+
+    bool BuildRendererGpuTimingPublication(
+        const std::vector<RenderGraph::RawTimestampScope>& scopes,
+        RendererGpuTimingPublication& publication, std::string* error = nullptr);
+    bool ApplyRendererGpuTimingPublication(RendererFrameTiming& timing,
+        const RendererGpuTimingPublication& publication, std::string* error = nullptr);
 
     struct FramePacingBenchmarkIdentity
     {
@@ -243,6 +259,9 @@ namespace Engine
         static const RHI::DeviceCapabilities* GetDeviceCapabilities();
         static const RendererBuildInfo& GetBuildInfo();
         static const RendererFrameTiming& GetLastFrameTiming();
+        static const RendererFrameTiming& GetLastCompletedFrameTiming();
+        static bool PublishRenderGraphTimestampScopes(
+            const std::vector<RenderGraph::RawTimestampScope>& scopes);
         static void SetFramePacingPolicy(const ResolvedFramePacingPolicy& policy);
         static ResolvedFramePacingPolicy GetFramePacingPolicy();
         static void RecordFrameLifecyclePhase(u64 applicationFrameIndex, RendererFrameLifecyclePhase phase);
@@ -270,6 +289,7 @@ namespace Engine
             case RendererTimingStatus::Unavailable: return "Unavailable";
             case RendererTimingStatus::Pending: return "Pending";
             case RendererTimingStatus::Ready: return "Ready";
+            case RendererTimingStatus::Disjoint: return "Disjoint";
         }
 
         return "Unknown";

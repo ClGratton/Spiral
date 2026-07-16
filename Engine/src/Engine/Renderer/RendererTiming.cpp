@@ -1,0 +1,104 @@
+#include "Engine/Renderer/Renderer.h"
+
+#include <cmath>
+#include <set>
+
+namespace Engine
+{
+    bool BuildRendererGpuTimingPublication(
+        const std::vector<RenderGraph::RawTimestampScope>& scopes,
+        RendererGpuTimingPublication& publication, std::string* error)
+    {
+        const auto fail = [&](std::string message)
+        {
+            publication = {};
+            if (error) *error = std::move(message);
+            return false;
+        };
+        publication = {};
+        if (scopes.empty()) return fail("GPU timing publication requires at least one scope.");
+
+        publication.FrameIndex = scopes.front().FrameIndex;
+        publication.Status = RendererTimingStatus::Ready;
+        publication.Passes.reserve(scopes.size());
+        const double period = scopes.front().PeriodNanoseconds;
+        if (!std::isfinite(period) || period <= 0.0)
+            return fail("GPU timing publication requires a positive finite timestamp period.");
+
+        std::set<std::string> labels;
+        for (const RenderGraph::RawTimestampScope& scope : scopes)
+        {
+            if (scope.FrameIndex != publication.FrameIndex || scope.PassLabel.empty()
+                || !labels.insert(scope.PassLabel).second || !scope.Token.IsValid()
+                || scope.EffectiveQueue != RHI::QueueType::Graphics
+                || scope.Start.Generation == 0 || scope.Start.Generation != scope.End.Generation
+                || !std::isfinite(scope.PeriodNanoseconds) || scope.PeriodNanoseconds != period)
+                return fail("GPU timing scopes do not share one exact frame, label set, generation, token, and Graphics clock.");
+
+            RendererPassTiming pass;
+            pass.Name = scope.PassLabel;
+            if (scope.Start.Status == RHI::QueryResultStatus::Ready
+                && scope.End.Status == RHI::QueryResultStatus::Ready)
+            {
+                if (scope.End.Value < scope.Start.Value)
+                    pass.GpuStatus = RendererTimingStatus::Disjoint;
+                else
+                {
+                    pass.GpuStatus = RendererTimingStatus::Ready;
+                    pass.GpuMilliseconds = static_cast<double>(scope.End.Value - scope.Start.Value)
+                        * period / 1'000'000.0;
+                }
+            }
+            else if (scope.Start.Status == RHI::QueryResultStatus::Disjoint
+                || scope.End.Status == RHI::QueryResultStatus::Disjoint)
+                pass.GpuStatus = RendererTimingStatus::Disjoint;
+            else if (scope.Start.Status == RHI::QueryResultStatus::Pending
+                || scope.End.Status == RHI::QueryResultStatus::Pending)
+                pass.GpuStatus = RendererTimingStatus::Pending;
+            else
+                pass.GpuStatus = RendererTimingStatus::Unavailable;
+
+            if (pass.GpuStatus == RendererTimingStatus::Disjoint)
+                publication.Status = RendererTimingStatus::Disjoint;
+            else if (publication.Status != RendererTimingStatus::Disjoint
+                && pass.GpuStatus == RendererTimingStatus::Pending)
+                publication.Status = RendererTimingStatus::Pending;
+            else if (publication.Status == RendererTimingStatus::Ready
+                && pass.GpuStatus == RendererTimingStatus::Unavailable)
+                publication.Status = RendererTimingStatus::Unavailable;
+            publication.Passes.emplace_back(std::move(pass));
+        }
+
+        if (publication.Status == RendererTimingStatus::Ready)
+        {
+            const RenderGraph::RawTimestampScope& first = scopes.front();
+            const RenderGraph::RawTimestampScope& last = scopes.back();
+            if (last.End.Value < first.Start.Value)
+                publication.Status = RendererTimingStatus::Disjoint;
+            else
+                publication.GpuMilliseconds = static_cast<double>(last.End.Value - first.Start.Value)
+                    * period / 1'000'000.0;
+        }
+        return true;
+    }
+
+    bool ApplyRendererGpuTimingPublication(RendererFrameTiming& timing,
+        const RendererGpuTimingPublication& publication, std::string* error)
+    {
+        if (timing.FrameIndex != publication.FrameIndex)
+        {
+            if (error) *error = "GPU timing publication frame identity does not match the retained renderer frame.";
+            return false;
+        }
+        if (publication.Passes.empty())
+        {
+            if (error) *error = "GPU timing publication has no named passes.";
+            return false;
+        }
+        timing.GpuStatus = publication.Status;
+        timing.GpuMilliseconds = publication.Status == RendererTimingStatus::Ready
+            ? publication.GpuMilliseconds : 0.0;
+        timing.Passes.insert(timing.Passes.end(), publication.Passes.begin(), publication.Passes.end());
+        return true;
+    }
+}

@@ -24,6 +24,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <deque>
 #include <stdexcept>
 
 namespace Engine
@@ -68,6 +69,8 @@ namespace Engine
         RenderViewportRect s_ViewportRect;
         RendererBuildInfo s_BuildInfo;
         RendererFrameTiming s_FrameTiming;
+        std::deque<RendererFrameTiming> s_CompletedFrameTimings;
+        constexpr size_t kCompletedFrameTimingCapacity = 8;
         ResolvedFramePacingPolicy s_FramePacingPolicy;
         SystemFramePacingClock s_FramePacingClock;
         SmoothFrametimePacer s_SmoothFrametimePacer;
@@ -236,6 +239,12 @@ namespace Engine
 
         void BeginTimingFrame(u64 applicationFrameIndex, const FramePacingWaitResult& preFramePacing)
         {
+            if (s_RendererFrameTimingActive)
+            {
+                s_CompletedFrameTimings.push_back(std::move(s_FrameTiming));
+                while (s_CompletedFrameTimings.size() > kCompletedFrameTimingCapacity)
+                    s_CompletedFrameTimings.pop_front();
+            }
             s_FrameTiming = {};
             s_FrameTiming.FrameIndex = applicationFrameIndex;
             s_FrameTiming.FramePacingPolicy = s_FramePacingPolicy;
@@ -381,6 +390,8 @@ namespace Engine
 
         s_DeviceCapabilities = {};
         s_PreviousRendererFrameStart.reset();
+        s_CompletedFrameTimings.clear();
+        s_RendererFrameTimingActive = false;
         s_SmoothFrametimePacer.Reset();
         s_HasDeviceCapabilities = false;
 
@@ -443,6 +454,8 @@ namespace Engine
         s_PreparedSceneRasterFrame.Store({});
         s_SceneRasterFrame.Store({});
         s_PreviousRendererFrameStart.reset();
+        s_CompletedFrameTimings.clear();
+        s_RendererFrameTimingActive = false;
         s_SmoothFrametimePacer.Reset();
         s_FramePacingBenchmark.reset();
         s_FramePacingBenchmarkQpcActive = false;
@@ -649,6 +662,70 @@ namespace Engine
     const RendererFrameTiming& Renderer::GetLastFrameTiming()
     {
         return s_FrameTiming;
+    }
+
+    const RendererFrameTiming& Renderer::GetLastCompletedFrameTiming()
+    {
+        return s_CompletedFrameTimings.empty() ? s_FrameTiming : s_CompletedFrameTimings.back();
+    }
+
+    bool Renderer::PublishRenderGraphTimestampScopes(
+        const std::vector<RenderGraph::RawTimestampScope>& scopes)
+    {
+        // Backend bootstrap/offscreen qualification can execute the same scene
+        // renderer before Application has opened an authoritative timing frame.
+        // P3A evidence remains valid there, but P3B must not invent frame state.
+        if (!s_RendererFrameTimingActive)
+            return true;
+
+        RendererGpuTimingPublication publication;
+        std::string error;
+        if (!BuildRendererGpuTimingPublication(scopes, publication, &error))
+        {
+            Log::Error("Renderer GPU timing conversion failed: ", error);
+            return false;
+        }
+
+        RendererFrameTiming* retained = nullptr;
+        if (s_FrameTiming.FrameIndex == publication.FrameIndex)
+            retained = &s_FrameTiming;
+        else
+            for (RendererFrameTiming& timing : s_CompletedFrameTimings)
+                if (timing.FrameIndex == publication.FrameIndex) { retained = &timing; break; }
+        if (!retained)
+        {
+            // Initialization smokes and a genuinely delayed GPU can retire a
+            // scope after its application timing record is no longer retained.
+            // Never attach that result to the current frame, but do not turn a
+            // diagnostic retention miss into a renderer failure either.
+            Log::Warn("RendererGpuTimingDropV1 backend=", GetActiveBackendName(),
+                " frame=", publication.FrameIndex,
+                " status=Unavailable reason=retained-frame-not-found result=ignored");
+            return true;
+        }
+        if (!ApplyRendererGpuTimingPublication(*retained, publication, &error))
+        {
+            Log::Error("Renderer GPU timing exact-frame publication failed: ", error);
+            return false;
+        }
+
+        RHI::CapabilityPath selectedPath = RHI::CapabilityPath::CpuSteadyClock;
+        if (publication.Status == RendererTimingStatus::Ready && s_HasDeviceCapabilities)
+        {
+            RHI::CapabilityGroupState promoted = BuildFrameTimingCapabilityGroup(s_DeviceCapabilities, true);
+            promoted.Exercised = true;
+            promoted.Qualification = retained->Presentation.PresentSucceeded
+                ? RHI::QualificationLevel::Presentation : RHI::QualificationLevel::Bootstrap;
+            if (RHI::CapabilityGroupState* group = s_DeviceCapabilities.GetCapabilityGroup(
+                    RHI::CapabilityGroupId::Phase3FrameTimingV1))
+                *group = std::move(promoted);
+            selectedPath = RHI::CapabilityPath::GpuTimestamps;
+        }
+        Log::Info("RendererGpuTimingV1 backend=", GetActiveBackendName(),
+            " frame=", publication.FrameIndex, " passes=", publication.Passes.size(),
+            " wholeMs=", publication.GpuMilliseconds, " status=", ToString(publication.Status),
+            " capability=", RHI::ToString(selectedPath), " result=pass");
+        return true;
     }
 
     void Renderer::SetFramePacingPolicy(const ResolvedFramePacingPolicy& policy)

@@ -479,8 +479,12 @@ namespace Engine
                 const RendererPresentationTiming& presentation = Renderer::GetLastFrameTiming().Presentation;
                 const bool requiresLifecycleObservation = m_Specification.CommandLineArgs.HasFlag("--frame-lifecycle-telemetry-smoke")
                     || m_Specification.CommandLineArgs.HasFlag("--smooth-frametime-candidate-smoke");
+                const bool requiresGraphGpuTiming = m_Specification.CommandLineArgs.HasFlag("--scene-viewport-render-graph-smoke");
+                const bool graphGpuTimingComplete = !requiresGraphGpuTiming
+                    || Renderer::GetLastCompletedFrameTiming().GpuStatus == RendererTimingStatus::Ready;
                 if (Renderer::GetActiveBackend() == RendererBackend::NVRHIVulkan
                     && (!requiresLifecycleObservation || m_FrameLifecycleTelemetrySmokeComplete)
+                    && graphGpuTimingComplete
                     && presentation.SwapchainGeneration >= 2
                     && presentation.LastSuccessfulPresentGeneration == presentation.SwapchainGeneration)
                 {
