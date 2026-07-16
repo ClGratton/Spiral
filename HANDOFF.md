@@ -108,6 +108,7 @@ Latest accepted slice:
 - `5399996` - explicit shared frame-lifecycle telemetry/policy-handoff prerequisite scheduled before native pacing candidates.
 - `4154d09` - authoritative application-frame trace through input, native submission, Present, and generation-safe GPU-completion observation with mandatory-wait classification and truthful unavailable display/replacement states.
 - `8bb678e` - experimental InterFrame and SubmissionGate pacing candidates, released-FrameStart/active-work telemetry, top-bar serialized settings, Profiler runtime experiments, and removal of the duplicate Project Settings panel.
+- `6a06f53` - bounded immutable frame-pacing benchmark history, strict schema-1 CSV/JSON lifecycle/wait/completion export, deterministic distributions and low metrics, runner-supplied condition state, twelve-condition local D3D12/Vulkan capture verification, and bounded-process output-drain repair.
 
 `PLAN.md` is checked through experimental presentation-pacing candidate implementation and native control-point qualification. Production selection remains unchecked.
 
@@ -177,4 +178,4 @@ The GPU-timing roadmap prerequisite is now explicitly backend-neutral and gates 
 
 ## Working State
 
-GPU-timing planning commit `df6590c` is on `main` and `origin/main`; benchmark scheduling commit `d6f2456` is local. The working tree contains the accepted benchmark-capture implementation and documentation, ready for a scoped commit. Generated captures and focused logs remain under ignored `output/`.
+GPU-timing planning commit `df6590c` is on `origin/main`. Benchmark scheduling commit `d6f2456` and accepted implementation commit `6a06f53` are on local `main`, ready to push as one batch. The working tree is clean except for this handoff refresh. Generated captures and focused logs remain under ignored `output/`.
