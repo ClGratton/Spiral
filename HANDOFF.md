@@ -4,7 +4,7 @@ Updated 2026-07-16. This is a recovery aid; `PLAN.md` remains the sole roadmap a
 
 ## Objective And Stop Condition
 
-Phase 3C expected-before RHI transitions, P2 worker-safe recording, the parent multithreaded preparation/recording integration, the project-owned frame-pacing policy/runtime override, shared frame-lifecycle telemetry, both experimental Smooth Frametime control points, bounded benchmark capture, and the external-collector attachment/QPC identity boundary are implemented and locally accepted. The user authorized continued ordered work down to a hard 25%-remaining weekly floor. The latest reliable meter reports 70% used / 30% remaining. Official portable PresentMon now produces exact-PID QPC CSV; the first unchecked work is the smaller deterministic parser/join prerequisite, which must finish before live collector supervision.
+Phase 3C expected-before RHI transitions, P2 worker-safe recording, the parent multithreaded preparation/recording integration, the project-owned frame-pacing policy/runtime override, shared frame-lifecycle telemetry, both experimental Smooth Frametime control points, bounded benchmark capture, external-collector attachment/QPC identity, and deterministic PresentMon raw-stream correlation are implemented and locally accepted. The user authorized continued ordered work down to a hard 25%-remaining weekly floor. The latest reliable meter reports 72% used / 28% remaining. Live PresentMon supervision is first unchecked and is a medium process-lifetime/native-measurement slice that must not start inside the remaining three-point floor margin.
 
 ## Token-Efficiency Baseline And Required Next-Session Audit (2026-07-15)
 
@@ -92,6 +92,8 @@ This is useful fail-closed evidence. It corrected the initial launch ordering be
 
 The same owner then implemented and accepted that attachment prerequisite in one continued session plus one consolidated root correction. Reliable weekly use moved from 60% to 67%; the full session from feasibility through implementation recorded 96.61% cached-input share with median/max input contexts 116,687/225,929. The correction was required to preserve the default performance contract and process-lifetime evidence: the first patch sampled QPC on every normal frame, retried the absent attachment option every frame, and stopped only the root editor PID. The accepted code samples QPC only after an identity-complete released attachment benchmark begins, resolves the absent option once, and captures/cleans/verifies the full owned process tree. This session crossed the 100k checkpoint, but it retained one hot exact-Terra owner and one correction rather than a cold replacement.
 
+Fresh exact `terra_medium` session `019f6b9a-ca94-7831-8389-d04fdf0dd601` resolved the collector blocker and implemented the bounded parser slice. Reliable weekly use moved from 69% to 72%. It downloaded no installed dependency: official portable Intel/GameTechDev PresentMon `1.10.0` stayed under ignored output, produced 528 exact-PID rows, and the script-only helper then joined 512 retained presents with 16 warm-up rows. One root acceptance correction made exact headers case-sensitive and prohibited the report path from aliasing/overwriting either raw input. The owner stayed scoped to diagnostic plus parser work; no build, engine edit, live supervisor, or production-selection work was mixed into the slice.
+
 ## Completed Roadmap Work
 
 The following commits are on `main` and `origin/main`:
@@ -178,14 +180,16 @@ Exact-head CI run `29430304670` passed real Windows D3D12, Ubuntu Vulkan/lavapip
 
 ## Next Ordered Work
 
-The first unchecked `PLAN.md` item is:
+The deterministic raw-stream parser/report prerequisite is now implemented locally at base head `ac852c9` (uncommitted in this handoff): `Scripts/JoinPresentMonCorrelation.ps1` requires the exact observed official 1.10.0 header order, exact PID/QPC identity, stable input hashes, one `PresentBegin` per retained engine frame, monotonic QPC, interval/final-tolerance one-to-one pairing, and writes an atomic schema-1 report without changing raw streams. `Scripts/TestPresentMonCorrelation.ps1` passes synthetic success plus wrong PID, header, missing-row, duplicate/reordered QPC, missing/ambiguous interval, and noncausal-final failures. The saved ignored D3D12 capture passes with 512 pairs, 16 warm-up rows, zero trailing rows, and positive 118-1323-QPC-tick deltas.
 
-> Phase 3 PresentMon correlation prerequisite — deterministic raw-stream parser and join report.
+The first remaining unchecked `PLAN.md` item is:
 
-The official portable Intel/GameTechDev PresentMon `1.10.0` console asset was downloaded only under ignored `output/tools/presentmon-diagnostic/`; local SHA-256 is `e57a2f8ee1de1ef1a5516d875f1b115e881943cd729fe9c5a2f88b1dc79a8a3b`. It is official GitHub provenance but not Authenticode-signed and the release publishes no checksum, so it is diagnostic evidence rather than an admitted dependency. A bounded non-elevated exact-PID D3D12 run produced 528 CSV rows with the required present/display fields, 16 warm-up rows, and 512 causal rows for 512 retained engine presents. The next slice implements only the fail-closed parser/report against separate raw files. Live collector supervision remains the following unchecked item.
+> Phase 3 production-pacing measurement prerequisite — Windows PresentMon correlation.
+
+The official portable Intel/GameTechDev PresentMon `1.10.0` console asset was downloaded only under ignored `output/tools/presentmon-diagnostic/`; local SHA-256 is `e57a2f8ee1de1ef1a5516d875f1b115e881943cd729fe9c5a2f88b1dc79a8a3b`. It is official GitHub provenance but not Authenticode-signed and the release publishes no checksum, so it is diagnostic evidence rather than an admitted dependency. A bounded non-elevated exact-PID D3D12 run produced 528 CSV rows with the required present/display fields; the implemented parser retained 16 warm-up rows separately and joined the remaining 512 rows to the 512 retained engine presents. The next slice adds bounded live collector supervision around this existing parser/report; it must preserve its raw-stream separation and fail-closed behavior.
 
 The GPU-timing roadmap prerequisite is now explicitly backend-neutral and gates Phase 3E: D3D12 query heaps, Vulkan query pools, non-stalling resolve/readback, frame/pass identity, RenderGraph scopes, Profiler `GpuMilliseconds`, and native qualification must exist before Forward+/clustered lighting, PBR, lights, shadows, or sky/atmosphere begins. CPU steady-clock timing remains a fallback but cannot qualify GPU-cost claims.
 
 ## Working State
 
-Head `56ce19f` is on local `main`; `81b1598` is on `origin/main`. Exact-head CI run `29510382649` and dependency submission `29510382467` for `81b1598` were queued at the one allowed initial check and are deliberately detached because local evidence accepts the benchmark slice. The working tree is clean except for this handoff refresh. Generated captures, diagnostic probes, and focused logs remain under ignored `output/`.
+Head `ac852c9` is on local `main`; `d44b5c1` is on `origin/main`. The working tree contains only the accepted parser/report implementation and its documentation, ready for a scoped commit. Generated captures, the portable diagnostic tool, raw streams, reports, and focused logs remain under ignored `output/`.
