@@ -40,7 +40,7 @@ param(
     [string]$TestCollectorScriptPath = "",
     [ValidateSet("success", "stale-readiness", "failure", "timeout", "linger-after-release")]
     [string]$TestEditorBehavior = "success",
-    [ValidateSet("success", "linger-after-capture", "bad-header", "failure-before-ready", "exit-during-settle", "timeout")]
+    [ValidateSet("success", "linger-holding-csv", "bad-header", "failure-before-ready", "exit-during-settle", "timeout")]
     [string]$TestCollectorBehavior = "success",
     [ValidateRange(10, 1500)]
     [int]$TestCollectorSettleMilliseconds = 50,
@@ -241,7 +241,12 @@ function Stop-OwnedProcessTree($State) {
         if ($State.JobClosed) { $State.JobHandle = [IntPtr]::Zero }
     }
     try { $State.Process.WaitForExit(10000) | Out-Null } catch {}
-    return @($State.OwnedProcessIds | Where-Object { Get-Process -Id $_ -ErrorAction SilentlyContinue })
+    $cleanupWatch = [Diagnostics.Stopwatch]::StartNew()
+    do {
+        $survivors = @($State.OwnedProcessIds | Where-Object { Get-Process -Id $_ -ErrorAction SilentlyContinue })
+        if ($survivors.Count -eq 0 -or $cleanupWatch.Elapsed.TotalSeconds -ge 10) { return $survivors }
+        Start-Sleep -Milliseconds 25
+    } while ($true)
 }
 
 function Close-ProcessState($State) {
@@ -478,6 +483,36 @@ try {
     Pump-ProcessOutput $editorState -Drain; Pump-ProcessOutput $collectorState
     if ($editorState.Process.ExitCode -ne 0) { throw "Editor failed with exit code $($editorState.Process.ExitCode)" }
 
+    # Editor exit only triggers PresentMon's -terminate_on_proc_exit path. It does not prove that
+    # PresentMon has flushed and relinquished its CSV or exact ETW session. Finalize the owned
+    # collector before treating either raw input as immutable.
+    while (!$collectorState.Process.HasExited) {
+        Pump-ProcessOutput $collectorState
+        Capture-ProcessTree $collectorState
+        if ($collectorState.Stopwatch.Elapsed.TotalSeconds -ge $PresentMonTimeoutSeconds) {
+            $collectorTimedOut = $true
+            throw "PresentMon finalization timed out after $PresentMonTimeoutSeconds seconds"
+        }
+        Start-Sleep -Milliseconds 25
+    }
+    $collectorState.Process.WaitForExit()
+    Pump-ProcessOutput $collectorState -Drain
+    if ($collectorState.Process.ExitCode -ne 0) { throw "PresentMon failed with exit code $($collectorState.Process.ExitCode)" }
+    do {
+        Capture-ProcessTree $collectorState
+        $collectorSurvivors = @($collectorState.OwnedProcessIds | Where-Object { Get-Process -Id $_ -ErrorAction SilentlyContinue })
+        $exactSessionAlive = !$TestMode -and (Test-ExactEtwSession $sessionName)
+        if ($collectorSurvivors.Count -eq 0 -and !$exactSessionAlive) { break }
+        if ($collectorState.Stopwatch.Elapsed.TotalSeconds -ge $PresentMonTimeoutSeconds) {
+            $collectorTimedOut = $true
+            if ($collectorSurvivors.Count -ne 0) {
+                throw "PresentMon collector descendants survived finalization timeout: PIDs=$($collectorSurvivors -join ',')"
+            }
+            throw "PresentMon exact ETW session survived finalization timeout"
+        }
+        Start-Sleep -Milliseconds 25
+    } while ($true)
+
     $engineJson = Join-Path $engineDirectory "frame-pacing-benchmark.json"
     $engineHash = Wait-StableFile $engineJson "Engine raw JSON"
     $presentMonHash = Wait-StableFile $presentMonCsv "PresentMon raw CSV"
@@ -496,13 +531,6 @@ try {
     if ($report.rawInputs.engineJsonSha256 -cne $engineHash -or $report.rawInputs.presentMonCsvSha256 -cne $presentMonHash -or
         $report.counts.pairedRows -ne $expectedFrameCount) { throw "Correlation report did not retain the stable raw inputs and one-to-one count" }
     $joined = $true
-    if (!$collectorState.Process.HasExited) {
-        $presentMonTerminationMode = "owned-job-after-complete-capture"
-        $cleanup.presentMonSurvivors = @(Stop-OwnedProcessTree $collectorState)
-        if ($cleanup.presentMonSurvivors.Count -ne 0) { throw "Owned PresentMon process tree did not terminate after complete capture" }
-    } elseif ($collectorState.Process.ExitCode -ne 0) {
-        throw "PresentMon failed with exit code $($collectorState.Process.ExitCode)"
-    }
     $postCleanupPresentMonHash = (Get-FileHash -LiteralPath $presentMonCsv -Algorithm SHA256).Hash.ToLowerInvariant()
     if ($postCleanupPresentMonHash -cne $presentMonHash) { throw "PresentMon raw CSV changed after owned collector cleanup" }
     $success = $true

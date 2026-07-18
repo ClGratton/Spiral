@@ -81,12 +81,12 @@ try {
         if ($receipt.process.cleanup.verified -or $receipt.process.cleanup.exactSessionCleanup -notlike "$(if ($behavior -eq 'survives') { 'survived' } else { 'failed:*' })") { throw "Exact session teardown $behavior did not fail closed" }
     }
 
-    $lingerOutput = Invoke-Supervisor "linger-after-capture" @{ TestCollectorBehavior = "linger-after-capture" }
-    $linger = Get-Content -LiteralPath (Join-Path $lingerOutput "capture-receipt.json") -Raw | ConvertFrom-Json
-    if (!$linger.success -or !$linger.process.joined -or !$linger.process.cleanup.verified -or
-        $linger.process.presentMonTerminationMode -ne "owned-job-after-complete-capture" -or $null -ne $linger.process.presentMonExitCode -or
-        $linger.hashes.presentMonCsvSha256 -ne $linger.hashes.presentMonCsvSha256AfterCleanup) {
-        throw "Lingering collector was not joined, owned-job terminated, and rehashed after complete capture"
+    $lingerOutput = Join-Path $Temporary "linger-holding-csv"
+    Assert-Fails { Invoke-Supervisor "linger-holding-csv" @{ TestCollectorBehavior = "linger-holding-csv"; PresentMonTimeoutSeconds = 2 } } "finalization timed out"
+    $linger = Assert-FailureReceipt $lingerOutput "finalization timed out"
+    if (!$linger.process.presentMonTimedOut -or $null -ne $linger.hashes.presentMonCsvSha256 -or
+        $null -ne $linger.hashes.presentMonCsvSha256AfterCleanup -or $null -ne $linger.hashes.reportSha256) {
+        throw "CSV-holding collector did not fail before raw acceptance and preserve timeout/null-hash evidence"
     }
 
     Assert-Fails {
@@ -132,8 +132,11 @@ try {
     [void](Assert-FailureReceipt $editorFailureOutput "Editor failed with exit code 7")
 
     $missingRawOutput = Join-Path $Temporary "collector-missing-raw-after-editor"
-    Assert-Fails { Invoke-Supervisor "collector-missing-raw-after-editor" @{ TestCollectorBehavior = "timeout"; PresentMonTimeoutSeconds = 2 } } "PresentMon raw CSV was not produced"
-    [void](Assert-FailureReceipt $missingRawOutput "PresentMon raw CSV was not produced")
+    Assert-Fails { Invoke-Supervisor "collector-missing-raw-after-editor" @{ TestCollectorBehavior = "timeout"; PresentMonTimeoutSeconds = 2 } } "finalization timed out"
+    $missingRaw = Assert-FailureReceipt $missingRawOutput "finalization timed out"
+    if (!$missingRaw.process.presentMonTimedOut -or $null -ne $missingRaw.hashes.presentMonCsvSha256 -or $null -ne $missingRaw.hashes.reportSha256) {
+        throw "Non-finalizing collector without raw output did not fail before hash/join acceptance"
+    }
 
     $timeoutOutput = Join-Path $Temporary "collector-timeout"
     Assert-Fails { Invoke-Supervisor "collector-timeout" @{ TestEditorBehavior = "linger-after-release"; TestCollectorBehavior = "timeout"; PresentMonTimeoutSeconds = 2 } } "PresentMon timed out"
@@ -144,7 +147,7 @@ try {
         throw "Collector timeout did not terminate and verify its fake child process tree"
     }
 
-    Write-Host "PresentMon supervisor deterministic tests passed: readiness-plus-settle ordering, production argument contract, collision/stale, version/header, missing-raw, child failure/timeout, no-join failure, exact-session teardown, and process-tree cleanup."
+    Write-Host "PresentMon supervisor deterministic tests passed: readiness-plus-settle ordering, natural collector finalization before raw acceptance, exclusive-CSV timeout, production argument contract, collision/stale, version/header, missing-raw, child failure/timeout, no-join failure, exact-session teardown, and process-tree cleanup."
 } finally {
     Remove-Item -LiteralPath $Temporary -Recurse -Force -ErrorAction SilentlyContinue
 }

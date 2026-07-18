@@ -4,7 +4,7 @@ param(
     [Parameter(Mandatory = $true)][string]$ReleasePath,
     [Parameter(Mandatory = $true)][int]$EditorPid,
     [Parameter(Mandatory = $true)][string]$SessionName,
-    [ValidateSet("success", "linger-after-capture", "bad-header", "failure-before-ready", "exit-during-settle", "timeout")][string]$Behavior
+    [ValidateSet("success", "linger-holding-csv", "bad-header", "failure-before-ready", "exit-during-settle", "timeout")][string]$Behavior
 )
 
 $ErrorActionPreference = "Stop"
@@ -36,6 +36,10 @@ foreach ($offset in @(9000, 10100, 20100, 30100, 40000)) {
 [IO.Directory]::CreateDirectory((Split-Path -Parent $CsvPath)) | Out-Null
 [IO.File]::WriteAllLines($CsvPath, $lines, [Text.UTF8Encoding]::new($false))
 while (Get-Process -Id $EditorPid -ErrorAction SilentlyContinue) { Start-Sleep -Milliseconds 10 }
-if ($Behavior -eq "linger-after-capture") { while ($true) { Start-Sleep -Seconds 1 } }
+if ($Behavior -eq "linger-holding-csv") {
+    $exclusiveCsv = [IO.File]::Open($CsvPath, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+    try { while ($true) { Start-Sleep -Seconds 1 } }
+    finally { $exclusiveCsv.Dispose() }
+}
 Start-Sleep -Milliseconds 100
 Write-Output "FakePresentMon state=complete session=$SessionName"
