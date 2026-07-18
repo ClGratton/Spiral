@@ -15,7 +15,7 @@ namespace Engine
         Log::Info("Destroyed headless window: ", m_Specification.Title);
     }
 
-    void HeadlessWindow::OnUpdate()
+    void HeadlessWindow::PollEvents()
     {
     }
 }

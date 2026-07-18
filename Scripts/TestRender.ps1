@@ -130,6 +130,9 @@ foreach ($Marker in $RequiredMarkers) {
         throw "D3D12 render smoke did not emit required marker: $Marker"
     }
 }
+if ($JoinedLog -notmatch 'FrameLifecycleTelemetryV1 backend=NVRHI D3D12 frame=\d+ phases=frame-start,input-sample,input-simulation,render-submission,present-begin,present-end .*mandatoryWaits=dxgi-latency') {
+    throw "D3D12 render smoke did not prove the ordered input-sample lifecycle boundary while retaining the mandatory DXGI wait."
+}
 if ($JoinedLog -notmatch 'RenderGraphRecordingV1 backend=D3D12 mode=worker workerPasses=2 overlap=(yes|no) submitted=3 result=pass') {
     throw "D3D12 render smoke did not prove the parallel RenderGraph recording marker."
 }

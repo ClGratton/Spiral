@@ -12,7 +12,7 @@ namespace Engine
         explicit GLFWWindow(WindowSpecification specification);
         ~GLFWWindow() override;
 
-        void OnUpdate() override;
+        void PollEvents() override;
         u32 GetWidth() const override { return m_Data.Width; }
         u32 GetHeight() const override { return m_Data.Height; }
         const std::string& GetTitle() const override { return m_Data.Title; }

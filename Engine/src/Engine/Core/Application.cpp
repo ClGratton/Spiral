@@ -38,6 +38,7 @@ namespace Engine
         {
             u64 FrameIndex = 0;
             Timestep Delta;
+            RendererInputSample InputSample;
         };
 
         std::string DescribeFrameTaskFailure(const FrameTaskGraphResult& result)
@@ -338,6 +339,10 @@ namespace Engine
             if (!m_Minimized)
             {
                 Renderer::BeginFrame(m_FrameIndex, preFramePacing);
+                m_Window->PollEvents();
+                const std::optional<RendererInputSample> inputSample = Renderer::RecordInputSample(m_FrameIndex);
+                if (!inputSample)
+                    throw std::logic_error("input sample did not preserve the active frame lifecycle invariant");
 
                 FramePublication<ApplicationFrameInput> frameInput;
                 FrameTaskGraph frameTasks;
@@ -345,7 +350,7 @@ namespace Engine
                 FrameTaskDescription publishInput;
                 publishInput.Name = "Frame.PublishInput";
                 publishInput.Lane = FrameTaskLane::CallingThread;
-                publishInput.Execute = [&]() { frameInput.Stage({ m_FrameIndex, timestep }); };
+                publishInput.Execute = [&]() { frameInput.Stage({ m_FrameIndex, timestep, *inputSample }); };
                 publishInput.Publication = frameInput.GetState();
                 const FrameTaskId publishInputTask = frameTasks.AddTask(std::move(publishInput));
 
@@ -446,6 +451,12 @@ namespace Engine
 
                 Renderer::EndFrame();
             }
+            else
+            {
+                // A minimized window has no active renderer timing frame, but it
+                // must still dispatch resize and close callbacks.
+                m_Window->PollEvents();
+            }
 
             if (m_ImGuiLayer && !m_Minimized)
                 m_ImGuiLayer->Begin();
@@ -455,8 +466,6 @@ namespace Engine
 
             if (m_ImGuiLayer && !m_Minimized)
                 m_ImGuiLayer->End();
-
-            m_Window->OnUpdate();
 
             if (const RendererFrameTiming& timing = Renderer::GetLastFrameTiming();
                 (m_Specification.CommandLineArgs.HasFlag("--frame-lifecycle-telemetry-smoke")
@@ -483,7 +492,7 @@ namespace Engine
                     throw std::runtime_error("Smooth Frametime candidate smoke did not observe a nonzero intentional wait");
                 Log::Info(pacingSmoke ? "SmoothFrametimeCandidateSmokeV1 backend=" : "FrameLifecycleTelemetryV1 backend=", Renderer::GetActiveBackendName(),
                     " frame=", timing.FrameIndex,
-                    " phases=frame-start,input-simulation,render-submission,present-begin,present-end",
+                    " phases=frame-start,input-sample,input-simulation,render-submission,present-begin,present-end",
                     " candidate=", ToString(timing.FramePacingPolicy.Candidate),
                     " intentionalWait=", pacingSmoke ? std::to_string(timing.IntentionalPacingMilliseconds) : "not-applied:0",
                     " startToStartMs=", timing.StartToStartMilliseconds,

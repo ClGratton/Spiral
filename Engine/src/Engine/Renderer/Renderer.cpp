@@ -778,9 +778,25 @@ namespace Engine
         return s_FramePacingPolicy;
     }
 
+    std::optional<RendererInputSample> Renderer::RecordInputSample(u64 applicationFrameIndex)
+    {
+        if (!s_RendererFrameTimingActive || s_FrameTiming.FrameIndex != applicationFrameIndex)
+            return std::nullopt;
+
+        const Clock::time_point sampleTime = Clock::now();
+        const RendererInputSample sample {
+            applicationFrameIndex,
+            ToMilliseconds(sampleTime - s_RendererFrameStart),
+            CurrentQpcTick()
+        };
+        if (!ApplyRendererInputSample(s_FrameTiming, sample))
+            return std::nullopt;
+        return sample;
+    }
+
     void Renderer::RecordFrameLifecyclePhase(u64 applicationFrameIndex, RendererFrameLifecyclePhase phase)
     {
-        if (s_FrameTiming.FrameIndex != applicationFrameIndex)
+        if (phase == RendererFrameLifecyclePhase::InputSample || s_FrameTiming.FrameIndex != applicationFrameIndex)
             return;
         AddLifecyclePhase(phase);
     }

@@ -92,6 +92,7 @@ namespace Engine
     enum class RendererFrameLifecyclePhase
     {
         FrameStart,
+        InputSample,
         InputSimulation,
         RenderSubmission,
         PresentBegin,
@@ -114,6 +115,13 @@ namespace Engine
         double MillisecondsFromFrameStart = 0.0;
         // Windows external collectors use this explicit QPC tick domain. Zero
         // remains truthful on platforms where the benchmark has no QPC source.
+        u64 QpcTick = 0;
+    };
+
+    struct RendererInputSample
+    {
+        u64 FrameIndex = 0;
+        double MillisecondsFromFrameStart = 0.0;
         u64 QpcTick = 0;
     };
 
@@ -145,6 +153,7 @@ namespace Engine
         RendererPresentationTiming Presentation;
         RendererEffectiveLimitingSource EffectiveLimitingSource = RendererEffectiveLimitingSource::Unresolved;
         ResolvedFramePacingPolicy FramePacingPolicy;
+        std::optional<RendererInputSample> InputSample;
         std::vector<RendererFrameLifecycleEvent> Lifecycle;
         std::vector<RendererFrameWaitTiming> Waits;
         bool HasGpuCompletionObservation = false;
@@ -165,6 +174,8 @@ namespace Engine
         RendererGpuTimingPublication& publication, std::string* error = nullptr);
     bool ApplyRendererGpuTimingPublication(RendererFrameTiming& timing,
         const RendererGpuTimingPublication& publication, std::string* error = nullptr);
+    bool ApplyRendererInputSample(RendererFrameTiming& timing,
+        const RendererInputSample& sample, std::string* error = nullptr);
 
     struct FramePacingBenchmarkIdentity
     {
@@ -178,6 +189,7 @@ namespace Engine
     {
         constexpr RendererFrameLifecyclePhase required[] = {
             RendererFrameLifecyclePhase::FrameStart,
+            RendererFrameLifecyclePhase::InputSample,
             RendererFrameLifecyclePhase::InputSimulation,
             RendererFrameLifecyclePhase::RenderSubmission,
             RendererFrameLifecyclePhase::PresentBegin,
@@ -199,6 +211,10 @@ namespace Engine
             vulkanFence |= wait.Kind == RendererFrameWaitKind::MandatoryVulkanFence && wait.Applied;
         }
         return requiredIndex == std::size(required)
+            && timing.InputSample
+            && timing.InputSample->FrameIndex == timing.FrameIndex
+            && std::isfinite(timing.InputSample->MillisecondsFromFrameStart)
+            && timing.InputSample->MillisecondsFromFrameStart >= 0.0
             && !timing.Waits.empty()
             && timing.Waits.front().Kind == RendererFrameWaitKind::IntentionalPacing
             && !timing.Waits.front().Applied
@@ -348,6 +364,7 @@ namespace Engine
             const std::vector<RenderGraph::RawTimestampScope>& scopes);
         static void SetFramePacingPolicy(const ResolvedFramePacingPolicy& policy);
         static ResolvedFramePacingPolicy GetFramePacingPolicy();
+        static std::optional<RendererInputSample> RecordInputSample(u64 applicationFrameIndex);
         static void RecordFrameLifecyclePhase(u64 applicationFrameIndex, RendererFrameLifecyclePhase phase);
         static void RecordFrameWait(u64 applicationFrameIndex, RendererFrameWaitKind kind, bool applied, double milliseconds);
         static FramePacingWaitResult ApplySmoothFrametimeCandidate(SmoothFrametimeCandidate candidate);

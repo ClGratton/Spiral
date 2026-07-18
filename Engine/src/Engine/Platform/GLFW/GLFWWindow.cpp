@@ -213,7 +213,7 @@ namespace Engine
         Log::Info("Destroyed GLFW window: ", m_Data.Title);
     }
 
-    void GLFWWindow::OnUpdate()
+    void GLFWWindow::PollEvents()
     {
         glfwPollEvents();
     }

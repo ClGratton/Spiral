@@ -101,4 +101,44 @@ namespace Engine
         timing.Passes.insert(timing.Passes.end(), publication.Passes.begin(), publication.Passes.end());
         return true;
     }
+
+    bool ApplyRendererInputSample(RendererFrameTiming& timing,
+        const RendererInputSample& sample, std::string* error)
+    {
+        const auto fail = [error](const char* message)
+        {
+            if (error)
+                *error = message;
+            return false;
+        };
+
+        if (sample.FrameIndex != timing.FrameIndex)
+            return fail("input sample frame does not match timing frame");
+        if (!std::isfinite(sample.MillisecondsFromFrameStart) || sample.MillisecondsFromFrameStart < 0.0)
+            return fail("input sample offset is not finite and nonnegative");
+        if (timing.InputSample)
+            return fail("timing frame already has an input sample");
+
+        bool hasFrameStart = false;
+        for (const RendererFrameLifecycleEvent& event : timing.Lifecycle)
+        {
+            if (!std::isfinite(event.MillisecondsFromFrameStart) || event.MillisecondsFromFrameStart < 0.0)
+                return fail("timing lifecycle contains an invalid offset");
+            if (event.Phase == RendererFrameLifecyclePhase::FrameStart)
+                hasFrameStart = true;
+            if (event.Phase == RendererFrameLifecyclePhase::InputSample)
+                return fail("timing lifecycle already contains an input sample");
+            if (event.Phase == RendererFrameLifecyclePhase::InputSimulation)
+                return fail("input simulation was recorded before the input sample");
+            if (sample.MillisecondsFromFrameStart < event.MillisecondsFromFrameStart)
+                return fail("input sample precedes an existing lifecycle event");
+        }
+        if (!hasFrameStart)
+            return fail("input sample requires a frame-start lifecycle event");
+
+        timing.Lifecycle.push_back({ RendererFrameLifecyclePhase::InputSample,
+            sample.MillisecondsFromFrameStart, sample.QpcTick });
+        timing.InputSample = sample;
+        return true;
+    }
 }

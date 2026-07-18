@@ -153,8 +153,15 @@ foreach ($Target in $TargetFramesPerSecond) {
                 throw "Benchmark frame IDs are not continuous: $Backend $Target $Candidate"
             }
             $Phases = @($Frame.lifecycle | ForEach-Object { $_.phase })
-            foreach ($RequiredPhase in @("FrameStart", "InputSimulation", "RenderSubmission", "PresentBegin", "PresentEnd")) {
+            foreach ($RequiredPhase in @("FrameStart", "InputSample", "InputSimulation", "RenderSubmission", "PresentBegin", "PresentEnd")) {
                 if ($RequiredPhase -notin $Phases) { throw "Benchmark lifecycle is incomplete: $Backend $Target $Candidate frame=$($Frame.frame) phase=$RequiredPhase" }
+            }
+            $RequiredLifecycle = @("FrameStart", "InputSample", "InputSimulation", "RenderSubmission", "PresentBegin", "PresentEnd")
+            $RequiredLifecycleIndexes = @($RequiredLifecycle | ForEach-Object { [array]::IndexOf($Phases, $_) })
+            $RequiredLifecycleOrder = $RequiredLifecycleIndexes -join ','
+            $SortedLifecycleOrder = (@($RequiredLifecycleIndexes | Sort-Object)) -join ','
+            if ($RequiredLifecycleIndexes -contains -1 -or $SortedLifecycleOrder -ne $RequiredLifecycleOrder) {
+                throw "Benchmark lifecycle phases are out of order: $Backend $Target $Candidate frame=$($Frame.frame)"
             }
             if ($null -eq $Frame.waits -or $Frame.display -ne "unavailable" -or $Frame.replacementDrop -ne "unavailable" -or $Frame.inputLatency -ne "unavailable" -or $null -eq $Frame.gpuTimingStatus -or $null -eq $Frame.gpuDurationMs -or $null -eq $Frame.gpuHeadroom) {
                 throw "Benchmark raw fields are incomplete: $Backend $Target $Candidate frame=$($Frame.frame)"

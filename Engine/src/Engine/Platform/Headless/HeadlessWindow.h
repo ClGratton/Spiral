@@ -10,7 +10,7 @@ namespace Engine
         explicit HeadlessWindow(WindowSpecification specification);
         ~HeadlessWindow() override;
 
-        void OnUpdate() override;
+        void PollEvents() override;
         u32 GetWidth() const override { return m_Specification.Width; }
         u32 GetHeight() const override { return m_Specification.Height; }
         const std::string& GetTitle() const override { return m_Specification.Title; }

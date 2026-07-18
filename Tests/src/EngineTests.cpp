@@ -709,12 +709,14 @@ namespace
         trace.FrameIndex = 0;
         trace.Lifecycle = {
             { Engine::RendererFrameLifecyclePhase::FrameStart, 0.0 },
+            { Engine::RendererFrameLifecyclePhase::InputSample, 0.05 },
             { Engine::RendererFrameLifecyclePhase::InputSimulation, 0.1 },
             { Engine::RendererFrameLifecyclePhase::RenderSubmission, 1.0 },
             { Engine::RendererFrameLifecyclePhase::PresentBegin, 1.1 },
             { Engine::RendererFrameLifecyclePhase::PresentEnd, 1.2 },
             { Engine::RendererFrameLifecyclePhase::GpuCompletionObservation, 2.0 }
         };
+        trace.InputSample = Engine::RendererInputSample { 0, 0.05, 0 };
         trace.Waits = {
             { Engine::RendererFrameWaitKind::IntentionalPacing, false, 0.0 },
             { Engine::RendererFrameWaitKind::MandatoryDxgiFrameLatency, true, 0.5 }
@@ -727,14 +729,54 @@ namespace
         trace.Waits.push_back({ Engine::RendererFrameWaitKind::MandatoryVulkanFence, true, 0.25 });
         const bool vulkanWaitsAccepted = Engine::HasValidFrameLifecycleTelemetry(trace, false, true);
 
-        trace.Lifecycle[2].Phase = Engine::RendererFrameLifecyclePhase::PresentBegin;
+        trace.Lifecycle[3].Phase = Engine::RendererFrameLifecyclePhase::PresentBegin;
         const bool outOfOrderRejected = !Engine::HasValidFrameLifecycleTelemetry(trace);
-        trace.Lifecycle[2].Phase = Engine::RendererFrameLifecyclePhase::RenderSubmission;
+        trace.Lifecycle[3].Phase = Engine::RendererFrameLifecyclePhase::RenderSubmission;
         trace.Presentation.DisplayCadenceAvailable = true;
         const bool unavailableStateRequired = !Engine::HasValidFrameLifecycleTelemetry(trace);
         trace.Presentation.DisplayCadenceAvailable = false;
         trace.Presentation.InputLatencyAvailable = true;
         const bool inputLatencyUnavailableRequired = !Engine::HasValidFrameLifecycleTelemetry(trace);
+
+        Engine::RendererFrameTiming sampleTrace;
+        sampleTrace.FrameIndex = 42;
+        sampleTrace.Lifecycle = { { Engine::RendererFrameLifecyclePhase::FrameStart, 0.0, 100 } };
+        std::string sampleError;
+        const Engine::RendererInputSample exactSample { 42, 0.25, 125 };
+        const bool exactSampleAccepted = Engine::ApplyRendererInputSample(sampleTrace, exactSample, &sampleError)
+            && sampleTrace.InputSample && sampleTrace.InputSample->FrameIndex == 42
+            && sampleTrace.Lifecycle.size() == 2
+            && sampleTrace.Lifecycle.back().Phase == Engine::RendererFrameLifecyclePhase::InputSample;
+        const size_t acceptedLifecycleSize = sampleTrace.Lifecycle.size();
+        const bool duplicateRejectedWithoutMutation = !Engine::ApplyRendererInputSample(sampleTrace, exactSample, &sampleError)
+            && sampleTrace.Lifecycle.size() == acceptedLifecycleSize
+            && sampleTrace.InputSample && sampleTrace.InputSample->QpcTick == 125;
+
+        Engine::RendererFrameTiming wrongFrameSample;
+        wrongFrameSample.FrameIndex = 43;
+        wrongFrameSample.Lifecycle = { { Engine::RendererFrameLifecyclePhase::FrameStart, 0.0, 100 } };
+        const bool wrongFrameRejectedWithoutMutation = !Engine::ApplyRendererInputSample(wrongFrameSample, exactSample, &sampleError)
+            && !wrongFrameSample.InputSample && wrongFrameSample.Lifecycle.size() == 1;
+        Engine::RendererFrameTiming missingStartSample;
+        missingStartSample.FrameIndex = 42;
+        const bool missingStartRejectedWithoutMutation = !Engine::ApplyRendererInputSample(missingStartSample, exactSample, &sampleError)
+            && !missingStartSample.InputSample && missingStartSample.Lifecycle.empty();
+        Engine::RendererFrameTiming lateSample;
+        lateSample.FrameIndex = 42;
+        lateSample.Lifecycle = {
+            { Engine::RendererFrameLifecyclePhase::FrameStart, 0.0, 100 },
+            { Engine::RendererFrameLifecyclePhase::InputSimulation, 0.2, 120 }
+        };
+        const bool afterSimulationRejectedWithoutMutation = !Engine::ApplyRendererInputSample(lateSample, exactSample, &sampleError)
+            && !lateSample.InputSample && lateSample.Lifecycle.size() == 2;
+        Engine::RendererFrameTiming regressingSample;
+        regressingSample.FrameIndex = 42;
+        regressingSample.Lifecycle = {
+            { Engine::RendererFrameLifecyclePhase::FrameStart, 0.0, 100 },
+            { Engine::RendererFrameLifecyclePhase::IntentionalPacingWait, 0.5, 130 }
+        };
+        const bool regressingOffsetRejectedWithoutMutation = !Engine::ApplyRendererInputSample(regressingSample, exactSample, &sampleError)
+            && !regressingSample.InputSample && regressingSample.Lifecycle.size() == 2;
 
         Engine::RendererFrameTiming limiting, source;
         limiting.FrameIndex = 11;
@@ -804,6 +846,8 @@ namespace
         const bool mismatchedPresentRejected = mismatchedPresent.Source == Engine::RendererEffectiveLimitingSource::Unresolved;
 
         return Expect(valid && vulkanWaitsRejected && vulkanWaitsAccepted && outOfOrderRejected && unavailableStateRequired && inputLatencyUnavailableRequired
+                && exactSampleAccepted && duplicateRejectedWithoutMutation && wrongFrameRejectedWithoutMutation
+                && missingStartRejectedWithoutMutation && afterSimulationRejectedWithoutMutation && regressingOffsetRejectedWithoutMutation
                 && d3d12PresentLimited && vulkanPresentLimited && targetLimited && lowRateTargetLimited && submissionGateTargetLimited
                 && cpuLimited && gpuLimited && unresolved && firstFrameUnresolved
                 && currentCpuDoesNotClaimPriorCadence && conflictUnresolved && mismatchedPresentRejected,
@@ -943,11 +987,13 @@ namespace
                 timing.FramePacingPolicy.SmoothTargetFramesPerSecond = 0.0;
             timing.Lifecycle = {
                 { Engine::RendererFrameLifecyclePhase::FrameStart, 0.0, 100 },
+                { Engine::RendererFrameLifecyclePhase::InputSample, 0.125, 112 },
                 { Engine::RendererFrameLifecyclePhase::InputSimulation, 0.25, 125 },
                 { Engine::RendererFrameLifecyclePhase::RenderSubmission, 1.5, 250 },
                 { Engine::RendererFrameLifecyclePhase::PresentBegin, 2.0, 300 },
                 { Engine::RendererFrameLifecyclePhase::PresentEnd, 2.5, 350 }
             };
+            timing.InputSample = Engine::RendererInputSample { index, 0.125, 112 };
             timing.Waits = { { Engine::RendererFrameWaitKind::MandatoryDxgiFrameLatency, true, 3.5 } };
             if (index == 1000)
                 timing.Waits.push_back({ Engine::RendererFrameWaitKind::IntentionalPacing, true, 2.0, Engine::SmoothFrametimeCandidate::InterFrame, true, 10.0, 12.0 });
@@ -1025,11 +1071,13 @@ namespace
             && Expect(wrote && csv.find("\"adapter\"\"quoted\tvalue\"") != std::string::npos
                 && csv.find("cadencePreviousFrame,limitingSource,limitingSourceFrame") != std::string::npos
                 && csv.find("gpuTimingStatus,gpuDurationMs,gpuHeadroom") != std::string::npos
+                && csv.find("{\"\"phase\"\":\"\"InputSample\"\",\"\"ms\"\":0.125,\"\"qpc\"\":112}") != std::string::npos
                 && csv.find("{\"\"phase\"\":\"\"PresentEnd\"\",\"\"ms\"\":2.5,\"\"qpc\"\":350}") != std::string::npos
                 && csv.find("{\"\"kind\"\":\"\"MandatoryDxgiFrameLatency\"\",\"\"applied\"\":true,\"\"ms\"\":3.5") != std::string::npos
                 && json.find("adapter\\\"quoted\\tvalue") != std::string::npos
                 && json.find("\"presentationMode\":\"flip-discard\",\"sync\":\"driver-vsync\",\"vrr\":\"enabled\",\"tearing\":\"disabled\"") != std::string::npos
                 && json.find("\"runId\":\"run-test-42\",\"processId\":42,\"executablePath\":\"C:/test/Editor.exe\",\"qpcFrequency\":10000000") != std::string::npos
+                && json.find("\"phase\":\"InputSample\",\"ms\":0.125,\"qpc\":112") != std::string::npos
                 && json.find("\"phase\":\"PresentEnd\",\"ms\":2.5,\"qpc\":350") != std::string::npos
                 && json.find("\"kind\":\"MandatoryDxgiFrameLatency\",\"applied\":true,\"ms\":3.5") != std::string::npos
                 && json.find("\"gpuCompletionFrame\":998") != std::string::npos

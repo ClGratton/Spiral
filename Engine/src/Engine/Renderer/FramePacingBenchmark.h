@@ -222,7 +222,7 @@ namespace Engine
 
         static const char* PhaseName(RendererFrameLifecyclePhase phase)
         {
-            switch (phase) { case RendererFrameLifecyclePhase::FrameStart: return "FrameStart"; case RendererFrameLifecyclePhase::InputSimulation: return "InputSimulation"; case RendererFrameLifecyclePhase::RenderSubmission: return "RenderSubmission"; case RendererFrameLifecyclePhase::PresentBegin: return "PresentBegin"; case RendererFrameLifecyclePhase::PresentEnd: return "PresentEnd"; case RendererFrameLifecyclePhase::IntentionalPacingWait: return "IntentionalPacingWait"; case RendererFrameLifecyclePhase::GpuCompletionObservation: return "GpuCompletionObservation"; } return "Unknown";
+            switch (phase) { case RendererFrameLifecyclePhase::FrameStart: return "FrameStart"; case RendererFrameLifecyclePhase::InputSample: return "InputSample"; case RendererFrameLifecyclePhase::InputSimulation: return "InputSimulation"; case RendererFrameLifecyclePhase::RenderSubmission: return "RenderSubmission"; case RendererFrameLifecyclePhase::PresentBegin: return "PresentBegin"; case RendererFrameLifecyclePhase::PresentEnd: return "PresentEnd"; case RendererFrameLifecyclePhase::IntentionalPacingWait: return "IntentionalPacingWait"; case RendererFrameLifecyclePhase::GpuCompletionObservation: return "GpuCompletionObservation"; } return "Unknown";
         }
         static const char* WaitName(RendererFrameWaitKind kind)
         {

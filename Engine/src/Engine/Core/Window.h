@@ -37,7 +37,7 @@ namespace Engine
 
         virtual ~Window() = default;
 
-        virtual void OnUpdate() = 0;
+        virtual void PollEvents() = 0;
         virtual u32 GetWidth() const = 0;
         virtual u32 GetHeight() const = 0;
         virtual const std::string& GetTitle() const = 0;

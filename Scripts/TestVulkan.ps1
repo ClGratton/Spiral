@@ -109,6 +109,9 @@ foreach ($Marker in $RequiredMarkers) {
         throw "Vulkan render smoke did not emit required marker: $Marker"
     }
 }
+if ($JoinedLog -notmatch 'FrameLifecycleTelemetryV1 backend=NVRHI Vulkan frame=\d+ phases=frame-start,input-sample,input-simulation,render-submission,present-begin,present-end .*mandatoryWaits=vulkan-acquire\+fence') {
+    throw "Vulkan render smoke did not prove the ordered input-sample lifecycle boundary while retaining mandatory acquire/fence waits."
+}
 if ($JoinedLog -notmatch 'RenderGraphRecordingV1 backend=Vulkan mode=worker workerPasses=2 overlap=(yes|no) submitted=3 result=pass') {
     throw "Vulkan render smoke did not prove the parallel RenderGraph recording marker."
 }
