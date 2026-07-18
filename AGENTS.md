@@ -50,7 +50,7 @@ For a broad architecture audit, read every document listed in `Docs/README.md`. 
 
 | Path | Scope |
 | --- | --- |
-| `Engine/src/Engine/Core` | Application lifecycle, layers, windows, logging, assertions, command-line handling, and lightweight utilities. Must not depend on renderer, scene, assets, scripting, or editor code. |
+| `Engine/src/Engine/Core` | Application lifecycle, layers, windows, logging, assertions, command-line handling, and lightweight utilities. Public Core headers and reusable services must not depend on renderer, scene, assets, scripting, or editor code; `Application.cpp` is the narrow composition-root exception allowed to sequence public renderer lifecycle/timing APIs, as defined by Core `OWNERSHIP.md`. |
 | `Engine/src/Engine/RHI` | Backend-neutral GPU device/resource/command contracts and NVRHI-backed implementations. No scene, material, or editor policy. |
 | `Engine/src/Engine/RenderGraph` | Pass/resource declarations, dependency compilation, lifetime/state planning, execution scheduling, and transient-resource policy as those stages are implemented. |
 | `Engine/src/Engine/Renderer` | High-level rendering, presentation bridges, shader management, scene rendering, and renderer diagnostics. Depends on RHI/render graph; does not own gameplay entities. |

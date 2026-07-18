@@ -4,7 +4,7 @@ Updated 2026-07-18. This is a recovery aid; `PLAN.md` remains the sole roadmap a
 
 ## Objective And Stop Condition
 
-Smooth target application and source-aligned effective-limiter diagnosis are accepted locally. The first unchecked roadmap item is the pacing latency-source prerequisite: carry the authoritative input sample through simulation/submit/present/GPU completion, publish only source-qualified engine intervals, and keep input-to-display/click-to-photon unavailable without an admitted external measurement. Do not skip ahead to RTSS automation or production candidate selection. The latest reliable rate-limit event available to this task reported 23% used / 77% remaining in the weekly window at 2026-07-18T17:00:42Z; do not infer current allowance from raw token counters.
+Smooth target application and source-aligned effective-limiter diagnosis are accepted locally. A read-only feasibility gate split the first unchecked work: implement the authoritative input-poll/sample identity before deriving pacing latency intervals. Today GLFW polling occurs after presentation at the prior frame's tail and `Frame.PublishInput` carries only frame ID/timestep, so neither is a truthful current-frame sample. Do not skip this prerequisite or advance to RTSS automation/production selection. The latest reliable rate-limit event available to this task reported 23% used / 77% remaining in the weekly window at 2026-07-18T17:00:42Z; do not infer current allowance from raw token counters.
 
 ## Token-Efficiency Baseline And Required Next-Session Audit (2026-07-15)
 
