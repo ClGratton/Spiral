@@ -265,6 +265,7 @@ namespace Engine
 
         void WaitForFrameLatency()
         {
+            m_PresentationTiming.ApplicationFrameIndex.reset();
             m_PresentationTiming.WaitedForFrameLatency = false;
             m_PresentationTiming.FrameLatencyWaitMilliseconds = 0.0;
             m_PresentationTiming.PresentSucceeded = false;
@@ -379,13 +380,15 @@ namespace Engine
             m_GraphicsQueue->ExecuteCommandLists(1, commandLists);
             Renderer::RecordFrameLifecyclePhase(Renderer::GetLastFrameTiming().FrameIndex, RendererFrameLifecyclePhase::RenderSubmission);
 
-            Renderer::RecordFrameLifecyclePhase(Renderer::GetLastFrameTiming().FrameIndex, RendererFrameLifecyclePhase::PresentBegin);
+            const u64 applicationFrameIndex = Renderer::GetLastFrameTiming().FrameIndex;
+            Renderer::RecordFrameLifecyclePhase(applicationFrameIndex, RendererFrameLifecyclePhase::PresentBegin);
             const auto presentStart = std::chrono::steady_clock::now();
             result = m_Swapchain->Present(1, 0);
             const auto presentEnd = std::chrono::steady_clock::now();
             m_PresentationTiming.PresentMilliseconds = std::chrono::duration<double, std::milli>(presentEnd - presentStart).count();
             m_PresentationTiming.PresentSucceeded = SUCCEEDED(result);
-            Renderer::RecordFrameLifecyclePhase(Renderer::GetLastFrameTiming().FrameIndex, RendererFrameLifecyclePhase::PresentEnd);
+            m_PresentationTiming.ApplicationFrameIndex = applicationFrameIndex;
+            Renderer::RecordFrameLifecyclePhase(applicationFrameIndex, RendererFrameLifecyclePhase::PresentEnd);
             if (FAILED(result))
                 Log::Error("D3D12 swapchain present failed: ", HResultToString(result));
 
@@ -394,7 +397,7 @@ namespace Engine
             if (FAILED(result))
                 throw std::runtime_error("Could not signal D3D12 fence: " + HResultToString(result));
             frame.FenceValue = fenceValue;
-            frame.ApplicationFrameIndex = Renderer::GetLastFrameTiming().FrameIndex;
+            frame.ApplicationFrameIndex = applicationFrameIndex;
         }
 
         bool PrepareViewportTexture(u32 width, u32 height)

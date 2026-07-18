@@ -736,34 +736,77 @@ namespace
         trace.Presentation.InputLatencyAvailable = true;
         const bool inputLatencyUnavailableRequired = !Engine::HasValidFrameLifecycleTelemetry(trace);
 
-        Engine::RendererFrameTiming limiting;
+        Engine::RendererFrameTiming limiting, source;
+        limiting.FrameIndex = 11;
+        limiting.CadencePreviousFrameIndex = 10;
         limiting.StartToStartMilliseconds = 15.7;
-        limiting.CpuActiveMilliseconds = 2.0;
-        limiting.FramePacingPolicy.EffectiveMode = Engine::FramePacingMode::SmoothFrametime;
-        limiting.FramePacingPolicy.SmoothTargetFramesPerSecond = 180.0;
-        limiting.Presentation.PresentSucceeded = true;
-        const bool d3d12PresentLimited = Engine::ClassifyEffectiveLimitingSource(limiting, Engine::RendererBackend::NVRHID3D12)
-            == Engine::RendererEffectiveLimitingSource::D3D12SynchronizedPresent;
-        const bool vulkanPresentLimited = Engine::ClassifyEffectiveLimitingSource(limiting, Engine::RendererBackend::NVRHIVulkan)
-            == Engine::RendererEffectiveLimitingSource::VulkanFifoPresent;
+        source.FrameIndex = 10;
+        source.CpuActiveMilliseconds = 2.0;
+        source.FramePacingPolicy.EffectiveMode = Engine::FramePacingMode::SmoothFrametime;
+        source.FramePacingPolicy.SmoothTargetFramesPerSecond = 180.0;
+        source.Presentation.PresentSucceeded = true;
+        source.Presentation.ApplicationFrameIndex = 10;
+        const auto d3d12Present = Engine::ClassifyEffectiveLimitingSource(limiting, &source, Engine::RendererBackend::NVRHID3D12);
+        const auto vulkanPresent = Engine::ClassifyEffectiveLimitingSource(limiting, &source, Engine::RendererBackend::NVRHIVulkan);
+        const bool d3d12PresentLimited = d3d12Present.Source == Engine::RendererEffectiveLimitingSource::D3D12SynchronizedPresent && d3d12Present.SourceFrameIndex == 10;
+        const bool vulkanPresentLimited = vulkanPresent.Source == Engine::RendererEffectiveLimitingSource::VulkanFifoPresent && vulkanPresent.SourceFrameIndex == 10;
+        source.Presentation.PresentSucceeded = false;
         limiting.StartToStartMilliseconds = 5.6;
-        const bool targetLimited = Engine::ClassifyEffectiveLimitingSource(limiting, Engine::RendererBackend::NVRHID3D12)
-            == Engine::RendererEffectiveLimitingSource::RequestedTargetCadence;
+        limiting.FramePacingPolicy = source.FramePacingPolicy;
+        limiting.FramePacingPolicy.Candidate = Engine::SmoothFrametimeCandidate::InterFrame;
+        limiting.Waits.push_back({ Engine::RendererFrameWaitKind::IntentionalPacing, true, 1.0, Engine::SmoothFrametimeCandidate::InterFrame });
+        const auto target = Engine::ClassifyEffectiveLimitingSource(limiting, &source, Engine::RendererBackend::NVRHID3D12);
+        const bool targetLimited = target.Source == Engine::RendererEffectiveLimitingSource::RequestedTargetCadence && target.SourceFrameIndex == 11;
+        limiting.FramePacingPolicy.SmoothTargetFramesPerSecond = 10.0;
+        limiting.StartToStartMilliseconds = 110.84;
+        const auto lowRateTarget = Engine::ClassifyEffectiveLimitingSource(limiting, &source, Engine::RendererBackend::NVRHID3D12);
+        const bool lowRateTargetLimited = lowRateTarget.Source == Engine::RendererEffectiveLimitingSource::RequestedTargetCadence
+            && lowRateTarget.SourceFrameIndex == 11;
+        limiting.FramePacingPolicy.SmoothTargetFramesPerSecond = 180.0;
+        limiting.StartToStartMilliseconds = 5.6;
+        limiting.Waits.clear();
+        source.FramePacingPolicy.Candidate = Engine::SmoothFrametimeCandidate::SubmissionGate;
+        source.Waits = { { Engine::RendererFrameWaitKind::IntentionalPacing, true, 1.0, Engine::SmoothFrametimeCandidate::SubmissionGate } };
+        const auto submissionGateTarget = Engine::ClassifyEffectiveLimitingSource(limiting, &source, Engine::RendererBackend::NVRHID3D12);
+        const bool submissionGateTargetLimited = submissionGateTarget.Source == Engine::RendererEffectiveLimitingSource::RequestedTargetCadence
+            && submissionGateTarget.SourceFrameIndex == 10;
         limiting.StartToStartMilliseconds = 15.7;
-        limiting.CpuActiveMilliseconds = 15.5;
-        const bool cpuLimited = Engine::ClassifyEffectiveLimitingSource(limiting, Engine::RendererBackend::NVRHID3D12)
-            == Engine::RendererEffectiveLimitingSource::CpuActiveWork;
-        limiting.CpuActiveMilliseconds = 2.0;
-        limiting.GpuStatus = Engine::RendererTimingStatus::Ready;
-        limiting.GpuMilliseconds = 16.0;
-        const bool gpuLimited = Engine::ClassifyEffectiveLimitingSource(limiting, Engine::RendererBackend::NVRHIVulkan)
-            == Engine::RendererEffectiveLimitingSource::GpuWork;
+        source.Waits.clear();
+        source.CpuActiveMilliseconds = 15.5;
+        const auto cpu = Engine::ClassifyEffectiveLimitingSource(limiting, &source, Engine::RendererBackend::NVRHID3D12);
+        const bool cpuLimited = cpu.Source == Engine::RendererEffectiveLimitingSource::CpuActiveWork && cpu.SourceFrameIndex == 10;
+        source.CpuActiveMilliseconds = 2.0;
+        source.GpuStatus = Engine::RendererTimingStatus::Ready;
+        source.GpuMilliseconds = 16.0;
+        const auto gpu = Engine::ClassifyEffectiveLimitingSource(limiting, &source, Engine::RendererBackend::NVRHIVulkan);
+        const bool gpuLimited = gpu.Source == Engine::RendererEffectiveLimitingSource::GpuWork && gpu.SourceFrameIndex == 10;
         limiting.StartToStartMilliseconds = 0.0;
-        const bool unresolved = Engine::ClassifyEffectiveLimitingSource(limiting, Engine::RendererBackend::NVRHIVulkan)
-            == Engine::RendererEffectiveLimitingSource::Unresolved;
+        const auto unresolvedResult = Engine::ClassifyEffectiveLimitingSource(limiting, &source, Engine::RendererBackend::NVRHIVulkan);
+        const bool unresolved = unresolvedResult.Source == Engine::RendererEffectiveLimitingSource::Unresolved && !unresolvedResult.SourceFrameIndex;
+        limiting.StartToStartMilliseconds = 15.7; limiting.CadencePreviousFrameIndex.reset();
+        const auto firstFrame = Engine::ClassifyEffectiveLimitingSource(limiting, &source, Engine::RendererBackend::NVRHIVulkan);
+        const bool firstFrameUnresolved = firstFrame.Source == Engine::RendererEffectiveLimitingSource::Unresolved && !firstFrame.SourceFrameIndex;
+        limiting.StartToStartMilliseconds = 7.879;
+        limiting.FrameIndex = 8; limiting.CadencePreviousFrameIndex = 7; source.FrameIndex = 7;
+        limiting.CpuActiveMilliseconds = 11.136; source.CpuActiveMilliseconds = 2.0;
+        source.GpuStatus = Engine::RendererTimingStatus::Unavailable; source.GpuMilliseconds = 0.0;
+        const auto priorWorkDoesNotBorrowCurrent = Engine::ClassifyEffectiveLimitingSource(limiting, &source, Engine::RendererBackend::NVRHID3D12);
+        const bool currentCpuDoesNotClaimPriorCadence = priorWorkDoesNotBorrowCurrent.Source != Engine::RendererEffectiveLimitingSource::CpuActiveWork;
+        limiting.StartToStartMilliseconds = 5.6;
+        limiting.FramePacingPolicy.Candidate = Engine::SmoothFrametimeCandidate::InterFrame;
+        limiting.Waits = { { Engine::RendererFrameWaitKind::IntentionalPacing, true, 1.0, Engine::SmoothFrametimeCandidate::InterFrame } };
+        source.CpuActiveMilliseconds = 5.6;
+        const auto conflictingCandidates = Engine::ClassifyEffectiveLimitingSource(limiting, &source, Engine::RendererBackend::NVRHID3D12);
+        const bool conflictUnresolved = conflictingCandidates.Source == Engine::RendererEffectiveLimitingSource::Unresolved && !conflictingCandidates.SourceFrameIndex;
+        source.Presentation.PresentSucceeded = true; source.Presentation.ApplicationFrameIndex = 999;
+        source.CpuActiveMilliseconds = 0.0; limiting.Waits.clear(); limiting.StartToStartMilliseconds = 15.7;
+        const auto mismatchedPresent = Engine::ClassifyEffectiveLimitingSource(limiting, &source, Engine::RendererBackend::NVRHID3D12);
+        const bool mismatchedPresentRejected = mismatchedPresent.Source == Engine::RendererEffectiveLimitingSource::Unresolved;
 
         return Expect(valid && vulkanWaitsRejected && vulkanWaitsAccepted && outOfOrderRejected && unavailableStateRequired && inputLatencyUnavailableRequired
-                && d3d12PresentLimited && vulkanPresentLimited && targetLimited && cpuLimited && gpuLimited && unresolved,
+                && d3d12PresentLimited && vulkanPresentLimited && targetLimited && lowRateTargetLimited && submissionGateTargetLimited
+                && cpuLimited && gpuLimited && unresolved && firstFrameUnresolved
+                && currentCpuDoesNotClaimPriorCadence && conflictUnresolved && mismatchedPresentRejected,
             "frame lifecycle telemetry preserves phase order, no-delay intent, and truthful unavailable feedback states");
     }
 
@@ -800,6 +843,28 @@ namespace
         RendererFrameTiming wrongFrame;
         wrongFrame.FrameIndex = 20;
         const bool mismatchRejected = !ApplyRendererGpuTimingPublication(wrongFrame, publication, &error);
+
+        RendererFrameTiming delayedSource;
+        delayedSource.FrameIndex = 30;
+        delayedSource.CpuActiveMilliseconds = 1.0;
+        delayedSource.GpuStatus = RendererTimingStatus::Pending;
+        delayedSource.FramePacingPolicy.EffectiveMode = FramePacingMode::SmoothFrametime;
+        delayedSource.FramePacingPolicy.SmoothTargetFramesPerSecond = 120.0;
+        RendererFrameTiming dependentCadence;
+        dependentCadence.FrameIndex = 31;
+        dependentCadence.CadencePreviousFrameIndex = 30;
+        dependentCadence.StartToStartMilliseconds = 8.0;
+        const auto beforeDelayedGpu = ClassifyEffectiveLimitingSource(dependentCadence, &delayedSource, RendererBackend::NVRHID3D12);
+        RendererGpuTimingPublication delayedPublication;
+        delayedPublication.FrameIndex = 30;
+        delayedPublication.Status = RendererTimingStatus::Ready;
+        delayedPublication.GpuMilliseconds = 8.0;
+        delayedPublication.Passes.push_back({ "Delayed GPU frame", 0.0, 8.0, RendererTimingStatus::Ready });
+        const bool delayedApplied = ApplyRendererGpuTimingPublication(delayedSource, delayedPublication, &error);
+        const auto afterDelayedGpu = ClassifyEffectiveLimitingSource(dependentCadence, &delayedSource, RendererBackend::NVRHID3D12);
+        const bool delayedGpuReclassifiedDependentCadence = beforeDelayedGpu.Source == RendererEffectiveLimitingSource::Unresolved
+            && delayedApplied && afterDelayedGpu.Source == RendererEffectiveLimitingSource::GpuWork
+            && afterDelayedGpu.SourceFrameIndex == 30;
 
         std::vector<RenderGraph::RawTimestampScope> disjoint = ready;
         disjoint[1].Start.Status = QueryResultStatus::Disjoint;
@@ -841,6 +906,8 @@ namespace
                 "GPU timing converts named passes and the first-start-to-last-end interval without summing")
             && Expect(mismatchRejected && crossClockRejected && generationRejected,
                 "GPU timing rejects mismatched retained frames, clocks, and generations")
+            && Expect(delayedGpuReclassifiedDependentCadence,
+                "delayed exact GPU work reclassifies only its dependent next-frame cadence")
             && Expect(disjointPreserved && pendingPreserved && unavailablePreserved,
                 "GPU timing preserves explicit disjoint, pending, and unavailable states");
     }
@@ -902,6 +969,8 @@ namespace
         const bool nonpositiveTargetApplied = capture.AmendGpuTiming(gpuPublication(997, Engine::RendererTimingStatus::Ready, 3.0));
         const bool pendingApplied = capture.AmendGpuTiming(gpuPublication(996, Engine::RendererTimingStatus::Pending, 0.0));
         const bool unavailableApplied = capture.AmendGpuTiming(gpuPublication(995, Engine::RendererTimingStatus::Unavailable, 0.0));
+        const bool sourceAmended = capture.AmendEffectiveLimitingSource(1000, Engine::RendererEffectiveLimitingSource::GpuWork, 999);
+        const bool sourceEvictedRejected = !capture.AmendEffectiveLimitingSource(0, Engine::RendererEffectiveLimitingSource::GpuWork, 0);
         const bool evictedRejected = !capture.AmendGpuTiming(gpuPublication(0, Engine::RendererTimingStatus::Ready, 1.0));
         const bool mismatchedRejected = !capture.AmendGpuTiming(gpuPublication(1002, Engine::RendererTimingStatus::Ready, 1.0));
         const auto snapshot = capture.GetSnapshot();
@@ -933,14 +1002,16 @@ namespace
         const Engine::RendererFrameTiming* pendingFrame = findFrame(996);
         const Engine::RendererFrameTiming* unavailableFrame = findFrame(995);
         return Expect(continuous && readyApplied && disjointApplied && nonpositiveTargetApplied && pendingApplied && unavailableApplied
-                && evictedRejected && mismatchedRejected && snapshot->Frames.back().StartToStartMilliseconds == 10000.0
+                && sourceAmended && sourceEvictedRejected && evictedRejected && mismatchedRejected && snapshot->Frames.back().StartToStartMilliseconds == 10000.0
                 && snapshot->Summary.SampleCount == 1000 && snapshot->Summary.StartToStartP99Milliseconds == 10.0
                 && snapshot->Summary.CpuActiveP50Milliseconds == 1.0 && snapshot->Summary.CpuActiveP95Milliseconds == 2.0
                 && snapshot->Summary.CpuActiveP99Milliseconds == 3.0 && snapshot->Summary.IntentionalWaitP50Milliseconds == 0.0
                 && snapshot->Summary.IntentionalWaitP95Milliseconds == 1.0 && snapshot->Summary.IntentionalWaitP99Milliseconds == 2.0
                 && std::abs(snapshot->Summary.OnePercentLowFramesPerSecond - 100.0) < 0.0001
                 && std::abs(snapshot->Summary.PointOnePercentLowFramesPerSecond - 10.0) < 0.0001
-                && snapshot->Summary.DeadlineMissCount == 1 && snapshot->Summary.DeadlineOvershootP99Milliseconds == 2.0,
+                && snapshot->Summary.DeadlineMissCount == 1 && snapshot->Summary.DeadlineOvershootP99Milliseconds == 2.0
+                && snapshot->Frames.back().EffectiveLimitingSource == Engine::RendererEffectiveLimitingSource::GpuWork
+                && snapshot->Frames.back().EffectiveLimitingSourceFrameIndex == 999,
                 "frame pacing benchmark retains continuous raw spikes and aggregates deterministic cadence, work, wait, low, and deadline statistics")
             && Expect(readyFrame && readyFrame->GpuStatus == Engine::RendererTimingStatus::Ready
                     && std::abs(readyFrame->GpuMilliseconds - 4.0) < 0.0001
@@ -952,6 +1023,7 @@ namespace
                     && unavailableFrame && unavailableFrame->GpuStatus == Engine::RendererTimingStatus::Unavailable && !unavailableFrame->GpuHeadroomMilliseconds,
                 "benchmark GPU amendment derives exact-frame target headroom and preserves unavailable status and target cases")
             && Expect(wrote && csv.find("\"adapter\"\"quoted\tvalue\"") != std::string::npos
+                && csv.find("cadencePreviousFrame,limitingSource,limitingSourceFrame") != std::string::npos
                 && csv.find("gpuTimingStatus,gpuDurationMs,gpuHeadroom") != std::string::npos
                 && csv.find("{\"\"phase\"\":\"\"PresentEnd\"\",\"\"ms\"\":2.5,\"\"qpc\"\":350}") != std::string::npos
                 && csv.find("{\"\"kind\"\":\"\"MandatoryDxgiFrameLatency\"\",\"\"applied\"\":true,\"\"ms\"\":3.5") != std::string::npos
@@ -961,10 +1033,11 @@ namespace
                 && json.find("\"phase\":\"PresentEnd\",\"ms\":2.5,\"qpc\":350") != std::string::npos
                 && json.find("\"kind\":\"MandatoryDxgiFrameLatency\",\"applied\":true,\"ms\":3.5") != std::string::npos
                 && json.find("\"gpuCompletionFrame\":998") != std::string::npos
-                && json.find("\"schema\":3") != std::string::npos
+                && json.find("\"schema\":4") != std::string::npos
+                && json.find("\"limitingSource\":\"GpuWork\",\"limitingSourceFrame\":999") != std::string::npos
                 && json.find("\"gpuTimingStatus\":\"Ready\",\"gpuDurationMs\":4.000000,\"gpuHeadroom\":4.333333") != std::string::npos
                 && json.find("\"gpuTimingStatus\":\"Disjoint\",\"gpuDurationMs\":\"unavailable\",\"gpuHeadroom\":\"unavailable\"") != std::string::npos,
-                "frame pacing benchmark exports stable schema-3 CSV/JSON exact-frame GPU duration, headroom, and unavailable records");
+                "frame pacing benchmark exports stable schema-4 CSV/JSON exact-frame GPU duration, headroom, source amendment, and unavailable records");
     }
 
     bool TestFramePacingAttachmentReadinessAndReleaseValidation()

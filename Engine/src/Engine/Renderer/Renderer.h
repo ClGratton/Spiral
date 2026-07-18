@@ -59,6 +59,10 @@ namespace Engine
 
     struct RendererPresentationTiming
     {
+        // Native presentation evidence is valid only for this exact submitted
+        // application frame.  A default/old snapshot is deliberately not
+        // evidence for a later timing record.
+        std::optional<u64> ApplicationFrameIndex;
         bool UsesWaitableSwapchain = false;
         bool WaitedForFrameLatency = false;
         bool PresentSucceeded = false;
@@ -131,6 +135,10 @@ namespace Engine
         double CpuActiveMilliseconds = 0.0;
         double IntentionalPacingMilliseconds = 0.0;
         double StartToStartMilliseconds = 0.0;
+        // Cadence belongs to this terminal frame N and spans FrameStart[N-1]
+        // to FrameStart[N].  The source work frame is retained separately.
+        std::optional<u64> CadencePreviousFrameIndex;
+        std::optional<u64> EffectiveLimitingSourceFrameIndex;
         double GpuMilliseconds = 0.0;
         RendererTimingStatus GpuStatus = RendererTimingStatus::Unavailable;
         std::optional<double> GpuHeadroomMilliseconds;
@@ -234,29 +242,65 @@ namespace Engine
         NRI
     };
 
-    inline RendererEffectiveLimitingSource ClassifyEffectiveLimitingSource(const RendererFrameTiming& timing, RendererBackend backend)
+    struct RendererEffectiveLimitingClassification
     {
-        if (timing.StartToStartMilliseconds <= 0.0 || !timing.FramePacingPolicy.SmoothTargetFramesPerSecond
-            || !IsValidSmoothTargetFramesPerSecond(*timing.FramePacingPolicy.SmoothTargetFramesPerSecond))
-            return RendererEffectiveLimitingSource::Unresolved;
+        RendererEffectiveLimitingSource Source = RendererEffectiveLimitingSource::Unresolved;
+        std::optional<u64> SourceFrameIndex;
+    };
 
-        const double observed = timing.StartToStartMilliseconds;
-        const double requested = 1000.0 / *timing.FramePacingPolicy.SmoothTargetFramesPerSecond;
-        const double tolerance = std::max(0.5, requested * 0.10);
-        if (timing.GpuStatus == RendererTimingStatus::Ready && timing.GpuMilliseconds >= observed - tolerance)
-            return RendererEffectiveLimitingSource::GpuWork;
-        if (timing.CpuActiveMilliseconds >= observed - tolerance)
-            return RendererEffectiveLimitingSource::CpuActiveWork;
-        if (timing.Presentation.PresentSucceeded && observed > requested + tolerance)
+    inline RendererEffectiveLimitingClassification ClassifyEffectiveLimitingSource(const RendererFrameTiming& cadence,
+        const RendererFrameTiming* sourceWork, RendererBackend backend)
+    {
+        if (cadence.StartToStartMilliseconds <= 0.0 || !cadence.CadencePreviousFrameIndex || !sourceWork
+            || sourceWork->FrameIndex != *cadence.CadencePreviousFrameIndex)
+            return {};
+
+        const double observed = cadence.StartToStartMilliseconds;
+        const auto requestedCadence = [](const RendererFrameTiming& timing) -> std::optional<double>
         {
-            if (backend == RendererBackend::NVRHID3D12)
-                return RendererEffectiveLimitingSource::D3D12SynchronizedPresent;
-            if (backend == RendererBackend::NVRHIVulkan)
-                return RendererEffectiveLimitingSource::VulkanFifoPresent;
+            if (timing.FramePacingPolicy.EffectiveMode != FramePacingMode::SmoothFrametime
+                || !timing.FramePacingPolicy.SmoothTargetFramesPerSecond
+                || !IsValidSmoothTargetFramesPerSecond(*timing.FramePacingPolicy.SmoothTargetFramesPerSecond))
+                return std::nullopt;
+            return 1000.0 / *timing.FramePacingPolicy.SmoothTargetFramesPerSecond;
+        };
+        const auto nearRequested = [&](const RendererFrameTiming& timing)
+        {
+            const std::optional<double> requested = requestedCadence(timing);
+            // Native low-rate smoke devices can release late by more than a
+            // millisecond while the exact intentional wait remains the only
+            // qualifying source. Keep the band relative and bounded without
+            // borrowing work or presentation evidence from another frame.
+            return requested && std::abs(observed - *requested) <= std::max(1.0, *requested * .15);
+        };
+        const auto hasAppliedCandidate = [](const RendererFrameTiming& timing, SmoothFrametimeCandidate candidate)
+        {
+            return std::any_of(timing.Waits.begin(), timing.Waits.end(), [candidate](const RendererFrameWaitTiming& wait)
+                { return wait.Kind == RendererFrameWaitKind::IntentionalPacing && wait.Applied && wait.Candidate == candidate; });
+        };
+
+        std::vector<RendererEffectiveLimitingClassification> candidates;
+        // Inter-frame release is performed on N and is inside cadence N.
+        if (cadence.FramePacingPolicy.Candidate == SmoothFrametimeCandidate::InterFrame
+            && hasAppliedCandidate(cadence, SmoothFrametimeCandidate::InterFrame) && nearRequested(cadence))
+            candidates.push_back({ RendererEffectiveLimitingSource::RequestedTargetCadence, cadence.FrameIndex });
+        // Submission-gate release and all rendered work occupy N-1's interval.
+        if (sourceWork->FramePacingPolicy.Candidate == SmoothFrametimeCandidate::SubmissionGate
+            && hasAppliedCandidate(*sourceWork, SmoothFrametimeCandidate::SubmissionGate) && nearRequested(*sourceWork))
+            candidates.push_back({ RendererEffectiveLimitingSource::RequestedTargetCadence, sourceWork->FrameIndex });
+        const double sourceRequested = requestedCadence(*sourceWork).value_or(0.0);
+        const double tolerance = sourceRequested > 0.0 ? std::max(0.5, sourceRequested * .10) : .5;
+        if (sourceRequested > 0.0 && sourceWork->GpuStatus == RendererTimingStatus::Ready && sourceWork->GpuMilliseconds >= observed - tolerance)
+            candidates.push_back({ RendererEffectiveLimitingSource::GpuWork, sourceWork->FrameIndex });
+        if (sourceRequested > 0.0 && sourceWork->CpuActiveMilliseconds >= observed - tolerance)
+            candidates.push_back({ RendererEffectiveLimitingSource::CpuActiveWork, sourceWork->FrameIndex });
+        if (sourceWork->Presentation.ApplicationFrameIndex && *sourceWork->Presentation.ApplicationFrameIndex == sourceWork->FrameIndex
+            && sourceWork->Presentation.PresentSucceeded && sourceRequested > 0.0 && observed > sourceRequested + tolerance)
+        {
+            if (backend == RendererBackend::NVRHID3D12) candidates.push_back({ RendererEffectiveLimitingSource::D3D12SynchronizedPresent, sourceWork->FrameIndex });
+            if (backend == RendererBackend::NVRHIVulkan) candidates.push_back({ RendererEffectiveLimitingSource::VulkanFifoPresent, sourceWork->FrameIndex });
         }
-        if (std::abs(observed - requested) <= tolerance)
-            return RendererEffectiveLimitingSource::RequestedTargetCadence;
-        return RendererEffectiveLimitingSource::Unresolved;
+        return candidates.size() == 1 ? candidates.front() : RendererEffectiveLimitingClassification {};
     }
 
     struct RendererBackendOption

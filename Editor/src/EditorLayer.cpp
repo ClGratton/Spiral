@@ -2057,7 +2057,14 @@ void EditorLayer::DrawProfilerPanel()
         ImGui::Text("Observed engine cadence: %.2f FPS (FrameStart-to-FrameStart)", 1000.0 / timing.StartToStartMilliseconds);
     else
         ImGui::TextDisabled("Observed engine cadence: awaiting a consecutive frame start");
-    ImGui::Text("Effective limiting source: %s", Engine::ToString(timing.EffectiveLimitingSource));
+    const std::string cadencePreviousFrame = timing.CadencePreviousFrameIndex
+        ? std::to_string(*timing.CadencePreviousFrameIndex) : "unavailable";
+    const std::string limitingSourceFrame = timing.EffectiveLimitingSourceFrameIndex
+        ? std::to_string(*timing.EffectiveLimitingSourceFrameIndex) : "unavailable";
+    ImGui::Text("Cadence terminal frame: %llu; previous: %s", static_cast<unsigned long long>(timing.FrameIndex),
+        cadencePreviousFrame.c_str());
+    ImGui::Text("Effective limiter: %s; source frame: %s (not display cadence)", Engine::ToString(timing.EffectiveLimitingSource),
+        limitingSourceFrame.c_str());
     ImGui::TextDisabled("Evidence-qualified; synchronized presentation does not infer monitor refresh or display cadence.");
     ImGui::TextWrapped("%s", framePacingDescription.c_str());
 

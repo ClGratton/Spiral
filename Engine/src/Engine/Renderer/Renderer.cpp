@@ -25,6 +25,7 @@
 #include <atomic>
 #include <chrono>
 #include <deque>
+#include <limits>
 #include <stdexcept>
 
 namespace Engine
@@ -88,6 +89,28 @@ namespace Engine
         bool s_RendererFrameTimingActive = false;
         bool s_FramePacingBenchmarkQpcActive = false;
         Scope<FramePacingBenchmarkCapture> s_FramePacingBenchmark;
+
+        RendererFrameTiming* FindRetainedTiming(u64 frameIndex)
+        {
+            if (s_RendererFrameTimingActive && s_FrameTiming.FrameIndex == frameIndex)
+                return &s_FrameTiming;
+            for (RendererFrameTiming& timing : s_CompletedFrameTimings)
+                if (timing.FrameIndex == frameIndex)
+                    return &timing;
+            return nullptr;
+        }
+
+        void RefreshEffectiveLimitingSource(RendererFrameTiming& cadence)
+        {
+            cadence.EffectiveLimitingSource = RendererEffectiveLimitingSource::Unresolved;
+            cadence.EffectiveLimitingSourceFrameIndex.reset();
+            if (!cadence.CadencePreviousFrameIndex)
+                return;
+            RendererFrameTiming* source = FindRetainedTiming(*cadence.CadencePreviousFrameIndex);
+            const RendererEffectiveLimitingClassification classification = ClassifyEffectiveLimitingSource(cadence, source, s_ActiveBackend);
+            cadence.EffectiveLimitingSource = classification.Source;
+            cadence.EffectiveLimitingSourceFrameIndex = classification.SourceFrameIndex;
+        }
 
         u64 CurrentQpcTick()
         {
@@ -252,6 +275,8 @@ namespace Engine
             s_RendererFrameStart = Clock::now();
             if (s_PreviousRendererFrameStart)
                 s_FrameTiming.StartToStartMilliseconds = ToMilliseconds(s_RendererFrameStart - *s_PreviousRendererFrameStart);
+            if (applicationFrameIndex > 0 && FindRetainedTiming(applicationFrameIndex - 1))
+                s_FrameTiming.CadencePreviousFrameIndex = applicationFrameIndex - 1;
             s_PreviousRendererFrameStart = s_RendererFrameStart;
             s_InFrameIntentionalPacingMilliseconds = 0.0;
             s_RendererFrameTimingActive = true;
@@ -265,6 +290,7 @@ namespace Engine
                     SmoothFrametimeCandidate::InterFrame, preFramePacing.DeadlineMissed, preFramePacing.RequestedDeadlineMilliseconds, preFramePacing.ActualReleaseMilliseconds });
                 s_FrameTiming.IntentionalPacingMilliseconds += preFramePacing.WaitMilliseconds;
             }
+            RefreshEffectiveLimitingSource(s_FrameTiming);
         }
 
         void AddLifecyclePhase(RendererFrameLifecyclePhase phase)
@@ -296,9 +322,10 @@ namespace Engine
         void RefreshPresentationTiming()
         {
             const NVRHIRenderBackend* backend = dynamic_cast<const NVRHIRenderBackend*>(s_Backend.get());
-            if (const RendererPresentationTiming* timing = backend ? backend->GetPresentationTiming() : nullptr)
+            if (const RendererPresentationTiming* timing = backend ? backend->GetPresentationTiming() : nullptr;
+                timing && timing->ApplicationFrameIndex && *timing->ApplicationFrameIndex == s_FrameTiming.FrameIndex)
                 s_FrameTiming.Presentation = *timing;
-            s_FrameTiming.EffectiveLimitingSource = ClassifyEffectiveLimitingSource(s_FrameTiming, s_ActiveBackend);
+            RefreshEffectiveLimitingSource(s_FrameTiming);
             RefreshFrameTimingCapabilityGroup();
             RefreshTransientResourceCapabilityGroup();
         }
@@ -687,12 +714,7 @@ namespace Engine
             return false;
         }
 
-        RendererFrameTiming* retained = nullptr;
-        if (s_FrameTiming.FrameIndex == publication.FrameIndex)
-            retained = &s_FrameTiming;
-        else
-            for (RendererFrameTiming& timing : s_CompletedFrameTimings)
-                if (timing.FrameIndex == publication.FrameIndex) { retained = &timing; break; }
+        RendererFrameTiming* retained = FindRetainedTiming(publication.FrameIndex);
         if (!retained)
         {
             // Initialization smokes and a genuinely delayed GPU can retire a
@@ -709,7 +731,20 @@ namespace Engine
             Log::Error("Renderer GPU timing exact-frame publication failed: ", error);
             return false;
         }
-        retained->EffectiveLimitingSource = ClassifyEffectiveLimitingSource(*retained, s_ActiveBackend);
+        // GPU work frame N-1 can only amend the cadence record N that owns
+        // the interval containing that work. Never borrow it for an arbitrary
+        // current record when N has been evicted or is nonconsecutive.
+        if (publication.FrameIndex != std::numeric_limits<u64>::max())
+        {
+            if (RendererFrameTiming* cadence = FindRetainedTiming(publication.FrameIndex + 1);
+                cadence && cadence->CadencePreviousFrameIndex && *cadence->CadencePreviousFrameIndex == publication.FrameIndex)
+            {
+                RefreshEffectiveLimitingSource(*cadence);
+                if (s_FramePacingBenchmark)
+                    s_FramePacingBenchmark->AmendEffectiveLimitingSource(cadence->FrameIndex,
+                        cadence->EffectiveLimitingSource, cadence->EffectiveLimitingSourceFrameIndex);
+            }
+        }
         if (s_FramePacingBenchmark && !s_FramePacingBenchmark->AmendGpuTiming(publication))
             Log::Warn("BenchmarkGpuTimingDropV1 frame=", publication.FrameIndex,
                 " status=Unavailable reason=frame-not-retained result=ignored");

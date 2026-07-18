@@ -277,8 +277,10 @@ namespace Engine
 
             Renderer::RecordFrameLifecyclePhase(applicationFrameIndex, RendererFrameLifecyclePhase::PresentBegin);
             const Clock::time_point presentStart = Clock::now();
+            m_Timing.PresentSucceeded = false;
             result = VULKAN_HPP_DEFAULT_DISPATCHER.vkQueuePresentKHR(m_GraphicsQueue, &presentInfo);
             m_Timing.PresentMilliseconds = std::chrono::duration<double, std::milli>(Clock::now() - presentStart).count();
+            m_Timing.ApplicationFrameIndex = applicationFrameIndex;
             Renderer::RecordFrameLifecyclePhase(applicationFrameIndex, RendererFrameLifecyclePhase::PresentEnd);
             if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR)
                 m_SwapchainInvalid = true;

@@ -39,12 +39,17 @@ foreach ($Candidate in @("inter-frame", "submission-gate")) {
     if ($Candidate -eq "submission-gate" -and $PacingLog -notmatch "SmoothFrametimeNativeV1 backend=Vulkan candidate=SubmissionGate control=pre-vkQueueSubmit") { throw "Vulkan submission-gate smoke did not prove the pre-submit seam." }
 }
 
-foreach ($TargetChange in @(@{ Name = "below"; NewTarget = 10; Limiter = "RequestedTargetCadence" }, @{ Name = "above"; NewTarget = 1000; Limiter = "VulkanFifoPresent" })) {
+foreach ($TargetChange in @(@{ Name = "below"; NewTarget = 10 }, @{ Name = "above"; NewTarget = 1000 })) {
     $ChangeResult = Invoke-BoundedProcess -FilePath $Executable -Arguments @("--vulkan-render-smoke", "--smooth-frametime-candidate-smoke", "--smooth-frametime-target-change-smoke", "--smooth-frametime-candidate=inter-frame", "--smooth-frametime-target-fps=5", "--smooth-frametime-target-change-fps=$($TargetChange.NewTarget)") -Label "Vulkan Smooth Frametime target change $($TargetChange.Name)" -TimeoutSeconds $ChildTimeoutSeconds
     if ($ChangeResult.TimedOut -or $ChangeResult.ExitCode -ne 0) { throw "Vulkan Smooth Frametime target-change $($TargetChange.Name) smoke failed." }
     $ChangeLog = $ChangeResult.Output -join "`n"
     if (($ChangeLog -notmatch "SmoothFrametimeTargetChangeV1 state=published oldTargetFps=5") -or ($ChangeLog -notmatch "newTargetFps=$($TargetChange.NewTarget).+firstControlPoint=next-valid-frame-boundary") -or ($ChangeLog -notmatch "targetChange=applied.+newTargetFps=$($TargetChange.NewTarget)")) { throw "Vulkan target-change smoke did not prove the live policy transition for $($TargetChange.Name)." }
-    if ($ChangeLog -notmatch "effectiveLimiter=$($TargetChange.Limiter)") { throw "Vulkan target-change $($TargetChange.Name) smoke did not report the expected evidence-qualified limiter." }
+    if ($TargetChange.Name -eq "below") {
+        if ($ChangeLog -notmatch "frame=(\d+).+effectiveLimiter=RequestedTargetCadence.+limitingSourceFrame=\1") { throw "Vulkan below-target smoke did not report an InterFrame requested-cadence source on its terminal cadence frame." }
+    } else {
+        $Match = [regex]::Match($ChangeLog, "frame=(\d+).+effectiveLimiter=(CpuActiveWork|GpuWork|VulkanFifoPresent|Unresolved).+limitingSourceFrame=(\d+|unavailable)")
+        if (!$Match.Success -or $ChangeLog -match "effectiveLimiter=RequestedTargetCadence" -or ($Match.Groups[2].Value -eq "Unresolved" -and $Match.Groups[3].Value -ne "unavailable") -or ($Match.Groups[2].Value -ne "Unresolved" -and [UInt64]$Match.Groups[3].Value -ne ([UInt64]$Match.Groups[1].Value - 1))) { throw "Vulkan above-target smoke did not report a source-qualified non-target result aligned to its cadence interval." }
+    }
 }
 
 $InlineRecordingResult = Invoke-BoundedProcess -FilePath $Executable -Arguments @("--vulkan-render-smoke", "--scene-raster-preparation-smoke", "--scene-viewport-render-graph-smoke", "--frame-task-single-thread") -Label "Editor Vulkan inline recording smoke" -TimeoutSeconds $ChildTimeoutSeconds

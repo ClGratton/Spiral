@@ -485,7 +485,7 @@ try {
     if (-not ($actualHeader -ceq $ExpectedHeader)) { throw "PresentMon CSV actual header does not match the required 1.10.0 header" }
     $engineArtifact = Get-Content -LiteralPath $engineJson -Raw | ConvertFrom-Json
     $expectedFrameCount = if ($TestMode) { 3 } else { 512 }
-    if ($engineArtifact.schema -notin @(2, 3) -or $engineArtifact.frames.Count -ne $expectedFrameCount -or
+    if ($engineArtifact.schema -notin @(2, 3, 4) -or $engineArtifact.frames.Count -ne $expectedFrameCount -or
         $engineArtifact.condition.runId -cne $readiness.runId -or [int]$engineArtifact.condition.processId -ne [int]$readiness.processId -or
         [UInt64]$engineArtifact.condition.qpcFrequency -ne [UInt64]$readiness.qpcFrequency) {
         throw "Stable engine artifact did not retain the released identity and expected frame count"
