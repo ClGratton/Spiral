@@ -11,9 +11,22 @@ workspace "Spiral"
 
     multiprocessorcompile "On"
 
+newoption
+{
+    trigger = "sanitize",
+    value = "MODE",
+    description = "Enable an admitted sanitizer configuration",
+    allowed = {
+        { "address-undefined", "Clang AddressSanitizer plus UndefinedBehaviorSanitizer" }
+    }
+}
+
 action_suffix = ""
 if _ACTION ~= nil and _ACTION ~= "vs2022" then
     action_suffix = "-" .. _ACTION
+end
+if _OPTIONS["sanitize"] == "address-undefined" then
+    action_suffix = action_suffix .. "-asan-ubsan"
 end
 
 outputdir = "%{cfg.buildcfg}-%{cfg.system}-%{cfg.architecture}" .. action_suffix
@@ -21,6 +34,20 @@ has_nvrhi = os.isdir("Vendor/NVRHI/include")
 has_vulkan_headers = os.isdir("Vendor/Vulkan-Headers/include/vulkan")
 has_directx_headers = os.isdir("Vendor/DirectX-Headers/include/directx")
 workspace_root = path.getabsolute(_MAIN_SCRIPT_DIR)
+
+function apply_spiral_sanitizers(enable_fuzzer)
+    if _OPTIONS["sanitize"] ~= "address-undefined" then return end
+    filter "toolset:clang"
+        buildoptions { "-fsanitize=address,undefined", "-fno-omit-frame-pointer", "-fno-sanitize-recover=all" }
+        if enable_fuzzer then
+            buildoptions { "-fsanitize=fuzzer" }
+            linkoptions { "-fsanitize=fuzzer,address,undefined", "-fno-sanitize-recover=all" }
+            defines { "GE_LIBFUZZER=1" }
+        else
+            linkoptions { "-fsanitize=address,undefined", "-fno-sanitize-recover=all" }
+        end
+    filter {}
+end
 
 local pin_file = assert(io.open(path.join(_MAIN_SCRIPT_DIR, "Scripts/ShaderToolchainPins.env"), "r"))
 shader_toolchain_pins = {}

@@ -122,3 +122,5 @@ project "Engine"
         defines { "GE_DIST" }
         runtime "Release"
         optimize "on"
+
+    apply_spiral_sanitizers(false)

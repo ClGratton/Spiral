@@ -17,6 +17,33 @@ jobs:
       - name: Check code style
         run: bash Scripts/CheckCodeStyle.sh
 
+  sanitizer-contracts:
+    name: Linux ASan UBSan And Structured Fuzz
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install build and symbolizer dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang llvm libgl1-mesa-dev libx11-dev libxcursor-dev libxi-dev libxinerama-dev libxrandr-dev
+
+      - name: Build and run admitted sanitizer lane
+        timeout-minutes: 15
+        run: bash Scripts/TestSanitizers.sh
+
+      - name: Upload sanitizer and fuzz failures
+        uses: actions/upload-artifact@v7
+        if: failure()
+        with:
+          name: sanitizer-fuzz-failures
+          path: |
+            output/fuzz-failures/
+            output/test-results/engine-tests-asan-ubsan.json
+          if-no-files-found: ignore
+
   windows-d3d12-render-smoke:
     name: Windows D3D12 Render Smoke
     runs-on: windows-latest
@@ -31,7 +58,13 @@ jobs:
 
       - name: Run engine tests
         shell: pwsh
-        run: .\bin\Debug-windows-x86_64\EngineTests\EngineTests.exe
+        timeout-minutes: 6
+        run: .\bin\Debug-windows-x86_64\EngineTests\EngineTests.exe --tier integration --report-json output/test-results/engine-tests-windows.json
+
+      - name: Verify engine test runner contract
+        shell: pwsh
+        timeout-minutes: 6
+        run: .\Scripts\TestEngineTestRunner.ps1 -Configuration Debug -Action vs2022
 
       - name: Run asset watch smoke
         shell: pwsh
@@ -109,11 +142,14 @@ jobs:
         run: bash Scripts/Build.sh Debug gmake
 
       - name: Run engine tests
+        timeout-minutes: 6
         run: |
           if [[ "${{ runner.os }}" == "Linux" ]]; then
-            ./bin/Debug-linux-x86_64-gmake/EngineTests/EngineTests
+            ./bin/Debug-linux-x86_64-gmake/EngineTests/EngineTests --tier integration --report-json output/test-results/engine-tests-linux.json
+            bash Scripts/TestEngineTestRunner.sh "$PWD/bin/Debug-linux-x86_64-gmake/EngineTests/EngineTests"
           else
-            ./bin/Debug-macosx-x86_64-gmake/EngineTests/EngineTests
+            ./bin/Debug-macosx-x86_64-gmake/EngineTests/EngineTests --tier integration --report-json output/test-results/engine-tests-macos.json
+            bash Scripts/TestEngineTestRunner.sh "$PWD/bin/Debug-macosx-x86_64-gmake/EngineTests/EngineTests"
           fi
 
       - name: Run native Linux Vulkan presentation smoke

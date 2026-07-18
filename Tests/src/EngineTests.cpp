@@ -18,27 +18,442 @@
 #include "Engine/Renderer/SlangShaderCompiler.h"
 #include "Engine/Renderer/SceneRasterPreparation.h"
 #include "Engine/Scene/Scene.h"
+#include "TestSupport/GeneratedTest.h"
+#include "TestSupport/StructuredFuzz.h"
 
 #include <algorithm>
 #include <atomic>
+#include <charconv>
 #include <chrono>
 #include <cmath>
 #include <condition_variable>
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <iomanip>
 #include <iostream>
 #include <iterator>
 #include <limits>
 #include <optional>
 #include <stdexcept>
+#include <string>
 #include <string_view>
 #include <thread>
 #include <vector>
 
 namespace
 {
-    using TestFunction = std::function<bool()>;
+    enum class TestTier
+    {
+        Fast,
+        Integration
+    };
+
+    using TestFunction = bool (*)();
+
+    struct TestCase
+    {
+        std::string_view Name;
+        TestFunction Function;
+        TestTier Tier;
+    };
+
+    struct TestResult
+    {
+        const TestCase* Test = nullptr;
+        bool Passed = false;
+        double DurationMs = 0.0;
+    };
+
+    enum class SelectionKind
+    {
+        Tier,
+        ExactName,
+        Filter
+    };
+
+    struct RunnerOptions
+    {
+        SelectionKind Selection = SelectionKind::Tier;
+        TestTier Tier = TestTier::Integration;
+        std::string Value = "integration";
+        std::optional<unsigned long long> BudgetMs;
+        std::optional<std::filesystem::path> ReportPath;
+        std::uint64_t Seed = 0x53504952414c2026ull;
+        std::optional<Spiral::Tests::ChoiceTrace> ReplayTrace;
+        std::filesystem::path FailureDirectory = "output/test-failures";
+        bool SeedSpecified = false;
+        bool FailureDirectorySpecified = false;
+        bool List = false;
+        bool Help = false;
+    };
+
+    std::uint64_t g_GeneratedSeed = 0x53504952414c2026ull;
+    std::optional<Spiral::Tests::ChoiceTrace> g_GeneratedReplay;
+    std::filesystem::path g_GeneratedFailureDirectory = "output/test-failures";
+    std::string g_TestExecutable = "EngineTests";
+
+    const char* ToString(TestTier tier)
+    {
+        return tier == TestTier::Fast ? "Fast" : "Integration";
+    }
+
+    void PrintRunnerUsage(const char* executable)
+    {
+        std::cout << "Usage: " << executable << " [--tier fast|integration | --test exact-name | --filter substring]"
+            << " [--budget-ms positive-integer] [--report-json path] [--seed unsigned-integer]"
+            << " [--replay-trace comma-separated-u64 --failure-dir path]\n"
+            << "       " << executable << " --list\n";
+    }
+
+    bool ParsePositiveInteger(std::string_view text, unsigned long long& value)
+    {
+        if (text.empty())
+            return false;
+
+        const auto [end, error] = std::from_chars(text.data(), text.data() + text.size(), value);
+        return error == std::errc {} && end == text.data() + text.size() && value > 0;
+    }
+
+    bool ParseRunnerOptions(int argc, char** argv, RunnerOptions& options, std::string& error)
+    {
+        bool hasSelection = false;
+        for (int index = 1; index < argc; ++index)
+        {
+            const std::string_view argument = argv[index];
+            const auto requireValue = [&](std::string_view option, std::string_view& value) -> bool
+            {
+                if (++index >= argc)
+                {
+                    error = std::string(option) + " requires a value";
+                    return false;
+                }
+                value = argv[index];
+                return true;
+            };
+
+            if (argument == "--help")
+            {
+                if (options.Help)
+                {
+                    error = "duplicate --help";
+                    return false;
+                }
+                options.Help = true;
+            }
+            else if (argument == "--list")
+            {
+                if (options.List)
+                {
+                    error = "duplicate --list";
+                    return false;
+                }
+                options.List = true;
+            }
+            else if (argument == "--tier" || argument == "--test" || argument == "--filter")
+            {
+                std::string_view value;
+                if (!requireValue(argument, value))
+                    return false;
+                if (hasSelection)
+                {
+                    error = "duplicate or conflicting test selector";
+                    return false;
+                }
+                hasSelection = true;
+                if (argument == "--tier")
+                {
+                    if (value == "fast")
+                        options.Tier = TestTier::Fast;
+                    else if (value == "integration")
+                        options.Tier = TestTier::Integration;
+                    else
+                    {
+                        error = "unknown tier: " + std::string(value);
+                        return false;
+                    }
+                    options.Selection = SelectionKind::Tier;
+                    options.Value = std::string(value);
+                }
+                else
+                {
+                    if (value.empty())
+                    {
+                        error = std::string(argument) + " requires a nonempty value";
+                        return false;
+                    }
+                    options.Selection = argument == "--test" ? SelectionKind::ExactName : SelectionKind::Filter;
+                    options.Value = std::string(value);
+                }
+            }
+            else if (argument == "--budget-ms")
+            {
+                if (options.BudgetMs)
+                {
+                    error = "duplicate --budget-ms";
+                    return false;
+                }
+                std::string_view value;
+                unsigned long long budget = 0;
+                if (!requireValue(argument, value) || !ParsePositiveInteger(value, budget))
+                {
+                    if (error.empty()) error = "--budget-ms requires a positive integer";
+                    return false;
+                }
+                options.BudgetMs = budget;
+            }
+            else if (argument == "--report-json")
+            {
+                if (options.ReportPath)
+                {
+                    error = "duplicate --report-json";
+                    return false;
+                }
+                std::string_view value;
+                if (!requireValue(argument, value) || value.empty())
+                {
+                    if (error.empty()) error = "--report-json requires a nonempty path";
+                    return false;
+                }
+                options.ReportPath = std::filesystem::path(value);
+            }
+            else if (argument == "--seed")
+            {
+                if (options.SeedSpecified)
+                {
+                    error = "duplicate --seed";
+                    return false;
+                }
+                std::string_view value;
+                if (!requireValue(argument, value)) return false;
+                std::uint64_t seed = 0;
+                const auto [parsedEnd, parseError] = std::from_chars(value.data(), value.data() + value.size(), seed);
+                if (value.empty() || parseError != std::errc {} || parsedEnd != value.data() + value.size())
+                {
+                    error = "--seed requires an unsigned integer";
+                    return false;
+                }
+                options.Seed = seed;
+                options.SeedSpecified = true;
+            }
+            else if (argument == "--replay-trace")
+            {
+                if (options.ReplayTrace)
+                {
+                    error = "duplicate --replay-trace";
+                    return false;
+                }
+                std::string_view value;
+                Spiral::Tests::ChoiceTrace trace;
+                if (!requireValue(argument, value) || !Spiral::Tests::ParseTrace(value, trace))
+                {
+                    if (error.empty()) error = "--replay-trace requires comma-separated unsigned integers";
+                    return false;
+                }
+                options.ReplayTrace = std::move(trace);
+            }
+            else if (argument == "--failure-dir")
+            {
+                if (options.FailureDirectorySpecified)
+                {
+                    error = "duplicate --failure-dir";
+                    return false;
+                }
+                std::string_view value;
+                if (!requireValue(argument, value) || value.empty())
+                {
+                    if (error.empty()) error = "--failure-dir requires a nonempty path";
+                    return false;
+                }
+                options.FailureDirectory = std::filesystem::path(value);
+                options.FailureDirectorySpecified = true;
+            }
+            else
+            {
+                error = "unknown argument: " + std::string(argument);
+                return false;
+            }
+        }
+
+        if (options.Help && (argc != 2))
+        {
+            error = "--help cannot be combined with other arguments";
+            return false;
+        }
+        if (options.List && (hasSelection || options.BudgetMs || options.ReportPath || options.ReplayTrace
+            || options.SeedSpecified || options.FailureDirectorySpecified))
+        {
+            error = "--list cannot be combined with test selection, budget, reporting, or replay";
+            return false;
+        }
+        if (options.ReplayTrace && options.Selection != SelectionKind::ExactName)
+        {
+            error = "--replay-trace requires one exact --test selection";
+            return false;
+        }
+        return true;
+    }
+
+    bool MatchesSelection(const TestCase& test, const RunnerOptions& options)
+    {
+        switch (options.Selection)
+        {
+        case SelectionKind::Tier:
+            return options.Tier == TestTier::Integration || test.Tier == TestTier::Fast;
+        case SelectionKind::ExactName:
+            return test.Name == options.Value;
+        case SelectionKind::Filter:
+            return test.Name.find(options.Value) != std::string_view::npos;
+        }
+        return false;
+    }
+
+    std::string SelectionDescription(const RunnerOptions& options)
+    {
+        switch (options.Selection)
+        {
+        case SelectionKind::Tier: return "tier:" + options.Value;
+        case SelectionKind::ExactName: return "test:" + options.Value;
+        case SelectionKind::Filter: return "filter:" + options.Value;
+        }
+        return {};
+    }
+
+    std::string EscapeJson(std::string_view value)
+    {
+        std::string escaped;
+        escaped.reserve(value.size());
+        for (const unsigned char character : value)
+        {
+            switch (character)
+            {
+            case '"': escaped += "\\\""; break;
+            case '\\': escaped += "\\\\"; break;
+            case '\b': escaped += "\\b"; break;
+            case '\f': escaped += "\\f"; break;
+            case '\n': escaped += "\\n"; break;
+            case '\r': escaped += "\\r"; break;
+            case '\t': escaped += "\\t"; break;
+            default:
+                if (character < 0x20)
+                {
+                    constexpr char hex[] = "0123456789abcdef";
+                    escaped += "\\u00";
+                    escaped += hex[character >> 4];
+                    escaped += hex[character & 0x0f];
+                }
+                else
+                    escaped += static_cast<char>(character);
+                break;
+            }
+        }
+        return escaped;
+    }
+
+    bool WriteJsonReport(const std::filesystem::path& path, std::string_view selection,
+        unsigned long long budgetMs, std::uint64_t seed, double totalMs, const std::vector<TestResult>& results,
+        size_t failures, bool budgetExceeded, std::string& error)
+    {
+        std::error_code filesystemError;
+        const std::filesystem::path parent = path.parent_path();
+        if (!parent.empty())
+        {
+            std::filesystem::create_directories(parent, filesystemError);
+            if (filesystemError)
+            {
+                error = "could not create report directory: " + filesystemError.message();
+                return false;
+            }
+        }
+
+        const std::filesystem::path temporary = path.string() + ".tmp-" + std::to_string(
+            std::chrono::steady_clock::now().time_since_epoch().count());
+        const auto cleanup = [&]() { std::filesystem::remove(temporary, filesystemError); };
+        std::ofstream output(temporary, std::ios::binary | std::ios::trunc);
+        if (!output)
+        {
+            error = "could not open temporary report";
+            cleanup();
+            return false;
+        }
+
+        output << std::fixed << std::setprecision(3)
+            << "{\n  \"schema\":1,\n  \"selection\":\"" << EscapeJson(selection)
+            << "\",\n  \"budgetMs\":" << budgetMs
+            << ",\n  \"seed\":" << seed
+            << ",\n  \"totalMs\":" << totalMs
+            << ",\n  \"selectedCount\":" << results.size()
+            << ",\n  \"failures\":" << failures
+            << ",\n  \"budgetExceeded\":" << (budgetExceeded ? "true" : "false")
+            << ",\n  \"results\":[\n";
+        for (size_t index = 0; index < results.size(); ++index)
+        {
+            const TestResult& result = results[index];
+            output << "    {\"name\":\"" << EscapeJson(result.Test->Name)
+                << "\",\"tier\":\"" << ToString(result.Test->Tier)
+                << "\",\"status\":\"" << (result.Passed ? "passed" : "failed")
+                << "\",\"durationMs\":" << result.DurationMs << "}";
+            output << (index + 1 == results.size() ? "\n" : ",\n");
+        }
+        output << "  ]\n}\n";
+        output.close();
+        if (!output)
+        {
+            error = "could not write temporary report";
+            cleanup();
+            return false;
+        }
+
+        if (std::filesystem::exists(path, filesystemError))
+        {
+            if (filesystemError || !std::filesystem::remove(path, filesystemError))
+            {
+                error = "could not replace existing report: " + filesystemError.message();
+                cleanup();
+                return false;
+            }
+        }
+        filesystemError.clear();
+        std::filesystem::rename(temporary, path, filesystemError);
+        if (filesystemError)
+        {
+            error = "could not rename temporary report: " + filesystemError.message();
+            cleanup();
+            return false;
+        }
+        return true;
+    }
+
+    bool RunGeneratedProperty(std::string_view testName, const Spiral::Tests::Property& property,
+        size_t iterations = 256)
+    {
+        Spiral::Tests::CampaignOptions options;
+        options.Seed = g_GeneratedSeed;
+        options.Iterations = iterations;
+        options.Replay = g_GeneratedReplay;
+        Spiral::Tests::Counterexample failure;
+        if (Spiral::Tests::RunCampaign(options, property, failure)) return true;
+
+        const std::string minimized = Spiral::Tests::SerializeTrace(failure.MinimizedTrace);
+        const std::string rerun = "\"" + g_TestExecutable + "\" --test \"" + std::string(testName)
+            + "\" --seed " + std::to_string(failure.Seed) + " --replay-trace \"" + minimized + "\"";
+        const std::filesystem::path artifact = g_GeneratedFailureDirectory /
+            ("counterexample-" + std::to_string(std::hash<std::string_view> {}(testName)) + ".json");
+        std::string artifactError;
+        const bool artifactWritten = Spiral::Tests::WriteCounterexample(
+            artifact, testName, failure, rerun, artifactError);
+        std::cerr << "  Generated property failed: " << failure.Message
+            << " seed=" << failure.Seed
+            << " iteration=" << failure.Iteration
+            << " originalTrace=" << Spiral::Tests::SerializeTrace(failure.OriginalTrace)
+            << " minimizedTrace=" << minimized << '\n'
+            << "  Rerun: " << rerun << '\n';
+        if (artifactWritten)
+            std::cerr << "  Counterexample: " << artifact.string() << '\n';
+        else
+            std::cerr << "  Counterexample write failed: " << artifactError << '\n';
+        return false;
+    }
 
     bool Expect(bool condition, std::string_view message)
     {
@@ -47,9 +462,135 @@ namespace
         return condition;
     }
 
+    bool TestGeneratedTestSupportReplaysAndMinimizes()
+    {
+        using namespace Spiral::Tests;
+        const ChoiceTrace original { 123, 456, 999 };
+        const Property property = [](ChoiceStream& choices, std::string& message)
+        {
+            const std::uint64_t first = choices.Next();
+            const std::uint64_t second = choices.Next();
+            if (first >= 10 && second >= 20)
+            {
+                message = "synthetic two-choice invariant";
+                return false;
+            }
+            return true;
+        };
+        CampaignOptions options;
+        options.Seed = 7;
+        options.Replay = original;
+        Counterexample failure;
+        const bool counterexampleFound = !RunCampaign(options, property, failure);
+        ChoiceTrace parsed;
+        const bool roundTrip = ParseTrace(SerializeTrace(failure.MinimizedTrace), parsed)
+            && parsed == failure.MinimizedTrace;
+        ChoiceStream first(42), second(42);
+        const std::vector<std::int64_t> boundaries { -1, 0, 1 };
+        const std::int64_t firstValue = first.NextI64(-100, 100, boundaries);
+        const std::int64_t secondValue = second.NextI64(-100, 100, boundaries);
+        return Expect(counterexampleFound && failure.OriginalTrace == original,
+                "generated support replays the caller-supplied serialized choice trace")
+            && Expect(failure.MinimizedTrace.size() == 2 && roundTrip,
+                "counterexample minimization removes irrelevant choices and preserves replay serialization")
+            && Expect(firstValue == secondValue && first.Trace() == second.Trace(),
+                "stable seeds reproduce boundary-weighted generated values and their trace");
+    }
+
+    bool TestGeneratedWorldGridNormalizationProperties()
+    {
+        constexpr std::string_view name = "Generated world-grid normalization preserves canonical reference results";
+        const Spiral::Tests::Property property = [](Spiral::Tests::ChoiceStream& choices, std::string& message)
+        {
+            using namespace Engine::Math;
+            const std::vector<std::int64_t> sectorBoundaries { -1000000, -1, 0, 1, 1000000 };
+            const std::vector<std::int64_t> localQuarterBoundaries {
+                -16384, -8193, -8192, -8191, -1, 0, 1, 8191, 8192, 8193, 16384
+            };
+            const std::int64_t sourceSector = choices.NextI64(-1000000, 1000000, sectorBoundaries);
+            const std::int64_t localQuarters = choices.NextI64(-16384, 16384, localQuarterBoundaries);
+            const double local = static_cast<double>(localQuarters) * 0.25;
+            const WorldGridPolicy policy;
+            SectorLocalPosition source;
+            source.Sector.X = sourceSector;
+            source.Local.X = local;
+            SectorLocalPosition normalized;
+            const std::int64_t carry = static_cast<std::int64_t>(std::floor(
+                (local + policy.SectorExtent * 0.5) / policy.SectorExtent));
+            const std::int64_t expectedSector = sourceSector + carry;
+            const double expectedLocal = local - static_cast<double>(carry) * policy.SectorExtent;
+            if (!TryNormalizeSectorLocal(source, policy, normalized)
+                || !IsCanonical(normalized, policy)
+                || normalized.Sector.X != expectedSector
+                || normalized.Local.X != expectedLocal)
+            {
+                message = "normalization diverged from the independent centered-half-open carry model";
+                return false;
+            }
+            return true;
+        };
+        return Expect(RunGeneratedProperty(name, property, 512),
+            "boundary-weighted generated world-grid values match the independent carry model");
+    }
+
     std::filesystem::path TestFilePath(std::string_view name)
     {
         return std::filesystem::temp_directory_path() / ("spiral-" + std::string(name));
+    }
+
+    bool TestGeneratedCounterexampleArtifactPreservesReplayData()
+    {
+        using namespace Spiral::Tests;
+        const std::filesystem::path path = TestFilePath("generated-counterexample.json");
+        std::error_code filesystemError;
+        std::filesystem::remove(path, filesystemError);
+
+        Counterexample failure;
+        failure.Seed = 42;
+        failure.Iteration = 7;
+        failure.Message = "synthetic artifact invariant";
+        failure.OriginalTrace = { 9, 8, 7 };
+        failure.MinimizedTrace = { 9, 8 };
+        const std::string rerun = "EngineTests --test generated --seed 42 --replay-trace 9,8";
+        std::string error;
+        const bool written = WriteCounterexample(path, "generated artifact test", failure, rerun, error);
+        std::ifstream input(path, std::ios::binary);
+        const std::string contents((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
+        std::filesystem::remove(path, filesystemError);
+        return Expect(written && error.empty(), "counterexample artifact publishes atomically")
+            && Expect(contents.find("\"seed\":42") != std::string::npos
+                    && contents.find("\"originalTrace\":\"9,8,7\"") != std::string::npos
+                    && contents.find("\"minimizedTrace\":\"9,8\"") != std::string::npos
+                    && contents.find("--replay-trace 9,8") != std::string::npos,
+                "counterexample artifact retains exact seed, original/minimized traces, and rerun command");
+    }
+
+    std::filesystem::path FindStructuredFuzzCorpus()
+    {
+        const auto search = [](std::filesystem::path root)
+        {
+            for (int depth = 0; depth < 8 && !root.empty(); ++depth)
+            {
+                const std::filesystem::path candidate = root / "Tests/Corpus/Fuzz";
+                if (std::filesystem::is_directory(candidate)) return candidate;
+                root = root.parent_path();
+            }
+            return std::filesystem::path {};
+        };
+        if (const std::filesystem::path fromWorkingDirectory = search(std::filesystem::current_path());
+            !fromWorkingDirectory.empty()) return fromWorkingDirectory;
+        return search(std::filesystem::absolute(g_TestExecutable).parent_path());
+    }
+
+    bool TestStructuredFuzzCorpusReplay()
+    {
+        const std::filesystem::path corpus = FindStructuredFuzzCorpus();
+        std::string error;
+        const bool replayed = Spiral::Tests::ReplayStructuredCorpus(
+            corpus, g_GeneratedFailureDirectory / "structured-fuzz", error);
+        if (!replayed) std::cerr << "  Structured fuzz replay failed: " << error << '\n';
+        return Expect(replayed,
+            "checked-in Scene and portable-shader corpus replays valid generation, field corruption, truncation, version edits, bit flips, and crossover");
     }
 
     bool TestFramePacingPolicyResolutionAndValidation()
@@ -2428,6 +2969,68 @@ float4 main(VertexInput input) : SV_Position
         description.TextureFormat = Engine::RHI::Format::R8G8B8A8Unorm;
         description.InitialState = initialState;
         return description;
+    }
+
+    bool TestGeneratedRenderGraphHazardProperties()
+    {
+        constexpr std::string_view name = "Generated render-graph hazards match the reference state model";
+        const Spiral::Tests::Property property = [](Spiral::Tests::ChoiceStream& choices, std::string& message)
+        {
+            using namespace Engine;
+            using namespace Engine::RHI;
+            const size_t passCount = choices.NextSize(2, 8);
+            std::vector<bool> writes;
+            writes.reserve(passCount);
+            RenderGraph graph;
+            const auto texture = graph.AddTexture(
+                MakeGraphTexture("generated-hazards"), RenderGraph::ResourceLifetimeKind::Imported);
+            for (size_t index = 0; index < passCount; ++index)
+            {
+                const bool write = choices.NextBool();
+                writes.push_back(write);
+                const auto pass = graph.AddPass("Generated " + std::to_string(index));
+                if (write) graph.AddWrite(pass, texture, ResourceState::RenderTarget);
+                else graph.AddRead(pass, texture, ResourceState::ShaderResource, ShaderStage::Pixel);
+            }
+
+            std::vector<std::pair<Engine::u32, Engine::u32>> expected;
+            std::optional<Engine::u32> lastWriter;
+            std::vector<Engine::u32> readers;
+            for (size_t index = 0; index < writes.size(); ++index)
+            {
+                if (!writes[index])
+                {
+                    if (lastWriter) expected.emplace_back(*lastWriter, static_cast<Engine::u32>(index));
+                    readers.push_back(static_cast<Engine::u32>(index));
+                    continue;
+                }
+                if (lastWriter) expected.emplace_back(*lastWriter, static_cast<Engine::u32>(index));
+                for (const Engine::u32 reader : readers)
+                    expected.emplace_back(reader, static_cast<Engine::u32>(index));
+                readers.clear();
+                lastWriter = static_cast<Engine::u32>(index);
+            }
+
+            const RenderGraph::CompileResult compiled = graph.Compile();
+            if (!compiled.Success || compiled.Passes.size() != passCount || compiled.Dependencies.size() != expected.size())
+            {
+                message = "compiled graph count diverged from the independent single-resource hazard model";
+                return false;
+            }
+            for (size_t index = 0; index < expected.size(); ++index)
+            {
+                if (compiled.Dependencies[index].Producer.Index != expected[index].first
+                    || compiled.Dependencies[index].Consumer.Index != expected[index].second
+                    || compiled.Dependencies[index].Resource.Index != texture.Index)
+                {
+                    message = "RAW/WAR/WAW edge order diverged from the independent hazard model";
+                    return false;
+                }
+            }
+            return true;
+        };
+        return Expect(RunGeneratedProperty(name, property, 512),
+            "generated stateful graph sequences preserve exact reference RAW/WAR/WAW dependencies");
     }
 
     bool TestRenderGraphOrdersHazardsAndLifetimesDeterministically()
@@ -4911,98 +5514,191 @@ float4 main(VertexInput input) : SV_Position
 
 }
 
-int main()
+int main(int argc, char** argv)
 {
+#define FAST_TEST(name, function) TestCase { name, function, TestTier::Fast }
+#define INTEGRATION_TEST(name, function) TestCase { name, function, TestTier::Integration }
+    const std::vector<TestCase> tests = {
+        FAST_TEST("Generated test support replays and minimizes counterexamples", TestGeneratedTestSupportReplaysAndMinimizes),
+        INTEGRATION_TEST("Generated counterexample artifacts preserve replay data", TestGeneratedCounterexampleArtifactPreservesReplayData),
+        INTEGRATION_TEST("Structured Scene and shader fuzz corpus replays deterministically", TestStructuredFuzzCorpusReplay),
+        FAST_TEST("Frame pacing policy resolves overrides and validates targets", TestFramePacingPolicyResolutionAndValidation),
+        FAST_TEST("Smooth Frametime pacer preserves deadlines overruns and mode switches", TestSmoothFrametimePacerDeadlinesAndModeSwitch),
+        FAST_TEST("Frame lifecycle telemetry orders phases and retains unavailable feedback", TestFrameLifecycleTelemetryOrderAndUnavailableStates),
+        FAST_TEST("Renderer GPU timing preserves exact frame pass and status identity", TestRendererGpuTimingPublicationPreservesExactFrameAndStatuses),
+        INTEGRATION_TEST("Frame pacing benchmark retains, aggregates, and exports stable capture artifacts", TestFramePacingBenchmarkRetentionStatisticsAndStableExport),
+        INTEGRATION_TEST("Frame pacing attachment readiness and release preserve exact external identity", TestFramePacingAttachmentReadinessAndReleaseValidation),
+        INTEGRATION_TEST("Slang compiler emits validated portable shader packages", TestSlangShaderCompilerProducesPortableValidatedPackages),
+        INTEGRATION_TEST("Async shader publication is nonblocking deduplicated and atomic", TestAsyncShaderPackagePublicationIsNonblockingDeduplicatedAndAtomic),
+        INTEGRATION_TEST("Async shader failure retention inline equivalence and shutdown safety", TestAsyncShaderFailureRetentionInlineEquivalenceAndShutdownSafety),
+        FAST_TEST("Render graph orders hazards and lifetimes deterministically", TestRenderGraphOrdersHazardsAndLifetimesDeterministically),
+        FAST_TEST("Generated render-graph hazards match the reference state model", TestGeneratedRenderGraphHazardProperties),
+        FAST_TEST("Render graph tracks RAW WAR WAW barriers and queue transitions", TestRenderGraphTracksRawWarWawBarriersAndQueueTransitions),
+        FAST_TEST("Render graph rejects invalid declarations and cycles", TestRenderGraphRejectsInvalidDeclarationsAndCycles),
+        FAST_TEST("Render graph executor rejects invalid bindings before recording", TestRenderGraphExecutorRejectsBindingsBeforeRecording),
+        FAST_TEST("Render graph executor stops after callback failure", TestRenderGraphExecutorStopsAfterCallbackFailure),
+        FAST_TEST("Render graph executor orders barriers and restricts context", TestRenderGraphExecutorOrdersBarriersAndRestrictsContext),
+        FAST_TEST("Render graph executor exhausts and reuses exact retired contexts", TestRenderGraphExecutorPoolExhaustionAndExactRetirement),
+        FAST_TEST("Render graph transient allocation reuses compatible lifetimes after exact retirement", TestRenderGraphTransientAllocationReuseAndExactRetirement),
+        FAST_TEST("Render graph transient accepted prefixes retain exact retirement", TestRenderGraphTransientAcceptedPrefixRetainsRetirement),
+        FAST_TEST("Render graph transient logical texture estimates cover mips and formats", TestRenderGraphTransientLogicalTextureCost),
+        FAST_TEST("Render graph executor translates cross-queue ownership and fallback", TestRenderGraphExecutorCrossQueueOwnershipAndFallback),
+        FAST_TEST("Render graph executor preserves accepted prefix on missing producer token", TestRenderGraphExecutorRejectsMissingProducerTokenBeforeConsumer),
+        FAST_TEST("Render graph worker recording preserves eligibility ordering and retirement", TestRenderGraphWorkerRecordingContract),
+        FAST_TEST("Submitted render graph frames retire exact tokens without waiting", TestSubmittedRenderGraphFrameOwnerRetiresWithoutWaiting),
+        FAST_TEST("Render graph timestamp scopes retire exact frame and pass identity", TestRenderGraphTimestampScopesRetireWithExactFrameIdentity),
+        FAST_TEST("RHI buffer transition contract rejects incompatible states", TestRhiBufferTransitionContract),
+        FAST_TEST("RHI completion token contract rejects unissued identities", TestRhiCompletionTokenContract),
+        FAST_TEST("RHI timestamp query lifecycle preserves generation-safe nonblocking results", TestTimestampQueryPoolLifecycleContract),
+        FAST_TEST("RHI timestamp query transactions retain native state through exact-token retirement", TestTimestampQueryTransactionRetirementContract),
+        FAST_TEST("RHI timestamp query retirement serializes concurrent pass reservations", TestTimestampQueryRetirementQueueConcurrentReservations),
+        FAST_TEST("RHI submission dependencies reject invalid token graphs", TestRhiSubmissionDependencyValidation),
+        FAST_TEST("RHI queue topology submits dependencies without premature publication", TestRhiQueueTopologyDependencySubmissionContract),
+        FAST_TEST("RHI resource-state query rejects null foreign and unknown resources", TestRhiResourceOwnershipContract),
+        FAST_TEST("RHI buffer ownership lifecycle publishes only accepted exact-token pairs", TestRhiBufferOwnershipLifecycleContract),
+        FAST_TEST("RHI buffer ownership recovery and adapter seams preserve fallback semantics", TestRhiBufferOwnershipRecoveryAndAdapterSeams),
+        FAST_TEST("RHI texture ownership tracker preserves accepted-token pending publication", TestRhiTextureOwnershipLifecycleContract),
+        FAST_TEST("Vulkan queue admission preserves fallback same-family and split-family policy", TestVulkanQueueAdmissionPolicy),
+        FAST_TEST("JobSystem contains worker exceptions", TestJobSystemContainsWorkerExceptions),
+        FAST_TEST("JobSystem inline fallback is reentrant", TestJobSystemInlineFallbackIsReentrant),
+        FAST_TEST("JobSystem steals nested worker jobs", TestJobSystemStealsNestedWorkerJobs),
+        FAST_TEST("Worker wait and nested graph are safe", TestWorkerWaitAndNestedGraphAreSafe),
+        FAST_TEST("Frame task graph publishes deterministically", TestFrameTaskGraphPublishesDeterministically),
+        FAST_TEST("Frame task graph propagates failure", TestFrameTaskGraphPropagatesFailure),
+        FAST_TEST("Frame task graph schedules fan-in and fan-out", TestFrameTaskGraphSchedulesFanInAndFanOut),
+        FAST_TEST("Frame task graph rejects cycles", TestFrameTaskGraphRejectsCycles),
+        FAST_TEST("Frame task graph rejects invalid dependencies", TestFrameTaskGraphRejectsInvalidDependencies),
+        INTEGRATION_TEST("Scene round trip", TestSceneRoundTrip),
+        INTEGRATION_TEST("Scene version 4 canonical persistence", TestSceneVersionFourCanonicalPersistence),
+        INTEGRATION_TEST("Scene loads legacy absolute transforms", TestSceneLoadsLegacyAbsoluteTransforms),
+        INTEGRATION_TEST("Scene rejects invalid version 4 world state", TestSceneRejectsInvalidVersionFourWorldState),
+        FAST_TEST("Camera-relative large-world transform", TestCameraRelativeLargeWorldTransform),
+        FAST_TEST("World grid canonicalization and bounds", TestWorldGridCanonicalizationAndBounds),
+        FAST_TEST("Generated world-grid normalization preserves canonical reference results", TestGeneratedWorldGridNormalizationProperties),
+        FAST_TEST("Per-view sector-snapped origin tracking", TestPerViewSectorSnappedOriginTracking),
+        FAST_TEST("Scene raster origin epoch invariance", TestSceneRasterOriginEpochInvariance),
+        FAST_TEST("Scene render snapshot extraction and retained epochs", TestSceneRenderSnapshotExtractionAndRetainedEpochs),
+        INTEGRATION_TEST("Scene rejects truncated components", TestSceneRejectsTruncatedComponent),
+        INTEGRATION_TEST("Scene loads version-one camera", TestSceneLoadsVersionOneCamera),
+        INTEGRATION_TEST("Scene rejects duplicate entities", TestSceneRejectsDuplicateEntities),
+        FAST_TEST("Capability state keeps lifecycle stages distinct", TestCapabilityStateKeepsLifecycleStagesDistinct),
+        FAST_TEST("Capability selection retains fallbacks and rejections", TestCapabilitySelectionRetainsFallbacksAndRejections),
+        FAST_TEST("Capability selection validates format usage and stable ranking", TestCapabilitySelectionValidatesFormatUsageAndStableRanking),
+        FAST_TEST("Capability selection rejects API limits and synchronization", TestCapabilitySelectionRejectsApiLimitsAndSynchronization),
+        FAST_TEST("Capability selection honors strict preference", TestCapabilitySelectionHonorsStrictPreference),
+        FAST_TEST("Capability diagnostics helpers are deterministic and bounds safe", TestCapabilityDiagnosticsHelpersAreDeterministicAndBoundsSafe),
+        FAST_TEST("Editor capability reason diagnostics preserve fallbacks and rejections", TestEditorCapabilityReasonDiagnosticsPreserveFallbacksAndRejections),
+        FAST_TEST("Frame timing capability group selects usable GPU timestamps", TestFrameTimingCapabilityGroupSelectsUsableGpuTimestamps),
+        FAST_TEST("Frame timing capability group selects portable CPU fallback", TestFrameTimingCapabilityGroupSelectsPortableCpuFallback),
+        INTEGRATION_TEST("Portable shader contract validates deterministic cache and layouts", TestPortableShaderContract),
+        FAST_TEST("Frame timing capability group rejects invalid timestamp lifecycle", TestFrameTimingCapabilityGroupRejectsInvalidTimestampLifecycle),
+        FAST_TEST("Transient capability group selects placed aliasing only when both RHI features are usable", TestTransientCapabilityGroupSelectsPlacedAliasingOnlyWhenBothRhiFeaturesAreUsable),
+        FAST_TEST("Transient capability group selects GPU-retired non-aliased fallback", TestTransientCapabilityGroupSelectsGpuRetiredNonAliasedFallback)
+    };
+#undef INTEGRATION_TEST
+#undef FAST_TEST
+
+    RunnerOptions options;
+    std::string parseError;
+    if (!ParseRunnerOptions(argc, argv, options, parseError))
+    {
+        std::cerr << "EngineTests argument error: " << parseError << '\n';
+        PrintRunnerUsage(argv[0]);
+        return 2;
+    }
+    if (options.Help)
+    {
+        PrintRunnerUsage(argv[0]);
+        return 0;
+    }
+    if (options.List)
+    {
+        for (const TestCase& test : tests)
+            std::cout << ToString(test.Tier) << '\t' << test.Name << '\n';
+        return 0;
+    }
+
+    std::vector<const TestCase*> selected;
+    for (const TestCase& test : tests)
+    {
+        if (MatchesSelection(test, options))
+            selected.push_back(&test);
+    }
+    if (selected.empty())
+    {
+        std::cerr << "EngineTests selection matched zero tests: " << SelectionDescription(options) << '\n';
+        return 2;
+    }
+
+    const bool containsIntegration = std::any_of(selected.begin(), selected.end(), [](const TestCase* test)
+    {
+        return test->Tier == TestTier::Integration;
+    });
+    const unsigned long long budgetMs = options.BudgetMs.value_or(containsIntegration ? 300000ull : 60000ull);
+    const std::string selection = SelectionDescription(options);
+    g_GeneratedSeed = options.Seed;
+    g_GeneratedReplay = options.ReplayTrace;
+    g_GeneratedFailureDirectory = options.FailureDirectory;
+    g_TestExecutable = argv[0];
     Engine::Log::Init();
 
-    const std::vector<std::pair<std::string_view, TestFunction>> tests = {
-        { "Frame pacing policy resolves overrides and validates targets", TestFramePacingPolicyResolutionAndValidation },
-        { "Smooth Frametime pacer preserves deadlines overruns and mode switches", TestSmoothFrametimePacerDeadlinesAndModeSwitch },
-        { "Frame lifecycle telemetry orders phases and retains unavailable feedback", TestFrameLifecycleTelemetryOrderAndUnavailableStates },
-        { "Renderer GPU timing preserves exact frame pass and status identity", TestRendererGpuTimingPublicationPreservesExactFrameAndStatuses },
-        { "Frame pacing benchmark retains, aggregates, and exports stable capture artifacts", TestFramePacingBenchmarkRetentionStatisticsAndStableExport },
-        { "Frame pacing attachment readiness and release preserve exact external identity", TestFramePacingAttachmentReadinessAndReleaseValidation },
-        { "Slang compiler emits validated portable shader packages", TestSlangShaderCompilerProducesPortableValidatedPackages },
-        { "Async shader publication is nonblocking deduplicated and atomic", TestAsyncShaderPackagePublicationIsNonblockingDeduplicatedAndAtomic },
-        { "Async shader failure retention inline equivalence and shutdown safety", TestAsyncShaderFailureRetentionInlineEquivalenceAndShutdownSafety },
-        { "Render graph orders hazards and lifetimes deterministically", TestRenderGraphOrdersHazardsAndLifetimesDeterministically },
-        { "Render graph tracks RAW WAR WAW barriers and queue transitions", TestRenderGraphTracksRawWarWawBarriersAndQueueTransitions },
-        { "Render graph rejects invalid declarations and cycles", TestRenderGraphRejectsInvalidDeclarationsAndCycles },
-        { "Render graph executor rejects invalid bindings before recording", TestRenderGraphExecutorRejectsBindingsBeforeRecording },
-        { "Render graph executor stops after callback failure", TestRenderGraphExecutorStopsAfterCallbackFailure },
-        { "Render graph executor orders barriers and restricts context", TestRenderGraphExecutorOrdersBarriersAndRestrictsContext },
-        { "Render graph executor exhausts and reuses exact retired contexts", TestRenderGraphExecutorPoolExhaustionAndExactRetirement },
-        { "Render graph transient allocation reuses compatible lifetimes after exact retirement", TestRenderGraphTransientAllocationReuseAndExactRetirement },
-        { "Render graph transient accepted prefixes retain exact retirement", TestRenderGraphTransientAcceptedPrefixRetainsRetirement },
-        { "Render graph transient logical texture estimates cover mips and formats", TestRenderGraphTransientLogicalTextureCost },
-        { "Render graph executor translates cross-queue ownership and fallback", TestRenderGraphExecutorCrossQueueOwnershipAndFallback },
-        { "Render graph executor preserves accepted prefix on missing producer token", TestRenderGraphExecutorRejectsMissingProducerTokenBeforeConsumer },
-        { "Render graph worker recording preserves eligibility ordering and retirement", TestRenderGraphWorkerRecordingContract },
-        { "Submitted render graph frames retire exact tokens without waiting", TestSubmittedRenderGraphFrameOwnerRetiresWithoutWaiting },
-        { "Render graph timestamp scopes retire exact frame and pass identity", TestRenderGraphTimestampScopesRetireWithExactFrameIdentity },
-        { "RHI buffer transition contract rejects incompatible states", TestRhiBufferTransitionContract },
-        { "RHI completion token contract rejects unissued identities", TestRhiCompletionTokenContract },
-        { "RHI timestamp query lifecycle preserves generation-safe nonblocking results", TestTimestampQueryPoolLifecycleContract },
-        { "RHI timestamp query transactions retain native state through exact-token retirement", TestTimestampQueryTransactionRetirementContract },
-        { "RHI timestamp query retirement serializes concurrent pass reservations", TestTimestampQueryRetirementQueueConcurrentReservations },
-        { "RHI submission dependencies reject invalid token graphs", TestRhiSubmissionDependencyValidation },
-        { "RHI queue topology submits dependencies without premature publication", TestRhiQueueTopologyDependencySubmissionContract },
-        { "RHI resource-state query rejects null foreign and unknown resources", TestRhiResourceOwnershipContract },
-        { "RHI buffer ownership lifecycle publishes only accepted exact-token pairs", TestRhiBufferOwnershipLifecycleContract },
-        { "RHI buffer ownership recovery and adapter seams preserve fallback semantics", TestRhiBufferOwnershipRecoveryAndAdapterSeams },
-        { "RHI texture ownership tracker preserves accepted-token pending publication", TestRhiTextureOwnershipLifecycleContract },
-        { "Vulkan queue admission preserves fallback same-family and split-family policy", TestVulkanQueueAdmissionPolicy },
-        { "JobSystem contains worker exceptions", TestJobSystemContainsWorkerExceptions },
-        { "JobSystem inline fallback is reentrant", TestJobSystemInlineFallbackIsReentrant },
-        { "JobSystem steals nested worker jobs", TestJobSystemStealsNestedWorkerJobs },
-        { "Worker wait and nested graph are safe", TestWorkerWaitAndNestedGraphAreSafe },
-        { "Frame task graph publishes deterministically", TestFrameTaskGraphPublishesDeterministically },
-        { "Frame task graph propagates failure", TestFrameTaskGraphPropagatesFailure },
-        { "Frame task graph schedules fan-in and fan-out", TestFrameTaskGraphSchedulesFanInAndFanOut },
-        { "Frame task graph rejects cycles", TestFrameTaskGraphRejectsCycles },
-        { "Frame task graph rejects invalid dependencies", TestFrameTaskGraphRejectsInvalidDependencies },
-        { "Scene round trip", TestSceneRoundTrip },
-        { "Scene version 4 canonical persistence", TestSceneVersionFourCanonicalPersistence },
-        { "Scene loads legacy absolute transforms", TestSceneLoadsLegacyAbsoluteTransforms },
-        { "Scene rejects invalid version 4 world state", TestSceneRejectsInvalidVersionFourWorldState },
-        { "Camera-relative large-world transform", TestCameraRelativeLargeWorldTransform },
-        { "World grid canonicalization and bounds", TestWorldGridCanonicalizationAndBounds },
-        { "Per-view sector-snapped origin tracking", TestPerViewSectorSnappedOriginTracking },
-        { "Scene raster origin epoch invariance", TestSceneRasterOriginEpochInvariance },
-        { "Scene render snapshot extraction and retained epochs", TestSceneRenderSnapshotExtractionAndRetainedEpochs },
-        { "Scene rejects truncated components", TestSceneRejectsTruncatedComponent },
-        { "Scene loads version-one camera", TestSceneLoadsVersionOneCamera },
-        { "Scene rejects duplicate entities", TestSceneRejectsDuplicateEntities },
-        { "Capability state keeps lifecycle stages distinct", TestCapabilityStateKeepsLifecycleStagesDistinct },
-        { "Capability selection retains fallbacks and rejections", TestCapabilitySelectionRetainsFallbacksAndRejections },
-        { "Capability selection validates format usage and stable ranking", TestCapabilitySelectionValidatesFormatUsageAndStableRanking },
-        { "Capability selection rejects API limits and synchronization", TestCapabilitySelectionRejectsApiLimitsAndSynchronization },
-        { "Capability selection honors strict preference", TestCapabilitySelectionHonorsStrictPreference },
-        { "Capability diagnostics helpers are deterministic and bounds safe", TestCapabilityDiagnosticsHelpersAreDeterministicAndBoundsSafe },
-        { "Editor capability reason diagnostics preserve fallbacks and rejections", TestEditorCapabilityReasonDiagnosticsPreserveFallbacksAndRejections },
-        { "Frame timing capability group selects usable GPU timestamps", TestFrameTimingCapabilityGroupSelectsUsableGpuTimestamps },
-        { "Frame timing capability group selects portable CPU fallback", TestFrameTimingCapabilityGroupSelectsPortableCpuFallback },
-        { "Portable shader contract validates deterministic cache and layouts", TestPortableShaderContract },
-        { "Frame timing capability group rejects invalid timestamp lifecycle", TestFrameTimingCapabilityGroupRejectsInvalidTimestampLifecycle },
-        { "Transient capability group selects placed aliasing only when both RHI features are usable", TestTransientCapabilityGroupSelectsPlacedAliasingOnlyWhenBothRhiFeaturesAreUsable },
-        { "Transient capability group selects GPU-retired non-aliased fallback", TestTransientCapabilityGroupSelectsGpuRetiredNonAliasedFallback }
-    };
-
+    const auto suiteStart = std::chrono::steady_clock::now();
+    std::vector<TestResult> results;
+    results.reserve(selected.size());
     size_t failures = 0;
-    for (const auto& [name, test] : tests)
+    for (const TestCase* test : selected)
     {
-        std::cout << "[ RUN      ] " << name << '\n';
-        if (test())
-            std::cout << "[       OK ] " << name << '\n';
+        std::cout << "[ RUN      ] " << test->Name << " [" << ToString(test->Tier) << "]\n";
+        const auto start = std::chrono::steady_clock::now();
+        bool passed = false;
+        try
+        {
+            passed = test->Function();
+        }
+        catch (const std::exception& exception)
+        {
+            std::cerr << "  Unhandled test exception: " << exception.what() << '\n';
+        }
+        catch (...)
+        {
+            std::cerr << "  Unhandled non-standard test exception\n";
+        }
+        const double durationMs = std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - start).count();
+        results.push_back({ test, passed, durationMs });
+        if (passed)
+            std::cout << "[       OK ] " << test->Name << " (" << std::fixed << std::setprecision(3) << durationMs << " ms)\n";
         else
         {
-            std::cout << "[  FAILED  ] " << name << '\n';
+            std::cout << "[  FAILED  ] " << test->Name << " (" << std::fixed << std::setprecision(3) << durationMs << " ms)\n";
+            std::cerr << "  Rerun: \"" << argv[0] << "\" --test \"" << test->Name << "\"\n";
             ++failures;
         }
     }
 
+    const double totalMs = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - suiteStart).count();
+    const bool budgetExceeded = totalMs > static_cast<double>(budgetMs);
+    std::string reportError;
+    bool reportWritten = true;
+    if (options.ReportPath)
+    {
+        reportWritten = WriteJsonReport(*options.ReportPath, selection, budgetMs, options.Seed, totalMs,
+            results, failures, budgetExceeded, reportError);
+        if (!reportWritten)
+            std::cerr << "EngineTests report error: " << reportError << '\n';
+    }
+
     Engine::JobSystem::Get().Shutdown();
     Engine::Log::Shutdown();
-    std::cout << tests.size() - failures << "/" << tests.size() << " tests passed\n";
-    return failures == 0 ? 0 : 1;
+    std::cout << selected.size() - failures << "/" << selected.size() << " selected tests passed\n";
+    std::cout << "EngineTestSummaryV1 selection=\"" << selection
+        << "\" selected=" << selected.size()
+        << " failures=" << failures
+        << " seed=" << options.Seed
+        << " budgetMs=" << budgetMs
+        << " totalMs=" << std::fixed << std::setprecision(3) << totalMs
+        << " budgetExceeded=" << (budgetExceeded ? "yes" : "no")
+        << " report=" << (options.ReportPath ? (reportWritten ? "written" : "failed") : "not-requested") << '\n';
+    return failures == 0 && !budgetExceeded && reportWritten ? 0 : 1;
 }

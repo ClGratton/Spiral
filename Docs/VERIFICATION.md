@@ -42,9 +42,39 @@ if ($Broken.Count) { $Broken; throw 'Broken Markdown links found.' }
 
 ## Test Selection And Generated Failures
 
-Classify new tests as Fast contract, Integration/headless, Headed/platform, or Stress/fuzz/soak using [TESTING_STRATEGY.md](TESTING_STRATEGY.md). Until the planned selectable runner exists, `EngineTests` remains one complete deterministic executable; a task may use a narrower script-only check during implementation, but the applicable complete contract suite still runs at the coherent integration milestone.
+Classify new tests as Fast contract, Integration/headless, Headed/platform, or Stress/fuzz/soak using [TESTING_STRATEGY.md](TESTING_STRATEGY.md). `EngineTests --tier fast` selects only deterministic in-memory contract tests under a 60-second execution budget. `EngineTests --tier integration` is the complete ordered registry, including filesystem and shader/toolchain cases, under a 300-second execution budget; it is also the compatibility default when no selector is supplied. `--list`, exact `--test`, substring `--filter`, positive `--budget-ms`, and schema-1 `--report-json` provide discovery, focused reruns, explicit overrides, per-test/total durations, and machine-readable evidence. Zero matches and invalid/conflicting selectors fail.
+
+After building, exercise the runner contract itself with:
+
+```powershell
+.\Scripts\TestEngineTestRunner.ps1 -Configuration Debug -Action vs2022
+```
+
+```bash
+bash Scripts/TestEngineTestRunner.sh "$PWD/bin/Debug-<system>-x86_64-gmake/EngineTests/EngineTests"
+```
+
+Both scripts must emit `EngineTestRunnerV1 result=pass`, prove both tiers are nonempty, verify exact/filter/generated-replay selection and JSON schema/order/status/budgets/seed, require default Integration to retain the complete registry, and reject zero/invalid/conflicting selectors plus malformed or non-exact replay. These are runner-contract checks, not sanitizer, fuzz, headed workflow, or backend qualification.
 
 Every generated or randomized failure report must retain the seed, serialized input or operation trace, exact rerun command, tier/timeout, and sanitizer mode under an ignored `output/` path. Reduce it to a deterministic regression fixture or curated corpus entry before completion. A varying-seed campaign is additional stress evidence; it never replaces the stable fast replay.
+
+The complete Integration tier includes `Tests/Corpus/Fuzz/*.case` replay. It exercises valid structure generation and field-aware corruption, truncation, version changes, bit flips, and crossover for transactional Scene loading and portable shader-package loading/validation. Run the same harness as a bounded local campaign with:
+
+```powershell
+.\bin\Debug-windows-x86_64\EngineFuzzTests\EngineFuzzTests.exe --iterations 256 --seed 42
+```
+
+The command must emit `EngineFuzzSummaryV1 ... result=pass`. `--replay <case-or-input>` replays one curated CSV case or exact raw failure input; a failure writes the exact bytes and rerun manifest under ignored `output/fuzz-failures/`.
+
+Linux Clang ASan+UBSan and coverage-guided structured fuzzing use the single canonical command:
+
+```bash
+bash Scripts/TestSanitizers.sh
+```
+
+It generates the isolated `Debug-linux-x86_64-gmake-asan-ubsan` tree, instruments only project-owned Engine/test/fuzz code, leaves vendored GLFW/ImGui/NVRHI/Slang libraries uninstrumented, enables llvm-symbolizer plus fail-fast ASan/UBSan diagnostics and leak detection, runs the complete Integration tier, and runs libFuzzer for 512 inputs from the checked corpus. Success requires `SanitizerLaneV1 ... result=pass`. The CI `Linux ASan UBSan And Structured Fuzz` job is the admitted hosted evidence. This lane makes no TSan, race-freedom, vendor-memory-safety, coverage-percentage, graphics-backend, or physical-device claim; TSan is deferred pending a separately qualified concurrency/toolchain/suppression boundary.
+
+libFuzzer writes a crashing raw input beneath `output/fuzz-failures/`; rerun it by passing that file as the sole positional input to the sanitized executable. Minimize only after reproducing, for example `EngineFuzzTests -minimize_crash=1 -exact_artifact_path=output/fuzz-failures/minimized.input output/fuzz-failures/crash-*`, then add the equivalent small CSV operation case to `Tests/Corpus/Fuzz/` and verify the normal Integration replay.
 
 ## Build And Contract Tests
 
