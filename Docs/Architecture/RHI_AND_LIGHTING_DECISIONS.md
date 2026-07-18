@@ -494,6 +494,8 @@ The default profiler view reports separate series rather than one ambiguous numb
 - **Display cadence:** actual displayed-time intervals from platform feedback or PresentMon-equivalent evidence. If unavailable, show `unavailable`; never rename present cadence as display cadence.
 - **Input latency markers:** input sample to simulation, submit, present, and display where measurable. Do not infer click-to-photon latency from CPU timestamps alone.
 
+Source-alignment invariant: cadence interval `FrameStart[N] - FrameStart[N-1]` terminates on timing record `N`. The InterFrame release for `N` is inside that interval, while SubmissionGate wait, CPU/GPU work, and `Present` that can delay the next start originate on `N-1`. Diagnostics must retain those source frame IDs and their frozen policies rather than comparing cadence `N` with current work `N`. Delayed exact GPU publication for `N-1` may amend only its associated retained cadence `N`. Backend presentation evidence must be an immutable frame-keyed publication; copying the latest mutable backend state is not sufficient. Missing, gapped, evicted, contradictory, or non-exact evidence remains `unavailable`/`Unresolved`, and no engine or present interval becomes display cadence.
+
 The graph must retain spikes and missed deadlines. Aggregation may add p50/p95/p99 and 1%/0.1% lows, but it must not average away individual long frames or rescale each mode so that different pacing policies appear equally stable. External overlay data remains a comparison condition, not the in-game source of truth.
 
 ### Backend Mechanisms
