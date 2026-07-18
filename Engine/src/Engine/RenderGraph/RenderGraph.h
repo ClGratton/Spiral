@@ -215,7 +215,8 @@ namespace Engine
         void SetPassWorkerRecordingEligible(PassHandle pass, bool eligible = true);
         bool BindTexture(ResourceHandle resource, RHI::Texture& texture);
         bool BindBuffer(ResourceHandle resource, RHI::Buffer& buffer);
-        ExecuteResult Execute(RHI::Device& device, const CompileResult& compiled, const ExecuteOptions& options = {});
+        ExecuteResult Execute(RHI::Device& device, const CompileResult& compiled);
+        ExecuteResult Execute(RHI::Device& device, const CompileResult& compiled, const ExecuteOptions& options);
         void AddDebugPass(std::string name);
         void AddResourceUse(PassHandle pass, ResourceUse use);
         void AddDependency(PassHandle producer, PassHandle consumer);

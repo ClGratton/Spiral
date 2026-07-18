@@ -298,6 +298,11 @@ namespace Engine
         m_AutoTransientBindings.clear();
     }
 
+    RenderGraph::ExecuteResult RenderGraph::Execute(RHI::Device& device, const CompileResult& compiled)
+    {
+        return Execute(device, compiled, ExecuteOptions {});
+    }
+
     RenderGraph::ExecuteResult RenderGraph::Execute(RHI::Device& device, const CompileResult& compiled, const ExecuteOptions& options)
     {
         ExecuteResult result;
