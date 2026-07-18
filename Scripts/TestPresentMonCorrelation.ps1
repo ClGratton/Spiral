@@ -32,6 +32,9 @@ try {
     $schema6 = New-Fixture "schema6" -Schema 6
     & $Joiner -EngineJsonPath $schema6.Engine -PresentMonCsvPath $schema6.Csv -OutputPath $schema6.Report -FinalQpcTolerance 20
     if ((Get-Content -Raw $schema6.Report | ConvertFrom-Json).counts.pairedRows -ne 3) { throw "Schema-6 compatibility did not preserve join semantics" }
+    $schema7 = New-Fixture "schema7" -Schema 7
+    & $Joiner -EngineJsonPath $schema7.Engine -PresentMonCsvPath $schema7.Csv -OutputPath $schema7.Report -FinalQpcTolerance 20
+    if ((Get-Content -Raw $schema7.Report | ConvertFrom-Json).counts.pairedRows -ne 3) { throw "Schema-7 compatibility did not preserve join semantics" }
 
     $wrongPid = New-Fixture "wrong-pid" -PresentMonProcessId 7; Assert-Fails { & $Joiner $wrongPid.Engine $wrongPid.Csv $wrongPid.Report -FinalQpcTolerance 20 } "ProcessID"
     $badHeader = New-Fixture "bad-header" -Header ($Headers -replace "Dropped", "DroppedX"); Assert-Fails { & $Joiner $badHeader.Engine $badHeader.Csv $badHeader.Report -FinalQpcTolerance 20 } "header"

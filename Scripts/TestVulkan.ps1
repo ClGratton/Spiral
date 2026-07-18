@@ -104,6 +104,14 @@ $RequiredMarkers = @(
 )
 
 $JoinedLog = $VulkanLog -join "`n"
+$PresentationResult = Invoke-BoundedProcess -FilePath $Executable -Arguments @("--renderer-vulkan", "--presentation-policy-smoke") -Label "Editor Vulkan presentation-policy smoke" -TimeoutSeconds $ChildTimeoutSeconds
+if ($PresentationResult.TimedOut -or $PresentationResult.ExitCode -ne 0) { throw "Vulkan presentation-policy smoke failed." }
+$PresentationLog = $PresentationResult.Output -join "`n"
+if ($PresentationLog -notmatch 'PresentationPolicySmokeV1 state=tearing-resolved requested=TearingAllowed\s+capability=(?:immediate-supported|immediate-unsupported|fifo-required-by-vulkan)\s+actual=Vulkan(?:Immediate|Fifo)\s+fallback=.*?\s+generation=\d+\s+effectiveFrame=\d+' -or
+    $PresentationLog -notmatch 'PresentationPolicySmokeV1 state=stable-request generation=\d+\s+resize=requested restore=Synchronized' -or
+    $PresentationLog -notmatch 'PresentationPolicySmokeV1 state=pass requested=Synchronized\s+capability=(?:fifo-supported|fifo-required-by-vulkan)\s+actual=VulkanFifo\s+fallback=.*?\s+generation=(\d+)\s+effectiveFrame=\d+\s+lastPresentGeneration=\1\s+lastPresentFrame=\d+\s+resize=pass imgui=pass present=pass') {
+    throw "Vulkan presentation-policy smoke did not prove ordered transition, stable FIFO fallback, resize, and final synchronized ImGui/present survival."
+}
 foreach ($Marker in $RequiredMarkers) {
     if (!$JoinedLog.Contains($Marker)) {
         throw "Vulkan render smoke did not emit required marker: $Marker"

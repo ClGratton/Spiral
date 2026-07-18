@@ -13,14 +13,6 @@ param(
     [string]$Candidate = "inter-frame",
     [ValidateRange(30, 600)]
     [int]$TargetFramesPerSecond = 60,
-    [ValidateNotNullOrEmpty()]
-    [string]$PresentationMode = "unknown",
-    [ValidateNotNullOrEmpty()]
-    [string]$SyncMode = "unknown",
-    [ValidateNotNullOrEmpty()]
-    [string]$VrrMode = "unknown",
-    [ValidateNotNullOrEmpty()]
-    [string]$TearingMode = "unknown",
     [ValidateRange(1, 120)]
     [int]$ReadinessTimeoutSeconds = 30,
     [ValidateRange(1, 120)]
@@ -393,9 +385,7 @@ try {
     } else {
         $editorArguments = @("--frame-pacing-benchmark", "--smooth-frametime-target-fps=$TargetFramesPerSecond",
             "--frame-pacing-benchmark-output=$engineDirectory", "--frame-pacing-benchmark-attachment-readiness=$readinessPath",
-            "--frame-pacing-benchmark-attachment-release=$releasePath", "--frame-pacing-benchmark-attachment-timeout-ms=$attachmentTimeoutMilliseconds",
-            "--frame-pacing-benchmark-presentation=$PresentationMode", "--frame-pacing-benchmark-sync=$SyncMode",
-            "--frame-pacing-benchmark-vrr=$VrrMode", "--frame-pacing-benchmark-tearing=$TearingMode")
+            "--frame-pacing-benchmark-attachment-release=$releasePath", "--frame-pacing-benchmark-attachment-timeout-ms=$attachmentTimeoutMilliseconds")
         if ($Candidate -eq "responsive") { $editorArguments += "--frame-pacing-benchmark-responsive" }
         else { $editorArguments += "--smooth-frametime-candidate=$Candidate" }
         if ($Backend -eq "Vulkan") { $editorArguments += "--renderer-vulkan" }
@@ -405,14 +395,20 @@ try {
     $readiness = Read-Readiness $readinessPath ([Diagnostics.Stopwatch]::StartNew()) $editorState
     $expectedBackend = if ($Backend -eq "Vulkan") { "NVRHI Vulkan" } else { "NVRHI D3D12" }
     $expectedCandidate = if ($Candidate -eq "submission-gate") { "SubmissionGate" } else { "InterFrame" }
+    $expectedPresentationMode = if ($Backend -eq "Vulkan") { "VulkanFifo" } else { "D3D12FlipSynchronized" }
+    $expectedPresentationCapability = if ($Backend -eq "Vulkan") { @("fifo-supported", "fifo-required-by-vulkan") } else { @("allow-tearing-supported", "allow-tearing-unsupported") }
+    $expectedPresentationSync = if ($Backend -eq "Vulkan") { "fifo" } else { "interval-1" }
     if ($readiness.schema -ne 1 -or [string]::IsNullOrWhiteSpace([string]$readiness.runId) -or
         [int]$readiness.processId -ne $editorState.Process.Id -or
         ![IO.Path]::GetFullPath([string]$readiness.executablePath).Equals($editorCanonical, [StringComparison]::OrdinalIgnoreCase) -or
         [UInt64]$readiness.qpcFrequency -eq 0 -or [UInt64]$readiness.qpcTick -eq 0 -or
         ![IO.Path]::GetFullPath([string]$readiness.benchmarkArtifactPath).Equals($engineDirectory, [StringComparison]::OrdinalIgnoreCase) -or
         $readiness.condition.backend -cne $expectedBackend -or [double]$readiness.condition.targetFps -ne $TargetFramesPerSecond -or
-        $readiness.condition.candidate -cne $expectedCandidate -or $readiness.condition.presentationMode -cne $PresentationMode -or
-        $readiness.condition.sync -cne $SyncMode -or $readiness.condition.vrr -cne $VrrMode -or $readiness.condition.tearing -cne $TearingMode) {
+        $readiness.condition.candidate -cne $expectedCandidate -or $readiness.condition.requestedPresentationPolicy -cne "Synchronized" -or
+        $readiness.condition.presentationCapability -notin $expectedPresentationCapability -or
+        $readiness.condition.presentationMode -cne $expectedPresentationMode -or $readiness.condition.presentationFallback -cne "none" -or
+        [UInt64]$readiness.condition.presentationGeneration -lt 1 -or $readiness.condition.sync -cne $expectedPresentationSync -or
+        $readiness.condition.vrr -cne "unavailable" -or $readiness.condition.tearing -cne "disabled") {
         throw "Editor attachment readiness identity or condition metadata did not match the launched run"
     }
     if (Test-Path -LiteralPath (Join-Path $engineDirectory "frame-pacing-benchmark.json")) {
@@ -520,7 +516,7 @@ try {
     if (-not ($actualHeader -ceq $ExpectedHeader)) { throw "PresentMon CSV actual header does not match the required 1.10.0 header" }
     $engineArtifact = Get-Content -LiteralPath $engineJson -Raw | ConvertFrom-Json
     $expectedFrameCount = if ($TestMode) { 3 } else { 512 }
-    if ($engineArtifact.schema -notin @(2, 3, 4, 5, 6) -or $engineArtifact.frames.Count -ne $expectedFrameCount -or
+    if ($engineArtifact.schema -notin @(2, 3, 4, 5, 6, 7) -or $engineArtifact.frames.Count -ne $expectedFrameCount -or
         $engineArtifact.condition.runId -cne $readiness.runId -or [int]$engineArtifact.condition.processId -ne [int]$readiness.processId -or
         [UInt64]$engineArtifact.condition.qpcFrequency -ne [UInt64]$readiness.qpcFrequency) {
         throw "Stable engine artifact did not retain the released identity and expected frame count"
@@ -587,7 +583,14 @@ try {
         }
         condition = [ordered]@{
             backend = $Backend; targetFps = $TargetFramesPerSecond; candidate = $Candidate
-            presentationMode = $PresentationMode; sync = $SyncMode; vrr = $VrrMode; tearing = $TearingMode
+            requestedPresentationPolicy = if ($readiness) { $readiness.condition.requestedPresentationPolicy } else { $null }
+            presentationCapability = if ($readiness) { $readiness.condition.presentationCapability } else { $null }
+            presentationMode = if ($readiness) { $readiness.condition.presentationMode } else { $null }
+            presentationFallback = if ($readiness) { $readiness.condition.presentationFallback } else { $null }
+            presentationGeneration = if ($readiness) { $readiness.condition.presentationGeneration } else { $null }
+            sync = if ($readiness) { $readiness.condition.sync } else { $null }
+            vrr = if ($readiness) { $readiness.condition.vrr } else { "unavailable" }
+            tearing = if ($readiness) { $readiness.condition.tearing } else { $null }
             monitor = "unknown"; rtss = "unavailable"; fes = "unavailable"; inputLatency = "unavailable"; gpuHeadroom = "unavailable"
         }
         paths = [ordered]@{

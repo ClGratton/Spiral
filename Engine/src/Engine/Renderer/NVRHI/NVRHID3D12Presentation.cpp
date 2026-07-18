@@ -47,7 +47,7 @@ namespace Engine
         constexpr u32 kSrvDescriptorCount = 256;
         constexpr u32 kInvalidDescriptorIndex = std::numeric_limits<u32>::max();
         constexpr DXGI_FORMAT kSwapchainFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
-        constexpr DXGI_SWAP_CHAIN_FLAG kSwapchainFlags = DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
+        constexpr DXGI_SWAP_CHAIN_FLAG kBaseSwapchainFlags = DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
 
         const wchar_t* GetBackBufferName(u32 index)
         {
@@ -263,6 +263,15 @@ namespace Engine
             return m_PresentationTiming;
         }
 
+        void SetPresentationPolicy(PresentationPolicy policy)
+        {
+            m_Transition.Request(policy);
+            m_RequestedPolicy = policy;
+            m_PolicyDiagnostics.Requested = policy;
+        }
+
+        const RendererPresentationPolicyDiagnostics& GetPresentationPolicyDiagnostics() const { return m_PolicyDiagnostics; }
+
         void WaitForFrameLatency()
         {
             m_PresentationTiming.ApplicationFrameIndex.reset();
@@ -383,7 +392,9 @@ namespace Engine
             const u64 applicationFrameIndex = Renderer::GetLastFrameTiming().FrameIndex;
             Renderer::RecordFrameLifecyclePhase(applicationFrameIndex, RendererFrameLifecyclePhase::PresentBegin);
             const auto presentStart = std::chrono::steady_clock::now();
-            result = m_Swapchain->Present(1, 0);
+            const UINT syncInterval = m_ActualPolicy == PresentationPolicy::TearingAllowed ? 0u : 1u;
+            const UINT presentFlags = m_ActualPolicy == PresentationPolicy::TearingAllowed ? DXGI_PRESENT_ALLOW_TEARING : 0u;
+            result = m_Swapchain->Present(syncInterval, presentFlags);
             const auto presentEnd = std::chrono::steady_clock::now();
             m_PresentationTiming.PresentMilliseconds = std::chrono::duration<double, std::milli>(presentEnd - presentStart).count();
             m_PresentationTiming.PresentSucceeded = SUCCEEDED(result);
@@ -391,6 +402,14 @@ namespace Engine
             Renderer::RecordFrameLifecyclePhase(applicationFrameIndex, RendererFrameLifecyclePhase::PresentEnd);
             if (FAILED(result))
                 Log::Error("D3D12 swapchain present failed: ", HResultToString(result));
+            else
+            {
+                m_LastSuccessfulPresentGeneration = m_PresentationGeneration;
+                m_PresentationTiming.SwapchainGeneration = m_PresentationGeneration;
+                m_PresentationTiming.LastSuccessfulPresentGeneration = m_LastSuccessfulPresentGeneration;
+                m_PolicyDiagnostics.LastSuccessfulPresentGeneration = m_LastSuccessfulPresentGeneration;
+                m_PolicyDiagnostics.LastSuccessfulPresentApplicationFrame = applicationFrameIndex;
+            }
 
             const u64 fenceValue = ++m_LastFenceValue;
             result = m_GraphicsQueue->Signal(m_Fence.Get(), fenceValue);
@@ -619,6 +638,17 @@ namespace Engine
             return written;
         }
 
+        bool ApplyPendingPresentationPolicyForCurrentFramebuffer()
+        {
+            if (!m_Initialized)
+                return false;
+            int width = 0;
+            int height = 0;
+            glfwGetFramebufferSize(m_Window, &width, &height);
+            return width > 0 && height > 0
+                && ApplyPendingPresentationPolicy(static_cast<u32>(width), static_cast<u32>(height));
+        }
+
     private:
         bool CreateDescriptorHeaps()
         {
@@ -690,7 +720,8 @@ namespace Engine
             swapchainDesc.Scaling = DXGI_SCALING_STRETCH;
             swapchainDesc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
             swapchainDesc.AlphaMode = DXGI_ALPHA_MODE_UNSPECIFIED;
-            swapchainDesc.Flags = kSwapchainFlags;
+            const bool allowTearing = m_RequestedPolicy == PresentationPolicy::TearingAllowed && m_WindowTearingEligible && IsFactoryTearingSupported();
+            swapchainDesc.Flags = allowTearing ? static_cast<DXGI_SWAP_CHAIN_FLAG>(kBaseSwapchainFlags | DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING) : kBaseSwapchainFlags;
 
             ComPtr<IDXGISwapChain1> swapchain1;
             HRESULT result = m_Factory->CreateSwapChainForHwnd(m_GraphicsQueue, hwnd, &swapchainDesc, nullptr, nullptr, &swapchain1);
@@ -714,7 +745,11 @@ namespace Engine
             m_FrameIndex = m_Swapchain->GetCurrentBackBufferIndex();
             if (!ConfigureFrameLatencyWaitableObject())
                 return false;
-            return CreateBackBufferViews();
+            if (!CreateBackBufferViews())
+                return false;
+            CommitPresentationPolicy(allowTearing, allowTearing ? "none" :
+                (m_RequestedPolicy == PresentationPolicy::TearingAllowed ? "TearingAllowed requested; capability/window unavailable, selected synchronized" : "none"));
+            return true;
         }
 
         bool ConfigureFrameLatencyWaitableObject()
@@ -865,7 +900,9 @@ namespace Engine
             ReleaseBackBuffers();
             ReleaseFrameLatencyWaitableObject();
 
-            HRESULT result = m_Swapchain->ResizeBuffers(kFrameCount, width, height, kSwapchainFormat, kSwapchainFlags);
+            const DXGI_SWAP_CHAIN_FLAG flags = m_ActualPolicy == PresentationPolicy::TearingAllowed
+                ? static_cast<DXGI_SWAP_CHAIN_FLAG>(kBaseSwapchainFlags | DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING) : kBaseSwapchainFlags;
+            HRESULT result = m_Swapchain->ResizeBuffers(kFrameCount, width, height, kSwapchainFormat, flags);
             if (FAILED(result))
             {
                 Log::Error("Could not resize D3D12 swapchain: ", HResultToString(result));
@@ -878,6 +915,99 @@ namespace Engine
             if (!ConfigureFrameLatencyWaitableObject())
                 return false;
             return CreateBackBufferViews();
+        }
+
+        bool IsFactoryTearingSupported()
+        {
+            if (m_FactoryTearingCapabilityKnown)
+                return m_FactoryTearingSupported;
+            m_FactoryTearingCapabilityKnown = true;
+            ComPtr<IDXGIFactory5> factory5;
+            BOOL supported = FALSE;
+            m_FactoryTearingSupported = SUCCEEDED(m_Factory->QueryInterface(IID_PPV_ARGS(&factory5)))
+                && SUCCEEDED(factory5->CheckFeatureSupport(DXGI_FEATURE_PRESENT_ALLOW_TEARING, &supported, sizeof(supported))) && supported;
+            return m_FactoryTearingSupported;
+        }
+
+        bool IsTearingAllowedForWindow()
+        {
+            if (!IsFactoryTearingSupported())
+                return false;
+            BOOL fullscreen = FALSE;
+            return m_Swapchain && SUCCEEDED(m_Swapchain->GetFullscreenState(&fullscreen, nullptr)) && !fullscreen;
+        }
+
+        void CommitPresentationPolicy(bool tearing, std::string reason)
+        {
+            m_ActualPolicy = tearing ? PresentationPolicy::TearingAllowed : PresentationPolicy::Synchronized;
+            m_PolicyDiagnostics.Backend = "NVRHI D3D12";
+            m_PolicyDiagnostics.Requested = m_RequestedPolicy;
+            m_PolicyDiagnostics.Capability = IsFactoryTearingSupported() ? "allow-tearing-supported" : "allow-tearing-unsupported";
+            m_PolicyDiagnostics.Actual = tearing ? PresentationActualMode::D3D12TearingAllowed : PresentationActualMode::D3D12Synchronized;
+            m_PolicyDiagnostics.FallbackReason = std::move(reason);
+            m_PolicyDiagnostics.SyncInterval = tearing ? 0 : 1;
+            m_PolicyDiagnostics.PresentAllowsTearing = tearing;
+            m_PolicyDiagnostics.SwapchainGeneration = ++m_PresentationGeneration;
+            m_PolicyDiagnostics.EffectiveApplicationFrame = Renderer::GetLastFrameTiming().FrameIndex;
+            m_Transition.Commit();
+            if (!m_SuppressPolicyMarker)
+                Log::Info("PresentationPolicyV1 backend=D3D12 requested=", ToString(m_PolicyDiagnostics.Requested),
+                    " capability=", m_PolicyDiagnostics.Capability, " actual=", ToString(m_PolicyDiagnostics.Actual),
+                    " fallback=", m_PolicyDiagnostics.FallbackReason, " generation=", m_PolicyDiagnostics.SwapchainGeneration,
+                    " effectiveFrame=", m_PolicyDiagnostics.EffectiveApplicationFrame);
+        }
+
+        bool ApplyPendingPresentationPolicy(u32 width, u32 height)
+        {
+            if (!m_Transition.IsPending())
+                return true;
+            const PresentationPolicy desired = m_RequestedPolicy;
+            const PresentationPolicy prior = m_ActualPolicy;
+            // The old chain is the sole truthful source for fullscreen/window
+            // eligibility. This engine does not support exclusive fullscreen
+            // transitions, so defer tearing there rather than guessing after
+            // reset or creating a forced-windowed replacement.
+            m_WindowTearingEligible = IsTearingAllowedForWindow();
+            WaitIdle();
+            ReleaseBackBuffers();
+            ReleaseFrameLatencyWaitableObject();
+            m_Swapchain.Reset();
+            if (CreateSwapchain(width, height))
+                return true;
+            // Creation has consumed the old chain; restore the known-good mode
+            // before publishing a fallback. Never report the failed request actual.
+            m_RequestedPolicy = prior;
+            ReleaseBackBuffers();
+            ReleaseFrameLatencyWaitableObject();
+            m_Swapchain.Reset();
+            m_SuppressPolicyMarker = true;
+            const bool restored = CreateSwapchain(width, height);
+            m_SuppressPolicyMarker = false;
+            m_RequestedPolicy = desired;
+            m_PolicyDiagnostics.Requested = desired;
+            if (restored)
+            {
+                // CreateSwapchain committed the temporary prior request. Restore
+                // the desired request as the applied fallback and publish one
+                // final, truthful marker for this transaction.
+                m_PolicyDiagnostics.Requested = desired;
+                m_PolicyDiagnostics.FallbackReason = "requested-recreation-failed-restored-prior-mode";
+                m_PolicyDiagnostics.EffectiveApplicationFrame = Renderer::GetLastFrameTiming().FrameIndex;
+                m_Transition.Request(desired);
+                m_Transition.Commit();
+                Log::Info("PresentationPolicyV1 backend=D3D12 requested=", ToString(m_PolicyDiagnostics.Requested),
+                    " capability=", m_PolicyDiagnostics.Capability, " actual=", ToString(m_PolicyDiagnostics.Actual),
+                    " fallback=", m_PolicyDiagnostics.FallbackReason, " generation=", m_PolicyDiagnostics.SwapchainGeneration,
+                    " effectiveFrame=", m_PolicyDiagnostics.EffectiveApplicationFrame);
+                return true;
+            }
+            m_PolicyDiagnostics.Actual = PresentationActualMode::Unavailable;
+            m_PolicyDiagnostics.FallbackReason = "requested-and-restore-recreation-failed";
+            m_PolicyDiagnostics.EffectiveApplicationFrame = Renderer::GetLastFrameTiming().FrameIndex;
+            Log::Error("PresentationPolicyV1 backend=D3D12 requested=", ToString(m_PolicyDiagnostics.Requested),
+                " capability=", m_PolicyDiagnostics.Capability, " actual=Unavailable fallback=", m_PolicyDiagnostics.FallbackReason,
+                " generation=", m_PolicyDiagnostics.SwapchainGeneration, " effectiveFrame=", m_PolicyDiagnostics.EffectiveApplicationFrame);
+            return false;
         }
 
         bool CreateViewportDepthTexture(u32 width, u32 height)
@@ -1055,6 +1185,16 @@ namespace Engine
         u32 m_SwapchainHeight = 0;
         u64 m_LastFenceValue = 0;
         RendererPresentationTiming m_PresentationTiming;
+        PresentationPolicy m_RequestedPolicy = PresentationPolicy::Synchronized;
+        PresentationPolicy m_ActualPolicy = PresentationPolicy::Synchronized;
+        PresentationPolicyTransitionState m_Transition;
+        RendererPresentationPolicyDiagnostics m_PolicyDiagnostics;
+        u64 m_PresentationGeneration = 0;
+        u64 m_LastSuccessfulPresentGeneration = 0;
+        bool m_FactoryTearingCapabilityKnown = false;
+        bool m_FactoryTearingSupported = false;
+        bool m_WindowTearingEligible = true;
+        bool m_SuppressPolicyMarker = false;
 
         Scope<RHI::Texture> m_ViewportTexture;
         Scope<RHI::Texture> m_ViewportDepthTexture;
@@ -1120,6 +1260,17 @@ namespace Engine
 #endif
     }
 
+    bool NVRHID3D12Presentation::ApplyPendingPresentationPolicy()
+    {
+#if defined(GE_HAS_NVRHI_D3D12)
+        if (!m_Impl->ApplyPendingPresentationPolicyForCurrentFramebuffer())
+            throw std::runtime_error("D3D12 presentation-policy transition could not restore a valid swapchain");
+        return true;
+#else
+        return false;
+#endif
+    }
+
     void NVRHID3D12Presentation::BeginImGuiFrame()
     {
 #if defined(GE_HAS_NVRHI_D3D12)
@@ -1176,6 +1327,25 @@ namespace Engine
 #else
         static const RendererPresentationTiming timing;
         return timing;
+#endif
+    }
+
+    void NVRHID3D12Presentation::SetPresentationPolicy(PresentationPolicy policy)
+    {
+#if defined(GE_HAS_NVRHI_D3D12)
+        m_Impl->SetPresentationPolicy(policy);
+#else
+        (void)policy;
+#endif
+    }
+
+    const RendererPresentationPolicyDiagnostics& NVRHID3D12Presentation::GetPresentationPolicyDiagnostics() const
+    {
+#if defined(GE_HAS_NVRHI_D3D12)
+        return m_Impl->GetPresentationPolicyDiagnostics();
+#else
+        static const RendererPresentationPolicyDiagnostics diagnostics;
+        return diagnostics;
 #endif
     }
 }

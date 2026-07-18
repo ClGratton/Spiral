@@ -21,12 +21,15 @@ namespace Engine
 
         bool IsInitialized() const;
         void WaitForFrameLatency();
+        bool ApplyPendingPresentationPolicy();
         void BeginImGuiFrame();
         void RenderImGuiDrawData(ImDrawData* drawData, const ClearColor& clearColor, u32 width, u32 height);
         bool PrepareViewportTexture(u32 width, u32 height);
         u64 GetViewportTextureId() const;
         bool CaptureViewportToFile(std::string_view path);
         const RendererPresentationTiming& GetTiming() const;
+        void SetPresentationPolicy(PresentationPolicy policy);
+        const RendererPresentationPolicyDiagnostics& GetPresentationPolicyDiagnostics() const;
 
     private:
         struct Impl;

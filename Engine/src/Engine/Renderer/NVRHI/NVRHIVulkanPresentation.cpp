@@ -9,6 +9,7 @@
 
     #include <chrono>
     #include <iterator>
+    #include <stdexcept>
     #include <unordered_map>
 #endif
 
@@ -75,9 +76,8 @@ namespace Engine
                 requestedFormats,
                 static_cast<int>(std::size(requestedFormats)),
                 VK_COLORSPACE_SRGB_NONLINEAR_KHR);
-            const VkPresentModeKHR requestedPresentMode = VK_PRESENT_MODE_FIFO_KHR;
-            m_WindowData.PresentMode = ImGui_ImplVulkanH_SelectPresentMode(
-                m_PhysicalDevice, m_WindowData.Surface, &requestedPresentMode, 1);
+            if (!ResolveRequestedPresentMode())
+                return false;
 
             if (!CreateDescriptorPool())
                 return false;
@@ -155,6 +155,15 @@ namespace Engine
 #endif
         }
 
+        void SetPresentationPolicy(PresentationPolicy policy)
+        {
+            m_Transition.Request(policy);
+            m_RequestedPolicy = policy;
+            m_PolicyDiagnostics.Requested = policy;
+        }
+
+        const RendererPresentationPolicyDiagnostics& GetPresentationPolicyDiagnostics() const { return m_PolicyDiagnostics; }
+
         void RenderImGuiDrawData(ImDrawData* drawData, const ClearColor& clearColor, u32 width, u32 height)
         {
 #if defined(GE_HAS_NVRHI_VULKAN)
@@ -172,6 +181,11 @@ namespace Engine
             width = static_cast<u32>(framebufferWidth);
             height = static_cast<u32>(framebufferHeight);
 
+            if (m_Transition.IsPending())
+            {
+                if (!RecreateForRequestedPolicy(width, height))
+                    throw std::runtime_error("Vulkan presentation-policy transition could not restore a valid swapchain");
+            }
             if (m_SwapchainInvalid || width != static_cast<u32>(m_WindowData.Width) || height != static_cast<u32>(m_WindowData.Height))
             {
                 if (!CreateOrResizeSwapchain(width, height))
@@ -289,6 +303,8 @@ namespace Engine
                 m_Timing.PresentSucceeded = true;
                 m_LastSuccessfulPresentGeneration = m_SwapchainGeneration;
                 m_Timing.LastSuccessfulPresentGeneration = m_LastSuccessfulPresentGeneration;
+                m_PolicyDiagnostics.LastSuccessfulPresentGeneration = m_LastSuccessfulPresentGeneration;
+                m_PolicyDiagnostics.LastSuccessfulPresentApplicationFrame = applicationFrameIndex;
                 ++m_SuccessfulPresentCount;
                 if (m_ViewportTextureQueued)
                 {
@@ -384,6 +400,8 @@ namespace Engine
         {
             if (width == 0 || height == 0)
                 return false;
+            if (!ResolveRequestedPresentMode())
+                return false;
             VULKAN_HPP_DEFAULT_DISPATCHER.vkDeviceWaitIdle(m_Device);
             m_SubmittedFrameIds.clear();
             ImGui_ImplVulkanH_CreateOrResizeWindow(
@@ -401,10 +419,80 @@ namespace Engine
                 return false;
 
             ++m_SwapchainGeneration;
+            m_ActualPolicy = m_WindowData.PresentMode == VK_PRESENT_MODE_IMMEDIATE_KHR
+                ? PresentationPolicy::TearingAllowed : PresentationPolicy::Synchronized;
+            m_PolicyDiagnostics.Backend = "NVRHI Vulkan";
+            m_PolicyDiagnostics.Requested = m_RequestedPolicy;
+            m_PolicyDiagnostics.Actual = m_ActualPolicy == PresentationPolicy::TearingAllowed
+                ? PresentationActualMode::VulkanImmediate : PresentationActualMode::VulkanFifo;
+            m_PolicyDiagnostics.SyncInterval = 0;
+            m_PolicyDiagnostics.PresentAllowsTearing = m_ActualPolicy == PresentationPolicy::TearingAllowed;
+            m_PolicyDiagnostics.SwapchainGeneration = m_SwapchainGeneration;
+            m_PolicyDiagnostics.EffectiveApplicationFrame = Renderer::GetLastFrameTiming().FrameIndex;
+            m_Transition.Commit();
+            if (!m_SuppressPolicyMarker)
+                Log::Info("PresentationPolicyV1 backend=Vulkan requested=", ToString(m_PolicyDiagnostics.Requested),
+                    " capability=", m_PolicyDiagnostics.Capability, " actual=", ToString(m_PolicyDiagnostics.Actual),
+                    " fallback=", m_PolicyDiagnostics.FallbackReason, " generation=", m_PolicyDiagnostics.SwapchainGeneration,
+                    " effectiveFrame=", m_PolicyDiagnostics.EffectiveApplicationFrame);
             m_Timing.SwapchainGeneration = m_SwapchainGeneration;
             if (m_SwapchainGeneration > 1)
                 Log::Info("Vulkan swapchain recreated after window resize (generation ", m_SwapchainGeneration, ")");
             return true;
+        }
+
+        bool ResolveRequestedPresentMode()
+        {
+            u32 count = 0;
+            if (VULKAN_HPP_DEFAULT_DISPATCHER.vkGetPhysicalDeviceSurfacePresentModesKHR(m_PhysicalDevice, m_WindowData.Surface, &count, nullptr) != VK_SUCCESS || count == 0)
+                return false;
+            std::vector<VkPresentModeKHR> modes(count);
+            if (VULKAN_HPP_DEFAULT_DISPATCHER.vkGetPhysicalDeviceSurfacePresentModesKHR(m_PhysicalDevice, m_WindowData.Surface, &count, modes.data()) != VK_SUCCESS)
+                return false;
+            std::vector<int> values;
+            values.reserve(modes.size());
+            for (VkPresentModeKHR mode : modes) values.push_back(static_cast<int>(mode));
+            const VulkanPresentationResolution resolution = ResolveVulkanPresentationPolicy(m_RequestedPolicy, values,
+                static_cast<int>(VK_PRESENT_MODE_FIFO_KHR), static_cast<int>(VK_PRESENT_MODE_IMMEDIATE_KHR));
+            m_WindowData.PresentMode = resolution.Actual == PresentationActualMode::VulkanImmediate
+                ? VK_PRESENT_MODE_IMMEDIATE_KHR : VK_PRESENT_MODE_FIFO_KHR;
+            m_PolicyDiagnostics.Capability = resolution.Capability;
+            m_PolicyDiagnostics.FallbackReason = resolution.FallbackReason;
+            return true;
+        }
+
+        bool RecreateForRequestedPolicy(u32 width, u32 height)
+        {
+            const PresentationPolicy desired = m_RequestedPolicy;
+            const PresentationPolicy prior = m_ActualPolicy;
+            if (CreateOrResizeSwapchain(width, height))
+                return true;
+            m_RequestedPolicy = prior;
+            m_SuppressPolicyMarker = true;
+            const bool restored = CreateOrResizeSwapchain(width, height);
+            m_SuppressPolicyMarker = false;
+            m_RequestedPolicy = desired;
+            m_PolicyDiagnostics.Requested = desired;
+            if (restored)
+            {
+                m_PolicyDiagnostics.FallbackReason = "requested-recreation-failed-restored-prior-mode";
+                m_PolicyDiagnostics.Requested = desired;
+                m_PolicyDiagnostics.EffectiveApplicationFrame = Renderer::GetLastFrameTiming().FrameIndex;
+                m_Transition.Request(desired);
+                m_Transition.Commit();
+                Log::Info("PresentationPolicyV1 backend=Vulkan requested=", ToString(m_PolicyDiagnostics.Requested),
+                    " capability=", m_PolicyDiagnostics.Capability, " actual=", ToString(m_PolicyDiagnostics.Actual),
+                    " fallback=", m_PolicyDiagnostics.FallbackReason, " generation=", m_PolicyDiagnostics.SwapchainGeneration,
+                    " effectiveFrame=", m_PolicyDiagnostics.EffectiveApplicationFrame);
+                return true;
+            }
+            m_PolicyDiagnostics.Actual = PresentationActualMode::Unavailable;
+            m_PolicyDiagnostics.FallbackReason = "requested-and-restore-recreation-failed";
+            m_PolicyDiagnostics.EffectiveApplicationFrame = Renderer::GetLastFrameTiming().FrameIndex;
+            Log::Error("PresentationPolicyV1 backend=Vulkan requested=", ToString(m_PolicyDiagnostics.Requested),
+                " capability=", m_PolicyDiagnostics.Capability, " actual=Unavailable fallback=", m_PolicyDiagnostics.FallbackReason,
+                " generation=", m_PolicyDiagnostics.SwapchainGeneration, " effectiveFrame=", m_PolicyDiagnostics.EffectiveApplicationFrame);
+            return false;
         }
 
         static constexpr u32 kMinimumImageCount = 2;
@@ -433,6 +521,11 @@ namespace Engine
         u64 m_SwapchainGeneration = 0;
         u64 m_LastSuccessfulPresentGeneration = 0;
         bool m_Initialized = false;
+        PresentationPolicy m_RequestedPolicy = PresentationPolicy::Synchronized;
+        PresentationPolicy m_ActualPolicy = PresentationPolicy::Synchronized;
+        PresentationPolicyTransitionState m_Transition;
+        RendererPresentationPolicyDiagnostics m_PolicyDiagnostics;
+        bool m_SuppressPolicyMarker = false;
     };
 
     NVRHIVulkanPresentation::NVRHIVulkanPresentation()
@@ -474,6 +567,9 @@ namespace Engine
     {
         return m_Impl->m_Timing;
     }
+
+    void NVRHIVulkanPresentation::SetPresentationPolicy(PresentationPolicy policy) { m_Impl->SetPresentationPolicy(policy); }
+    const RendererPresentationPolicyDiagnostics& NVRHIVulkanPresentation::GetPresentationPolicyDiagnostics() const { return m_Impl->GetPresentationPolicyDiagnostics(); }
 
     u64 NVRHIVulkanPresentation::GetSuccessfulPresentCount() const
     {

@@ -1129,9 +1129,13 @@ namespace
         condition.TargetFramesPerSecond = 120.0;
         condition.Policy.EffectiveMode = Engine::FramePacingMode::SmoothFrametime;
         condition.Policy.SmoothTargetFramesPerSecond = 120.0;
-        condition.PresentationMode = "flip-discard";
-        condition.SyncMode = "driver-vsync";
-        condition.VrrMode = "enabled";
+        condition.RequestedPresentationPolicy = "Synchronized";
+        condition.PresentationCapability = "allow-tearing-supported";
+        condition.PresentationMode = "D3D12FlipSynchronized";
+        condition.PresentationFallback = "none";
+        condition.PresentationGeneration = 1;
+        condition.SyncMode = "interval-1";
+        condition.VrrMode = "unavailable";
         condition.TearingMode = "disabled";
         capture.Begin(condition);
         for (Engine::u64 index = 0; index <= 1000; ++index)
@@ -1247,19 +1251,19 @@ namespace
                 && csv.find("{\"\"phase\"\":\"\"PresentEnd\"\",\"\"ms\"\":2.5,\"\"qpc\"\":350}") != std::string::npos
                 && csv.find("{\"\"kind\"\":\"\"MandatoryDxgiFrameLatency\"\",\"\"applied\"\":true,\"\"ms\"\":3.5") != std::string::npos
                 && json.find("adapter\\\"quoted\\tvalue") != std::string::npos
-                && json.find("\"presentationMode\":\"flip-discard\",\"sync\":\"driver-vsync\",\"vrr\":\"enabled\",\"tearing\":\"disabled\"") != std::string::npos
+                && json.find("\"requestedPresentationPolicy\":\"Synchronized\",\"presentationCapability\":\"allow-tearing-supported\",\"presentationMode\":\"D3D12FlipSynchronized\",\"presentationFallback\":\"none\",\"presentationGeneration\":1,\"sync\":\"interval-1\",\"vrr\":\"unavailable\",\"tearing\":\"disabled\"") != std::string::npos
                 && json.find("\"runId\":\"run-test-42\",\"processId\":42,\"executablePath\":\"C:/test/Editor.exe\",\"qpcFrequency\":10000000") != std::string::npos
                 && json.find("\"phase\":\"InputSample\",\"ms\":0.125,\"qpc\":112") != std::string::npos
                 && json.find("\"phase\":\"PresentEnd\",\"ms\":2.5,\"qpc\":350") != std::string::npos
                 && json.find("\"kind\":\"MandatoryDxgiFrameLatency\",\"applied\":true,\"ms\":3.5") != std::string::npos
                 && json.find("\"deadlineWait\":{\"primitive\":\"WindowsHighResolutionWaitableTimer\",\"fellBack\":false,\"fallbackReason\":\"None\",\"timerWaitMs\":1.5,\"portableWaitMs\":0,\"activeTailBudgetMs\":0.5,\"activeTailMs\":0.5,\"processCpuTimeMs\":0.5,\"wallTimeMs\":2}") != std::string::npos
                 && json.find("\"gpuCompletionFrame\":998") != std::string::npos
-                && json.find("\"schema\":6") != std::string::npos
+                && json.find("\"schema\":7") != std::string::npos
                 && json.find("\"limitingSource\":\"GpuWork\",\"limitingSourceFrame\":999") != std::string::npos
                 && json.find("\"inputLatencySourceFrame\":1000,\"inputToSimulationMs\":0.125000,\"inputToSubmitMs\":1.375000,\"inputToPresentMs\":2.375000,\"inputToDisplay\":\"unavailable\",\"clickToPhoton\":\"unavailable\"") != std::string::npos
                 && json.find("\"gpuTimingStatus\":\"Ready\",\"gpuDurationMs\":4.000000,\"gpuHeadroom\":4.333333") != std::string::npos
                 && json.find("\"gpuTimingStatus\":\"Disjoint\",\"gpuDurationMs\":\"unavailable\",\"gpuHeadroom\":\"unavailable\"") != std::string::npos,
-                "frame pacing benchmark exports stable schema-6 CSV/JSON deadline-wait, exact-frame GPU, limiter, and input-stage source records");
+                "frame pacing benchmark exports stable schema-7 CSV/JSON engine-owned presentation and exact-frame timing records");
     }
 
     bool TestFramePacingAttachmentReadinessAndReleaseValidation()
@@ -1275,9 +1279,13 @@ namespace
         readiness.Condition.Backend = "NVRHI D3D12";
         readiness.Condition.TargetFramesPerSecond = 120.0;
         readiness.Condition.Policy.Candidate = Engine::SmoothFrametimeCandidate::SubmissionGate;
-        readiness.Condition.PresentationMode = "flip-discard";
-        readiness.Condition.SyncMode = "vsync";
-        readiness.Condition.VrrMode = "unknown";
+        readiness.Condition.RequestedPresentationPolicy = "Synchronized";
+        readiness.Condition.PresentationCapability = "allow-tearing-supported";
+        readiness.Condition.PresentationMode = "D3D12FlipSynchronized";
+        readiness.Condition.PresentationFallback = "none";
+        readiness.Condition.PresentationGeneration = 1;
+        readiness.Condition.SyncMode = "interval-1";
+        readiness.Condition.VrrMode = "unavailable";
         readiness.Condition.TearingMode = "disabled";
         std::string error;
         const bool wrote = Engine::FramePacingBenchmarkCapture::WriteAttachmentReadiness(readiness, path / "ready.json", error);
@@ -1291,7 +1299,9 @@ namespace
         std::filesystem::remove(noParentPath);
         return Expect(wrote && wroteWithoutParent && ready.find("\"schema\":1,\n  \"runId\":\"run-attachment-7\"") != std::string::npos
                 && ready.find("\"processId\":77") != std::string::npos && ready.find("\"qpcFrequency\":10000000") != std::string::npos
-                && ready.find("\"candidate\":\"SubmissionGate\"") != std::string::npos,
+                && ready.find("\"candidate\":\"SubmissionGate\"") != std::string::npos
+                && ready.find("\"requestedPresentationPolicy\":\"Synchronized\"") != std::string::npos
+                && ready.find("\"presentationMode\":\"D3D12FlipSynchronized\"") != std::string::npos,
                 "frame pacing attachment readiness exports ordered run, process, QPC, artifact, and condition identity")
             && Expect(valid && staleRejected && wrongPidRejected,
                 "frame pacing attachment release accepts only the exact published run and process identity");
@@ -5846,6 +5856,40 @@ float4 main(VertexInput input) : SV_Position
 
 }
 
+bool TestPresentationPolicyResolverRejectsReplacementModes()
+{
+    using namespace Engine;
+    const auto synchronized = ResolveVulkanPresentationPolicy(PresentationPolicy::Synchronized, { 1, 2, 3 }, 2, 0);
+    const auto immediate = ResolveVulkanPresentationPolicy(PresentationPolicy::TearingAllowed, { 1, 2, 3, 0 }, 2, 0);
+    const auto fifoFallback = ResolveVulkanPresentationPolicy(PresentationPolicy::TearingAllowed, { 1, 2, 3 }, 2, 0);
+    return Expect(synchronized.Actual == PresentationActualMode::VulkanFifo && synchronized.FallbackReason == "none",
+            "synchronized Vulkan policy resolves FIFO")
+        && Expect(immediate.Actual == PresentationActualMode::VulkanImmediate && immediate.FallbackReason == "none",
+            "TearingAllowed selects IMMEDIATE only when supported")
+        && Expect(fifoFallback.Actual == PresentationActualMode::VulkanFifo
+                && fifoFallback.FallbackReason.find("without replacement") != std::string::npos,
+            "TearingAllowed falls back to FIFO instead of MAILBOX or FIFO_RELAXED");
+}
+
+bool TestPresentationPolicyFallbackTransitionAppliesOnce()
+{
+    using namespace Engine;
+    PresentationPolicyTransitionState transition;
+    transition.Request(PresentationPolicy::TearingAllowed);
+    const bool firstPending = transition.IsPending();
+    // Model an unsupported backend committing FIFO/synchronized while retaining
+    // TearingAllowed as the last applied request.
+    transition.Commit();
+    const bool stableAcrossFrames = !transition.IsPending() && transition.Generation == 1;
+    for (int frame = 0; frame != 8; ++frame)
+        if (transition.IsPending()) return Expect(false, "unsupported presentation fallback is not retried every frame");
+    transition.Request(PresentationPolicy::Synchronized);
+    const bool changedRequestPending = transition.IsPending();
+    transition.Commit();
+    return Expect(firstPending && stableAcrossFrames && changedRequestPending && transition.Generation == 2,
+        "presentation transition records requested fallback once and generations only real requests");
+}
+
 int main(int argc, char** argv)
 {
 #define FAST_TEST(name, function) TestCase { name, function, TestTier::Fast }
@@ -5855,6 +5899,8 @@ int main(int argc, char** argv)
         INTEGRATION_TEST("Generated counterexample artifacts preserve replay data", TestGeneratedCounterexampleArtifactPreservesReplayData),
         INTEGRATION_TEST("Structured Scene and shader fuzz corpus replays deterministically", TestStructuredFuzzCorpusReplay),
         FAST_TEST("Frame pacing policy resolves overrides and validates targets", TestFramePacingPolicyResolutionAndValidation),
+        FAST_TEST("Presentation policy resolves immediate or no-replacement FIFO", TestPresentationPolicyResolverRejectsReplacementModes),
+        FAST_TEST("Presentation fallback transition commits once across stable frames", TestPresentationPolicyFallbackTransitionAppliesOnce),
         FAST_TEST("Monotonic deadline waiter retries early wakes and exposes fallback cleanup", TestMonotonicDeadlineWaiterDeterministicFailureAndTailPaths),
         FAST_TEST("Smooth Frametime pacer preserves deadlines overruns and mode switches", TestSmoothFrametimePacerDeadlinesAndModeSwitch),
         FAST_TEST("Frame lifecycle telemetry orders phases and retains unavailable feedback", TestFrameLifecycleTelemetryOrderAndUnavailableStates),

@@ -157,11 +157,15 @@ namespace Engine
             condition.Backend = Renderer::GetActiveBackendName();
             condition.TargetFramesPerSecond = std::strtod(std::string(args.GetOptionValue("--smooth-frametime-target-fps")).c_str(), nullptr);
             condition.Policy = Renderer::GetFramePacingPolicy();
-            const auto conditionValue = [&](std::string_view option) { const std::string_view value = args.GetOptionValue(option); return value.empty() ? std::string("unknown") : std::string(value); };
-            condition.PresentationMode = conditionValue("--frame-pacing-benchmark-presentation");
-            condition.SyncMode = conditionValue("--frame-pacing-benchmark-sync");
-            condition.VrrMode = conditionValue("--frame-pacing-benchmark-vrr");
-            condition.TearingMode = conditionValue("--frame-pacing-benchmark-tearing");
+            const RendererPresentationPolicyDiagnostics presentation = Renderer::GetPresentationPolicyDiagnostics();
+            condition.RequestedPresentationPolicy = ToString(presentation.Requested);
+            condition.PresentationCapability = presentation.Capability;
+            condition.PresentationMode = ToString(presentation.Actual);
+            condition.PresentationFallback = presentation.FallbackReason;
+            condition.PresentationGeneration = presentation.SwapchainGeneration;
+            condition.SyncMode = PresentationSyncEncoding(presentation.Actual);
+            condition.VrrMode = "unavailable";
+            condition.TearingMode = presentation.PresentAllowsTearing ? "allowed" : "disabled";
             if (const RHI::DeviceCapabilities* capabilities = Renderer::GetDeviceCapabilities())
             {
                 condition.Adapter = capabilities->Identity.Name;
@@ -301,14 +305,7 @@ namespace Engine
             if (m_Specification.CommandLineArgs.HasFlag("--frame-pacing-benchmark") && !m_FramePacingBenchmarkStarted && m_FrameIndex >= benchmarkWarmupFrames)
             {
                 const std::string_view targetValue = m_Specification.CommandLineArgs.GetOptionValue("--smooth-frametime-target-fps");
-                const auto conditionValue = [&](std::string_view option)
-                {
-                    const std::string_view value = m_Specification.CommandLineArgs.GetOptionValue(option);
-                    return value.empty() ? std::string("unknown") : std::string(value);
-                };
                 Renderer::BeginFramePacingBenchmark(512, targetValue.empty() ? 0.0 : std::strtod(std::string(targetValue).c_str(), nullptr), benchmarkWarmupFrames,
-                    conditionValue("--frame-pacing-benchmark-presentation"), conditionValue("--frame-pacing-benchmark-sync"),
-                    conditionValue("--frame-pacing-benchmark-vrr"), conditionValue("--frame-pacing-benchmark-tearing"),
                     { m_FramePacingAttachmentRunId, m_FramePacingAttachmentProcessId,
                         m_FramePacingAttachmentExecutablePath, m_FramePacingAttachmentQpcFrequency });
                 m_FramePacingBenchmarkStarted = true;
@@ -528,11 +525,13 @@ namespace Engine
                 const RendererPresentationTiming& presentation = Renderer::GetLastFrameTiming().Presentation;
                 const bool requiresLifecycleObservation = m_Specification.CommandLineArgs.HasFlag("--frame-lifecycle-telemetry-smoke")
                     || m_Specification.CommandLineArgs.HasFlag("--smooth-frametime-candidate-smoke");
+                const bool requiresPresentationPolicySmoke = m_Specification.CommandLineArgs.HasFlag("--presentation-policy-smoke");
                 const bool requiresGraphGpuTiming = m_Specification.CommandLineArgs.HasFlag("--scene-viewport-render-graph-smoke");
                 const bool graphGpuTimingComplete = !requiresGraphGpuTiming
                     || Renderer::GetLastCompletedFrameTiming().GpuStatus == RendererTimingStatus::Ready;
                 if (Renderer::GetActiveBackend() == RendererBackend::NVRHIVulkan
                     && (!requiresLifecycleObservation || m_FrameLifecycleTelemetrySmokeComplete)
+                    && (!requiresPresentationPolicySmoke || m_FrameIndex >= 5)
                     && graphGpuTimingComplete
                     && presentation.SwapchainGeneration >= 2
                     && presentation.LastSuccessfulPresentGeneration == presentation.SwapchainGeneration)

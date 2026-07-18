@@ -57,7 +57,8 @@ try {
         $report.rawInputs.engineJsonSha256 -ne $success.hashes.engineJsonSha256 -or $report.rawInputs.presentMonCsvSha256 -ne $success.hashes.presentMonCsvSha256 -or
         ($report.presentMonHeaders -join ",") -cne "Application,ProcessID,SwapChainAddress,Runtime,SyncInterval,PresentFlags,Dropped,TimeInSeconds,msInPresentAPI,msBetweenPresents,AllowsTearing,PresentMode,msUntilRenderComplete,msUntilDisplayed,msBetweenDisplayChange,QPCTime" -or
         [IO.Path]::GetFullPath($success.paths.engineJson).Equals([IO.Path]::GetFullPath($success.paths.presentMonCsv), [StringComparison]::OrdinalIgnoreCase) -or
-        $success.condition.monitor -ne "unknown" -or $success.condition.vrr -ne "unknown" -or $success.condition.rtss -ne "unavailable" -or
+        $success.condition.requestedPresentationPolicy -ne "Synchronized" -or $success.condition.presentationGeneration -lt 1 -or
+        $success.condition.monitor -ne "unknown" -or $success.condition.vrr -ne "unavailable" -or $success.condition.rtss -ne "unavailable" -or
         $success.condition.fes -ne "unavailable" -or $success.condition.inputLatency -ne "unavailable" -or $success.condition.gpuHeadroom -ne "unavailable") {
         throw "Successful fake supervision violated ordering, identity, condition, join, or cleanup invariants"
     }

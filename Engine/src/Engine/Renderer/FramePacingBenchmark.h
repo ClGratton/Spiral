@@ -17,7 +17,7 @@ namespace Engine
     // supplies measured evidence; they are never inferred from Present.
     struct FramePacingBenchmarkCondition
     {
-        static constexpr u32 SchemaVersion = 6;
+        static constexpr u32 SchemaVersion = 7;
         std::string RunId = "unavailable";
         u32 ProcessId = 0;
         std::string ExecutablePath = "unavailable";
@@ -28,7 +28,11 @@ namespace Engine
         double TargetFramesPerSecond = 0.0;
         u32 WarmupFrames = 0;
         ResolvedFramePacingPolicy Policy;
-        std::string PresentationMode = "unknown";
+        std::string RequestedPresentationPolicy = "Synchronized";
+        std::string PresentationCapability = "unavailable";
+        std::string PresentationMode = "Unavailable";
+        std::string PresentationFallback = "unavailable";
+        u64 PresentationGeneration = 0;
         std::string SyncMode = "unknown";
         std::string VrrMode = "unknown";
         std::string TearingMode = "unknown";
@@ -169,8 +173,12 @@ namespace Engine
                 << "\",\n  \"condition\":{\"backend\":\"" << Escape(readiness.Condition.Backend)
                 << "\",\"targetFps\":" << readiness.Condition.TargetFramesPerSecond
                 << ",\"candidate\":\"" << ToString(readiness.Condition.Policy.Candidate)
+                << "\",\"requestedPresentationPolicy\":\"" << Escape(readiness.Condition.RequestedPresentationPolicy)
+                << "\",\"presentationCapability\":\"" << Escape(readiness.Condition.PresentationCapability)
                 << "\",\"presentationMode\":\"" << Escape(readiness.Condition.PresentationMode)
-                << "\",\"sync\":\"" << Escape(readiness.Condition.SyncMode)
+                << "\",\"presentationFallback\":\"" << Escape(readiness.Condition.PresentationFallback)
+                << "\",\"presentationGeneration\":" << readiness.Condition.PresentationGeneration
+                << ",\"sync\":\"" << Escape(readiness.Condition.SyncMode)
                 << "\",\"vrr\":\"" << Escape(readiness.Condition.VrrMode)
                 << "\",\"tearing\":\"" << Escape(readiness.Condition.TearingMode) << "\"}\n}\n";
             return WriteAtomically(path, out.str(), error);
@@ -320,7 +328,7 @@ namespace Engine
         static std::string Csv(const FramePacingBenchmarkSnapshot& snapshot)
         {
             std::ostringstream out; out << std::setprecision(12);
-            out << "schema,runId,processId,executablePath,qpcFrequency,backend,adapter,adapterStableId,targetFps,effectiveTargetFps,warmupFrames,projectMode,runtimeOverride,mode,candidate,behavior,presentationMode,sync,vrr,tearing,frame,startToStartMs,cpuTotalMs,cpuActiveMs,intentionalWaitMs,gpuCompleteFrame,cadencePreviousFrame,limitingSource,limitingSourceFrame,inputLatencySourceFrame,inputToSimulationMs,inputToSubmitMs,inputToPresentMs,lifecycleJson,waitsJson,display,replacementDrop,inputLatency,gpuTimingStatus,gpuDurationMs,gpuHeadroom\n";
+            out << "schema,runId,processId,executablePath,qpcFrequency,backend,adapter,adapterStableId,targetFps,effectiveTargetFps,warmupFrames,projectMode,runtimeOverride,mode,candidate,behavior,requestedPresentationPolicy,presentationCapability,presentationMode,presentationFallback,presentationGeneration,sync,vrr,tearing,frame,startToStartMs,cpuTotalMs,cpuActiveMs,intentionalWaitMs,gpuCompleteFrame,cadencePreviousFrame,limitingSource,limitingSourceFrame,inputLatencySourceFrame,inputToSimulationMs,inputToSubmitMs,inputToPresentMs,lifecycleJson,waitsJson,display,replacementDrop,inputLatency,gpuTimingStatus,gpuDurationMs,gpuHeadroom\n";
             for (const RendererFrameTiming& f : snapshot.Frames)
             {
                 std::ostringstream lifecycle, waits;
@@ -335,7 +343,10 @@ namespace Engine
                     << ',' << snapshot.Condition.WarmupFrames << ',' << CsvEscape(ToString(snapshot.Condition.Policy.ProjectMode)) << ','
                     << CsvEscape(ToString(snapshot.Condition.Policy.RuntimeOverride)) << ',' << CsvEscape(ToString(f.FramePacingPolicy.EffectiveMode))
                     << ',' << CsvEscape(ToString(f.FramePacingPolicy.Candidate)) << ',' << CsvEscape(f.FramePacingPolicy.Behavior)
-                    << ',' << CsvEscape(snapshot.Condition.PresentationMode) << ',' << CsvEscape(snapshot.Condition.SyncMode)
+                    << ',' << CsvEscape(snapshot.Condition.RequestedPresentationPolicy) << ',' << CsvEscape(snapshot.Condition.PresentationCapability)
+                    << ',' << CsvEscape(snapshot.Condition.PresentationMode) << ',' << CsvEscape(snapshot.Condition.PresentationFallback)
+                    << ',' << snapshot.Condition.PresentationGeneration
+                    << ',' << CsvEscape(snapshot.Condition.SyncMode)
                     << ',' << CsvEscape(snapshot.Condition.VrrMode) << ',' << CsvEscape(snapshot.Condition.TearingMode) << ',' << f.FrameIndex << ',' << f.StartToStartMilliseconds << ','
                     << f.CpuMilliseconds << ',' << f.CpuActiveMilliseconds << ',' << f.IntentionalPacingMilliseconds << ',' << (f.HasGpuCompletionObservation ? std::to_string(f.LastGpuCompletionObservedFrameIndex) : "unavailable")
                     << ',' << (f.CadencePreviousFrameIndex ? std::to_string(*f.CadencePreviousFrameIndex) : "unavailable")
@@ -360,7 +371,7 @@ namespace Engine
                 << "\",\"mode\":\"" << ToString(s.Condition.Policy.EffectiveMode) << "\",\"candidate\":\"" << ToString(s.Condition.Policy.Candidate)
                 << "\",\"behavior\":\"" << Escape(s.Condition.Policy.Behavior) << "\",\"effectiveTargetFps\":"
                 << (s.Condition.Policy.SmoothTargetFramesPerSecond ? std::to_string(*s.Condition.Policy.SmoothTargetFramesPerSecond) : "null")
-                << ",\"presentationMode\":\"" << Escape(s.Condition.PresentationMode) << "\",\"sync\":\"" << Escape(s.Condition.SyncMode) << "\",\"vrr\":\"" << Escape(s.Condition.VrrMode) << "\",\"tearing\":\"" << Escape(s.Condition.TearingMode)
+                << ",\"requestedPresentationPolicy\":\"" << Escape(s.Condition.RequestedPresentationPolicy) << "\",\"presentationCapability\":\"" << Escape(s.Condition.PresentationCapability) << "\",\"presentationMode\":\"" << Escape(s.Condition.PresentationMode) << "\",\"presentationFallback\":\"" << Escape(s.Condition.PresentationFallback) << "\",\"presentationGeneration\":" << s.Condition.PresentationGeneration << ",\"sync\":\"" << Escape(s.Condition.SyncMode) << "\",\"vrr\":\"" << Escape(s.Condition.VrrMode) << "\",\"tearing\":\"" << Escape(s.Condition.TearingMode)
                 << "\"},\n  \"summary\":{\"samples\":" << s.Summary.SampleCount << ",\"p50Ms\":" << s.Summary.StartToStartP50Milliseconds << ",\"p95Ms\":" << s.Summary.StartToStartP95Milliseconds << ",\"p99Ms\":" << s.Summary.StartToStartP99Milliseconds << ",\"cpuActiveP50Ms\":" << s.Summary.CpuActiveP50Milliseconds << ",\"cpuActiveP95Ms\":" << s.Summary.CpuActiveP95Milliseconds << ",\"cpuActiveP99Ms\":" << s.Summary.CpuActiveP99Milliseconds << ",\"intentionalWaitP50Ms\":" << s.Summary.IntentionalWaitP50Milliseconds << ",\"intentionalWaitP95Ms\":" << s.Summary.IntentionalWaitP95Milliseconds << ",\"intentionalWaitP99Ms\":" << s.Summary.IntentionalWaitP99Milliseconds << ",\"onePercentLowFps\":" << s.Summary.OnePercentLowFramesPerSecond << ",\"pointOnePercentLowFps\":" << s.Summary.PointOnePercentLowFramesPerSecond << ",\"deadlineMisses\":" << s.Summary.DeadlineMissCount << ",\"deadlineOvershootP99Ms\":" << s.Summary.DeadlineOvershootP99Milliseconds << "},\n  \"frames\":[\n";
             for (size_t i = 0; i < s.Frames.size(); ++i) { const auto& f = s.Frames[i]; const std::string gpuDuration = GpuDurationValue(f), gpuHeadroom = GpuHeadroomValue(f); out << "    {\"frame\":" << f.FrameIndex << ",\"startToStartMs\":" << f.StartToStartMilliseconds << ",\"cpuTotalMs\":" << f.CpuMilliseconds << ",\"cpuActiveMs\":" << f.CpuActiveMilliseconds << ",\"intentionalWaitMs\":" << f.IntentionalPacingMilliseconds << ",\"cadencePreviousFrame\":" << (f.CadencePreviousFrameIndex ? std::to_string(*f.CadencePreviousFrameIndex) : "null") << ",\"limitingSource\":\"" << ToString(f.EffectiveLimitingSource) << "\",\"limitingSourceFrame\":" << (f.EffectiveLimitingSourceFrameIndex ? std::to_string(*f.EffectiveLimitingSourceFrameIndex) : "null") << ",\"inputLatencySourceFrame\":" << (f.InputLatencySourceFrameIndex ? std::to_string(*f.InputLatencySourceFrameIndex) : "null") << ",\"inputToSimulationMs\":" << (f.InputToSimulationMilliseconds ? std::to_string(*f.InputToSimulationMilliseconds) : "null") << ",\"inputToSubmitMs\":" << (f.InputToRenderSubmissionMilliseconds ? std::to_string(*f.InputToRenderSubmissionMilliseconds) : "null") << ",\"inputToPresentMs\":" << (f.InputToPresentMilliseconds ? std::to_string(*f.InputToPresentMilliseconds) : "null") << ",\"inputToDisplay\":\"unavailable\",\"clickToPhoton\":\"unavailable\",\"lifecycle\":["; for(size_t e=0;e<f.Lifecycle.size();++e){if(e)out<<',';out<<"{\"phase\":\""<<PhaseName(f.Lifecycle[e].Phase)<<"\",\"ms\":"<<f.Lifecycle[e].MillisecondsFromFrameStart<<",\"qpc\":"<<f.Lifecycle[e].QpcTick<<'}';} out<<"],\"waits\":["; for(size_t w=0;w<f.Waits.size();++w){if(w)out<<',';const auto& x=f.Waits[w];out<<"{\"kind\":\""<<WaitName(x.Kind)<<"\",\"applied\":"<<(x.Applied?"true":"false")<<",\"ms\":"<<x.Milliseconds<<",\"candidate\":\""<<ToString(x.Candidate)<<"\",\"deadlineMissed\":"<<(x.DeadlineMissed?"true":"false")<<",\"requestedDeadlineMs\":"<<x.RequestedDeadlineMilliseconds<<",\"actualReleaseMs\":"<<x.ActualReleaseMilliseconds<<",\"deadlineWait\":"<<DeadlineWaitJson(x)<<'}';} out<<"],\"gpuCompletionFrame\":"<<(f.HasGpuCompletionObservation?std::to_string(f.LastGpuCompletionObservedFrameIndex):"null")<<",\"display\":\"unavailable\",\"replacementDrop\":\"unavailable\",\"inputLatency\":\"unavailable\",\"gpuTimingStatus\":\""<<ToString(f.GpuStatus)<<"\",\"gpuDurationMs\":"<<(gpuDuration == "unavailable" ? "\"unavailable\"" : gpuDuration)<<",\"gpuHeadroom\":"<<(gpuHeadroom == "unavailable" ? "\"unavailable\"" : gpuHeadroom)<<'}' << (i + 1 == s.Frames.size() ? "\n" : ",\n"); }
             return out.str() + "  ]\n}\n";

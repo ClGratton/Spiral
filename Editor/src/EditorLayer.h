@@ -5,6 +5,7 @@
 #include <array>
 #include <filesystem>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -56,6 +57,7 @@ private:
     void DrawProfilerPanel();
     void DrawProjectPanel();
     void PublishFramePacingPolicy();
+    void PublishPresentationPolicy();
     void DrawNewProjectDialog();
     bool DrawMaterialAssetControls(Engine::AssetHandle handle);
     void HandleAssetWatchEvents();
@@ -68,6 +70,7 @@ private:
     void RunFramePacingPolicySmoke();
     void RunEditorSettingsSmoke();
     void RunViewportNavigationSmoke();
+    void RunPresentationPolicySmoke();
     void ConfigureSceneOriginRasterSmoke();
     void AdvanceSceneOriginRasterSmoke();
     void CaptureSceneOriginRasterSmoke();
@@ -120,6 +123,9 @@ private:
     bool m_EditorSettingsSmokeCompleted = false;
     bool m_ViewportNavigationSmokeRequested = false;
     bool m_ViewportNavigationSmokeCompleted = false;
+    bool m_PresentationPolicySmokeRequested = false;
+    bool m_PresentationPolicySmokeCompleted = false;
+    Engine::u64 m_PresentationPolicySmokeTearingGeneration = 0;
     bool m_ShowNewProjectDialog = false;
     std::string m_CaptureViewportPath = "output/captures/editor-viewport.bmp";
     std::string m_ProjectPath = "output/projects/default.spiralproject";
@@ -139,6 +145,10 @@ private:
     Engine::GltfImportResult m_LastGltfImport;
     Engine::MaterialLibrary m_MaterialLibrary;
     Engine::FramePacingPolicy m_ProjectFramePacingPolicy;
+    Engine::PresentationPolicy m_ProjectPresentationPolicy = Engine::PresentationPolicy::Synchronized;
+    // Command-line policy is session-only; project serialization always keeps
+    // the project-owned request intact.
+    std::optional<Engine::PresentationPolicy> m_RuntimePresentationPolicyOverride;
     Engine::GameFramePacingSettings m_GameFramePacingSettings;
     Engine::Scene m_ActiveScene { "Sample Scene" };
     Engine::Entity m_PrototypeMeshEntity;

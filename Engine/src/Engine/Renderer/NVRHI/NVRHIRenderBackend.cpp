@@ -257,7 +257,13 @@ namespace Engine
     {
         (void)clearColor;
         if (m_D3D12Presentation)
+        {
+            // The replacement waitable object must be installed before this
+            // frame's mandatory latency wait, never halfway through render.
+            if (!m_D3D12Presentation->ApplyPendingPresentationPolicy())
+                return;
             m_D3D12Presentation->WaitForFrameLatency();
+        }
     }
 
     void NVRHIRenderBackend::EndFrame()
@@ -278,12 +284,28 @@ namespace Engine
         return m_VulkanPresentation ? &m_VulkanPresentation->GetTiming() : nullptr;
     }
 
+    void NVRHIRenderBackend::SetPresentationPolicy(PresentationPolicy policy)
+    {
+        if (m_D3D12Presentation)
+            m_D3D12Presentation->SetPresentationPolicy(policy);
+        if (m_VulkanPresentation)
+            m_VulkanPresentation->SetPresentationPolicy(policy);
+    }
+
+    const RendererPresentationPolicyDiagnostics* NVRHIRenderBackend::GetPresentationPolicyDiagnostics() const
+    {
+        if (m_D3D12Presentation)
+            return &m_D3D12Presentation->GetPresentationPolicyDiagnostics();
+        return m_VulkanPresentation ? &m_VulkanPresentation->GetPresentationPolicyDiagnostics() : nullptr;
+    }
+
     bool NVRHIRenderBackend::InitializeImGui(void* nativeWindow, u32 width, u32 height)
     {
         if (m_RendererBackend == RendererBackend::NVRHIVulkan && m_VulkanContext)
         {
             if (!m_VulkanPresentation)
                 m_VulkanPresentation = CreateScope<NVRHIVulkanPresentation>();
+            m_VulkanPresentation->SetPresentationPolicy(Renderer::GetPresentationPolicy());
             return m_VulkanPresentation->Initialize(m_VulkanContext.get(), nativeWindow, width, height);
         }
 
@@ -292,6 +314,7 @@ namespace Engine
 
         if (!m_D3D12Presentation)
             m_D3D12Presentation = CreateScope<NVRHID3D12Presentation>();
+        m_D3D12Presentation->SetPresentationPolicy(Renderer::GetPresentationPolicy());
 
         return m_D3D12Presentation->Initialize(nativeWindow, m_Device.get(), m_D3D12NativeHandles, width, height);
     }

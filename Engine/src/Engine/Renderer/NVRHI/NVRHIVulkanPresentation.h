@@ -21,6 +21,8 @@ namespace Engine
         void BeginImGuiFrame();
         void RenderImGuiDrawData(ImDrawData* drawData, const ClearColor& clearColor, u32 width, u32 height);
         const RendererPresentationTiming& GetTiming() const;
+        void SetPresentationPolicy(PresentationPolicy policy);
+        const RendererPresentationPolicyDiagnostics& GetPresentationPolicyDiagnostics() const;
         u64 GetSuccessfulPresentCount() const;
         bool RegisterViewportOutput(const RHI::NVRHIVulkanTextureNativeHandles& handles, u64 outputGeneration);
         void ReleaseViewportOutput();

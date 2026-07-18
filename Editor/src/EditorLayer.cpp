@@ -20,7 +20,7 @@
 namespace
 {
     constexpr const char* AssetDragPayloadType = "SPIRAL_ASSET_HANDLE";
-    constexpr int ProjectFormatVersion = 2;
+    constexpr int ProjectFormatVersion = 3;
     constexpr int EditorSettingsFormatVersion = 1;
 
     struct EditorSettings
@@ -39,6 +39,7 @@ namespace
         std::string ScenePath;
         std::string AssetRegistryPath;
         Engine::FramePacingPolicy FramePacingPolicy;
+        Engine::PresentationPolicy PresentationPolicy = Engine::PresentationPolicy::Synchronized;
     };
 
     const char* ToEditorSettingsNavigationPreset(ViewportNavigationPreset preset)
@@ -89,6 +90,13 @@ namespace
             case Engine::FramePacingMode::SmoothFrametime: return "SmoothFrametime";
         }
         return "Unknown";
+    }
+
+    bool ParsePresentationPolicy(std::string_view text, Engine::PresentationPolicy& outPolicy)
+    {
+        if (text == "Synchronized") { outPolicy = Engine::PresentationPolicy::Synchronized; return true; }
+        if (text == "TearingAllowed") { outPolicy = Engine::PresentationPolicy::TearingAllowed; return true; }
+        return false;
     }
 
     const char* ToLightTypeName(Engine::LightType type)
@@ -383,6 +391,7 @@ namespace
         output << "AssetRegistry " << std::quoted(manifest.AssetRegistryPath) << '\n';
         output << "FramePacingMode " << ToManifestFramePacingMode(manifest.FramePacingPolicy.Mode) << '\n';
         output << "FramePacingTargetFps " << manifest.FramePacingPolicy.SmoothTargetFramesPerSecond << '\n';
+        output << "PresentationPolicy " << Engine::ToString(manifest.PresentationPolicy) << '\n';
         return static_cast<bool>(output);
     }
 
@@ -394,12 +403,13 @@ namespace
 
         std::string magic;
         int version = 0;
-        if (!(input >> magic >> version) || magic != "SpiralProject" || (version != 1 && version != ProjectFormatVersion))
+        if (!(input >> magic >> version) || magic != "SpiralProject" || version < 1 || version > ProjectFormatVersion)
             return false;
 
         ProjectManifest manifest;
         bool readFramePacingMode = version == 1;
         bool readFramePacingTarget = version == 1;
+        bool readPresentationPolicy = version < 3;
         std::string key;
         while (input >> key)
         {
@@ -420,6 +430,13 @@ namespace
                 input >> manifest.FramePacingPolicy.SmoothTargetFramesPerSecond;
                 readFramePacingTarget = true;
             }
+            else if (version >= 3 && key == "PresentationPolicy")
+            {
+                std::string policy;
+                if (!(input >> policy) || !ParsePresentationPolicy(policy, manifest.PresentationPolicy))
+                    return false;
+                readPresentationPolicy = true;
+            }
             else
                 return false;
 
@@ -427,7 +444,7 @@ namespace
                 return false;
         }
 
-        if (!readFramePacingMode || !readFramePacingTarget
+        if (!readFramePacingMode || !readFramePacingTarget || !readPresentationPolicy
             || manifest.ScenePath.empty() || manifest.AssetRegistryPath.empty()
             || !Engine::IsValidFramePacingPolicy(manifest.FramePacingPolicy))
             return false;
@@ -449,6 +466,13 @@ void EditorLayer::OnAttach()
     m_ConsoleLines.emplace_back("GLFW window backend active");
     m_ConsoleLines.emplace_back(std::string("Renderer backend: ") + Engine::Renderer::GetActiveBackendName());
     const Engine::ApplicationCommandLineArgs& args = Engine::Application::Get().GetSpecification().CommandLineArgs;
+    const std::string_view presentationOverride = args.GetOptionValue("--presentation-policy");
+    if (presentationOverride == "synchronized")
+        m_RuntimePresentationPolicyOverride = Engine::PresentationPolicy::Synchronized;
+    else if (presentationOverride == "tearing-allowed")
+        m_RuntimePresentationPolicyOverride = Engine::PresentationPolicy::TearingAllowed;
+    else if (!presentationOverride.empty())
+        throw std::runtime_error("Invalid --presentation-policy; expected synchronized or tearing-allowed");
     LoadEditorSettings();
     m_RendererCapabilitySmokeRequested = args.HasFlag("--renderer-capability-smoke");
     const Engine::RHI::DeviceCapabilities* deviceCapabilities = Engine::Renderer::GetDeviceCapabilities();
@@ -478,6 +502,7 @@ void EditorLayer::OnAttach()
     if (!std::filesystem::exists(m_ProjectPath) || !LoadProject())
         EnsureDefaultSceneEntities();
     PublishFramePacingPolicy();
+    PublishPresentationPolicy();
     SyncEditorCameraStateFromMainCamera(true);
     ResetFusionNavigationPivotFromScene();
     m_CaptureViewportRequested = Engine::Application::Get().GetSpecification().CommandLineArgs.HasFlag("--capture-viewport");
@@ -498,6 +523,7 @@ void EditorLayer::OnAttach()
         Engine::Application::Get().GetSpecification().CommandLineArgs.HasFlag("--editor-settings-smoke");
     m_ViewportNavigationSmokeRequested =
         Engine::Application::Get().GetSpecification().CommandLineArgs.HasFlag("--editor-viewport-navigation-smoke");
+    m_PresentationPolicySmokeRequested = args.HasFlag("--presentation-policy-smoke");
     if (m_SceneOriginRasterSmokeRequested)
         ConfigureSceneOriginRasterSmoke();
     if (m_AssetWatchSmokeRequested)
@@ -540,6 +566,8 @@ void EditorLayer::OnUpdate(Engine::Timestep timestep)
     ++m_FrameCounter;
     m_LastFrameMs = timestep.GetMilliseconds();
     PublishFramePacingPolicy();
+    PublishPresentationPolicy();
+    RunPresentationPolicySmoke();
 
     RunAssetWatchSmokeMutation();
     RunGltfImportSmoke();
@@ -919,6 +947,21 @@ void EditorLayer::DrawMainMenuBar()
             ImGui::TextDisabled("Responsive has no intentional pacing wait.");
             ImGui::TextDisabled("Smooth Frametime is opt-in experimental pacing; VSync/VRR/tearing stay separate.");
 
+            ImGui::Separator();
+            ImGui::TextUnformatted("Presentation policy");
+            ImGui::TextDisabled("TearingAllowed permits a native immediate/tearing path when supported; it never proves VRR active.");
+            const Engine::PresentationPolicy presentationPolicies[] = { Engine::PresentationPolicy::Synchronized, Engine::PresentationPolicy::TearingAllowed };
+            if (ImGui::BeginCombo("Presentation", Engine::ToString(m_ProjectPresentationPolicy)))
+            {
+                for (Engine::PresentationPolicy policy : presentationPolicies)
+                {
+                    const bool selected = policy == m_ProjectPresentationPolicy;
+                    if (ImGui::Selectable(Engine::ToString(policy), selected)) m_ProjectPresentationPolicy = policy;
+                    if (selected) ImGui::SetItemDefaultFocus();
+                }
+                ImGui::EndCombo();
+            }
+
             const Engine::FramePacingMode modes[] = {
                 Engine::FramePacingMode::Responsive,
                 Engine::FramePacingMode::SmoothFrametime
@@ -953,6 +996,7 @@ void EditorLayer::DrawMainMenuBar()
                         + Engine::DescribeFramePacingPolicy(m_GameFramePacingSettings.Resolve(m_ProjectFramePacingPolicy)));
             }
             PublishFramePacingPolicy();
+            PublishPresentationPolicy();
             ImGui::EndMenu();
         }
 
@@ -2047,6 +2091,7 @@ void EditorLayer::DrawProfilerPanel()
 
     const Engine::ResolvedFramePacingPolicy framePacing =
         m_GameFramePacingSettings.Resolve(m_ProjectFramePacingPolicy);
+    const Engine::RendererPresentationPolicyDiagnostics presentation = Engine::Renderer::GetPresentationPolicyDiagnostics();
     const std::string framePacingDescription = Engine::DescribeFramePacingPolicy(framePacing);
     ImGui::Text("Project: %s", Engine::ToString(framePacing.ProjectMode));
     ImGui::Text("Runtime override: %s", Engine::ToString(framePacing.RuntimeOverride));
@@ -2066,6 +2111,13 @@ void EditorLayer::DrawProfilerPanel()
     ImGui::Text("Effective limiter: %s; source frame: %s (not display cadence)", Engine::ToString(timing.EffectiveLimitingSource),
         limitingSourceFrame.c_str());
     ImGui::TextDisabled("Evidence-qualified; synchronized presentation does not infer monitor refresh or display cadence.");
+    ImGui::Text("Presentation project: %s; requested: %s; actual: %s", Engine::ToString(m_ProjectPresentationPolicy),
+        Engine::ToString(presentation.Requested), Engine::ToString(presentation.Actual));
+    if (m_RuntimePresentationPolicyOverride)
+        ImGui::Text("Presentation runtime override: %s (not serialized)", Engine::ToString(*m_RuntimePresentationPolicyOverride));
+    ImGui::Text("Capability: %s; fallback: %s; generation: %llu", presentation.Capability.c_str(), presentation.FallbackReason.c_str(),
+        static_cast<unsigned long long>(presentation.SwapchainGeneration));
+    ImGui::TextDisabled("VRR-active, monitor state, display cadence, and input-to-display remain unavailable.");
     if (timing.InputLatencySourceFrameIndex && timing.InputToSimulationMilliseconds
         && timing.InputToRenderSubmissionMilliseconds && timing.InputToPresentMilliseconds)
     {
@@ -2079,12 +2131,12 @@ void EditorLayer::DrawProfilerPanel()
     ImGui::TextDisabled("Input to display / click-to-photon: unavailable");
     ImGui::TextWrapped("%s", framePacingDescription.c_str());
 
-    const Engine::RendererPresentationTiming& presentation = timing.Presentation;
-    if (presentation.UsesWaitableSwapchain)
+    const Engine::RendererPresentationTiming& presentationTiming = timing.Presentation;
+    if (presentationTiming.UsesWaitableSwapchain)
     {
-        ImGui::Text("Swapchain pacing: waitable, queue depth %u", presentation.MaximumFrameLatency);
-        ImGui::Text("Frame-latency wait: %.3f ms", presentation.FrameLatencyWaitMilliseconds);
-        ImGui::Text("Present: %.3f ms (%s)", presentation.PresentMilliseconds, presentation.PresentSucceeded ? "ok" : "pending");
+        ImGui::Text("Swapchain pacing: waitable, queue depth %u", presentationTiming.MaximumFrameLatency);
+        ImGui::Text("Frame-latency wait: %.3f ms", presentationTiming.FrameLatencyWaitMilliseconds);
+        ImGui::Text("Present: %.3f ms (%s)", presentationTiming.PresentMilliseconds, presentationTiming.PresentSucceeded ? "ok" : "pending");
     }
     else
     {
@@ -2458,6 +2510,69 @@ void EditorLayer::PublishFramePacingPolicy()
     Engine::Renderer::SetFramePacingPolicy(m_GameFramePacingSettings.Resolve(m_ProjectFramePacingPolicy));
 }
 
+void EditorLayer::PublishPresentationPolicy()
+{
+    Engine::Renderer::SetPresentationPolicy(m_RuntimePresentationPolicyOverride.value_or(m_ProjectPresentationPolicy));
+}
+
+void EditorLayer::RunPresentationPolicySmoke()
+{
+    if (!m_PresentationPolicySmokeRequested || m_PresentationPolicySmokeCompleted)
+        return;
+
+    const Engine::u64 frame = Engine::Application::Get().GetFrameIndex();
+    if (frame == 0)
+    {
+        m_ProjectPresentationPolicy = Engine::PresentationPolicy::TearingAllowed;
+        PublishPresentationPolicy();
+        Engine::Log::Info("PresentationPolicySmokeV1 state=request-tearing frame=", frame);
+        return;
+    }
+
+    const Engine::RendererPresentationPolicyDiagnostics diagnostics = Engine::Renderer::GetPresentationPolicyDiagnostics();
+    if (frame == 1)
+    {
+        if (diagnostics.Requested != Engine::PresentationPolicy::TearingAllowed || diagnostics.SwapchainGeneration == 0)
+            throw std::runtime_error("presentation policy smoke did not commit the tearing request");
+        m_PresentationPolicySmokeTearingGeneration = diagnostics.SwapchainGeneration;
+        Engine::Log::Info("PresentationPolicySmokeV1 state=tearing-resolved requested=", Engine::ToString(diagnostics.Requested),
+            " capability=", diagnostics.Capability, " actual=", Engine::ToString(diagnostics.Actual),
+            " fallback=", diagnostics.FallbackReason, " generation=", diagnostics.SwapchainGeneration,
+            " effectiveFrame=", diagnostics.EffectiveApplicationFrame);
+        return;
+    }
+    if (frame == 2)
+    {
+        if (diagnostics.SwapchainGeneration != m_PresentationPolicySmokeTearingGeneration)
+            throw std::runtime_error("unsupported presentation fallback recreated while its request was stable");
+        const Engine::u32 width = Engine::Application::Get().GetWindow().GetWidth();
+        const Engine::u32 height = Engine::Application::Get().GetWindow().GetHeight();
+        Engine::Application::Get().GetWindow().SetSize(width > 128 ? width - 64 : width, height > 128 ? height - 64 : height);
+        m_ProjectPresentationPolicy = Engine::PresentationPolicy::Synchronized;
+        PublishPresentationPolicy();
+        Engine::Log::Info("PresentationPolicySmokeV1 state=stable-request generation=", diagnostics.SwapchainGeneration,
+            " resize=requested restore=Synchronized");
+        return;
+    }
+    if (frame >= 4)
+    {
+        if (diagnostics.Requested != Engine::PresentationPolicy::Synchronized
+            || diagnostics.Actual == Engine::PresentationActualMode::Unavailable
+            || diagnostics.SwapchainGeneration <= m_PresentationPolicySmokeTearingGeneration
+            || diagnostics.LastSuccessfulPresentGeneration != diagnostics.SwapchainGeneration
+            || diagnostics.LastSuccessfulPresentApplicationFrame < diagnostics.EffectiveApplicationFrame)
+            throw std::runtime_error("presentation policy smoke did not restore synchronized presentation after resize");
+        Engine::Log::Info("PresentationPolicySmokeV1 state=pass requested=", Engine::ToString(diagnostics.Requested),
+            " capability=", diagnostics.Capability, " actual=", Engine::ToString(diagnostics.Actual),
+            " fallback=", diagnostics.FallbackReason, " generation=", diagnostics.SwapchainGeneration,
+            " effectiveFrame=", diagnostics.EffectiveApplicationFrame,
+            " lastPresentGeneration=", diagnostics.LastSuccessfulPresentGeneration,
+            " lastPresentFrame=", diagnostics.LastSuccessfulPresentApplicationFrame,
+            " resize=pass imgui=pass present=pass");
+        m_PresentationPolicySmokeCompleted = true;
+    }
+}
+
 void EditorLayer::DrawNewProjectDialog()
 {
     if (m_ShowNewProjectDialog)
@@ -2804,36 +2919,49 @@ void EditorLayer::RunFramePacingPolicySmoke()
 
     const std::filesystem::path smokeRoot = "output/projects/frame-pacing-policy-smoke";
     const std::filesystem::path legacyManifestPath = smokeRoot / "legacy.spiralproject";
+    const std::filesystem::path v2ManifestPath = smokeRoot / "v2.spiralproject";
     const std::filesystem::path invalidManifestPath = smokeRoot / "invalid.spiralproject";
     const bool legacyWritten = WriteTextFile(legacyManifestPath,
         "SpiralProject 1\nScene \"legacy.spiral\"\nAssetRegistry \"legacy.spiralassets\"\n");
     ProjectManifest legacyManifest;
     const bool legacyLoaded = legacyWritten && ReadProjectManifest(legacyManifestPath, legacyManifest)
-        && legacyManifest.FramePacingPolicy.Mode == Engine::FramePacingMode::Responsive;
+        && legacyManifest.FramePacingPolicy.Mode == Engine::FramePacingMode::Responsive
+        && legacyManifest.PresentationPolicy == Engine::PresentationPolicy::Synchronized;
+    const bool v2Written = WriteTextFile(v2ManifestPath,
+        "SpiralProject 2\nScene \"v2.spiral\"\nAssetRegistry \"v2.spiralassets\"\nFramePacingMode Responsive\nFramePacingTargetFps 60\n");
+    ProjectManifest v2Manifest;
+    const bool v2Migrated = v2Written && ReadProjectManifest(v2ManifestPath, v2Manifest)
+        && v2Manifest.PresentationPolicy == Engine::PresentationPolicy::Synchronized;
 
-    const ProjectManifest beforeInvalidRead { "unchanged.spiral", "unchanged.spiralassets", {} };
+    const ProjectManifest beforeInvalidRead { "unchanged.spiral", "unchanged.spiralassets", {}, Engine::PresentationPolicy::Synchronized };
     ProjectManifest invalidReadTarget = beforeInvalidRead;
     const bool invalidWritten = WriteTextFile(invalidManifestPath,
-        "SpiralProject 2\nScene \"invalid.spiral\"\nAssetRegistry \"invalid.spiralassets\"\n"
-        "FramePacingMode SmoothFrametime\nFramePacingTargetFps 0\n");
+        "SpiralProject 3\nScene \"invalid.spiral\"\nAssetRegistry \"invalid.spiralassets\"\n"
+        "FramePacingMode SmoothFrametime\nFramePacingTargetFps 60\nPresentationPolicy NotARealPolicy\n");
     const bool invalidRejected = invalidWritten && !ReadProjectManifest(invalidManifestPath, invalidReadTarget)
         && invalidReadTarget.ScenePath == beforeInvalidRead.ScenePath
         && invalidReadTarget.AssetRegistryPath == beforeInvalidRead.AssetRegistryPath;
 
     const Engine::FramePacingPolicy previousPolicy = m_ProjectFramePacingPolicy;
+    const Engine::PresentationPolicy previousPresentationPolicy = m_ProjectPresentationPolicy;
     m_ProjectFramePacingPolicy = { Engine::FramePacingMode::SmoothFrametime, 144.0 };
+    m_ProjectPresentationPolicy = Engine::PresentationPolicy::TearingAllowed;
     const bool savedAndReloaded = SaveProject() && LoadProject()
         && m_ProjectFramePacingPolicy.Mode == Engine::FramePacingMode::SmoothFrametime
-        && m_ProjectFramePacingPolicy.SmoothTargetFramesPerSecond == 144.0;
+        && m_ProjectFramePacingPolicy.SmoothTargetFramesPerSecond == 144.0
+        && m_ProjectPresentationPolicy == Engine::PresentationPolicy::TearingAllowed;
     if (!savedAndReloaded)
+    {
         m_ProjectFramePacingPolicy = previousPolicy;
+        m_ProjectPresentationPolicy = previousPresentationPolicy;
+    }
 
     m_FramePacingPolicySmokeCompleted = true;
-    if (!legacyLoaded || !invalidRejected || !savedAndReloaded)
+    if (!legacyLoaded || !v2Migrated || !invalidRejected || !savedAndReloaded)
         throw std::runtime_error("Frame-pacing policy smoke failed");
 
     const Engine::ResolvedFramePacingPolicy resolved = m_GameFramePacingSettings.Resolve(m_ProjectFramePacingPolicy);
-    Engine::Log::Info("FramePacingPolicySmokeV1 legacy=pass invalid=transactional-rejected saveReopen=pass ",
+    Engine::Log::Info("FramePacingPolicySmokeV1 legacy=pass v2Migration=pass invalid=transactional-rejected saveReopen=pass ",
         Engine::DescribeFramePacingPolicy(resolved), " result=pass");
     m_ConsoleLines.emplace_back("Frame pacing policy smoke passed: " + Engine::DescribeFramePacingPolicy(resolved));
 }
@@ -2866,7 +2994,7 @@ void EditorLayer::RunEditorSettingsSmoke()
     const bool invalidRejected = invalidWritten && !ReadEditorSettings(invalidPath, unchangedOnInvalidRead)
         && unchangedOnInvalidRead.ViewportNavigation == ViewportNavigationPreset::Unreal;
 
-    const ProjectManifest manifest { "separation.spiral", "separation.spiralassets", {} };
+    const ProjectManifest manifest { "separation.spiral", "separation.spiralassets", {}, Engine::PresentationPolicy::Synchronized };
     const bool manifestSeparated = WriteProjectManifest(manifestPath, manifest);
     std::ifstream manifestInput(manifestPath);
     std::stringstream manifestContents;
@@ -3210,7 +3338,7 @@ bool EditorLayer::SaveProject()
     if (!SaveActiveScene())
         return false;
 
-    const ProjectManifest manifest { m_ScenePath, m_AssetRegistryPath, m_ProjectFramePacingPolicy };
+    const ProjectManifest manifest { m_ScenePath, m_AssetRegistryPath, m_ProjectFramePacingPolicy, m_ProjectPresentationPolicy };
     if (!WriteProjectManifest(m_ProjectPath, manifest))
     {
         Engine::Log::Error("Project save failed: ", m_ProjectPath);
@@ -3377,7 +3505,9 @@ bool EditorLayer::LoadProject()
     m_ScenePath = std::move(manifest.ScenePath);
     m_AssetRegistryPath = std::move(manifest.AssetRegistryPath);
     m_ProjectFramePacingPolicy = manifest.FramePacingPolicy;
+    m_ProjectPresentationPolicy = manifest.PresentationPolicy;
     PublishFramePacingPolicy();
+    PublishPresentationPolicy();
     m_AssetRegistry = std::move(loadedRegistry);
     m_MaterialLibrary = std::move(loadedMaterials);
     m_ActiveScene = std::move(loadedScene);

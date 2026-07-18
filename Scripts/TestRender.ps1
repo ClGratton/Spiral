@@ -125,6 +125,14 @@ $RequiredMarkers = @(
     "RendererGpuTimingV1 backend=NVRHI D3D12"
 )
 $JoinedLog = $RenderLog -join "`n"
+$PresentationResult = Invoke-BoundedProcess -FilePath $Editor -Arguments @("--presentation-policy-smoke") -Label "Editor D3D12 presentation-policy smoke" -TimeoutSeconds $ChildTimeoutSeconds
+if ($PresentationResult.TimedOut -or $PresentationResult.ExitCode -ne 0) { throw "D3D12 presentation-policy smoke failed." }
+$PresentationLog = $PresentationResult.Output -join "`n"
+if ($PresentationLog -notmatch 'PresentationPolicySmokeV1 state=tearing-resolved requested=TearingAllowed\s+capability=allow-tearing-(?:supported|unsupported)\s+actual=D3D12Flip(?:Synchronized|TearingAllowed)\s+fallback=.*?\s+generation=\d+\s+effectiveFrame=\d+' -or
+    $PresentationLog -notmatch 'PresentationPolicySmokeV1 state=stable-request generation=\d+\s+resize=requested restore=Synchronized' -or
+    $PresentationLog -notmatch 'PresentationPolicySmokeV1 state=pass requested=Synchronized\s+capability=allow-tearing-(?:supported|unsupported)\s+actual=D3D12FlipSynchronized\s+fallback=.*?\s+generation=(\d+)\s+effectiveFrame=\d+\s+lastPresentGeneration=\1\s+lastPresentFrame=\d+\s+resize=pass imgui=pass present=pass') {
+    throw "D3D12 presentation-policy smoke did not prove ordered transition, stable fallback, resize, and final synchronized ImGui/present survival."
+}
 foreach ($Marker in $RequiredMarkers) {
     if (!$JoinedLog.Contains($Marker)) {
         throw "D3D12 render smoke did not emit required marker: $Marker"

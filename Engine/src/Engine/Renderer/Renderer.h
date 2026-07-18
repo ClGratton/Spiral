@@ -3,6 +3,7 @@
 #include "Engine/Core/Base.h"
 #include "Engine/RenderGraph/RenderGraph.h"
 #include "Engine/Renderer/FramePacingPolicy.h"
+#include "Engine/Renderer/PresentationPolicy.h"
 #include "Engine/RHI/RHICommon.h"
 #include "Engine/Renderer/SceneRasterPreparation.h"
 #include "Engine/Scene/SceneRenderSnapshot.h"
@@ -377,12 +378,14 @@ namespace Engine
             const std::vector<RenderGraph::RawTimestampScope>& scopes);
         static void SetFramePacingPolicy(const ResolvedFramePacingPolicy& policy);
         static ResolvedFramePacingPolicy GetFramePacingPolicy();
+        static void SetPresentationPolicy(PresentationPolicy policy);
+        static PresentationPolicy GetPresentationPolicy();
+        static RendererPresentationPolicyDiagnostics GetPresentationPolicyDiagnostics();
         static std::optional<RendererInputSample> RecordInputSample(u64 applicationFrameIndex);
         static void RecordFrameLifecyclePhase(u64 applicationFrameIndex, RendererFrameLifecyclePhase phase);
         static void RecordFrameWait(u64 applicationFrameIndex, RendererFrameWaitKind kind, bool applied, double milliseconds);
         static FramePacingWaitResult ApplySmoothFrametimeCandidate(SmoothFrametimeCandidate candidate);
         static void BeginFramePacingBenchmark(size_t capacity, double targetFramesPerSecond, u32 warmupFrames,
-            std::string presentationMode, std::string syncMode, std::string vrrMode, std::string tearingMode,
             FramePacingBenchmarkIdentity identity = {});
         static std::shared_ptr<const FramePacingBenchmarkSnapshot> GetFramePacingBenchmarkSnapshot();
         static void RecordGpuCompletionObservation(u64 completedApplicationFrameIndex);

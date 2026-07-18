@@ -73,6 +73,8 @@ namespace Engine
         std::deque<RendererFrameTiming> s_CompletedFrameTimings;
         constexpr size_t kCompletedFrameTimingCapacity = 8;
         ResolvedFramePacingPolicy s_FramePacingPolicy;
+        PresentationPolicy s_PresentationPolicy = PresentationPolicy::Synchronized;
+        RendererPresentationPolicyDiagnostics s_PresentationPolicyDiagnostics;
         SystemFramePacingClock s_FramePacingClock;
         SmoothFrametimePacer s_SmoothFrametimePacer;
         AtomicSharedPointer<SceneRenderSnapshot> s_SceneRenderSnapshot;
@@ -323,6 +325,8 @@ namespace Engine
         void RefreshPresentationTiming()
         {
             const NVRHIRenderBackend* backend = dynamic_cast<const NVRHIRenderBackend*>(s_Backend.get());
+            if (const RendererPresentationPolicyDiagnostics* diagnostics = backend ? backend->GetPresentationPolicyDiagnostics() : nullptr)
+                s_PresentationPolicyDiagnostics = *diagnostics;
             if (const RendererPresentationTiming* timing = backend ? backend->GetPresentationTiming() : nullptr;
                 timing && timing->ApplicationFrameIndex && *timing->ApplicationFrameIndex == s_FrameTiming.FrameIndex)
                 s_FrameTiming.Presentation = *timing;
@@ -423,6 +427,8 @@ namespace Engine
         s_RendererFrameTimingActive = false;
         s_SmoothFrametimePacer.Reset();
         s_HasDeviceCapabilities = false;
+        s_PresentationPolicyDiagnostics = {};
+        s_PresentationPolicyDiagnostics.Requested = s_PresentationPolicy;
 
         if (HasNativeWindow() && HasNVRHI())
         {
@@ -488,6 +494,8 @@ namespace Engine
         s_SmoothFrametimePacer.Reset();
         s_FramePacingBenchmark.reset();
         s_FramePacingBenchmarkQpcActive = false;
+        s_PresentationPolicyDiagnostics = {};
+        s_PresentationPolicyDiagnostics.Requested = s_PresentationPolicy;
         if (!s_Initialized)
             return;
 
@@ -842,7 +850,6 @@ namespace Engine
     }
 
     void Renderer::BeginFramePacingBenchmark(size_t capacity, double targetFramesPerSecond, u32 warmupFrames,
-        std::string presentationMode, std::string syncMode, std::string vrrMode, std::string tearingMode,
         FramePacingBenchmarkIdentity identity)
     {
         const bool attachmentQpcActive = !identity.RunId.empty() && identity.ProcessId != 0
@@ -852,10 +859,16 @@ namespace Engine
         condition.TargetFramesPerSecond = targetFramesPerSecond;
         condition.WarmupFrames = warmupFrames;
         condition.Policy = s_FramePacingPolicy;
-        condition.PresentationMode = std::move(presentationMode);
-        condition.SyncMode = std::move(syncMode);
-        condition.VrrMode = std::move(vrrMode);
-        condition.TearingMode = std::move(tearingMode);
+        // Native presentation owns these frozen conditions.
+        const RendererPresentationPolicyDiagnostics presentation = GetPresentationPolicyDiagnostics();
+        condition.RequestedPresentationPolicy = ToString(presentation.Requested);
+        condition.PresentationCapability = presentation.Capability;
+        condition.PresentationMode = ToString(presentation.Actual);
+        condition.PresentationFallback = presentation.FallbackReason;
+        condition.PresentationGeneration = presentation.SwapchainGeneration;
+        condition.SyncMode = PresentationSyncEncoding(presentation.Actual);
+        condition.VrrMode = "unavailable";
+        condition.TearingMode = presentation.PresentAllowsTearing ? "allowed" : "disabled";
         condition.RunId = identity.RunId.empty() ? "unavailable" : std::move(identity.RunId);
         condition.ProcessId = identity.ProcessId;
         condition.ExecutablePath = identity.ExecutablePath.empty() ? "unavailable" : std::move(identity.ExecutablePath);
@@ -873,6 +886,24 @@ namespace Engine
     std::shared_ptr<const FramePacingBenchmarkSnapshot> Renderer::GetFramePacingBenchmarkSnapshot()
     {
         return s_FramePacingBenchmark ? s_FramePacingBenchmark->GetSnapshot() : nullptr;
+    }
+
+    void Renderer::SetPresentationPolicy(PresentationPolicy policy)
+    {
+        s_PresentationPolicy = policy;
+        s_PresentationPolicyDiagnostics.Requested = policy;
+        if (NVRHIRenderBackend* backend = dynamic_cast<NVRHIRenderBackend*>(s_Backend.get()))
+            backend->SetPresentationPolicy(policy);
+    }
+
+    PresentationPolicy Renderer::GetPresentationPolicy() { return s_PresentationPolicy; }
+
+    RendererPresentationPolicyDiagnostics Renderer::GetPresentationPolicyDiagnostics()
+    {
+        if (const NVRHIRenderBackend* backend = dynamic_cast<const NVRHIRenderBackend*>(s_Backend.get()))
+            if (const RendererPresentationPolicyDiagnostics* diagnostics = backend->GetPresentationPolicyDiagnostics())
+                s_PresentationPolicyDiagnostics = *diagnostics;
+        return s_PresentationPolicyDiagnostics;
     }
 
     void Renderer::RecordGpuCompletionObservation(u64 completedApplicationFrameIndex)

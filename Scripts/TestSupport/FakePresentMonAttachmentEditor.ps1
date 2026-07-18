@@ -15,13 +15,18 @@ $processPath = (Get-Process -Id $PID).Path
 $runId = "fake-run-$PID-$tick"
 $publishedPid = if ($Behavior -eq "stale-readiness") { $PID + 1 } else { $PID }
 $candidateName = if ($Candidate -eq "submission-gate") { "SubmissionGate" } else { "InterFrame" }
+$presentationMode = if ($Backend -eq "Vulkan") { "VulkanFifo" } else { "D3D12FlipSynchronized" }
+$presentationCapability = if ($Backend -eq "Vulkan") { "fifo-supported" } else { "allow-tearing-supported" }
+$presentationSync = if ($Backend -eq "Vulkan") { "fifo" } else { "interval-1" }
 $readiness = [ordered]@{
     schema = 1; runId = $runId; processId = $publishedPid; executablePath = [IO.Path]::GetFullPath($processPath)
     qpcFrequency = $frequency; qpcTick = $tick; benchmarkArtifactPath = [IO.Path]::GetFullPath($EngineDirectory)
     condition = [ordered]@{
         backend = if ($Backend -eq "Vulkan") { "NVRHI Vulkan" } else { "NVRHI D3D12" }
         targetFps = $TargetFramesPerSecond; candidate = $candidateName
-        presentationMode = "unknown"; sync = "unknown"; vrr = "unknown"; tearing = "unknown"
+        requestedPresentationPolicy = "Synchronized"; presentationCapability = $presentationCapability
+        presentationMode = $presentationMode; presentationFallback = "none"; presentationGeneration = 1
+        sync = $presentationSync; vrr = "unavailable"; tearing = "disabled"
     }
 }
 [IO.Directory]::CreateDirectory((Split-Path -Parent $ReadinessPath)) | Out-Null
@@ -54,12 +59,14 @@ foreach ($offset in @(10000, 20000, 30000)) {
     }
 }
 $engine = [ordered]@{
-    schema = 2
+    schema = 7
     condition = [ordered]@{
         runId = $runId; processId = $PID; executablePath = [IO.Path]::GetFullPath($processPath); qpcFrequency = $frequency
         backend = if ($Backend -eq "Vulkan") { "NVRHI Vulkan" } else { "NVRHI D3D12" }
         targetFps = $TargetFramesPerSecond; warmupFrames = 30; mode = "Smooth Frametime"; candidate = $candidateName
-        presentationMode = "unknown"; sync = "unknown"; vrr = "unknown"; tearing = "unknown"
+        requestedPresentationPolicy = "Synchronized"; presentationCapability = $presentationCapability
+        presentationMode = $presentationMode; presentationFallback = "none"; presentationGeneration = 1
+        sync = $presentationSync; vrr = "unavailable"; tearing = "disabled"
     }
     frames = $frames
 }

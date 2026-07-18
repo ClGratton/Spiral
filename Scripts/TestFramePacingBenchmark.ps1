@@ -3,14 +3,6 @@ param(
     [string]$Backend = "D3D12",
     [ValidateRange(30, 600)]
     [int[]]$TargetFramesPerSecond = @(60, 120),
-    [ValidateNotNullOrEmpty()]
-    [string]$PresentationMode = "unknown",
-    [ValidateNotNullOrEmpty()]
-    [string]$SyncMode = "unknown",
-    [ValidateNotNullOrEmpty()]
-    [string]$VrrMode = "unknown",
-    [ValidateNotNullOrEmpty()]
-    [string]$TearingMode = "unknown",
     [switch]$ExternalAttachment,
     [ValidateRange(10, 600)]
     [int]$ChildTimeoutSeconds = 180
@@ -81,7 +73,7 @@ function Invoke-AttachmentCase([ValidateSet("release", "mismatch", "timeout")][s
             ![IO.Path]::GetFullPath($Readiness.executablePath).Equals($ExpectedPath, [StringComparison]::OrdinalIgnoreCase) -or
             $Readiness.qpcFrequency -le 0 -or $Readiness.qpcTick -le 0 -or $Readiness.benchmarkArtifactPath -ne [IO.Path]::GetFullPath($Artifact) -or
             $Readiness.condition.backend -ne $(if ($Backend -eq "Vulkan") { "NVRHI Vulkan" } else { "NVRHI D3D12" }) -or $Readiness.condition.targetFps -ne 60 -or
-            $Readiness.condition.presentationMode -ne "unknown" -or $Readiness.condition.sync -ne "unknown" -or $Readiness.condition.vrr -ne "unknown" -or $Readiness.condition.tearing -ne "unknown") {
+            [string]::IsNullOrWhiteSpace([string]$Readiness.condition.requestedPresentationPolicy) -or [string]::IsNullOrWhiteSpace([string]$Readiness.condition.presentationCapability) -or [string]::IsNullOrWhiteSpace([string]$Readiness.condition.presentationMode) -or [string]::IsNullOrWhiteSpace([string]$Readiness.condition.presentationFallback) -or [uint64]$Readiness.condition.presentationGeneration -lt 1 -or [string]::IsNullOrWhiteSpace([string]$Readiness.condition.sync) -or $Readiness.condition.vrr -ne "unavailable" -or [string]::IsNullOrWhiteSpace([string]$Readiness.condition.tearing)) {
             throw "Attachment readiness identity/condition mismatch: $Backend $Mode"
         }
         if (Test-Path (Join-Path $Artifact "frame-pacing-benchmark.json")) { throw "Measurement artifact existed before supervisor release: $Backend $Mode" }
@@ -102,7 +94,7 @@ function Invoke-AttachmentCase([ValidateSet("release", "mismatch", "timeout")][s
         if ($Mode -eq "release") {
             if ($Log -notmatch "FramePacingAttachmentV1 state=released" -or $Log -notmatch "FramePacingBenchmarkV1 frames=512") { throw "Attachment release launch failed: $Backend" }
             $Json = Get-Content -Raw (Join-Path $Artifact "frame-pacing-benchmark.json") | ConvertFrom-Json
-            if ($Json.schema -ne 6 -or $Json.condition.runId -ne $Readiness.runId -or $Json.condition.processId -ne $Process.Id -or $Json.condition.qpcFrequency -ne $Readiness.qpcFrequency -or $Json.frames.Count -ne 512 -or @($Json.frames | Where-Object { @($_.lifecycle | Where-Object { $_.qpc -le 0 }).Count -ne 0 }).Count -ne 0) { throw "Attachment release artifact did not retain QPC/run identity: $Backend" }
+            if ($Json.schema -ne 7 -or $Json.condition.runId -ne $Readiness.runId -or $Json.condition.processId -ne $Process.Id -or $Json.condition.qpcFrequency -ne $Readiness.qpcFrequency -or $Json.frames.Count -ne 512 -or @($Json.frames | Where-Object { @($_.lifecycle | Where-Object { $_.qpc -le 0 }).Count -ne 0 }).Count -ne 0) { throw "Attachment release artifact did not retain QPC/run identity: $Backend" }
             Write-Host "Frame pacing attachment passed: $Backend release runId=$($Readiness.runId)"
         } else {
             $Expected = if ($Mode -eq "mismatch") { "state=rejected" } else { "state=timeout" }
@@ -123,9 +115,7 @@ foreach ($Target in $TargetFramesPerSecond) {
     foreach ($Candidate in @("responsive", "inter-frame", "submission-gate")) {
         $Output = Join-Path $Root "output\frame-pacing-benchmark\$Backend-$Target-$Candidate"
         if (Test-Path $Output) { Remove-Item -LiteralPath $Output -Recurse -Force }
-        $Arguments = @("--frame-pacing-benchmark", "--smooth-frametime-target-fps=$Target", "--frame-pacing-benchmark-output=$Output",
-            "--frame-pacing-benchmark-presentation=$PresentationMode", "--frame-pacing-benchmark-sync=$SyncMode",
-            "--frame-pacing-benchmark-vrr=$VrrMode", "--frame-pacing-benchmark-tearing=$TearingMode")
+        $Arguments = @("--frame-pacing-benchmark", "--smooth-frametime-target-fps=$Target", "--frame-pacing-benchmark-output=$Output")
         if ($Candidate -eq "responsive") { $Arguments += "--frame-pacing-benchmark-responsive" } else { $Arguments += "--smooth-frametime-candidate=$Candidate" }
         if ($Backend -eq "Vulkan") { $Arguments += "--renderer-vulkan" }
         $Result = Invoke-BoundedProcess -FilePath $Executable -Arguments $Arguments -Label "Frame pacing benchmark $Backend $Target $Candidate" -TimeoutSeconds $ChildTimeoutSeconds
@@ -141,8 +131,11 @@ foreach ($Target in $TargetFramesPerSecond) {
         $ExpectedMode = if ($Candidate -eq "responsive") { "Responsive" } else { "Smooth Frametime" }
         $ExpectedCandidate = if ($Candidate -eq "responsive") { "InterFrame" } elseif ($Candidate -eq "inter-frame") { "InterFrame" } else { "SubmissionGate" }
         $ExpectedBackend = if ($Backend -eq "Vulkan") { "NVRHI Vulkan" } else { "NVRHI D3D12" }
+        $ExpectedPresentationMode = if ($Backend -eq "Vulkan") { "VulkanFifo" } else { "D3D12FlipSynchronized" }
+        $ExpectedPresentationCapability = if ($Backend -eq "Vulkan") { @("fifo-supported", "fifo-required-by-vulkan") } else { @("allow-tearing-supported", "allow-tearing-unsupported") }
+        $ExpectedPresentationSync = if ($Backend -eq "Vulkan") { "fifo" } else { "interval-1" }
         $EffectiveTargetMismatch = if ($Candidate -eq "responsive") { $null -ne $Json.condition.effectiveTargetFps } else { $Json.condition.effectiveTargetFps -ne $Target }
-        if ($Json.schema -ne 6 -or $Json.condition.backend -ne $ExpectedBackend -or $Json.condition.targetFps -ne $Target -or $EffectiveTargetMismatch -or $Json.condition.warmupFrames -ne 30 -or $Json.condition.mode -ne $ExpectedMode -or $Json.condition.candidate -ne $ExpectedCandidate -or $Json.condition.presentationMode -ne $PresentationMode -or $Json.condition.sync -ne $SyncMode -or $Json.condition.vrr -ne $VrrMode -or $Json.condition.tearing -ne $TearingMode -or $Json.frames.Count -ne 512 -or $Csv.Count -ne 512 -or $null -eq $Json.summary.p50Ms -or $null -eq $Json.summary.p95Ms -or $null -eq $Json.summary.p99Ms -or $null -eq $Json.summary.cpuActiveP50Ms -or $null -eq $Json.summary.cpuActiveP95Ms -or $null -eq $Json.summary.cpuActiveP99Ms -or $null -eq $Json.summary.intentionalWaitP50Ms -or $null -eq $Json.summary.intentionalWaitP95Ms -or $null -eq $Json.summary.intentionalWaitP99Ms -or $null -eq $Json.summary.deadlineMisses -or $null -eq $Json.summary.deadlineOvershootP99Ms -or $null -eq $Json.summary.onePercentLowFps -or $null -eq $Json.summary.pointOnePercentLowFps) {
+        if ($Json.schema -ne 7 -or $Json.condition.backend -ne $ExpectedBackend -or $Json.condition.targetFps -ne $Target -or $EffectiveTargetMismatch -or $Json.condition.warmupFrames -ne 30 -or $Json.condition.mode -ne $ExpectedMode -or $Json.condition.candidate -ne $ExpectedCandidate -or $Json.condition.requestedPresentationPolicy -ne "Synchronized" -or $Json.condition.presentationCapability -notin $ExpectedPresentationCapability -or $Json.condition.presentationMode -ne $ExpectedPresentationMode -or $Json.condition.presentationFallback -ne "none" -or [uint64]$Json.condition.presentationGeneration -lt 1 -or $Json.condition.sync -ne $ExpectedPresentationSync -or $Json.condition.vrr -ne "unavailable" -or $Json.condition.tearing -ne "disabled" -or $Json.frames.Count -ne 512 -or $Csv.Count -ne 512 -or $null -eq $Json.summary.p50Ms -or $null -eq $Json.summary.p95Ms -or $null -eq $Json.summary.p99Ms -or $null -eq $Json.summary.cpuActiveP50Ms -or $null -eq $Json.summary.cpuActiveP95Ms -or $null -eq $Json.summary.cpuActiveP99Ms -or $null -eq $Json.summary.intentionalWaitP50Ms -or $null -eq $Json.summary.intentionalWaitP95Ms -or $null -eq $Json.summary.intentionalWaitP99Ms -or $null -eq $Json.summary.deadlineMisses -or $null -eq $Json.summary.deadlineOvershootP99Ms -or $null -eq $Json.summary.onePercentLowFps -or $null -eq $Json.summary.pointOnePercentLowFps) {
             throw "Benchmark condition manifest did not retain ${Candidate}: $Backend $Target"
         }
         $AppliedPacingWaits = @($Json.frames | ForEach-Object { @($_.waits) } | Where-Object { $_.kind -eq "IntentionalPacing" -and $_.applied })

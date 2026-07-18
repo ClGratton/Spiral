@@ -49,6 +49,8 @@ namespace Engine
         RendererBackend GetRendererBackend() const { return m_RendererBackend; }
         const RHI::DeviceCapabilities* GetDeviceCapabilities() const;
         const RendererPresentationTiming* GetPresentationTiming() const;
+        void SetPresentationPolicy(PresentationPolicy policy);
+        const RendererPresentationPolicyDiagnostics* GetPresentationPolicyDiagnostics() const;
 
     private:
         RHI::NVRHIAdapterInfo m_AdapterInfo;
