@@ -1,7 +1,7 @@
 # AI And Automation Architecture
 
 **Status:** Accepted planning contract; product runtime not implemented
-**Date:** 2026-07-13
+**Date:** 2026-07-18
 
 ## Decision Summary
 
@@ -42,8 +42,9 @@ The supplied Codex analysis was useful secondary material, but its numerical “
 | Sanfilippo, [Z80/ZX Spectrum experiment](https://antirez.com/news/160) | A specification, factual documentation, simplicity rules, tests, commits, a work log, rereading after compaction, and targeted steering produced a strong result. | Keep repository-readable state, verification, recovery after compaction, and mechanism-specific steering. |
 | Sanfilippo, [Redis Array development](https://antirez.com/news/164) | A long specification evolved under evidence; an initial representation was replaced; tests, manual inspection, and stress testing exposed design and efficiency issues. | Contracts must be challengeable under evidence, and source inspection remains a valid risk-control tool. |
 | Sanfilippo, [“Controllare le idee è più importante di guardare il codice”](https://www.youtube.com/watch?v=XZZ_ddBvELc), 2026-07-13 | The current recommendation shifts attention from exhaustive line reading to design hints, idea/mechanism questions, QA, real scenarios, and live back-and-forth steering. It also asserts that frontier models no longer make local mistakes and recommends never returning to code reading. | Adopt attention allocation, short mechanism explanations, visible progress, steering, and QA-first acceptance. Treat zero-local-error and zero-code-review as unverified source claims, not Spiral facts. |
+| Sanfilippo, [“I test nel software: le tecniche che uso”](https://www.youtube.com/watch?v=521V3S3QmnQ), 2026-03-21 | Tests should primarily exercise exported behavior, use implementation knowledge to attack fragile boundaries, generate many meaningful states with invariants or a simpler oracle, combine stress with memory diagnostics, stay fast enough to run frequently, and give AI mechanism-specific testing instructions. The author personally rejects TDD and almost all isolated unit testing. | Adopt the concrete test-design and AI-brief mechanisms in [TESTING_STRATEGY.md](../TESTING_STRATEGY.md). Do not turn one practitioner's anti-TDD/anti-unit preference into a universal rule; isolated contract tests remain useful when they protect a stable invariant and improve fault localization. |
 
-The current video partly supersedes the author's earlier personal workflow, but it is not engine-owned evidence that local implementation mistakes no longer occur. Spiral therefore adopts the useful mechanism, not the absolute.
+The 2026-07-13 review video partly supersedes the author's earlier personal workflow, but it is not engine-owned evidence that local implementation mistakes no longer occur. The testing video adds a separate test-design perspective. Spiral therefore adopts useful mechanisms from both, not either absolute.
 
 ## Repository Development-Agent Contract
 
@@ -84,6 +85,12 @@ Model allowance is a finite project resource, not an invitation to maximize para
 - when allowance becomes critically low, preserving objective, commits, evidence, blockers, dirty-tree state, and the next ordered action takes priority over continuing implementation.
 
 Cost control must not weaken required behavioral evidence. It removes duplicated reasoning and coordination churn; it does not convert compilation, agent reports, or log markers into substitutes for runtime verification.
+
+### AI-assisted test design
+
+An agent is not asked merely to “write tests.” Its task packet names the public or deliberately test-facing behavior, relevant implementation/control boundaries, fragile states and limits, invariant/metamorphic relation/independent oracle, generator or corpus distribution, invalid/corruption strategy, deterministic replay and minimization requirements, test tier and runtime budget, sanitizer mode, required command, and exact platform/backend non-claims. [TESTING_STRATEGY.md](../TESTING_STRATEGY.md) is authoritative for that packet and for generated-failure retention.
+
+The owner reviews whether AI-authored assertions can actually distinguish an incorrect result, whether an oracle is independent rather than copied from the implementation, and whether generated inputs reach semantically difficult states. Compilation, line coverage, plausible test code, and the agent's confidence are not acceptance evidence. Fast deterministic regression coverage stays in the frequent loop; long fuzz, sanitizer, and soak campaigns remain bounded separate evidence.
 
 ### Contract challenge
 

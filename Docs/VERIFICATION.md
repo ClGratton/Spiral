@@ -1,9 +1,11 @@
 # Verification Guide
 
 Status: Living contract
-Date: 2026-07-15
+Date: 2026-07-18
 
 Verification must exercise the behavior claimed by the change. Compilation proves build compatibility; it does not prove a runtime or editor workflow.
+
+[TESTING_STRATEGY.md](TESTING_STRATEGY.md) owns how tests are designed: stable behavior boundaries, implementation-informed failure hypotheses, explicit invariants/oracles, reproducible generated inputs, test speed tiers, sanitizer/coverage policy, and the required AI test brief. This document owns the concrete commands and evidence matrix. A command listed here does not excuse a weak oracle, irrelevant inputs, an unreproducible random failure, or a test placed in the wrong feedback tier.
 
 Headed child processes launched by a verification script must stream stdout/stderr to the active console while retaining the lines needed for assertions, and each launch must have a finite runtime-only timeout. Timeout diagnostics must name the invocation, elapsed time, PID, recent useful output, dump availability/capture result, and successful process-tree cleanup. A cancelled or timed-out hosted run is failure evidence, never a passing qualification.
 
@@ -37,6 +39,12 @@ Get-ChildItem -Recurse -Filter *.md |
     }
 if ($Broken.Count) { $Broken; throw 'Broken Markdown links found.' }
 ```
+
+## Test Selection And Generated Failures
+
+Classify new tests as Fast contract, Integration/headless, Headed/platform, or Stress/fuzz/soak using [TESTING_STRATEGY.md](TESTING_STRATEGY.md). Until the planned selectable runner exists, `EngineTests` remains one complete deterministic executable; a task may use a narrower script-only check during implementation, but the applicable complete contract suite still runs at the coherent integration milestone.
+
+Every generated or randomized failure report must retain the seed, serialized input or operation trace, exact rerun command, tier/timeout, and sanitizer mode under an ignored `output/` path. Reduce it to a deterministic regression fixture or curated corpus entry before completion. A varying-seed campaign is additional stress evidence; it never replaces the stable fast replay.
 
 ## Build And Contract Tests
 

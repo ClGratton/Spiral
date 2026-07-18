@@ -10,8 +10,9 @@ Before roadmap, architecture, or implementation work:
 2. Read [PLAN.md](PLAN.md) for current state and execution order.
 3. Read [Docs/README.md](Docs/README.md) for the complete documentation catalog, authority rules, and update responsibilities.
 4. Read [Docs/ROADMAP_GOVERNANCE.md](Docs/ROADMAP_GOVERNANCE.md) before changing roadmap wording or checkboxes.
-5. Read [Docs/VERIFICATION.md](Docs/VERIFICATION.md) before claiming behavior is complete.
-6. Read the task-relevant architecture contracts linked by [Docs/Architecture/README.md](Docs/Architecture/README.md) and the nearest `OWNERSHIP.md` before editing a subsystem.
+5. Read [Docs/TESTING_STRATEGY.md](Docs/TESTING_STRATEGY.md) before creating, changing, or delegating nontrivial tests.
+6. Read [Docs/VERIFICATION.md](Docs/VERIFICATION.md) before claiming behavior is complete.
+7. Read the task-relevant architecture contracts linked by [Docs/Architecture/README.md](Docs/Architecture/README.md) and the nearest `OWNERSHIP.md` before editing a subsystem.
 
 For a broad architecture audit, read every document listed in `Docs/README.md`. For a bounded implementation, read the mandatory set above plus every contract named for that subsystem; do not substitute a stale “first implementation order” in a research document for `PLAN.md`.
 
@@ -74,7 +75,9 @@ More detailed engine/editor/sandbox boundaries live in their nearest `OWNERSHIP.
 
 ## Verification
 
-- Follow [Docs/VERIFICATION.md](Docs/VERIFICATION.md) and use the smallest test set that exercises the changed behavior plus proportionate regression coverage.
+- Follow [Docs/TESTING_STRATEGY.md](Docs/TESTING_STRATEGY.md) for test design and [Docs/VERIFICATION.md](Docs/VERIFICATION.md) for commands/evidence. Use the smallest test tier that exercises the changed behavior plus proportionate regression coverage.
+- Tests normally assert public or deliberately test-facing behavior, while implementation knowledge selects fragile boundaries, states, and failure sequences. Generated tests require an invariant or independent oracle, reproducible seed/trace, failure artifact, minimization path, and explicit runtime tier; line coverage is diagnostic, not completion evidence.
+- Never delegate tests with only “write tests.” Give the agent the behavior/public contract, implementation/control boundaries, fragile limits, invariant/oracle, generator or corpus distribution, corruption strategy, replay/minimization requirements, tier/budget/sanitizer mode, required commands, and exact platform/backend non-claims.
 - For frame pacing or latency work, never accept one hook-local frametime graph as evidence. Carry one frame ID through engine frame start, input/simulation, render submission, `Present`, GPU completion, and display feedback; report start-to-start cadence, active work, intentional pacing wait, present cadence, and display cadence separately. A limiter/overlay graph sampled near its own delay point may look flat while visible delivery still stutters.
 - When a completed feature can be exercised locally, test the new behavior itself rather than relying only on compilation.
 - Verification scripts that launch headed child processes must bound each child runtime independently of build time, stream live stdout/stderr while preserving assertion output, and report timeout diagnostics plus verified process-tree cleanup. A cancelled or timed-out hosted run is failed evidence, never a pass.

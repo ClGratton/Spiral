@@ -13,7 +13,7 @@ When documents overlap, use this order:
 2. `PLAN.md` for current state, execution order, required work, and checkboxes.
 3. `PRODUCT.md` and `DESIGN.md` for product and editor-experience requirements.
 4. Accepted ADRs and required architecture contracts for technical decisions.
-5. Living dependency, verification, roadmap-governance, UI-review, and ownership documents for their named domains.
+5. Living dependency, testing-strategy, verification, roadmap-governance, UI-review, and ownership documents for their named domains.
 6. Draft research, evaluations, and historical skeletons as rationale/reference only.
 
 Code, tests, captures, and completed CI jobs are evidence of actual behavior. If evidence contradicts prose, correct the authoritative document instead of preserving a false completion claim.
@@ -30,6 +30,7 @@ Code, tests, captures, and completed CI jobs are evidence of actual behavior. If
 | [DESIGN.md](../DESIGN.md) | Editor visual system and interaction contracts. | Editor layout, styling, or interaction rules change. |
 | [README.md](../README.md) | Build/run quick start and concise current implementation summary. | Commands, dependencies, platform status, or primary navigation changes. |
 | [Docs/ROADMAP_GOVERNANCE.md](ROADMAP_GOVERNANCE.md) | Checkmark and phase-completion rules. | Roadmap evidence policy changes. |
+| [Docs/TESTING_STRATEGY.md](TESTING_STRATEGY.md) | Test-design contract: behavior boundaries, failure hypotheses, properties/oracles, reproducible generation, speed tiers, sanitizers, and AI test briefs. | Test philosophy, types, budgets, generated-test policy, sanitizer/coverage policy, or AI test-design guidance changes. |
 | [Docs/VERIFICATION.md](VERIFICATION.md) | Local and hosted verification matrix. | Test commands, smoke coverage, platform evidence, or required gates change. |
 | [Docs/DEPENDENCIES.md](DEPENDENCIES.md) | Dependency/version/license/integration ledger. | A dependency is admitted, removed, upgraded, repurposed, or packaged differently. |
 | [Docs/EDITOR_UI_REVIEW.md](EDITOR_UI_REVIEW.md) | Current editor UX review, resolved issues, and follow-ups. | Editor-facing behavior or review findings change. |
@@ -88,6 +89,7 @@ If a subsystem grows rules that cannot be stated clearly in the engine-wide owne
 | Module/file responsibility | Nearest `OWNERSHIP.md`, `AGENTS.md` scope map, and this catalog. |
 | Editor UX | `PRODUCT.md`/`DESIGN.md` as applicable and `Docs/EDITOR_UI_REVIEW.md`. |
 | Build/test/CI command | Root `README.md`, `Docs/VERIFICATION.md`, and reusable scripts/workflows. |
+| Test design, tier, property/fuzz strategy, sanitizer/coverage policy | `Docs/TESTING_STRATEGY.md`; `Docs/VERIFICATION.md` when an executable command or evidence gate also changes. |
 | New Markdown file | This catalog; also `Docs/Architecture/README.md` when architectural. |
 
 Do not duplicate volatile facts in multiple documents unless each copy is necessary for its reader. Prefer a concise link to the authoritative owner.
