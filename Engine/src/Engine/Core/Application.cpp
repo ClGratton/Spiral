@@ -503,11 +503,15 @@ namespace Engine
                     " cadencePreviousFrame=", timing.CadencePreviousFrameIndex ? std::to_string(*timing.CadencePreviousFrameIndex) : "unavailable",
                     " effectiveLimiter=", ToString(timing.EffectiveLimitingSource),
                     " limitingSourceFrame=", timing.EffectiveLimitingSourceFrameIndex ? std::to_string(*timing.EffectiveLimitingSourceFrameIndex) : "unavailable",
+                    " inputLatencySourceFrame=", timing.InputLatencySourceFrameIndex ? std::to_string(*timing.InputLatencySourceFrameIndex) : "unavailable",
+                    " inputToSimulationMs=", timing.InputToSimulationMilliseconds ? std::to_string(*timing.InputToSimulationMilliseconds) : "unavailable",
+                    " inputToSubmitMs=", timing.InputToRenderSubmissionMilliseconds ? std::to_string(*timing.InputToRenderSubmissionMilliseconds) : "unavailable",
+                    " inputToPresentMs=", timing.InputToPresentMilliseconds ? std::to_string(*timing.InputToPresentMilliseconds) : "unavailable",
                     targetChangeSmoke ? " targetChange=applied" : " targetChange=not-requested",
                     targetChangeSmoke ? " oldTargetFps=" + std::to_string(m_SmoothFrametimeOldTargetFramesPerSecond) : std::string(),
                     targetChangeSmoke ? " newTargetFps=" + std::to_string(m_SmoothFrametimeNewTargetFramesPerSecond) : std::string(),
                     " mandatoryWaits=", d3d12 ? "dxgi-latency" : "vulkan-acquire+fence",
-                    " inputLatency=unavailable display=unavailable replacementDrop=unavailable result=pass");
+                    " inputToDisplay=unavailable clickToPhoton=unavailable inputLatency=unavailable display=unavailable replacementDrop=unavailable result=pass");
                 m_FrameLifecycleTelemetrySmokeComplete = true;
             }
 

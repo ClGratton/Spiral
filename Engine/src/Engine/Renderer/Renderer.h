@@ -154,6 +154,10 @@ namespace Engine
         RendererEffectiveLimitingSource EffectiveLimitingSource = RendererEffectiveLimitingSource::Unresolved;
         ResolvedFramePacingPolicy FramePacingPolicy;
         std::optional<RendererInputSample> InputSample;
+        std::optional<u64> InputLatencySourceFrameIndex;
+        std::optional<double> InputToSimulationMilliseconds;
+        std::optional<double> InputToRenderSubmissionMilliseconds;
+        std::optional<double> InputToPresentMilliseconds;
         std::vector<RendererFrameLifecycleEvent> Lifecycle;
         std::vector<RendererFrameWaitTiming> Waits;
         bool HasGpuCompletionObservation = false;
@@ -176,6 +180,8 @@ namespace Engine
         const RendererGpuTimingPublication& publication, std::string* error = nullptr);
     bool ApplyRendererInputSample(RendererFrameTiming& timing,
         const RendererInputSample& sample, std::string* error = nullptr);
+    bool RefreshRendererInputLatencyIntervals(RendererFrameTiming& timing,
+        std::string* error = nullptr);
 
     struct FramePacingBenchmarkIdentity
     {
@@ -215,6 +221,12 @@ namespace Engine
             && timing.InputSample->FrameIndex == timing.FrameIndex
             && std::isfinite(timing.InputSample->MillisecondsFromFrameStart)
             && timing.InputSample->MillisecondsFromFrameStart >= 0.0
+            && timing.InputLatencySourceFrameIndex == timing.FrameIndex
+            && timing.InputToSimulationMilliseconds && timing.InputToRenderSubmissionMilliseconds
+            && timing.InputToPresentMilliseconds
+            && *timing.InputToSimulationMilliseconds >= 0.0
+            && *timing.InputToRenderSubmissionMilliseconds >= *timing.InputToSimulationMilliseconds
+            && *timing.InputToPresentMilliseconds >= *timing.InputToRenderSubmissionMilliseconds
             && !timing.Waits.empty()
             && timing.Waits.front().Kind == RendererFrameWaitKind::IntentionalPacing
             && !timing.Waits.front().Applied

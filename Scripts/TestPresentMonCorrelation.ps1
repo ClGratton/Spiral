@@ -4,9 +4,9 @@ $Joiner = Join-Path $PSScriptRoot "JoinPresentMonCorrelation.ps1"
 $Headers = "Application,ProcessID,SwapChainAddress,Runtime,SyncInterval,PresentFlags,Dropped,TimeInSeconds,msInPresentAPI,msBetweenPresents,AllowsTearing,PresentMode,msUntilRenderComplete,msUntilDisplayed,msBetweenDisplayChange,QPCTime"
 $Temporary = Join-Path ([IO.Path]::GetTempPath()) "spiral-presentmon-correlation-$([guid]::NewGuid().ToString('N'))"
 
-function New-Fixture([string]$Name, [int[]]$EngineQpcs = @(100, 200, 300), [int[]]$PresentMonQpcs = @(90, 110, 210, 310, 400), [string]$Header = $Headers, [int]$ProcessId = 42, [int]$PresentMonProcessId = 42) {
+function New-Fixture([string]$Name, [int[]]$EngineQpcs = @(100, 200, 300), [int[]]$PresentMonQpcs = @(90, 110, 210, 310, 400), [string]$Header = $Headers, [int]$ProcessId = 42, [int]$PresentMonProcessId = 42, [int]$Schema = 2) {
     $directory = Join-Path $Temporary $Name; New-Item -ItemType Directory -Force -Path $directory | Out-Null
-    $engine = [ordered]@{ schema = 2; condition = [ordered]@{ runId = "fixture-$Name"; processId = $ProcessId; qpcFrequency = 10000000 }; frames = @() }
+    $engine = [ordered]@{ schema = $Schema; condition = [ordered]@{ runId = "fixture-$Name"; processId = $ProcessId; qpcFrequency = 10000000 }; frames = @() }
     for ($index = 0; $index -lt $EngineQpcs.Count; ++$index) { $engine.frames += [ordered]@{ frame = $index; lifecycle = @([ordered]@{ phase = "PresentBegin"; qpc = $EngineQpcs[$index] }) } }
     $enginePath = Join-Path $directory "engine.json"; $engine | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $enginePath -Encoding utf8
     $csvPath = Join-Path $directory "presentmon.csv"; $lines = [Collections.Generic.List[string]]::new(); $lines.Add($Header)
@@ -26,6 +26,9 @@ try {
     $report = Get-Content -Raw $success.Report | ConvertFrom-Json
     if ($report.schema -ne 1 -or $report.counts.pairedRows -ne 3 -or $report.counts.warmupRows -ne 1 -or $report.counts.trailingRows -ne 1 -or @($report.pairs | Select-Object -ExpandProperty presentMonQpc -Unique).Count -ne 3) { throw "Success report violated schema/count/one-to-one invariants" }
     Assert-Fails { & $Joiner $success.Engine $success.Csv $success.Engine -FinalQpcTolerance 20 } "distinct from both raw input"
+    $schema5 = New-Fixture "schema5" -Schema 5
+    & $Joiner -EngineJsonPath $schema5.Engine -PresentMonCsvPath $schema5.Csv -OutputPath $schema5.Report -FinalQpcTolerance 20
+    if ((Get-Content -Raw $schema5.Report | ConvertFrom-Json).counts.pairedRows -ne 3) { throw "Schema-5 compatibility did not preserve join semantics" }
 
     $wrongPid = New-Fixture "wrong-pid" -PresentMonProcessId 7; Assert-Fails { & $Joiner $wrongPid.Engine $wrongPid.Csv $wrongPid.Report -FinalQpcTolerance 20 } "ProcessID"
     $badHeader = New-Fixture "bad-header" -Header ($Headers -replace "Dropped", "DroppedX"); Assert-Fails { & $Joiner $badHeader.Engine $badHeader.Csv $badHeader.Report -FinalQpcTolerance 20 } "header"

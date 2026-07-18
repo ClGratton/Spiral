@@ -717,6 +717,12 @@ namespace
             { Engine::RendererFrameLifecyclePhase::GpuCompletionObservation, 2.0 }
         };
         trace.InputSample = Engine::RendererInputSample { 0, 0.05, 0 };
+        std::string latencyError;
+        const bool latencyIntervalsPublished = Engine::RefreshRendererInputLatencyIntervals(trace, &latencyError)
+            && trace.InputLatencySourceFrameIndex == 0
+            && trace.InputToSimulationMilliseconds && std::abs(*trace.InputToSimulationMilliseconds - 0.05) < 0.0001
+            && trace.InputToRenderSubmissionMilliseconds && std::abs(*trace.InputToRenderSubmissionMilliseconds - 0.95) < 0.0001
+            && trace.InputToPresentMilliseconds && std::abs(*trace.InputToPresentMilliseconds - 1.15) < 0.0001;
         trace.Waits = {
             { Engine::RendererFrameWaitKind::IntentionalPacing, false, 0.0 },
             { Engine::RendererFrameWaitKind::MandatoryDxgiFrameLatency, true, 0.5 }
@@ -751,6 +757,27 @@ namespace
         const bool duplicateRejectedWithoutMutation = !Engine::ApplyRendererInputSample(sampleTrace, exactSample, &sampleError)
             && sampleTrace.Lifecycle.size() == acceptedLifecycleSize
             && sampleTrace.InputSample && sampleTrace.InputSample->QpcTick == 125;
+        const bool sourceOnlyPublished = Engine::RefreshRendererInputLatencyIntervals(sampleTrace, &latencyError)
+            && sampleTrace.InputLatencySourceFrameIndex == 42
+            && !sampleTrace.InputToSimulationMilliseconds
+            && !sampleTrace.InputToRenderSubmissionMilliseconds
+            && !sampleTrace.InputToPresentMilliseconds;
+        sampleTrace.Lifecycle.push_back({ Engine::RendererFrameLifecyclePhase::InputSimulation, 0.5, 150 });
+        const bool simulationPublished = Engine::RefreshRendererInputLatencyIntervals(sampleTrace, &latencyError)
+            && sampleTrace.InputToSimulationMilliseconds && std::abs(*sampleTrace.InputToSimulationMilliseconds - 0.25) < 0.0001
+            && !sampleTrace.InputToRenderSubmissionMilliseconds && !sampleTrace.InputToPresentMilliseconds;
+        sampleTrace.Lifecycle.push_back({ Engine::RendererFrameLifecyclePhase::RenderSubmission, 1.0, 200 });
+        const bool submissionPublished = Engine::RefreshRendererInputLatencyIntervals(sampleTrace, &latencyError)
+            && sampleTrace.InputToRenderSubmissionMilliseconds
+            && std::abs(*sampleTrace.InputToRenderSubmissionMilliseconds - 0.75) < 0.0001
+            && !sampleTrace.InputToPresentMilliseconds;
+        sampleTrace.Lifecycle.push_back({ Engine::RendererFrameLifecyclePhase::PresentEnd, 2.0, 300 });
+        const bool presentPublished = Engine::RefreshRendererInputLatencyIntervals(sampleTrace, &latencyError)
+            && sampleTrace.InputToPresentMilliseconds && std::abs(*sampleTrace.InputToPresentMilliseconds - 1.75) < 0.0001;
+        const std::optional<double> acceptedPresentInterval = sampleTrace.InputToPresentMilliseconds;
+        sampleTrace.Lifecycle.push_back({ Engine::RendererFrameLifecyclePhase::InputSimulation, 0.6, 160 });
+        const bool duplicateEndpointRejectedWithoutMutation = !Engine::RefreshRendererInputLatencyIntervals(sampleTrace, &latencyError)
+            && sampleTrace.InputToPresentMilliseconds == acceptedPresentInterval;
 
         Engine::RendererFrameTiming wrongFrameSample;
         wrongFrameSample.FrameIndex = 43;
@@ -777,6 +804,16 @@ namespace
         };
         const bool regressingOffsetRejectedWithoutMutation = !Engine::ApplyRendererInputSample(regressingSample, exactSample, &sampleError)
             && !regressingSample.InputSample && regressingSample.Lifecycle.size() == 2;
+        Engine::RendererFrameTiming endpointBeforeSample;
+        endpointBeforeSample.FrameIndex = 42;
+        endpointBeforeSample.InputSample = exactSample;
+        endpointBeforeSample.Lifecycle = {
+            { Engine::RendererFrameLifecyclePhase::FrameStart, 0.0, 100 },
+            { Engine::RendererFrameLifecyclePhase::InputSample, 0.25, 125 },
+            { Engine::RendererFrameLifecyclePhase::InputSimulation, 0.2, 120 }
+        };
+        const bool endpointBeforeSampleRejected = !Engine::RefreshRendererInputLatencyIntervals(endpointBeforeSample, &latencyError)
+            && !endpointBeforeSample.InputLatencySourceFrameIndex && !endpointBeforeSample.InputToSimulationMilliseconds;
 
         Engine::RendererFrameTiming limiting, source;
         limiting.FrameIndex = 11;
@@ -845,9 +882,11 @@ namespace
         const auto mismatchedPresent = Engine::ClassifyEffectiveLimitingSource(limiting, &source, Engine::RendererBackend::NVRHID3D12);
         const bool mismatchedPresentRejected = mismatchedPresent.Source == Engine::RendererEffectiveLimitingSource::Unresolved;
 
-        return Expect(valid && vulkanWaitsRejected && vulkanWaitsAccepted && outOfOrderRejected && unavailableStateRequired && inputLatencyUnavailableRequired
+        return Expect(latencyIntervalsPublished && valid && vulkanWaitsRejected && vulkanWaitsAccepted && outOfOrderRejected && unavailableStateRequired && inputLatencyUnavailableRequired
                 && exactSampleAccepted && duplicateRejectedWithoutMutation && wrongFrameRejectedWithoutMutation
                 && missingStartRejectedWithoutMutation && afterSimulationRejectedWithoutMutation && regressingOffsetRejectedWithoutMutation
+                && sourceOnlyPublished && simulationPublished && submissionPublished && presentPublished
+                && duplicateEndpointRejectedWithoutMutation && endpointBeforeSampleRejected
                 && d3d12PresentLimited && vulkanPresentLimited && targetLimited && lowRateTargetLimited && submissionGateTargetLimited
                 && cpuLimited && gpuLimited && unresolved && firstFrameUnresolved
                 && currentCpuDoesNotClaimPriorCadence && conflictUnresolved && mismatchedPresentRejected,
@@ -994,6 +1033,9 @@ namespace
                 { Engine::RendererFrameLifecyclePhase::PresentEnd, 2.5, 350 }
             };
             timing.InputSample = Engine::RendererInputSample { index, 0.125, 112 };
+            const bool inputIntervalsApplied = Engine::RefreshRendererInputLatencyIntervals(timing);
+            if (!inputIntervalsApplied)
+                return Expect(false, "benchmark fixture publishes same-frame input stage intervals");
             timing.Waits = { { Engine::RendererFrameWaitKind::MandatoryDxgiFrameLatency, true, 3.5 } };
             if (index == 1000)
                 timing.Waits.push_back({ Engine::RendererFrameWaitKind::IntentionalPacing, true, 2.0, Engine::SmoothFrametimeCandidate::InterFrame, true, 10.0, 12.0 });
@@ -1069,7 +1111,7 @@ namespace
                     && unavailableFrame && unavailableFrame->GpuStatus == Engine::RendererTimingStatus::Unavailable && !unavailableFrame->GpuHeadroomMilliseconds,
                 "benchmark GPU amendment derives exact-frame target headroom and preserves unavailable status and target cases")
             && Expect(wrote && csv.find("\"adapter\"\"quoted\tvalue\"") != std::string::npos
-                && csv.find("cadencePreviousFrame,limitingSource,limitingSourceFrame") != std::string::npos
+                && csv.find("cadencePreviousFrame,limitingSource,limitingSourceFrame,inputLatencySourceFrame,inputToSimulationMs,inputToSubmitMs,inputToPresentMs") != std::string::npos
                 && csv.find("gpuTimingStatus,gpuDurationMs,gpuHeadroom") != std::string::npos
                 && csv.find("{\"\"phase\"\":\"\"InputSample\"\",\"\"ms\"\":0.125,\"\"qpc\"\":112}") != std::string::npos
                 && csv.find("{\"\"phase\"\":\"\"PresentEnd\"\",\"\"ms\"\":2.5,\"\"qpc\"\":350}") != std::string::npos
@@ -1081,11 +1123,12 @@ namespace
                 && json.find("\"phase\":\"PresentEnd\",\"ms\":2.5,\"qpc\":350") != std::string::npos
                 && json.find("\"kind\":\"MandatoryDxgiFrameLatency\",\"applied\":true,\"ms\":3.5") != std::string::npos
                 && json.find("\"gpuCompletionFrame\":998") != std::string::npos
-                && json.find("\"schema\":4") != std::string::npos
+                && json.find("\"schema\":5") != std::string::npos
                 && json.find("\"limitingSource\":\"GpuWork\",\"limitingSourceFrame\":999") != std::string::npos
+                && json.find("\"inputLatencySourceFrame\":1000,\"inputToSimulationMs\":0.125000,\"inputToSubmitMs\":1.375000,\"inputToPresentMs\":2.375000,\"inputToDisplay\":\"unavailable\",\"clickToPhoton\":\"unavailable\"") != std::string::npos
                 && json.find("\"gpuTimingStatus\":\"Ready\",\"gpuDurationMs\":4.000000,\"gpuHeadroom\":4.333333") != std::string::npos
                 && json.find("\"gpuTimingStatus\":\"Disjoint\",\"gpuDurationMs\":\"unavailable\",\"gpuHeadroom\":\"unavailable\"") != std::string::npos,
-                "frame pacing benchmark exports stable schema-4 CSV/JSON exact-frame GPU duration, headroom, source amendment, and unavailable records");
+                "frame pacing benchmark exports stable schema-5 CSV/JSON exact-frame GPU, limiter, and input-stage source records");
     }
 
     bool TestFramePacingAttachmentReadinessAndReleaseValidation()

@@ -133,6 +133,10 @@ foreach ($Marker in $RequiredMarkers) {
 if ($JoinedLog -notmatch 'FrameLifecycleTelemetryV1 backend=NVRHI D3D12 frame=\d+ phases=frame-start,input-sample,input-simulation,render-submission,present-begin,present-end .*mandatoryWaits=dxgi-latency') {
     throw "D3D12 render smoke did not prove the ordered input-sample lifecycle boundary while retaining the mandatory DXGI wait."
 }
+$InputLatencyMatch = [regex]::Match($JoinedLog, 'FrameLifecycleTelemetryV1 backend=NVRHI D3D12 frame=(\d+).*?inputLatencySourceFrame=(\d+).*?inputToSimulationMs=([0-9.eE+-]+).*?inputToSubmitMs=([0-9.eE+-]+).*?inputToPresentMs=([0-9.eE+-]+).*?inputToDisplay=unavailable clickToPhoton=unavailable', [Text.RegularExpressions.RegexOptions]::Singleline)
+if (!$InputLatencyMatch.Success -or [uint64]$InputLatencyMatch.Groups[2].Value -ne [uint64]$InputLatencyMatch.Groups[1].Value -or [double]$InputLatencyMatch.Groups[3].Value -lt 0.0 -or [double]$InputLatencyMatch.Groups[4].Value -lt [double]$InputLatencyMatch.Groups[3].Value -or [double]$InputLatencyMatch.Groups[5].Value -lt [double]$InputLatencyMatch.Groups[4].Value) {
+    throw "D3D12 render smoke did not publish ordered exact-frame input-to-simulation/submit/Present intervals."
+}
 if ($JoinedLog -notmatch 'RenderGraphRecordingV1 backend=D3D12 mode=worker workerPasses=2 overlap=(yes|no) submitted=3 result=pass') {
     throw "D3D12 render smoke did not prove the parallel RenderGraph recording marker."
 }

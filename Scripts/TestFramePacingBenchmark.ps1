@@ -102,7 +102,7 @@ function Invoke-AttachmentCase([ValidateSet("release", "mismatch", "timeout")][s
         if ($Mode -eq "release") {
             if ($Log -notmatch "FramePacingAttachmentV1 state=released" -or $Log -notmatch "FramePacingBenchmarkV1 frames=512") { throw "Attachment release launch failed: $Backend" }
             $Json = Get-Content -Raw (Join-Path $Artifact "frame-pacing-benchmark.json") | ConvertFrom-Json
-            if ($Json.schema -ne 4 -or $Json.condition.runId -ne $Readiness.runId -or $Json.condition.processId -ne $Process.Id -or $Json.condition.qpcFrequency -ne $Readiness.qpcFrequency -or $Json.frames.Count -ne 512 -or @($Json.frames | Where-Object { @($_.lifecycle | Where-Object { $_.qpc -le 0 }).Count -ne 0 }).Count -ne 0) { throw "Attachment release artifact did not retain QPC/run identity: $Backend" }
+            if ($Json.schema -ne 5 -or $Json.condition.runId -ne $Readiness.runId -or $Json.condition.processId -ne $Process.Id -or $Json.condition.qpcFrequency -ne $Readiness.qpcFrequency -or $Json.frames.Count -ne 512 -or @($Json.frames | Where-Object { @($_.lifecycle | Where-Object { $_.qpc -le 0 }).Count -ne 0 }).Count -ne 0) { throw "Attachment release artifact did not retain QPC/run identity: $Backend" }
             Write-Host "Frame pacing attachment passed: $Backend release runId=$($Readiness.runId)"
         } else {
             $Expected = if ($Mode -eq "mismatch") { "state=rejected" } else { "state=timeout" }
@@ -142,7 +142,7 @@ foreach ($Target in $TargetFramesPerSecond) {
         $ExpectedCandidate = if ($Candidate -eq "responsive") { "InterFrame" } elseif ($Candidate -eq "inter-frame") { "InterFrame" } else { "SubmissionGate" }
         $ExpectedBackend = if ($Backend -eq "Vulkan") { "NVRHI Vulkan" } else { "NVRHI D3D12" }
         $EffectiveTargetMismatch = if ($Candidate -eq "responsive") { $null -ne $Json.condition.effectiveTargetFps } else { $Json.condition.effectiveTargetFps -ne $Target }
-        if ($Json.schema -ne 4 -or $Json.condition.backend -ne $ExpectedBackend -or $Json.condition.targetFps -ne $Target -or $EffectiveTargetMismatch -or $Json.condition.warmupFrames -ne 30 -or $Json.condition.mode -ne $ExpectedMode -or $Json.condition.candidate -ne $ExpectedCandidate -or $Json.condition.presentationMode -ne $PresentationMode -or $Json.condition.sync -ne $SyncMode -or $Json.condition.vrr -ne $VrrMode -or $Json.condition.tearing -ne $TearingMode -or $Json.frames.Count -ne 512 -or $Csv.Count -ne 512 -or $null -eq $Json.summary.p50Ms -or $null -eq $Json.summary.p95Ms -or $null -eq $Json.summary.p99Ms -or $null -eq $Json.summary.cpuActiveP50Ms -or $null -eq $Json.summary.cpuActiveP95Ms -or $null -eq $Json.summary.cpuActiveP99Ms -or $null -eq $Json.summary.intentionalWaitP50Ms -or $null -eq $Json.summary.intentionalWaitP95Ms -or $null -eq $Json.summary.intentionalWaitP99Ms -or $null -eq $Json.summary.deadlineMisses -or $null -eq $Json.summary.deadlineOvershootP99Ms -or $null -eq $Json.summary.onePercentLowFps -or $null -eq $Json.summary.pointOnePercentLowFps) {
+        if ($Json.schema -ne 5 -or $Json.condition.backend -ne $ExpectedBackend -or $Json.condition.targetFps -ne $Target -or $EffectiveTargetMismatch -or $Json.condition.warmupFrames -ne 30 -or $Json.condition.mode -ne $ExpectedMode -or $Json.condition.candidate -ne $ExpectedCandidate -or $Json.condition.presentationMode -ne $PresentationMode -or $Json.condition.sync -ne $SyncMode -or $Json.condition.vrr -ne $VrrMode -or $Json.condition.tearing -ne $TearingMode -or $Json.frames.Count -ne 512 -or $Csv.Count -ne 512 -or $null -eq $Json.summary.p50Ms -or $null -eq $Json.summary.p95Ms -or $null -eq $Json.summary.p99Ms -or $null -eq $Json.summary.cpuActiveP50Ms -or $null -eq $Json.summary.cpuActiveP95Ms -or $null -eq $Json.summary.cpuActiveP99Ms -or $null -eq $Json.summary.intentionalWaitP50Ms -or $null -eq $Json.summary.intentionalWaitP95Ms -or $null -eq $Json.summary.intentionalWaitP99Ms -or $null -eq $Json.summary.deadlineMisses -or $null -eq $Json.summary.deadlineOvershootP99Ms -or $null -eq $Json.summary.onePercentLowFps -or $null -eq $Json.summary.pointOnePercentLowFps) {
             throw "Benchmark condition manifest did not retain ${Candidate}: $Backend $Target"
         }
         $ReadyGpuFrames = @($Json.frames | Where-Object { $_.gpuTimingStatus -eq "Ready" -and $_.gpuDurationMs -ne "unavailable" })
@@ -166,6 +166,9 @@ foreach ($Target in $TargetFramesPerSecond) {
             if ($null -eq $Frame.waits -or $Frame.display -ne "unavailable" -or $Frame.replacementDrop -ne "unavailable" -or $Frame.inputLatency -ne "unavailable" -or $null -eq $Frame.gpuTimingStatus -or $null -eq $Frame.gpuDurationMs -or $null -eq $Frame.gpuHeadroom) {
                 throw "Benchmark raw fields are incomplete: $Backend $Target $Candidate frame=$($Frame.frame)"
             }
+            if ([uint64]$Frame.inputLatencySourceFrame -ne [uint64]$Frame.frame -or $null -eq $Frame.inputToSimulationMs -or $null -eq $Frame.inputToSubmitMs -or $null -eq $Frame.inputToPresentMs -or $Frame.inputToDisplay -ne "unavailable" -or $Frame.clickToPhoton -ne "unavailable" -or [double]$Frame.inputToSimulationMs -lt 0.0 -or [double]$Frame.inputToSubmitMs -lt [double]$Frame.inputToSimulationMs -or [double]$Frame.inputToPresentMs -lt [double]$Frame.inputToSubmitMs) {
+                throw "Benchmark input-stage intervals are not exact-frame ordered evidence: $Backend $Target $Candidate frame=$($Frame.frame)"
+            }
             if ($Frame.gpuTimingStatus -eq "Ready") {
                 if ($Frame.gpuDurationMs -eq "unavailable") { throw "Ready GPU timing omitted its duration: $Backend $Target $Candidate frame=$($Frame.frame)" }
                 if ($Candidate -eq "responsive") {
@@ -185,6 +188,11 @@ foreach ($Target in $TargetFramesPerSecond) {
         $ReadyGpuCsv = @($Csv | Where-Object { $_.gpuTimingStatus -eq "Ready" -and $_.gpuDurationMs -ne "unavailable" })
         if ($CsvLifecycle.Count -eq 0 -or $null -eq $CsvWaits -or $Csv[0].display -ne "unavailable" -or $Csv[0].replacementDrop -ne "unavailable" -or $Csv[0].inputLatency -ne "unavailable" -or $ReadyGpuCsv.Count -eq 0) {
             throw "Benchmark CSV raw fields are incomplete: $Backend $Target $Candidate"
+        }
+        foreach ($Frame in $Csv) {
+            if ([uint64]$Frame.inputLatencySourceFrame -ne [uint64]$Frame.frame -or [double]$Frame.inputToSimulationMs -lt 0.0 -or [double]$Frame.inputToSubmitMs -lt [double]$Frame.inputToSimulationMs -or [double]$Frame.inputToPresentMs -lt [double]$Frame.inputToSubmitMs) {
+                throw "Benchmark CSV input-stage intervals are not exact-frame ordered evidence: $Backend $Target $Candidate frame=$($Frame.frame)"
+            }
         }
         foreach ($Frame in $ReadyGpuCsv) {
             if ($Candidate -eq "responsive") {

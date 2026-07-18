@@ -112,6 +112,10 @@ foreach ($Marker in $RequiredMarkers) {
 if ($JoinedLog -notmatch 'FrameLifecycleTelemetryV1 backend=NVRHI Vulkan frame=\d+ phases=frame-start,input-sample,input-simulation,render-submission,present-begin,present-end .*mandatoryWaits=vulkan-acquire\+fence') {
     throw "Vulkan render smoke did not prove the ordered input-sample lifecycle boundary while retaining mandatory acquire/fence waits."
 }
+$InputLatencyMatch = [regex]::Match($JoinedLog, 'FrameLifecycleTelemetryV1 backend=NVRHI Vulkan frame=(\d+).*?inputLatencySourceFrame=(\d+).*?inputToSimulationMs=([0-9.eE+-]+).*?inputToSubmitMs=([0-9.eE+-]+).*?inputToPresentMs=([0-9.eE+-]+).*?inputToDisplay=unavailable clickToPhoton=unavailable', [Text.RegularExpressions.RegexOptions]::Singleline)
+if (!$InputLatencyMatch.Success -or [uint64]$InputLatencyMatch.Groups[2].Value -ne [uint64]$InputLatencyMatch.Groups[1].Value -or [double]$InputLatencyMatch.Groups[3].Value -lt 0.0 -or [double]$InputLatencyMatch.Groups[4].Value -lt [double]$InputLatencyMatch.Groups[3].Value -or [double]$InputLatencyMatch.Groups[5].Value -lt [double]$InputLatencyMatch.Groups[4].Value) {
+    throw "Vulkan render smoke did not publish ordered exact-frame input-to-simulation/submit/Present intervals."
+}
 if ($JoinedLog -notmatch 'RenderGraphRecordingV1 backend=Vulkan mode=worker workerPasses=2 overlap=(yes|no) submitted=3 result=pass') {
     throw "Vulkan render smoke did not prove the parallel RenderGraph recording marker."
 }

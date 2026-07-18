@@ -2066,6 +2066,17 @@ void EditorLayer::DrawProfilerPanel()
     ImGui::Text("Effective limiter: %s; source frame: %s (not display cadence)", Engine::ToString(timing.EffectiveLimitingSource),
         limitingSourceFrame.c_str());
     ImGui::TextDisabled("Evidence-qualified; synchronized presentation does not infer monitor refresh or display cadence.");
+    if (timing.InputLatencySourceFrameIndex && timing.InputToSimulationMilliseconds
+        && timing.InputToRenderSubmissionMilliseconds && timing.InputToPresentMilliseconds)
+    {
+        ImGui::Text("Input sample frame: %llu", static_cast<unsigned long long>(*timing.InputLatencySourceFrameIndex));
+        ImGui::Text("Input to simulation / submit / Present: %.3f / %.3f / %.3f ms",
+            *timing.InputToSimulationMilliseconds, *timing.InputToRenderSubmissionMilliseconds,
+            *timing.InputToPresentMilliseconds);
+    }
+    else
+        ImGui::TextDisabled("Input stage intervals: unavailable");
+    ImGui::TextDisabled("Input to display / click-to-photon: unavailable");
     ImGui::TextWrapped("%s", framePacingDescription.c_str());
 
     const Engine::RendererPresentationTiming& presentation = timing.Presentation;

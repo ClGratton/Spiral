@@ -791,6 +791,8 @@ namespace Engine
         };
         if (!ApplyRendererInputSample(s_FrameTiming, sample))
             return std::nullopt;
+        if (!RefreshRendererInputLatencyIntervals(s_FrameTiming))
+            return std::nullopt;
         return sample;
     }
 
@@ -799,6 +801,10 @@ namespace Engine
         if (phase == RendererFrameLifecyclePhase::InputSample || s_FrameTiming.FrameIndex != applicationFrameIndex)
             return;
         AddLifecyclePhase(phase);
+        if (phase == RendererFrameLifecyclePhase::InputSimulation
+            || phase == RendererFrameLifecyclePhase::RenderSubmission
+            || phase == RendererFrameLifecyclePhase::PresentEnd)
+            RefreshRendererInputLatencyIntervals(s_FrameTiming);
     }
 
     void Renderer::RecordFrameWait(u64 applicationFrameIndex, RendererFrameWaitKind kind, bool applied, double milliseconds)

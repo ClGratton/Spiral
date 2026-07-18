@@ -141,4 +141,60 @@ namespace Engine
         timing.InputSample = sample;
         return true;
     }
+
+    bool RefreshRendererInputLatencyIntervals(RendererFrameTiming& timing, std::string* error)
+    {
+        const auto fail = [error](const char* message)
+        {
+            if (error)
+                *error = message;
+            return false;
+        };
+        if (!timing.InputSample || timing.InputSample->FrameIndex != timing.FrameIndex
+            || !std::isfinite(timing.InputSample->MillisecondsFromFrameStart)
+            || timing.InputSample->MillisecondsFromFrameStart < 0.0)
+            return fail("input latency intervals require one valid same-frame sample");
+
+        const double sample = timing.InputSample->MillisecondsFromFrameStart;
+        std::optional<double> simulation;
+        std::optional<double> submission;
+        std::optional<double> present;
+        size_t sampleEvents = 0;
+        for (const RendererFrameLifecycleEvent& event : timing.Lifecycle)
+        {
+            if (!std::isfinite(event.MillisecondsFromFrameStart) || event.MillisecondsFromFrameStart < 0.0)
+                return fail("input latency lifecycle contains an invalid offset");
+            if (event.Phase == RendererFrameLifecyclePhase::InputSample)
+            {
+                ++sampleEvents;
+                if (event.MillisecondsFromFrameStart != sample || event.QpcTick != timing.InputSample->QpcTick)
+                    return fail("input latency sample lifecycle does not match its source record");
+            }
+            const auto capture = [&](std::optional<double>& target) -> bool
+            {
+                if (target || event.MillisecondsFromFrameStart < sample)
+                    return false;
+                target = event.MillisecondsFromFrameStart - sample;
+                return true;
+            };
+            if (event.Phase == RendererFrameLifecyclePhase::InputSimulation && !capture(simulation))
+                return fail("input latency simulation endpoint is duplicate or precedes the sample");
+            if (event.Phase == RendererFrameLifecyclePhase::RenderSubmission && !capture(submission))
+                return fail("input latency submission endpoint is duplicate or precedes the sample");
+            if (event.Phase == RendererFrameLifecyclePhase::PresentEnd && !capture(present))
+                return fail("input latency present endpoint is duplicate or precedes the sample");
+        }
+        if (sampleEvents != 1)
+            return fail("input latency intervals require one exact sample lifecycle event");
+        if ((submission && !simulation) || (present && !submission)
+            || (simulation && submission && *submission < *simulation)
+            || (submission && present && *present < *submission))
+            return fail("input latency endpoints are missing or out of order");
+
+        timing.InputLatencySourceFrameIndex = timing.FrameIndex;
+        timing.InputToSimulationMilliseconds = simulation;
+        timing.InputToRenderSubmissionMilliseconds = submission;
+        timing.InputToPresentMilliseconds = present;
+        return true;
+    }
 }
