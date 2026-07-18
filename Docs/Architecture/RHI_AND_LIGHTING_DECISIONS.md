@@ -532,6 +532,14 @@ Read-only audit evidence identifies installed `RTSS.exe` as 7.3.5.28001, with va
 
 Accordingly, exact-Editor `ASYNC` is unavailable to automation for this installed/versioned interface. No configuration-file format may be inferred, and UI automation is prohibited. The accepted manual evidence gate is deliberately bounded: an operator records the exact `Editor.exe` path/profile and RTSS version/hash; captures before state for limiter mode, target, FES/scanline/frame-generation, and global/profile scope; changes only that exact Editor profile in the RTSS UI to the requested async condition; captures after state; runs one bounded benchmark; restores every exact prior value immediately, including after failure or timeout; captures restored state; and signs a receipt. The gate must not mutate a global profile, another profile/process, driver state, FES, or frame-generation state implicitly. It establishes a safe reference-condition protocol only; it neither proves that RTSS ASYNC executed nor supplies a production Smooth winner.
 
+### Production Smooth Evidence Dependency Order (2026-07-18)
+
+The production comparison is intentionally split into independently reviewable evidence prerequisites before the default-selection decision. First, the automated native bundle runs the existing schema-5 60/120 FPS engine matrices for D3D12 and Vulkan, attaches PresentMon to the exact D3D12 editor PID, and records a fail-closed Vulkan attachment attempt. It preserves immutable raw streams, joined reports, and condition manifests. It is provisional engine/present-source evidence: it does not establish physical display cadence, monitor/VRR state, input or photon latency, RTSS execution/configuration, or a winner.
+
+Second, each admitted external reference condition uses the bounded exact-Editor RTSS manual gate and produces signed before/apply/bounded-run/restore evidence. FES and frame generation remain distinct mechanisms: they enter only when explicitly named as separate conditions with separately captured state and evidence, never through an implicit profile, driver, or application mutation.
+
+Third, selection criteria that rely on input latency, physical display cadence, or VRR require an admitted source and control path for those signals before they are used. Same-frame engine input-to-`PresentEnd` remains a diagnostic CPU/presentation interval, not photon latency. An unavailable admitted source remains unavailable for that condition; engine or present cadence cannot be substituted. Only after these prerequisites may the parent comparison reconcile candidate conditions and select or reject a production default.
+
 ## Open Questions
 
 - Whether first bake implementation should be internal GPU baker or imported from external tools.
