@@ -287,7 +287,8 @@ namespace Engine
             if (s_FramePacingPolicy.EffectiveMode == FramePacingMode::SmoothFrametime && s_FramePacingPolicy.Candidate == SmoothFrametimeCandidate::InterFrame)
             {
                 s_FrameTiming.Waits.push_back({ RendererFrameWaitKind::IntentionalPacing, preFramePacing.Applied, preFramePacing.WaitMilliseconds,
-                    SmoothFrametimeCandidate::InterFrame, preFramePacing.DeadlineMissed, preFramePacing.RequestedDeadlineMilliseconds, preFramePacing.ActualReleaseMilliseconds });
+                    SmoothFrametimeCandidate::InterFrame, preFramePacing.DeadlineMissed, preFramePacing.RequestedDeadlineMilliseconds,
+                    preFramePacing.ActualReleaseMilliseconds, preFramePacing.Telemetry });
                 s_FrameTiming.IntentionalPacingMilliseconds += preFramePacing.WaitMilliseconds;
             }
             RefreshEffectiveLimitingSource(s_FrameTiming);
@@ -827,7 +828,7 @@ namespace Engine
         {
             s_FrameTiming.Waits.push_back({ RendererFrameWaitKind::IntentionalPacing, result.Applied,
                 result.WaitMilliseconds, candidate, result.DeadlineMissed,
-                result.RequestedDeadlineMilliseconds, result.ActualReleaseMilliseconds });
+                result.RequestedDeadlineMilliseconds, result.ActualReleaseMilliseconds, result.Telemetry });
             s_FrameTiming.IntentionalPacingMilliseconds += result.WaitMilliseconds;
             s_InFrameIntentionalPacingMilliseconds += result.WaitMilliseconds;
             AddLifecyclePhase(RendererFrameLifecyclePhase::IntentionalPacingWait);

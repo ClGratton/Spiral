@@ -134,6 +134,7 @@ namespace Engine
         bool DeadlineMissed = false;
         double RequestedDeadlineMilliseconds = 0.0;
         double ActualReleaseMilliseconds = 0.0;
+        Platform::DeadlineWaitTelemetry DeadlineWaitTelemetry;
     };
 
     struct RendererFrameTiming

@@ -1,5 +1,7 @@
 #pragma once
 
+#include "Engine/Platform/MonotonicDeadlineWaiter.h"
+
 #include <cmath>
 #include <chrono>
 #include <optional>
@@ -156,7 +158,7 @@ namespace Engine
     };
 
     // A deliberately small, backend-neutral deadline state machine. The system
-    // clock uses steady_clock/sleep_until; tests inject this interface and never
+    // clock delegates OS waiting to Platform; tests inject this interface and never
     // sleep. A late frame advances from its observed release time, never drops
     // work or fabricates a cadence sample.
     class FramePacingClock
@@ -165,6 +167,7 @@ namespace Engine
         virtual ~FramePacingClock() = default;
         virtual double NowMilliseconds() = 0;
         virtual void WaitUntilMilliseconds(double deadlineMilliseconds) = 0;
+        virtual Platform::DeadlineWaitTelemetry LastWaitTelemetry() const { return {}; }
     };
 
     class SystemFramePacingClock final : public FramePacingClock
@@ -177,12 +180,16 @@ namespace Engine
 
         void WaitUntilMilliseconds(double deadlineMilliseconds) override
         {
-            std::this_thread::sleep_until(m_Origin + std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+            m_LastTelemetry = m_Waiter.WaitUntil(m_Origin + std::chrono::duration_cast<std::chrono::steady_clock::duration>(
                 std::chrono::duration<double, std::milli>(deadlineMilliseconds)));
         }
 
+        Platform::DeadlineWaitTelemetry LastWaitTelemetry() const override { return m_LastTelemetry; }
+
     private:
         std::chrono::steady_clock::time_point m_Origin = std::chrono::steady_clock::now();
+        Platform::MonotonicDeadlineWaiter m_Waiter;
+        Platform::DeadlineWaitTelemetry m_LastTelemetry;
     };
 
     struct FramePacingWaitResult
@@ -192,6 +199,7 @@ namespace Engine
         double RequestedDeadlineMilliseconds = 0.0;
         double ActualReleaseMilliseconds = 0.0;
         double WaitMilliseconds = 0.0;
+        Platform::DeadlineWaitTelemetry Telemetry;
     };
 
     class SmoothFrametimePacer
@@ -239,6 +247,7 @@ namespace Engine
             if (!result.DeadlineMissed)
             {
                 clock.WaitUntilMilliseconds(*state.NextDeadlineMilliseconds);
+                result.Telemetry = clock.LastWaitTelemetry();
                 const double released = clock.NowMilliseconds();
                 result.Applied = true;
                 result.ActualReleaseMilliseconds = released;

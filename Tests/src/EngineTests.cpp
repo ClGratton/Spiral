@@ -662,6 +662,127 @@ namespace
         std::vector<double> Waits;
     };
 
+    class FakeDeadlineWaiterPlatform final : public Engine::Platform::DeadlineWaiterPlatform
+    {
+    public:
+        bool SupportsHighResolutionTimer() const override { return HighResolutionTimerAvailable; }
+        void* CreateHighResolutionTimer() override
+        {
+            ++CreateCalls;
+            return CreateSucceeds ? reinterpret_cast<void*>(1) : nullptr;
+        }
+        void CloseTimer(void* timer) override
+        {
+            if (timer)
+                ++CloseCalls;
+        }
+        bool ArmTimer(void*, std::chrono::steady_clock::duration relativeDelay) override
+        {
+            ArmedDelays.push_back(relativeDelay);
+            return ArmSucceeds;
+        }
+        bool WaitTimer(void*) override
+        {
+            if (WaitIndex >= WaitSucceeds.size() || !WaitSucceeds[WaitIndex])
+            {
+                ++WaitIndex;
+                return false;
+            }
+            NowPoint += WakeAdvances[WaitIndex++];
+            return true;
+        }
+        std::chrono::steady_clock::time_point Now() override { return NowPoint; }
+        double ProcessCpuMilliseconds() override
+        {
+            return std::chrono::duration<double, std::milli>(NowPoint.time_since_epoch()).count();
+        }
+        void PortableWaitUntil(std::chrono::steady_clock::time_point deadline) override
+        {
+            ++PortableWaitCalls;
+            NowPoint = deadline;
+        }
+        void ActiveTailUntil(std::chrono::steady_clock::time_point deadline) override
+        {
+            ++ActiveTailCalls;
+            ActiveTailBudget = deadline - NowPoint;
+            NowPoint = deadline;
+        }
+
+        bool HighResolutionTimerAvailable = true;
+        bool CreateSucceeds = true;
+        bool ArmSucceeds = true;
+        std::vector<bool> WaitSucceeds { true };
+        std::vector<std::chrono::steady_clock::duration> WakeAdvances { std::chrono::milliseconds(1) };
+        std::chrono::steady_clock::time_point NowPoint {};
+        std::vector<std::chrono::steady_clock::duration> ArmedDelays;
+        std::chrono::steady_clock::duration ActiveTailBudget {};
+        size_t WaitIndex = 0;
+        int CreateCalls = 0;
+        int CloseCalls = 0;
+        int PortableWaitCalls = 0;
+        int ActiveTailCalls = 0;
+    };
+
+    bool TestMonotonicDeadlineWaiterDeterministicFailureAndTailPaths()
+    {
+        const auto deadline = std::chrono::steady_clock::time_point {} + std::chrono::milliseconds(10);
+
+        FakeDeadlineWaiterPlatform earlyWake;
+        earlyWake.WakeAdvances = { std::chrono::milliseconds(2), std::chrono::microseconds(7500) };
+        earlyWake.WaitSucceeds = { true, true };
+        Engine::Platform::DeadlineWaitTelemetry earlyTelemetry;
+        {
+            Engine::Platform::MonotonicDeadlineWaiter waiter(earlyWake);
+            earlyTelemetry = waiter.WaitUntil(deadline);
+        }
+
+        FakeDeadlineWaiterPlatform creationFailure;
+        creationFailure.CreateSucceeds = false;
+        Engine::Platform::DeadlineWaitTelemetry creationTelemetry;
+        {
+            Engine::Platform::MonotonicDeadlineWaiter waiter(creationFailure);
+            creationTelemetry = waiter.WaitUntil(deadline);
+        }
+
+        FakeDeadlineWaiterPlatform armFailure;
+        armFailure.ArmSucceeds = false;
+        Engine::Platform::DeadlineWaitTelemetry armTelemetry;
+        {
+            Engine::Platform::MonotonicDeadlineWaiter waiter(armFailure);
+            armTelemetry = waiter.WaitUntil(deadline);
+        }
+
+        FakeDeadlineWaiterPlatform waitFailure;
+        waitFailure.WaitSucceeds = { false };
+        Engine::Platform::DeadlineWaitTelemetry waitTelemetry;
+        {
+            Engine::Platform::MonotonicDeadlineWaiter waiter(waitFailure);
+            waitTelemetry = waiter.WaitUntil(deadline);
+        }
+
+        const bool earlyWakeRetried = earlyTelemetry.Primitive == Engine::Platform::DeadlineWaitPrimitive::WindowsHighResolutionWaitableTimer
+            && !earlyTelemetry.FellBack && earlyWake.ArmedDelays.size() == 2
+            && earlyWake.ActiveTailCalls == 1 && earlyWake.ActiveTailBudget <= std::chrono::microseconds(500)
+            && earlyTelemetry.ActiveTailBudgetMilliseconds == 0.5 && earlyTelemetry.ActiveTailMilliseconds == 0.5
+            && earlyTelemetry.TimerWaitMilliseconds == 9.5 && earlyTelemetry.PortableWaitMilliseconds == 0.0
+            && earlyWake.CloseCalls == 1;
+        const bool creationFallsBack = creationTelemetry.FellBack
+            && creationTelemetry.FallbackReason == Engine::Platform::DeadlineWaitFallbackReason::CreationFailed
+            && creationTelemetry.TimerWaitMilliseconds == 0.0 && creationTelemetry.PortableWaitMilliseconds == 10.0
+            && creationFailure.PortableWaitCalls == 1 && creationFailure.CloseCalls == 0;
+        const bool armFallsBack = armTelemetry.FellBack
+            && armTelemetry.FallbackReason == Engine::Platform::DeadlineWaitFallbackReason::ArmFailed
+            && armFailure.PortableWaitCalls == 1 && armFailure.CloseCalls == 1;
+        const bool waitFallsBack = waitTelemetry.FellBack
+            && waitTelemetry.FallbackReason == Engine::Platform::DeadlineWaitFallbackReason::WaitFailed
+            && waitFailure.PortableWaitCalls == 1 && waitFailure.CloseCalls == 1;
+
+        return Expect(earlyWakeRetried,
+                "deadline waiter retries early timer wakes and bounds the final active tail")
+            && Expect(creationFallsBack && armFallsBack && waitFallsBack,
+                "deadline waiter exposes creation arm and wait fallback reasons and closes created timers");
+    }
+
     bool TestSmoothFrametimePacerDeadlinesAndModeSwitch()
     {
         Engine::ResolvedFramePacingPolicy policy;
@@ -1038,7 +1159,16 @@ namespace
                 return Expect(false, "benchmark fixture publishes same-frame input stage intervals");
             timing.Waits = { { Engine::RendererFrameWaitKind::MandatoryDxgiFrameLatency, true, 3.5 } };
             if (index == 1000)
+            {
                 timing.Waits.push_back({ Engine::RendererFrameWaitKind::IntentionalPacing, true, 2.0, Engine::SmoothFrametimeCandidate::InterFrame, true, 10.0, 12.0 });
+                auto& telemetry = timing.Waits.back().DeadlineWaitTelemetry;
+                telemetry.Primitive = Engine::Platform::DeadlineWaitPrimitive::WindowsHighResolutionWaitableTimer;
+                telemetry.TimerWaitMilliseconds = 1.5;
+                telemetry.ActiveTailBudgetMilliseconds = 0.5;
+                telemetry.ActiveTailMilliseconds = 0.5;
+                telemetry.CpuTimeMilliseconds = 0.5;
+                telemetry.WallTimeMilliseconds = 2.0;
+            }
             timing.HasGpuCompletionObservation = index > 1;
             timing.LastGpuCompletionObservedFrameIndex = index > 1 ? index - 2 : 0;
             capture.Record(timing);
@@ -1122,13 +1252,14 @@ namespace
                 && json.find("\"phase\":\"InputSample\",\"ms\":0.125,\"qpc\":112") != std::string::npos
                 && json.find("\"phase\":\"PresentEnd\",\"ms\":2.5,\"qpc\":350") != std::string::npos
                 && json.find("\"kind\":\"MandatoryDxgiFrameLatency\",\"applied\":true,\"ms\":3.5") != std::string::npos
+                && json.find("\"deadlineWait\":{\"primitive\":\"WindowsHighResolutionWaitableTimer\",\"fellBack\":false,\"fallbackReason\":\"None\",\"timerWaitMs\":1.5,\"portableWaitMs\":0,\"activeTailBudgetMs\":0.5,\"activeTailMs\":0.5,\"processCpuTimeMs\":0.5,\"wallTimeMs\":2}") != std::string::npos
                 && json.find("\"gpuCompletionFrame\":998") != std::string::npos
-                && json.find("\"schema\":5") != std::string::npos
+                && json.find("\"schema\":6") != std::string::npos
                 && json.find("\"limitingSource\":\"GpuWork\",\"limitingSourceFrame\":999") != std::string::npos
                 && json.find("\"inputLatencySourceFrame\":1000,\"inputToSimulationMs\":0.125000,\"inputToSubmitMs\":1.375000,\"inputToPresentMs\":2.375000,\"inputToDisplay\":\"unavailable\",\"clickToPhoton\":\"unavailable\"") != std::string::npos
                 && json.find("\"gpuTimingStatus\":\"Ready\",\"gpuDurationMs\":4.000000,\"gpuHeadroom\":4.333333") != std::string::npos
                 && json.find("\"gpuTimingStatus\":\"Disjoint\",\"gpuDurationMs\":\"unavailable\",\"gpuHeadroom\":\"unavailable\"") != std::string::npos,
-                "frame pacing benchmark exports stable schema-5 CSV/JSON exact-frame GPU, limiter, and input-stage source records");
+                "frame pacing benchmark exports stable schema-6 CSV/JSON deadline-wait, exact-frame GPU, limiter, and input-stage source records");
     }
 
     bool TestFramePacingAttachmentReadinessAndReleaseValidation()
@@ -5724,6 +5855,7 @@ int main(int argc, char** argv)
         INTEGRATION_TEST("Generated counterexample artifacts preserve replay data", TestGeneratedCounterexampleArtifactPreservesReplayData),
         INTEGRATION_TEST("Structured Scene and shader fuzz corpus replays deterministically", TestStructuredFuzzCorpusReplay),
         FAST_TEST("Frame pacing policy resolves overrides and validates targets", TestFramePacingPolicyResolutionAndValidation),
+        FAST_TEST("Monotonic deadline waiter retries early wakes and exposes fallback cleanup", TestMonotonicDeadlineWaiterDeterministicFailureAndTailPaths),
         FAST_TEST("Smooth Frametime pacer preserves deadlines overruns and mode switches", TestSmoothFrametimePacerDeadlinesAndModeSwitch),
         FAST_TEST("Frame lifecycle telemetry orders phases and retains unavailable feedback", TestFrameLifecycleTelemetryOrderAndUnavailableStates),
         FAST_TEST("Renderer GPU timing preserves exact frame pass and status identity", TestRendererGpuTimingPublicationPreservesExactFrameAndStatuses),
