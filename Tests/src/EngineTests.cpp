@@ -683,14 +683,24 @@ namespace
         const Engine::FramePacingWaitResult afterReset = pacer.Apply(policy, policy.Candidate, clock);
         policy.Candidate = Engine::SmoothFrametimeCandidate::SubmissionGate;
         const Engine::FramePacingWaitResult separateGate = pacer.Apply(policy, policy.Candidate, clock);
+        policy.Candidate = Engine::SmoothFrametimeCandidate::InterFrame;
+        policy.SmoothTargetFramesPerSecond = 200.0;
+        clock.Now = 31.0;
+        const Engine::FramePacingWaitResult faster = pacer.Apply(policy, policy.Candidate, clock);
+        policy.SmoothTargetFramesPerSecond = 50.0;
+        clock.Now = 36.0;
+        const Engine::FramePacingWaitResult slower = pacer.Apply(policy, policy.Candidate, clock);
 
-        return Expect(!first.Applied && clock.Waits.size() == 1 && waited.Applied
+        return Expect(!first.Applied && clock.Waits.size() == 3 && waited.Applied
                 && waited.WaitMilliseconds == 8.5 && !waited.DeadlineMissed,
                 "Smooth Frametime waits deterministically until the target deadline")
             && Expect(late.DeadlineMissed && !late.Applied && late.WaitMilliseconds == 0.0,
                 "late Smooth Frametime frames do not wait or discard work")
             && Expect(!responsive.Applied && !afterReset.Applied && !separateGate.Applied,
-                "Responsive resets pacing state and submission gate keeps an independent deadline");
+                "Responsive resets pacing state and submission gate keeps an independent deadline")
+            && Expect(faster.Applied && faster.RequestedDeadlineMilliseconds == 35.0
+                    && slower.Applied && slower.RequestedDeadlineMilliseconds == 55.5,
+                "target and candidate changes rebase from the last release without reusing stale deadlines");
     }
 
     bool TestFrameLifecycleTelemetryOrderAndUnavailableStates()
@@ -726,7 +736,34 @@ namespace
         trace.Presentation.InputLatencyAvailable = true;
         const bool inputLatencyUnavailableRequired = !Engine::HasValidFrameLifecycleTelemetry(trace);
 
-        return Expect(valid && vulkanWaitsRejected && vulkanWaitsAccepted && outOfOrderRejected && unavailableStateRequired && inputLatencyUnavailableRequired,
+        Engine::RendererFrameTiming limiting;
+        limiting.StartToStartMilliseconds = 15.7;
+        limiting.CpuActiveMilliseconds = 2.0;
+        limiting.FramePacingPolicy.EffectiveMode = Engine::FramePacingMode::SmoothFrametime;
+        limiting.FramePacingPolicy.SmoothTargetFramesPerSecond = 180.0;
+        limiting.Presentation.PresentSucceeded = true;
+        const bool d3d12PresentLimited = Engine::ClassifyEffectiveLimitingSource(limiting, Engine::RendererBackend::NVRHID3D12)
+            == Engine::RendererEffectiveLimitingSource::D3D12SynchronizedPresent;
+        const bool vulkanPresentLimited = Engine::ClassifyEffectiveLimitingSource(limiting, Engine::RendererBackend::NVRHIVulkan)
+            == Engine::RendererEffectiveLimitingSource::VulkanFifoPresent;
+        limiting.StartToStartMilliseconds = 5.6;
+        const bool targetLimited = Engine::ClassifyEffectiveLimitingSource(limiting, Engine::RendererBackend::NVRHID3D12)
+            == Engine::RendererEffectiveLimitingSource::RequestedTargetCadence;
+        limiting.StartToStartMilliseconds = 15.7;
+        limiting.CpuActiveMilliseconds = 15.5;
+        const bool cpuLimited = Engine::ClassifyEffectiveLimitingSource(limiting, Engine::RendererBackend::NVRHID3D12)
+            == Engine::RendererEffectiveLimitingSource::CpuActiveWork;
+        limiting.CpuActiveMilliseconds = 2.0;
+        limiting.GpuStatus = Engine::RendererTimingStatus::Ready;
+        limiting.GpuMilliseconds = 16.0;
+        const bool gpuLimited = Engine::ClassifyEffectiveLimitingSource(limiting, Engine::RendererBackend::NVRHIVulkan)
+            == Engine::RendererEffectiveLimitingSource::GpuWork;
+        limiting.StartToStartMilliseconds = 0.0;
+        const bool unresolved = Engine::ClassifyEffectiveLimitingSource(limiting, Engine::RendererBackend::NVRHIVulkan)
+            == Engine::RendererEffectiveLimitingSource::Unresolved;
+
+        return Expect(valid && vulkanWaitsRejected && vulkanWaitsAccepted && outOfOrderRejected && unavailableStateRequired && inputLatencyUnavailableRequired
+                && d3d12PresentLimited && vulkanPresentLimited && targetLimited && cpuLimited && gpuLimited && unresolved,
             "frame lifecycle telemetry preserves phase order, no-delay intent, and truthful unavailable feedback states");
     }
 

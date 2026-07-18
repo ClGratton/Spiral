@@ -39,6 +39,14 @@ foreach ($Candidate in @("inter-frame", "submission-gate")) {
     if ($Candidate -eq "submission-gate" -and $PacingLog -notmatch "SmoothFrametimeNativeV1 backend=Vulkan candidate=SubmissionGate control=pre-vkQueueSubmit") { throw "Vulkan submission-gate smoke did not prove the pre-submit seam." }
 }
 
+foreach ($TargetChange in @(@{ Name = "below"; NewTarget = 10; Limiter = "RequestedTargetCadence" }, @{ Name = "above"; NewTarget = 1000; Limiter = "VulkanFifoPresent" })) {
+    $ChangeResult = Invoke-BoundedProcess -FilePath $Executable -Arguments @("--vulkan-render-smoke", "--smooth-frametime-candidate-smoke", "--smooth-frametime-target-change-smoke", "--smooth-frametime-candidate=inter-frame", "--smooth-frametime-target-fps=5", "--smooth-frametime-target-change-fps=$($TargetChange.NewTarget)") -Label "Vulkan Smooth Frametime target change $($TargetChange.Name)" -TimeoutSeconds $ChildTimeoutSeconds
+    if ($ChangeResult.TimedOut -or $ChangeResult.ExitCode -ne 0) { throw "Vulkan Smooth Frametime target-change $($TargetChange.Name) smoke failed." }
+    $ChangeLog = $ChangeResult.Output -join "`n"
+    if (($ChangeLog -notmatch "SmoothFrametimeTargetChangeV1 state=published oldTargetFps=5") -or ($ChangeLog -notmatch "newTargetFps=$($TargetChange.NewTarget).+firstControlPoint=next-valid-frame-boundary") -or ($ChangeLog -notmatch "targetChange=applied.+newTargetFps=$($TargetChange.NewTarget)")) { throw "Vulkan target-change smoke did not prove the live policy transition for $($TargetChange.Name)." }
+    if ($ChangeLog -notmatch "effectiveLimiter=$($TargetChange.Limiter)") { throw "Vulkan target-change $($TargetChange.Name) smoke did not report the expected evidence-qualified limiter." }
+}
+
 $InlineRecordingResult = Invoke-BoundedProcess -FilePath $Executable -Arguments @("--vulkan-render-smoke", "--scene-raster-preparation-smoke", "--scene-viewport-render-graph-smoke", "--frame-task-single-thread") -Label "Editor Vulkan inline recording smoke" -TimeoutSeconds $ChildTimeoutSeconds
 $InlineRecordingLog = $InlineRecordingResult.Output
 if ($InlineRecordingResult.TimedOut) {

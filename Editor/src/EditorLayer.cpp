@@ -2052,7 +2052,13 @@ void EditorLayer::DrawProfilerPanel()
     ImGui::Text("Runtime override: %s", Engine::ToString(framePacing.RuntimeOverride));
     ImGui::Text("Effective: %s", Engine::ToString(framePacing.EffectiveMode));
     if (framePacing.SmoothTargetFramesPerSecond)
-        ImGui::Text("Target: %.2f FPS", *framePacing.SmoothTargetFramesPerSecond);
+        ImGui::Text("Requested target: %.2f FPS", *framePacing.SmoothTargetFramesPerSecond);
+    if (timing.StartToStartMilliseconds > 0.0)
+        ImGui::Text("Observed engine cadence: %.2f FPS (FrameStart-to-FrameStart)", 1000.0 / timing.StartToStartMilliseconds);
+    else
+        ImGui::TextDisabled("Observed engine cadence: awaiting a consecutive frame start");
+    ImGui::Text("Effective limiting source: %s", Engine::ToString(timing.EffectiveLimitingSource));
+    ImGui::TextDisabled("Evidence-qualified; synchronized presentation does not infer monitor refresh or display cadence.");
     ImGui::TextWrapped("%s", framePacingDescription.c_str());
 
     const Engine::RendererPresentationTiming& presentation = timing.Presentation;

@@ -298,6 +298,7 @@ namespace Engine
             const NVRHIRenderBackend* backend = dynamic_cast<const NVRHIRenderBackend*>(s_Backend.get());
             if (const RendererPresentationTiming* timing = backend ? backend->GetPresentationTiming() : nullptr)
                 s_FrameTiming.Presentation = *timing;
+            s_FrameTiming.EffectiveLimitingSource = ClassifyEffectiveLimitingSource(s_FrameTiming, s_ActiveBackend);
             RefreshFrameTimingCapabilityGroup();
             RefreshTransientResourceCapabilityGroup();
         }
@@ -708,6 +709,7 @@ namespace Engine
             Log::Error("Renderer GPU timing exact-frame publication failed: ", error);
             return false;
         }
+        retained->EffectiveLimitingSource = ClassifyEffectiveLimitingSource(*retained, s_ActiveBackend);
         if (s_FramePacingBenchmark && !s_FramePacingBenchmark->AmendGpuTiming(publication))
             Log::Warn("BenchmarkGpuTimingDropV1 frame=", publication.FrameIndex,
                 " status=Unavailable reason=frame-not-retained result=ignored");

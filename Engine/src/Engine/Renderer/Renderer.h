@@ -7,6 +7,8 @@
 #include "Engine/Renderer/SceneRasterPreparation.h"
 #include "Engine/Scene/SceneRenderSnapshot.h"
 
+#include <algorithm>
+#include <cmath>
 #include <memory>
 #include <optional>
 #include <string>
@@ -73,6 +75,16 @@ namespace Engine
         const char* InputLatencyDetail = "unavailable: no input-to-photon measurement path is implemented";
     };
 
+    enum class RendererEffectiveLimitingSource
+    {
+        Unresolved,
+        RequestedTargetCadence,
+        CpuActiveWork,
+        GpuWork,
+        D3D12SynchronizedPresent,
+        VulkanFifoPresent
+    };
+
     enum class RendererFrameLifecyclePhase
     {
         FrameStart,
@@ -123,6 +135,7 @@ namespace Engine
         RendererTimingStatus GpuStatus = RendererTimingStatus::Unavailable;
         std::optional<double> GpuHeadroomMilliseconds;
         RendererPresentationTiming Presentation;
+        RendererEffectiveLimitingSource EffectiveLimitingSource = RendererEffectiveLimitingSource::Unresolved;
         ResolvedFramePacingPolicy FramePacingPolicy;
         std::vector<RendererFrameLifecycleEvent> Lifecycle;
         std::vector<RendererFrameWaitTiming> Waits;
@@ -221,6 +234,31 @@ namespace Engine
         NRI
     };
 
+    inline RendererEffectiveLimitingSource ClassifyEffectiveLimitingSource(const RendererFrameTiming& timing, RendererBackend backend)
+    {
+        if (timing.StartToStartMilliseconds <= 0.0 || !timing.FramePacingPolicy.SmoothTargetFramesPerSecond
+            || !IsValidSmoothTargetFramesPerSecond(*timing.FramePacingPolicy.SmoothTargetFramesPerSecond))
+            return RendererEffectiveLimitingSource::Unresolved;
+
+        const double observed = timing.StartToStartMilliseconds;
+        const double requested = 1000.0 / *timing.FramePacingPolicy.SmoothTargetFramesPerSecond;
+        const double tolerance = std::max(0.5, requested * 0.10);
+        if (timing.GpuStatus == RendererTimingStatus::Ready && timing.GpuMilliseconds >= observed - tolerance)
+            return RendererEffectiveLimitingSource::GpuWork;
+        if (timing.CpuActiveMilliseconds >= observed - tolerance)
+            return RendererEffectiveLimitingSource::CpuActiveWork;
+        if (timing.Presentation.PresentSucceeded && observed > requested + tolerance)
+        {
+            if (backend == RendererBackend::NVRHID3D12)
+                return RendererEffectiveLimitingSource::D3D12SynchronizedPresent;
+            if (backend == RendererBackend::NVRHIVulkan)
+                return RendererEffectiveLimitingSource::VulkanFifoPresent;
+        }
+        if (std::abs(observed - requested) <= tolerance)
+            return RendererEffectiveLimitingSource::RequestedTargetCadence;
+        return RendererEffectiveLimitingSource::Unresolved;
+    }
+
     struct RendererBackendOption
     {
         RendererBackend Backend = RendererBackend::Auto;
@@ -294,6 +332,20 @@ namespace Engine
             case RendererTimingStatus::Disjoint: return "Disjoint";
         }
 
+        return "Unknown";
+    }
+
+    inline const char* ToString(RendererEffectiveLimitingSource source)
+    {
+        switch (source)
+        {
+            case RendererEffectiveLimitingSource::Unresolved: return "Unresolved";
+            case RendererEffectiveLimitingSource::RequestedTargetCadence: return "RequestedTargetCadence";
+            case RendererEffectiveLimitingSource::CpuActiveWork: return "CpuActiveWork";
+            case RendererEffectiveLimitingSource::GpuWork: return "GpuWork";
+            case RendererEffectiveLimitingSource::D3D12SynchronizedPresent: return "D3D12SynchronizedPresent";
+            case RendererEffectiveLimitingSource::VulkanFifoPresent: return "VulkanFifoPresent";
+        }
         return "Unknown";
     }
 }

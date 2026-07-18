@@ -210,43 +210,68 @@ namespace Engine
 
             const double now = clock.NowMilliseconds();
             const double cadence = 1000.0 / *policy.SmoothTargetFramesPerSecond;
-            std::optional<double>& nextDeadline = controlPoint == SmoothFrametimeCandidate::InterFrame
-                ? m_NextInterFrameDeadlineMilliseconds : m_NextSubmissionDeadlineMilliseconds;
-            if (!nextDeadline)
+            DeadlineState& state = controlPoint == SmoothFrametimeCandidate::InterFrame
+                ? m_InterFrame : m_SubmissionGate;
+            const bool candidateChanged = m_LastCandidate && *m_LastCandidate != policy.Candidate;
+            const bool targetChanged = state.TargetFramesPerSecond && *state.TargetFramesPerSecond != *policy.SmoothTargetFramesPerSecond;
+            if (candidateChanged || targetChanged)
+                state.NextDeadlineMilliseconds.reset();
+            m_LastCandidate = policy.Candidate;
+            state.TargetFramesPerSecond = *policy.SmoothTargetFramesPerSecond;
+
+            if (!state.NextDeadlineMilliseconds)
             {
-                nextDeadline = now + cadence;
-                result.ActualReleaseMilliseconds = now;
-                return result;
+                // A changed policy never reuses an old deadline. When this
+                // control point has a valid release phase, retain it; otherwise
+                // establish phase from the next valid observation.
+                if (!state.LastReleaseMilliseconds)
+                {
+                    state.NextDeadlineMilliseconds = now + cadence;
+                    result.ActualReleaseMilliseconds = now;
+                    state.LastReleaseMilliseconds = now;
+                    return result;
+                }
+                state.NextDeadlineMilliseconds = *state.LastReleaseMilliseconds + cadence;
             }
 
-            result.RequestedDeadlineMilliseconds = *nextDeadline;
-            result.DeadlineMissed = now >= *nextDeadline;
+            result.RequestedDeadlineMilliseconds = *state.NextDeadlineMilliseconds;
+            result.DeadlineMissed = now >= *state.NextDeadlineMilliseconds;
             if (!result.DeadlineMissed)
             {
-                clock.WaitUntilMilliseconds(*nextDeadline);
+                clock.WaitUntilMilliseconds(*state.NextDeadlineMilliseconds);
                 const double released = clock.NowMilliseconds();
                 result.Applied = true;
                 result.ActualReleaseMilliseconds = released;
                 result.WaitMilliseconds = released - now;
-                nextDeadline = released + cadence;
+                state.LastReleaseMilliseconds = released;
+                state.NextDeadlineMilliseconds = released + cadence;
             }
             else
             {
                 result.ActualReleaseMilliseconds = now;
-                nextDeadline = now + cadence;
+                state.LastReleaseMilliseconds = now;
+                state.NextDeadlineMilliseconds = now + cadence;
             }
             return result;
         }
 
         void Reset()
         {
-            m_NextInterFrameDeadlineMilliseconds.reset();
-            m_NextSubmissionDeadlineMilliseconds.reset();
+            m_InterFrame = {};
+            m_SubmissionGate = {};
+            m_LastCandidate.reset();
         }
 
     private:
-        std::optional<double> m_NextInterFrameDeadlineMilliseconds;
-        std::optional<double> m_NextSubmissionDeadlineMilliseconds;
+        struct DeadlineState
+        {
+            std::optional<double> NextDeadlineMilliseconds;
+            std::optional<double> LastReleaseMilliseconds;
+            std::optional<double> TargetFramesPerSecond;
+        };
+        DeadlineState m_InterFrame;
+        DeadlineState m_SubmissionGate;
+        std::optional<SmoothFrametimeCandidate> m_LastCandidate;
     };
 
     inline std::string DescribeFramePacingPolicy(const ResolvedFramePacingPolicy& policy)

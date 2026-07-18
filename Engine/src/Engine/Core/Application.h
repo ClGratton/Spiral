@@ -66,6 +66,9 @@ namespace Engine
         bool m_Minimized = false;
         u64 m_FrameIndex = 0;
         bool m_FrameLifecycleTelemetrySmokeComplete = false;
+        bool m_SmoothFrametimeTargetChangeApplied = false;
+        double m_SmoothFrametimeOldTargetFramesPerSecond = 0.0;
+        double m_SmoothFrametimeNewTargetFramesPerSecond = 0.0;
         bool m_FramePacingBenchmarkStarted = false;
         bool m_FramePacingAttachmentCheckResolved = false;
         bool m_FramePacingAttachmentReleased = false;

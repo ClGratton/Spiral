@@ -53,7 +53,8 @@ namespace Engine
             return "a dependency did not succeed";
         }
 
-        void ApplySmoothFrametimeSmokePolicy(const ApplicationCommandLineArgs& args)
+        void ApplySmoothFrametimeSmokePolicy(const ApplicationCommandLineArgs& args,
+            std::optional<double> targetOverride = std::nullopt)
         {
             if (args.HasFlag("--frame-pacing-benchmark-responsive"))
             {
@@ -75,7 +76,8 @@ namespace Engine
             policy.ProjectMode = FramePacingMode::SmoothFrametime;
             policy.RuntimeOverride = FramePacingOverride::SmoothFrametime;
             const std::string_view targetValue = args.GetOptionValue("--smooth-frametime-target-fps");
-            const double target = targetValue.empty() ? 5.0 : std::strtod(std::string(targetValue).c_str(), nullptr);
+            const double target = targetOverride.value_or(
+                targetValue.empty() ? 5.0 : std::strtod(std::string(targetValue).c_str(), nullptr));
             if (!IsValidSmoothTargetFramesPerSecond(target))
                 throw std::runtime_error("Smooth Frametime candidate smoke target is invalid");
             policy.SmoothTargetFramesPerSecond = target;
@@ -279,7 +281,9 @@ namespace Engine
 
         while (m_Running && !m_Window->ShouldClose())
         {
-            ApplySmoothFrametimeSmokePolicy(m_Specification.CommandLineArgs);
+            ApplySmoothFrametimeSmokePolicy(m_Specification.CommandLineArgs,
+                m_SmoothFrametimeTargetChangeApplied
+                    ? std::optional<double>(m_SmoothFrametimeNewTargetFramesPerSecond) : std::nullopt);
             if (!m_FramePacingAttachmentCheckResolved)
             {
                 m_FramePacingAttachmentCheckResolved = true;
@@ -307,6 +311,23 @@ namespace Engine
                     { m_FramePacingAttachmentRunId, m_FramePacingAttachmentProcessId,
                         m_FramePacingAttachmentExecutablePath, m_FramePacingAttachmentQpcFrequency });
                 m_FramePacingBenchmarkStarted = true;
+            }
+            const bool targetChangeSmoke = m_Specification.CommandLineArgs.HasFlag("--smooth-frametime-target-change-smoke");
+            if (targetChangeSmoke && !m_SmoothFrametimeTargetChangeApplied && m_FrameIndex == 2)
+            {
+                ResolvedFramePacingPolicy policy = Renderer::GetFramePacingPolicy();
+                const std::string_view targetValue = m_Specification.CommandLineArgs.GetOptionValue("--smooth-frametime-target-change-fps");
+                const double newTarget = targetValue.empty() ? 1000.0 : std::strtod(std::string(targetValue).c_str(), nullptr);
+                if (!policy.SmoothTargetFramesPerSecond || !IsValidSmoothTargetFramesPerSecond(newTarget))
+                    throw std::runtime_error("Smooth Frametime target-change smoke requires valid old and new targets");
+                m_SmoothFrametimeOldTargetFramesPerSecond = *policy.SmoothTargetFramesPerSecond;
+                m_SmoothFrametimeNewTargetFramesPerSecond = newTarget;
+                policy.SmoothTargetFramesPerSecond = newTarget;
+                Renderer::SetFramePacingPolicy(policy);
+                m_SmoothFrametimeTargetChangeApplied = true;
+                Log::Info("SmoothFrametimeTargetChangeV1 state=published oldTargetFps=", m_SmoothFrametimeOldTargetFramesPerSecond,
+                    " newTargetFps=", m_SmoothFrametimeNewTargetFramesPerSecond, " applicationFrame=", m_FrameIndex,
+                    " firstControlPoint=next-valid-frame-boundary");
             }
             const FramePacingWaitResult preFramePacing = Renderer::WaitForInterFrameBeforeFrame();
             const auto now = std::chrono::steady_clock::now();
@@ -363,7 +384,9 @@ namespace Engine
                     // Editor settings publish during InputSimulation. Reapply the
                     // explicit benchmark condition before render/submission so the
                     // recorded condition cannot silently drift to project UI state.
-                    ApplySmoothFrametimeSmokePolicy(m_Specification.CommandLineArgs);
+                    ApplySmoothFrametimeSmokePolicy(m_Specification.CommandLineArgs,
+                        m_SmoothFrametimeTargetChangeApplied
+                            ? std::optional<double>(m_SmoothFrametimeNewTargetFramesPerSecond) : std::nullopt);
                     for (auto& layer : m_LayerStack)
                         layer->OnRender();
                 };
@@ -435,12 +458,15 @@ namespace Engine
 
             m_Window->OnUpdate();
 
-            if ((m_Specification.CommandLineArgs.HasFlag("--frame-lifecycle-telemetry-smoke")
+            if (const RendererFrameTiming& timing = Renderer::GetLastFrameTiming();
+                (m_Specification.CommandLineArgs.HasFlag("--frame-lifecycle-telemetry-smoke")
                     || m_Specification.CommandLineArgs.HasFlag("--smooth-frametime-candidate-smoke"))
                 && !m_FrameLifecycleTelemetrySmokeComplete
-                && Renderer::GetLastFrameTiming().HasGpuCompletionObservation)
+                && Renderer::GetLastFrameTiming().HasGpuCompletionObservation
+                && (!targetChangeSmoke || (m_SmoothFrametimeTargetChangeApplied
+                    && timing.FramePacingPolicy.SmoothTargetFramesPerSecond
+                    && *timing.FramePacingPolicy.SmoothTargetFramesPerSecond == m_SmoothFrametimeNewTargetFramesPerSecond)))
             {
-                const RendererFrameTiming& timing = Renderer::GetLastFrameTiming();
                 const bool d3d12 = Renderer::GetActiveBackend() == RendererBackend::NVRHID3D12;
                 const bool vulkan = Renderer::GetActiveBackend() == RendererBackend::NVRHIVulkan;
                 if (!HasValidFrameLifecycleTelemetry(timing, d3d12, vulkan))
@@ -451,7 +477,9 @@ namespace Engine
                 bool intentionalWaitApplied = !pacingSmoke;
                 for (const RendererFrameWaitTiming& wait : timing.Waits)
                     intentionalWaitApplied |= wait.Kind == RendererFrameWaitKind::IntentionalPacing && wait.Applied && wait.Milliseconds > 0.0;
-                if (pacingSmoke && !intentionalWaitApplied)
+                const bool pacingWaitRequired = !targetChangeSmoke
+                    || timing.EffectiveLimitingSource == RendererEffectiveLimitingSource::RequestedTargetCadence;
+                if (pacingSmoke && pacingWaitRequired && !intentionalWaitApplied)
                     throw std::runtime_error("Smooth Frametime candidate smoke did not observe a nonzero intentional wait");
                 Log::Info(pacingSmoke ? "SmoothFrametimeCandidateSmokeV1 backend=" : "FrameLifecycleTelemetryV1 backend=", Renderer::GetActiveBackendName(),
                     " frame=", timing.FrameIndex,
@@ -462,6 +490,11 @@ namespace Engine
                     " cpuActiveMs=", timing.CpuActiveMilliseconds,
                     " gpuCompletion=observed completedFrame=", timing.LastGpuCompletionObservedFrameIndex,
                     " completionSwapchainGeneration=", timing.Presentation.SwapchainGeneration,
+                    " requestedTargetFps=", timing.FramePacingPolicy.SmoothTargetFramesPerSecond.value_or(0.0),
+                    " effectiveLimiter=", ToString(timing.EffectiveLimitingSource),
+                    targetChangeSmoke ? " targetChange=applied" : " targetChange=not-requested",
+                    targetChangeSmoke ? " oldTargetFps=" + std::to_string(m_SmoothFrametimeOldTargetFramesPerSecond) : std::string(),
+                    targetChangeSmoke ? " newTargetFps=" + std::to_string(m_SmoothFrametimeNewTargetFramesPerSecond) : std::string(),
                     " mandatoryWaits=", d3d12 ? "dxgi-latency" : "vulkan-acquire+fence",
                     " inputLatency=unavailable display=unavailable replacementDrop=unavailable result=pass");
                 m_FrameLifecycleTelemetrySmokeComplete = true;
