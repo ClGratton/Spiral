@@ -132,6 +132,19 @@ namespace Engine
         return true;
     }
 
+    bool AssetRegistry::RemoveAsset(AssetHandle handle)
+    {
+        const auto it = std::find_if(m_Assets.begin(), m_Assets.end(), [handle](const AssetMetadata& candidate)
+        {
+            return candidate.Handle == handle;
+        });
+        if (it == m_Assets.end())
+            return false;
+
+        m_Assets.erase(it);
+        return true;
+    }
+
     bool AssetRegistry::Contains(AssetHandle handle) const
     {
         return GetAsset(handle) != nullptr;

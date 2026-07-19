@@ -37,6 +37,7 @@ namespace Engine
     public:
         AssetHandle RegisterAsset(AssetType type, std::string sourcePath, std::string name = {});
         bool RegisterAsset(const AssetMetadata& metadata);
+        bool RemoveAsset(AssetHandle handle);
         bool Contains(AssetHandle handle) const;
         AssetMetadata* GetAsset(AssetHandle handle);
         const AssetMetadata* GetAsset(AssetHandle handle) const;

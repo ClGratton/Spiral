@@ -1,6 +1,7 @@
 #include "Engine/Assets/GltfImporter.h"
 
 #include "Engine/Assets/AssetFileSystem.h"
+#include "Engine/Assets/MeshArtifact.h"
 #include "Engine/Assets/AssetRegistry.h"
 
 #define CGLTF_IMPLEMENTATION
@@ -9,6 +10,7 @@
 #include <algorithm>
 #include <cctype>
 #include <filesystem>
+#include <limits>
 #include <fstream>
 #include <iomanip>
 #include <memory>
@@ -70,32 +72,68 @@ namespace Engine
             return nullptr;
         }
 
-        bool WriteCookedManifest(const GltfImportResult& result)
+        bool AppendPrimitive(
+            const cgltf_primitive& primitive,
+            u32 sourceMeshIndex,
+            u32 sourcePrimitiveIndex,
+            MeshArtifact& artifact,
+            GltfMeshImportInfo& importedMesh,
+            std::string& outError)
         {
-            std::error_code error;
-            std::filesystem::create_directories(result.CookedPath.parent_path(), error);
-            if (error)
-                return false;
-
-            std::ofstream output(result.CookedPath, std::ios::out | std::ios::trunc);
-            if (!output)
-                return false;
-
-            output << "SpiralGltfMeshManifest 1\n";
-            output << "Source " << std::quoted(result.SourcePath) << '\n';
-            output << "MeshAsset " << result.MeshAsset << '\n';
-            output << "MeshCount " << result.Meshes.size() << '\n';
-            for (const GltfMeshImportInfo& mesh : result.Meshes)
+            const cgltf_accessor* positionAccessor = FindPositionAccessor(primitive);
+            if (primitive.type != cgltf_primitive_type_triangles || !positionAccessor
+                || positionAccessor->type != cgltf_type_vec3 || positionAccessor->component_type != cgltf_component_type_r_32f)
             {
-                output << "Mesh " << std::quoted(mesh.Name)
-                    << ' ' << mesh.PrimitiveCount
-                    << ' ' << mesh.TrianglePrimitiveCount
-                    << ' ' << mesh.UnsupportedPrimitiveCount
-                    << ' ' << mesh.VertexCount
-                    << ' ' << mesh.TriangleCount << '\n';
+                ++importedMesh.UnsupportedPrimitiveCount;
+                return true;
+            }
+            const cgltf_size sourceIndexCount = primitive.indices ? primitive.indices->count : positionAccessor->count;
+            if (sourceIndexCount == 0 || sourceIndexCount % 3 != 0
+                || positionAccessor->count > std::numeric_limits<u32>::max()
+                || artifact.Vertices.size() + positionAccessor->count > std::numeric_limits<u32>::max())
+            {
+                ++importedMesh.UnsupportedPrimitiveCount;
+                return true;
             }
 
-            return static_cast<bool>(output);
+            const u32 vertexOffset = static_cast<u32>(artifact.Vertices.size());
+            const u32 indexOffset = static_cast<u32>(artifact.Indices.size());
+            artifact.Vertices.reserve(artifact.Vertices.size() + positionAccessor->count);
+            for (cgltf_size vertexIndex = 0; vertexIndex < positionAccessor->count; ++vertexIndex)
+            {
+                MeshArtifactVertex vertex;
+                if (!cgltf_accessor_read_float(positionAccessor, vertexIndex, vertex.Position, 3))
+                {
+                    outError = "could not read glTF POSITION data";
+                    return false;
+                }
+                artifact.Vertices.push_back(vertex);
+            }
+            artifact.Indices.reserve(artifact.Indices.size() + sourceIndexCount);
+            for (cgltf_size index = 0; index < sourceIndexCount; ++index)
+            {
+                const cgltf_size sourceIndex = primitive.indices ? cgltf_accessor_read_index(primitive.indices, index) : index;
+                if (sourceIndex >= positionAccessor->count)
+                {
+                    outError = "glTF primitive index is outside the POSITION range";
+                    return false;
+                }
+                artifact.Indices.push_back(vertexOffset + static_cast<u32>(sourceIndex));
+            }
+
+            MeshArtifactPrimitive artifactPrimitive;
+            artifactPrimitive.SourceMeshIndex = sourceMeshIndex;
+            artifactPrimitive.SourcePrimitiveIndex = sourcePrimitiveIndex;
+            artifactPrimitive.VertexByteOffset = static_cast<u64>(vertexOffset) * sizeof(MeshArtifactVertex);
+            artifactPrimitive.VertexByteSize = static_cast<u64>(positionAccessor->count) * sizeof(MeshArtifactVertex);
+            artifactPrimitive.IndexByteOffset = static_cast<u64>(indexOffset) * sizeof(u32);
+            artifactPrimitive.IndexByteSize = static_cast<u64>(sourceIndexCount) * sizeof(u32);
+            artifact.Primitives.push_back(artifactPrimitive);
+
+            ++importedMesh.TrianglePrimitiveCount;
+            importedMesh.VertexCount += positionAccessor->count;
+            importedMesh.TriangleCount += sourceIndexCount / 3;
+            return true;
         }
     }
 
@@ -162,6 +200,8 @@ namespace Engine
         }
 
         result.Meshes.reserve(document->meshes_count);
+        MeshArtifact artifact;
+        artifact.SourcePath = result.SourcePath;
         for (cgltf_size meshIndex = 0; meshIndex < document->meshes_count; ++meshIndex)
         {
             const cgltf_mesh& sourceMesh = document->meshes[meshIndex];
@@ -172,25 +212,9 @@ namespace Engine
             for (cgltf_size primitiveIndex = 0; primitiveIndex < sourceMesh.primitives_count; ++primitiveIndex)
             {
                 const cgltf_primitive& primitive = sourceMesh.primitives[primitiveIndex];
-                const cgltf_accessor* positionAccessor = FindPositionAccessor(primitive);
-                if (positionAccessor)
-                    importedMesh.VertexCount += positionAccessor->count;
-
-                if (primitive.type != cgltf_primitive_type_triangles || !positionAccessor)
-                {
-                    ++importedMesh.UnsupportedPrimitiveCount;
-                    continue;
-                }
-
-                const cgltf_size indexCount = primitive.indices ? primitive.indices->count : positionAccessor->count;
-                if (indexCount % 3 != 0)
-                {
-                    ++importedMesh.UnsupportedPrimitiveCount;
-                    continue;
-                }
-
-                ++importedMesh.TrianglePrimitiveCount;
-                importedMesh.TriangleCount += indexCount / 3;
+                if (meshIndex > std::numeric_limits<u32>::max() || primitiveIndex > std::numeric_limits<u32>::max()
+                    || !AppendPrimitive(primitive, static_cast<u32>(meshIndex), static_cast<u32>(primitiveIndex), artifact, importedMesh, result.Error))
+                    return result;
             }
 
             result.Meshes.push_back(std::move(importedMesh));
@@ -199,6 +223,7 @@ namespace Engine
         const std::string assetName = result.Meshes.size() == 1
             ? result.Meshes.front().Name
             : resolvedPath.stem().string();
+        const bool alreadyRegistered = registry.FindAssetByPath(AssetType::Mesh, result.SourcePath) != kInvalidAssetHandle;
         result.MeshAsset = registry.RegisterAsset(AssetType::Mesh, result.SourcePath, assetName);
         if (result.MeshAsset == kInvalidAssetHandle)
         {
@@ -206,11 +231,14 @@ namespace Engine
             return result;
         }
 
-        result.CookedPath = std::filesystem::path("output") / "imports" / "gltf"
-            / (std::to_string(result.MeshAsset) + ".spiralmesh");
-        if (!WriteCookedManifest(result))
+        artifact.Asset = result.MeshAsset;
+        result.CookedPath = GetCookedMeshArtifactPath(result.MeshAsset);
+        if (!StoreMeshArtifact(result.CookedPath, artifact, result.Error))
         {
-            result.Error = "Could not write cooked glTF mesh manifest";
+            if (!alreadyRegistered)
+                registry.RemoveAsset(result.MeshAsset);
+            if (result.Error.empty())
+                result.Error = "Could not write cooked glTF mesh artifact";
             return result;
         }
 

@@ -2668,8 +2668,13 @@ void EditorLayer::RunGltfImportSmoke()
         && m_LastGltfImport.Meshes.front().VertexCount == 3
         && m_LastGltfImport.Meshes.front().TriangleCount == 1
         && std::filesystem::exists(m_LastGltfImport.CookedPath);
+    Engine::MeshArtifact artifact;
+    std::string artifactError;
+    m_GltfImportSmokeCompleted = m_GltfImportSmokeCompleted
+        && Engine::ResolveMeshArtifact(m_AssetRegistry, m_LastGltfImport.MeshAsset, artifact, artifactError)
+        && artifact.Vertices.size() == 3 && artifact.Indices.size() == 3;
     if (!m_GltfImportSmokeCompleted)
-        throw std::runtime_error("glTF import smoke produced an invalid cooked mesh manifest");
+        throw std::runtime_error("glTF import smoke produced an invalid cooked mesh artifact: " + artifactError);
 
     Engine::Log::Info("glTF import smoke passed: ", m_LastGltfImport.CookedPath.string());
 }

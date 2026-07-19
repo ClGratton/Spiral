@@ -18,6 +18,8 @@
 #include "Engine/Renderer/PortableShaderContract.h"
 #include "Engine/Renderer/SlangShaderCompiler.h"
 #include "Engine/Renderer/SceneRasterPreparation.h"
+#include "Engine/Assets/MeshArtifact.h"
+#include "Engine/Assets/AssetRegistry.h"
 #include "Engine/Scene/Scene.h"
 #include "TestSupport/GeneratedTest.h"
 #include "TestSupport/StructuredFuzz.h"
@@ -1674,6 +1676,94 @@ namespace
             && Expect(loaded.GetMainCamera().BackgroundColor.X == 0.21f
                 && loaded.GetMainCamera().BackgroundColor.Y == 0.34f
                 && loaded.GetMainCamera().BackgroundColor.Z == 0.55f, "camera background color round trips");
+    }
+
+    bool TestMeshArtifactValidationAndResolution()
+    {
+        using namespace Engine;
+        const std::filesystem::path path = TestFilePath("mesh-artifact.spiralmesh");
+        std::error_code filesystemError;
+        std::filesystem::remove(path, filesystemError);
+
+        MeshArtifact artifact;
+        artifact.Asset = 17;
+        artifact.SourcePath = "Assets/Test Triangle.gltf";
+        MeshArtifactVertex first;
+        first.Position[0] = 0.0f;
+        first.Position[1] = 0.0f;
+        first.Position[2] = 0.0f;
+        first.Color[0] = 1.0f;
+        MeshArtifactVertex second;
+        second.Position[0] = 1.0f;
+        second.Position[1] = 0.0f;
+        second.Position[2] = 0.0f;
+        second.Color[1] = 1.0f;
+        second.UV[0] = 1.0f;
+        MeshArtifactVertex third;
+        third.Position[0] = 0.0f;
+        third.Position[1] = 1.0f;
+        third.Position[2] = 0.0f;
+        third.Color[2] = 1.0f;
+        third.UV[1] = 1.0f;
+        artifact.Vertices = { first, second, third };
+        artifact.Indices = { 0, 1, 2 };
+        artifact.Primitives = { { 0, 0, 0, sizeof(MeshArtifactVertex) * 3ull, 0, sizeof(u32) * 3ull } };
+        std::string error;
+        MeshArtifact loaded;
+        const bool storedAndLoaded = StoreMeshArtifact(path, artifact, error) && LoadMeshArtifact(path, loaded, error);
+        const bool primitiveRoundTrip = loaded.Primitives.size() == 1
+            && loaded.Primitives.front().SourceMeshIndex == 0 && loaded.Primitives.front().SourcePrimitiveIndex == 0
+            && loaded.Primitives.front().VertexByteOffset == 0 && loaded.Primitives.front().VertexByteSize == sizeof(MeshArtifactVertex) * 3ull
+            && loaded.Primitives.front().IndexByteOffset == 0 && loaded.Primitives.front().IndexByteSize == sizeof(u32) * 3ull;
+        const bool roundTrip = storedAndLoaded
+            && loaded.Asset == artifact.Asset && loaded.SourcePath == artifact.SourcePath
+            && loaded.Vertices.size() == 3 && loaded.Indices == artifact.Indices && primitiveRoundTrip;
+
+        const MeshArtifact preserved = loaded;
+        {
+            std::ofstream malformed(path, std::ios::out | std::ios::trunc);
+            malformed << "SpiralMeshArtifact 1\nSource \\\"bad\\\"\n";
+        }
+        const bool malformedRejected = !LoadMeshArtifact(path, loaded, error) && loaded.Asset == preserved.Asset
+            && loaded.Indices == preserved.Indices;
+
+        MeshArtifact invalid = artifact;
+        invalid.Indices = { 0, 1, 3 };
+        const bool invalidRejected = !ValidateMeshArtifact(invalid, error);
+
+        AssetRegistry registry;
+        const AssetHandle registered = registry.RegisterAsset(AssetType::Mesh, artifact.SourcePath, "Triangle");
+        MeshArtifact resolvedArtifact = artifact;
+        resolvedArtifact.Asset = registered;
+        const std::filesystem::path resolvedPath = GetCookedMeshArtifactPath(registered);
+        std::filesystem::remove(resolvedPath, filesystemError);
+        MeshArtifact resolved = preserved;
+        const bool missingRejected = !ResolveMeshArtifact(registry, registered, resolved, error)
+            && resolved.Asset == preserved.Asset && resolved.Indices == preserved.Indices;
+        const bool resolvedSuccessfully = registered != kInvalidAssetHandle
+            && StoreMeshArtifact(resolvedPath, resolvedArtifact, error)
+            && ResolveMeshArtifact(registry, registered, resolved, error)
+            && resolved.Asset == registered && resolved.SourcePath == artifact.SourcePath;
+        resolvedArtifact.SourcePath = "Other.gltf";
+        const bool provenanceRejected = StoreMeshArtifact(resolvedPath, resolvedArtifact, error)
+            && !ResolveMeshArtifact(registry, registered, resolved, error)
+            && resolved.Asset == registered;
+        const AssetHandle texture = registry.RegisterAsset(AssetType::Texture, "Assets/Test.png", "Texture");
+        const bool wrongTypeRejected = texture != kInvalidAssetHandle
+            && !ResolveMeshArtifact(registry, texture, resolved, error) && resolved.Asset == registered;
+        {
+            std::ofstream unsupported(path, std::ios::out | std::ios::trunc);
+            unsupported << "SpiralMeshArtifact 99\n";
+        }
+        const bool unsupportedRejected = !LoadMeshArtifact(path, loaded, error) && loaded.Asset == preserved.Asset;
+
+        std::filesystem::remove(path, filesystemError);
+        std::filesystem::remove(resolvedPath, filesystemError);
+        return Expect(roundTrip, "versioned cooked mesh artifacts round trip deterministically")
+            && Expect(malformedRejected && invalidRejected && unsupportedRejected,
+                "mesh artifact loading rejects malformed unsupported and invalid data without mutating the destination")
+            && Expect(missingRejected && resolvedSuccessfully && provenanceRejected && wrongTypeRejected,
+                "mesh artifact resolution rejects missing wrong-type and mismatched provenance without partial publication");
     }
 
     bool TestSceneVersionFourCanonicalPersistence()
@@ -5972,6 +6062,7 @@ int main(int argc, char** argv)
         FAST_TEST("Frame task graph rejects cycles", TestFrameTaskGraphRejectsCycles),
         FAST_TEST("Frame task graph rejects invalid dependencies", TestFrameTaskGraphRejectsInvalidDependencies),
         INTEGRATION_TEST("Scene round trip", TestSceneRoundTrip),
+        INTEGRATION_TEST("Cooked mesh artifacts validate and resolve transactionally", TestMeshArtifactValidationAndResolution),
         INTEGRATION_TEST("Scene version 4 canonical persistence", TestSceneVersionFourCanonicalPersistence),
         INTEGRATION_TEST("Scene loads legacy absolute transforms", TestSceneLoadsLegacyAbsoluteTransforms),
         INTEGRATION_TEST("Scene rejects invalid version 4 world state", TestSceneRejectsInvalidVersionFourWorldState),

@@ -304,11 +304,12 @@ Capability groups are added as dependency-ordered checklist items immediately be
 
 ### Phase 3D: Scene Resources And Asset Inputs
 
-- [ ] Full Phase 3 Scene capability group for actual scene formats/usages, queue/synchronization, shared shader targets/reflection, descriptors/samplers, and timing paths, with functional fallbacks and Scene evidence on every backend/device class claimed.
+- [x] **Phase 3D mesh artifact prerequisite:** schema-1 `SpiralMeshArtifact` replaces the metadata-only glTF manifest with supported float3-position triangles cooked as bounded `PositionColorUV32F` vertices, `UInt32` indices, explicit per-source-primitive byte ranges, and asset-handle/source-path provenance. Unique temporary files plus atomic replacement publish the artifact; loading/resolution validate version, layouts, counts/ranges, finite data, primitive-local indices, registry type/handle/path, and trailing input without partially mutating the destination. The importer rolls back a newly registered asset when first publication fails. The zero-warning Debug build, 80/80 tests, focused malformed/unsupported/missing/wrong-type/mismatched fixtures, and bounded D3D12 Editor glTF import/resolution smoke passed. This is the Assets boundary only: source-dependency freshness, GPU upload/prototype replacement, descriptors/materials/textures/residency/hot reload, additional backend qualification, and headless Editor lifecycle are not claimed.
 - [ ] Scene mesh/index/constant/structured-buffer integration beyond the prototype draw, populated from the render snapshot through `Engine::RHI`.
 - [ ] Texture upload, samplers, mip generation.
 - [ ] KTX2/Basis texture import and deterministic target cooking: versioned `TextureAsset` metadata, validated libktx boundary, `DesktopBC`/`Astc`/`RGBAFallback` artifacts, color-space/role rules, and headless fixtures.
 - [ ] Descriptor/sampler and read-only bindless table model with declared capacities, error resources, GPU-retired updates, writable-resource rules, and a capability-gated bounded fallback.
+- [ ] **Phase 3D Scene capability exit gate:** after the individual Scene resource, texture, and descriptor prerequisites above, qualify actual scene formats/usages, queue/synchronization, shared shader targets/reflection, descriptors/samplers, and timing paths with functional fallbacks and Scene evidence on every backend/device class claimed.
 
 ### Phase 3E: Conventional Renderer Baseline
 
