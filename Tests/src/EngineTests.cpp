@@ -6124,6 +6124,34 @@ float4 main(VertexInput input) : SV_Position
             && Expect(errorRetainedByView, "resolved views retain the error resource after caller and table release");
     }
 
+    bool TestReadOnlyTextureUploadContract()
+    {
+        using namespace Engine::RHI;
+        TextureDescription description;
+        description.Extent = { 3, 2 };
+        description.TextureFormat = Format::R8G8B8A8Unorm;
+        description.Usage = static_cast<TextureUsage>(static_cast<Engine::u32>(TextureUsage::CopyDest) | static_cast<Engine::u32>(TextureUsage::ShaderResource));
+        description.InitialState = ResourceState::CopyDest;
+        TextureUpload upload;
+        upload.Extent = description.Extent;
+        upload.TextureFormat = description.TextureFormat;
+        upload.RowPitchBytes = 16;
+        upload.Bytes = Engine::CreateRef<std::vector<Engine::u8>>(32, 0x5a);
+        TextureUpload wrongFormat = upload;
+        wrongFormat.TextureFormat = Format::R8Unorm;
+        TextureUpload truncated = upload;
+        truncated.Bytes = Engine::CreateRef<std::vector<Engine::u8>>(31, 0x5a);
+        TextureDescription writable = description;
+        writable.Usage = static_cast<TextureUsage>(static_cast<Engine::u32>(writable.Usage) | static_cast<Engine::u32>(TextureUsage::RenderTarget));
+        TextureDescription wrongInitial = description;
+        wrongInitial.InitialState = ResourceState::ShaderResource;
+        return Expect(IsReadOnlyTextureUploadCompatible(description, upload), "a full RGBA8 upload accepts exact extent and padded rows")
+            && Expect(!IsReadOnlyTextureUploadCompatible(description, wrongFormat), "a texture upload rejects a mismatched format")
+            && Expect(!IsReadOnlyTextureUploadCompatible(description, truncated), "a texture upload rejects a truncated row payload")
+            && Expect(!IsReadOnlyTextureUploadCompatible(writable, upload), "a texture upload rejects writable destinations")
+            && Expect(!IsReadOnlyTextureUploadCompatible(wrongInitial, upload), "a texture upload requires CopyDest publication state");
+    }
+
     bool TestSampledTextureTableBindingContract()
     {
         using namespace Engine::RHI;
@@ -6567,6 +6595,7 @@ int main(int argc, char** argv)
         FAST_TEST("RHI queue topology submits dependencies without premature publication", TestRhiQueueTopologyDependencySubmissionContract),
         FAST_TEST("RHI resource-state query rejects null foreign and unknown resources", TestRhiResourceOwnershipContract),
         FAST_TEST("RHI read-only texture binding table preserves error and GPU-retired identities", TestReadOnlyTextureBindingTableContract),
+        FAST_TEST("RHI read-only texture upload validates the full-subresource contract", TestReadOnlyTextureUploadContract),
         FAST_TEST("RHI sampled texture-table binding validates pipeline space offsets and exact ownership", TestSampledTextureTableBindingContract),
         FAST_TEST("RHI buffer ownership lifecycle publishes only accepted exact-token pairs", TestRhiBufferOwnershipLifecycleContract),
         FAST_TEST("RHI buffer ownership recovery and adapter seams preserve fallback semantics", TestRhiBufferOwnershipRecoveryAndAdapterSeams),

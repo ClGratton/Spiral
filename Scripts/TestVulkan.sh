@@ -145,7 +145,7 @@ for ((ATTEMPT = 1; ATTEMPT <= ITERATIONS; ++ATTEMPT)); do
         my $status = $?;
         exit(128 + ($status & 127)) if $status & 127;
         exit($status >> 8);
-    ' "$CHILD_TIMEOUT_SECONDS" "$EDITOR" --vulkan-render-smoke --renderer-capability-smoke --scene-viewport-render-graph-smoke --vulkan-rhi-core-smoke --vulkan-rhi-indexed-draw-smoke --vulkan-scene-viewport-raster-smoke --rhi-buffer-transition-smoke --rhi-completion-smoke --rhi-queue-dependency-smoke --rhi-buffer-ownership-smoke --rhi-texture-ownership-smoke --rhi-resource-ownership-smoke --rhi-resource-state-smoke --render-graph-execution-smoke) 2>&1 | tee "$LOG_FILE"
+    ' "$CHILD_TIMEOUT_SECONDS" "$EDITOR" --vulkan-render-smoke --renderer-capability-smoke --scene-viewport-render-graph-smoke --vulkan-rhi-core-smoke --vulkan-rhi-indexed-draw-smoke --vulkan-scene-viewport-raster-smoke --rhi-buffer-transition-smoke --rhi-completion-smoke --rhi-queue-dependency-smoke --rhi-buffer-ownership-smoke --rhi-texture-ownership-smoke --rhi-resource-ownership-smoke --rhi-resource-state-smoke --rhi-texture-upload-smoke --render-graph-execution-smoke) 2>&1 | tee "$LOG_FILE"
     STATUS=${PIPESTATUS[0]}
     set -e
     if [[ $STATUS -ne 0 ]]; then
@@ -175,7 +175,7 @@ for ((ATTEMPT = 1; ATTEMPT <= ITERATIONS; ++ATTEMPT)); do
         echo "Vulkan render smoke did not publish exact-frame GPU durations and promote the exercised capability path on attempt $ATTEMPT/$ITERATIONS." >&2
         exit 1
     fi
-    DIAGNOSTICS_PATTERN='Editor renderer capability diagnostics rendered: profile=Phase 3 Vulkan Bootstrap Presentation V1, adapter=.+, qualification=Bootstrap, formats=[1-9][0-9]*, features=11, groups=2, candidates=[1-9][0-9]*'
+    DIAGNOSTICS_PATTERN='Editor renderer capability diagnostics rendered: profile=Phase 3 Vulkan Bootstrap Presentation V1, adapter=.+, qualification=Bootstrap, formats=[1-9][0-9]*, features=12, groups=2, candidates=[1-9][0-9]*'
     if ! grep -Eq "$DIAGNOSTICS_PATTERN" "$LOG_FILE"; then
         echo "Vulkan render smoke did not emit a complete editor capability diagnostics marker on attempt $ATTEMPT/$ITERATIONS." >&2
         exit 1

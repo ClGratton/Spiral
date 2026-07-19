@@ -21,7 +21,7 @@ if (!(Test-Path $Executable)) {
     throw "Vulkan smoke executable was not found: $Executable"
 }
 
-$VulkanResult = Invoke-BoundedProcess -FilePath $Executable -Arguments @("--vulkan-render-smoke", "--frame-lifecycle-telemetry-smoke", "--renderer-capability-smoke", "--scene-raster-preparation-smoke", "--scene-viewport-render-graph-smoke", "--vulkan-rhi-core-smoke", "--vulkan-rhi-indexed-draw-smoke", "--vulkan-scene-viewport-raster-smoke", "--rhi-buffer-transition-smoke", "--rhi-completion-smoke", "--rhi-timestamp-query-smoke", "--rhi-queue-dependency-smoke", "--rhi-buffer-ownership-smoke", "--rhi-texture-ownership-smoke", "--rhi-resource-ownership-smoke", "--rhi-resource-state-smoke", "--render-graph-execution-smoke") -Label "Editor Vulkan render smoke" -TimeoutSeconds $ChildTimeoutSeconds
+$VulkanResult = Invoke-BoundedProcess -FilePath $Executable -Arguments @("--vulkan-render-smoke", "--frame-lifecycle-telemetry-smoke", "--renderer-capability-smoke", "--scene-raster-preparation-smoke", "--scene-viewport-render-graph-smoke", "--vulkan-rhi-core-smoke", "--vulkan-rhi-indexed-draw-smoke", "--vulkan-scene-viewport-raster-smoke", "--rhi-buffer-transition-smoke", "--rhi-completion-smoke", "--rhi-timestamp-query-smoke", "--rhi-queue-dependency-smoke", "--rhi-buffer-ownership-smoke", "--rhi-texture-ownership-smoke", "--rhi-resource-ownership-smoke", "--rhi-resource-state-smoke", "--rhi-texture-upload-smoke", "--render-graph-execution-smoke") -Label "Editor Vulkan render smoke" -TimeoutSeconds $ChildTimeoutSeconds
 $Output = $VulkanLog = $VulkanResult.Output
 if ($VulkanResult.TimedOut) {
     throw "Vulkan render smoke timed out after $ChildTimeoutSeconds seconds."
@@ -169,7 +169,7 @@ if ($JoinedLog -notmatch 'RHIBufferOwnershipSmokeV1 backend=Vulkan, mode=(indepe
 if ($JoinedLog -notmatch 'RHITextureOwnershipSmokeV1 backend=Vulkan, mode=(independent, release=accepted, acquire=gpu-wait, cpuWaitBetween=no, bytes=pass, finalOwner=Copy, finalState=CopySource, recovery=pass, retirement=pass, result=pass|graphics-fallback, transfer=rejected, pending=no, result=pass)') {
     throw "Vulkan smoke did not prove topology-adaptive texture ownership transfer or truthful fallback rejection."
 }
-$DiagnosticsPattern = "Editor renderer capability diagnostics rendered: profile=Phase 3 Vulkan Bootstrap Presentation V1, adapter=.+, qualification=Bootstrap, formats=[1-9][0-9]*, features=11, groups=2, candidates=[1-9][0-9]*"
+$DiagnosticsPattern = "Editor renderer capability diagnostics rendered: profile=Phase 3 Vulkan Bootstrap Presentation V1, adapter=.+, qualification=Bootstrap, formats=[1-9][0-9]*, features=12, groups=2, candidates=[1-9][0-9]*"
 if ($JoinedLog -notmatch $DiagnosticsPattern) {
     throw "Vulkan render smoke did not emit a complete editor capability diagnostics marker."
 }

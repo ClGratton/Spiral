@@ -965,6 +965,23 @@ namespace Engine::RHI
                 Scope<CommandList> list = CreateCommandList(QueueType::Graphics, "Vulkan RHI Buffer Upload"); if (!list || !list->Begin()) return false;
                 static_cast<VulkanCommandList*>(list.get())->Native()->writeBuffer(buffer->Native(), data, size, offset); return list->End() && SubmitAndWait(*list);
             }
+            bool UploadTexture(Texture& destination, const TextureUpload& upload) override
+            {
+                auto* texture = dynamic_cast<VulkanTexture*>(&destination);
+                if (!texture || !OwnsResource(&destination) || !CanUseTextureOnQueue(&destination, QueueType::Graphics)
+                    || !IsReadOnlyTextureUploadCompatible(destination.GetDescription(), upload)
+                    || texture->GetCurrentState() != ResourceState::CopyDest)
+                    return false;
+                Scope<CommandList> list = CreateCommandList(QueueType::Graphics, "Vulkan RHI Texture Upload");
+                if (!list || !list->Begin())
+                    return false;
+                auto* nativeList = static_cast<VulkanCommandList*>(list.get());
+                nativeList->Native()->beginTrackingTextureState(texture->Native(), nvrhi::AllSubresources, ConvertState(ResourceState::CopyDest));
+                nativeList->Native()->writeTexture(texture->Native(), 0, 0, upload.Bytes->data(), upload.RowPitchBytes,
+                    static_cast<size_t>(upload.RowPitchBytes) * destination.GetDescription().Extent.Height);
+                return nativeList->TransitionTexture(destination, ResourceState::ShaderResource)
+                    && list->End() && SubmitAndWait(*list);
+            }
             bool ReadbackTexture(Texture& source, TextureReadback& out) override
             {
                 auto* texture = dynamic_cast<VulkanTexture*>(&source); const auto& d = source.GetDescription(); QueueType owner = QueueType::Graphics;

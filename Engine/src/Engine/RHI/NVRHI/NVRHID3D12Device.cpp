@@ -1881,6 +1881,63 @@ namespace Engine::RHI
                 return SubmitAndWait(*commandList);
             }
 
+            bool UploadTexture(Texture& destination, const TextureUpload& upload) override
+            {
+                auto* texture = dynamic_cast<NVRHID3D12Texture*>(&destination);
+                if (!texture || !OwnsResource(&destination) || !m_TextureOwnership.CanUse(&destination)
+                    || !IsReadOnlyTextureUploadCompatible(destination.GetDescription(), upload)
+                    || texture->GetTrackedState() != ResourceState::CopyDest)
+                    return false;
+
+                D3D12_RESOURCE_DESC nativeDescription = texture->GetResource()->GetDesc();
+                D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint {};
+                UINT rows = 0;
+                UINT64 rowBytes = 0;
+                UINT64 requiredBytes = 0;
+                m_Device->GetCopyableFootprints(&nativeDescription, 0, 1, 0, &footprint, &rows, &rowBytes, &requiredBytes);
+                if (rows != destination.GetDescription().Extent.Height || rowBytes != static_cast<UINT64>(destination.GetDescription().Extent.Width) * 4u
+                    || requiredBytes == 0)
+                    return false;
+
+                BufferDescription stagingDescription;
+                stagingDescription.DebugName = destination.GetDescription().DebugName + " Texture Upload Staging";
+                stagingDescription.SizeBytes = requiredBytes;
+                stagingDescription.Usage = BufferUsage::CopySource;
+                stagingDescription.CpuAccess = BufferCpuAccess::Write;
+                Scope<Buffer> staging = CreateBuffer(stagingDescription);
+                auto* nativeStaging = staging ? dynamic_cast<NVRHID3D12Buffer*>(staging.get()) : nullptr;
+                void* mapped = nativeStaging ? nativeStaging->Map() : nullptr;
+                if (!mapped)
+                    return false;
+                const u8* source = upload.Bytes->data();
+                for (u32 row = 0; row < destination.GetDescription().Extent.Height; ++row)
+                {
+                    std::memcpy(static_cast<u8*>(mapped) + footprint.Offset + static_cast<size_t>(row) * footprint.Footprint.RowPitch,
+                        source + static_cast<size_t>(row) * upload.RowPitchBytes,
+                        static_cast<size_t>(rowBytes));
+                }
+                nativeStaging->Unmap();
+
+                // The post-copy ShaderResource transition is not valid on a
+                // D3D12 Copy queue; this narrow initializer therefore owns one
+                // Graphics submission rather than hiding a cross-queue acquire.
+                Scope<CommandList> commandList = CreateCommandList(QueueType::Graphics, stagingDescription.DebugName);
+                auto* nativeList = commandList ? dynamic_cast<NVRHID3D12CommandList*>(commandList.get()) : nullptr;
+                if (!nativeList || !nativeList->Begin())
+                    return false;
+                D3D12_TEXTURE_COPY_LOCATION sourceLocation {};
+                sourceLocation.pResource = nativeStaging->GetResource();
+                sourceLocation.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+                sourceLocation.PlacedFootprint = footprint;
+                D3D12_TEXTURE_COPY_LOCATION destinationLocation {};
+                destinationLocation.pResource = texture->GetResource();
+                destinationLocation.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+                destinationLocation.SubresourceIndex = 0;
+                nativeList->GetNativeGraphicsCommandList()->CopyTextureRegion(&destinationLocation, 0, 0, 0, &sourceLocation, nullptr);
+                return nativeList->TransitionTexture(destination, ResourceState::ShaderResource)
+                    && nativeList->End() && SubmitAndWait(*nativeList);
+            }
+
             bool ReadbackTexture(Texture& source, TextureReadback& destination) override
             {
                 // Readback is deliberately restricted to the portable offscreen

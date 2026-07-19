@@ -42,7 +42,7 @@ foreach ($Path in @($ResolvedCapturePath) + $SceneOriginCapturePaths) {
     }
 }
 
-$RenderResult = Invoke-BoundedProcess -FilePath $Editor -Arguments @("--capture-viewport", "--smoke-test", "--frame-lifecycle-telemetry-smoke", "--renderer-capability-smoke", "--scene-origin-raster-smoke", "--scene-raster-preparation-smoke", "--scene-viewport-render-graph-smoke", "--rhi-buffer-transition-smoke", "--rhi-completion-smoke", "--rhi-timestamp-query-smoke", "--rhi-queue-dependency-smoke", "--rhi-buffer-ownership-smoke", "--rhi-texture-ownership-smoke", "--rhi-resource-ownership-smoke", "--rhi-resource-state-smoke", "--rhi-texture-readback-smoke", "--render-graph-execution-smoke") -Label "Editor render smoke" -TimeoutSeconds $ChildTimeoutSeconds
+$RenderResult = Invoke-BoundedProcess -FilePath $Editor -Arguments @("--capture-viewport", "--smoke-test", "--frame-lifecycle-telemetry-smoke", "--renderer-capability-smoke", "--scene-origin-raster-smoke", "--scene-raster-preparation-smoke", "--scene-viewport-render-graph-smoke", "--rhi-buffer-transition-smoke", "--rhi-completion-smoke", "--rhi-timestamp-query-smoke", "--rhi-queue-dependency-smoke", "--rhi-buffer-ownership-smoke", "--rhi-texture-ownership-smoke", "--rhi-resource-ownership-smoke", "--rhi-resource-state-smoke", "--rhi-texture-readback-smoke", "--rhi-texture-upload-smoke", "--render-graph-execution-smoke") -Label "Editor render smoke" -TimeoutSeconds $ChildTimeoutSeconds
 $Output = $RenderLog = $RenderResult.Output
 if ($RenderResult.TimedOut) {
     throw "Editor render smoke timed out after $ChildTimeoutSeconds seconds."
@@ -269,7 +269,7 @@ foreach ($Pattern in $CanonicalOriginPatterns) {
         throw "D3D12 scene-origin diagnostics did not prove the expected canonical mesh/origin boundary transition: $Pattern"
     }
 }
-$DiagnosticsPattern = "Editor renderer capability diagnostics rendered: profile=Phase 3 D3D12 Bootstrap V1, adapter=.+, qualification=Bootstrap, formats=[1-9][0-9]*, features=11, groups=2, candidates=[1-9][0-9]*"
+$DiagnosticsPattern = "Editor renderer capability diagnostics rendered: profile=Phase 3 D3D12 Bootstrap V1, adapter=.+, qualification=Bootstrap, formats=[1-9][0-9]*, features=12, groups=2, candidates=[1-9][0-9]*"
 if ($JoinedLog -notmatch $DiagnosticsPattern) {
     throw "D3D12 render smoke did not emit a complete editor capability diagnostics marker."
 }

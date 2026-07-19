@@ -41,6 +41,7 @@ namespace Engine
         bool RunRHIResourceOwnershipSmoke(RHI::Device& device, std::string_view backendName);
         bool RunRHIResourceStateSmoke(RHI::Device& device, std::string_view backendName);
         bool RunRHITextureReadbackSmoke(RHI::Device& device, std::string_view backendName);
+        bool RunRHITextureUploadSmoke(RHI::Device& device, std::string_view backendName);
         bool RunRenderGraphExecutionSmoke(RHI::Device& device, std::string_view backendName);
         bool RunVulkanRHIIndexedDrawSmoke();
         bool RunVulkanSceneViewportRasterSmoke();

@@ -146,6 +146,16 @@ namespace Engine::RHI
         }
         virtual Scope<CommandList> CreateCommandList(QueueType queueType, std::string_view debugName) = 0;
         virtual bool UploadBuffer(Buffer& destination, const void* sourceData, u64 sizeBytes, u64 destinationOffset = 0) = 0;
+        // Initializes one complete read-only 2D RGBA8 subresource and returns
+        // only after the exact submission token has completed. This keeps the
+        // engine-owned source bytes and private native staging alive through
+        // acceptance without exposing a descriptor or binding policy.
+        virtual bool UploadTexture(Texture& destination, const TextureUpload& upload)
+        {
+            (void)destination;
+            (void)upload;
+            return false;
+        }
         virtual bool ReadbackTexture(Texture& source, TextureReadback& destination) = 0;
         // Returns after the queue accepts closed work. The opaque token is
         // subsequently owned by this Device for query/wait/reuse decisions.

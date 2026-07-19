@@ -128,6 +128,10 @@ namespace Engine
                 m_VulkanContext.reset();
                 return false;
             }
+            if (args.HasFlag("--rhi-texture-upload-smoke") && !RunRHITextureUploadSmoke(*m_VulkanContext->GetRHIDevice(), "Vulkan"))
+            {
+                Log::Error("Vulkan RHI texture-upload smoke failed"); m_VulkanContext->Shutdown(); m_VulkanContext.reset(); return false;
+            }
             if (args.HasFlag("--render-graph-execution-smoke") && !RunRenderGraphExecutionSmoke(*m_VulkanContext->GetRHIDevice(), "Vulkan"))
             {
                 Log::Error("Vulkan render-graph execution smoke failed"); m_VulkanContext->Shutdown(); m_VulkanContext.reset(); return false;
@@ -216,6 +220,10 @@ namespace Engine
                 Log::Error("D3D12 RHI texture-readback smoke failed");
                 m_Device.reset();
                 return false;
+            }
+            if (args.HasFlag("--rhi-texture-upload-smoke") && !RunRHITextureUploadSmoke(*m_Device, "D3D12"))
+            {
+                Log::Error("D3D12 RHI texture-upload smoke failed"); m_Device.reset(); return false;
             }
             if (args.HasFlag("--render-graph-execution-smoke") && !RunRenderGraphExecutionSmoke(*m_Device, "D3D12"))
             {
@@ -1115,6 +1123,53 @@ namespace Engine
             ", submit=", draw ? "pass" : "fail",
             ", readback=", readbackOk ? "pass" : "fail",
             ", layout=", pixelsOk ? "tight" : "invalid",
+            ", result=", passed ? "pass" : "fail");
+        return passed;
+    }
+
+    bool NVRHIRenderBackend::RunRHITextureUploadSmoke(RHI::Device& device, std::string_view backendName)
+    {
+        constexpr u32 width = 3;
+        constexpr u32 height = 2;
+        RHI::TextureDescription description;
+        description.DebugName = "RHITextureUploadSmokeV1";
+        description.Extent = { width, height };
+        description.TextureFormat = RHI::Format::R8G8B8A8Unorm;
+        description.Usage = static_cast<RHI::TextureUsage>(static_cast<u32>(RHI::TextureUsage::CopyDest)
+            | static_cast<u32>(RHI::TextureUsage::CopySource) | static_cast<u32>(RHI::TextureUsage::ShaderResource));
+        description.InitialState = RHI::ResourceState::CopyDest;
+        Scope<RHI::Texture> texture = device.CreateTexture(description);
+        const Ref<std::vector<u8>> bytes = CreateRef<std::vector<u8>>(height * 16u, 0u);
+        for (u32 y = 0; y < height; ++y)
+            for (u32 x = 0; x < width; ++x)
+            {
+                const size_t offset = static_cast<size_t>(y) * 16u + x * 4u;
+                (*bytes)[offset + 0] = static_cast<u8>(16u + x + y * 3u);
+                (*bytes)[offset + 1] = static_cast<u8>(64u + x + y * 3u);
+                (*bytes)[offset + 2] = static_cast<u8>(128u + x + y * 3u);
+                (*bytes)[offset + 3] = 255u;
+            }
+        RHI::TextureUpload upload { { width, height }, RHI::Format::R8G8B8A8Unorm, 16u, bytes };
+        RHI::ResourceState state = RHI::ResourceState::Unknown;
+        const bool uploaded = texture && device.UploadTexture(*texture, upload)
+            && device.QueryResourceState(texture.get(), state) && state == RHI::ResourceState::ShaderResource;
+        Scope<RHI::CommandList> readbackList = uploaded ? device.CreateCommandList(RHI::QueueType::Graphics, "RHITextureUploadSmokeV1 Readback") : nullptr;
+        const bool transitioned = readbackList && readbackList->Begin()
+            && readbackList->TransitionTexture(*texture, RHI::ResourceState::CopySource)
+            && readbackList->End() && device.SubmitAndWait(*readbackList);
+        RHI::TextureReadback readback;
+        const bool read = transitioned && device.ReadbackTexture(*texture, readback);
+        bool bytesMatch = read && readback.RowPitchBytes == width * 4u && readback.Data.size() == static_cast<size_t>(width * height * 4u);
+        for (u32 y = 0; bytesMatch && y < height; ++y)
+            for (u32 x = 0; bytesMatch && x < width; ++x)
+                for (u32 channel = 0; channel < 4; ++channel)
+                    if (readback.Data[static_cast<size_t>(y) * readback.RowPitchBytes + x * 4u + channel] != (*bytes)[static_cast<size_t>(y) * 16u + x * 4u + channel])
+                        bytesMatch = false;
+        const bool passed = uploaded && transitioned && read && bytesMatch;
+        Log::Info("RHITextureUploadSmokeV1 backend=", backendName,
+            ", shaderResource=", uploaded ? "pass" : "fail",
+            ", readback=", read ? "pass" : "fail",
+            ", bytes=", bytesMatch ? "pass" : "fail",
             ", result=", passed ? "pass" : "fail");
         return passed;
     }
