@@ -134,6 +134,17 @@ namespace Engine::RHI
         return { error.TextureResource, error.Sampler, true };
     }
 
+    TextureBindingView TextureBindingTable::ResolvePublishedSlot(u32 index) const
+    {
+        if (index < m_Slots.size() && m_Slots[index].Active)
+        {
+            const Slot& slot = m_Slots[index];
+            return { slot.TextureResource, slot.Sampler, index == 0 };
+        }
+        const Slot& error = m_Slots[0];
+        return { error.TextureResource, error.Sampler, true };
+    }
+
     u32 TextureBindingTable::GetPendingOperationCount() const
     {
         u32 count = 0;

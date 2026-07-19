@@ -42,7 +42,7 @@ foreach ($Path in @($ResolvedCapturePath) + $SceneOriginCapturePaths) {
     }
 }
 
-$RenderResult = Invoke-BoundedProcess -FilePath $Editor -Arguments @("--capture-viewport", "--smoke-test", "--frame-lifecycle-telemetry-smoke", "--renderer-capability-smoke", "--scene-origin-raster-smoke", "--scene-raster-preparation-smoke", "--scene-viewport-render-graph-smoke", "--rhi-buffer-transition-smoke", "--rhi-completion-smoke", "--rhi-timestamp-query-smoke", "--rhi-queue-dependency-smoke", "--rhi-buffer-ownership-smoke", "--rhi-texture-ownership-smoke", "--rhi-resource-ownership-smoke", "--rhi-resource-state-smoke", "--rhi-texture-readback-smoke", "--rhi-texture-upload-smoke", "--render-graph-execution-smoke") -Label "Editor render smoke" -TimeoutSeconds $ChildTimeoutSeconds
+$RenderResult = Invoke-BoundedProcess -FilePath $Editor -Arguments @("--capture-viewport", "--smoke-test", "--frame-lifecycle-telemetry-smoke", "--renderer-capability-smoke", "--scene-origin-raster-smoke", "--scene-raster-preparation-smoke", "--scene-viewport-render-graph-smoke", "--rhi-buffer-transition-smoke", "--rhi-completion-smoke", "--rhi-timestamp-query-smoke", "--rhi-queue-dependency-smoke", "--rhi-buffer-ownership-smoke", "--rhi-texture-ownership-smoke", "--rhi-resource-ownership-smoke", "--rhi-resource-state-smoke", "--rhi-texture-readback-smoke", "--rhi-texture-upload-smoke", "--rhi-sampled-table-smoke", "--render-graph-execution-smoke") -Label "Editor render smoke" -TimeoutSeconds $ChildTimeoutSeconds
 $Output = $RenderLog = $RenderResult.Output
 if ($RenderResult.TimedOut) {
     throw "Editor render smoke timed out after $ChildTimeoutSeconds seconds."
@@ -200,7 +200,7 @@ if ($FallbackJoinedLog -notmatch 'RHIBufferOwnershipSmokeV1 backend=D3D12, mode=
 }
 if ($FallbackJoinedLog -notmatch 'RHITextureOwnershipSmokeV1 backend=D3D12, mode=graphics-fallback, transfer=rejected, pending=no, result=pass') { throw "D3D12 forced fallback texture ownership smoke failed." }
 
-$ConventionEvidence = "schema=1\|matrix=row-major\|d3dClipDepth=zero-to-one\|spirvY=inverted\|frontFace=clockwise\|binding=D3DRegisterSpace"
+$ConventionEvidence = "schema=2\|matrix=row-major\|d3dClipDepth=zero-to-one\|spirvY=inverted\|frontFace=clockwise\|binding=D3DRegisterSpaceVulkanClassOffsets0_100_200_300"
 $TerminalPattern = "PortableShaderTerminalV1 status=(?<status>success|cache-hit) request=[1-9][0-9]* stage=(?<stage>vertex|pixel) cacheMode=(?<cacheMode>compiled|cache-hit) cacheSource=(?<cacheSource>compiler|disk|service) compiler=Slang-2026\.13\.1 backend=Slang targets=DXIL\+SPIR-V key=(?<key>[0-9a-f]{64}) bindings=(?<bindings>[1-9][0-9]*) vertexInputs=(?<vertexInputs>[0-9]+) conventions=$ConventionEvidence legacySourceCompile=false"
 $TerminalMatches = [regex]::Matches($JoinedLog, $TerminalPattern)
 if ($TerminalMatches.Count -ne 2) {

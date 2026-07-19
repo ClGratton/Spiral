@@ -66,8 +66,8 @@ namespace Engine::RHI
         u32 TextureRegister = 0;
         u32 SamplerRegister = 0;
         u32 RegisterSpace = 1;
-        u32 VulkanTextureBindingOffset = 1;
-        u32 VulkanSamplerBindingOffset = 2;
+        u32 VulkanTextureBindingOffset = 100;
+        u32 VulkanSamplerBindingOffset = 300;
     };
 
     struct PipelineDescription;
@@ -77,7 +77,7 @@ namespace Engine::RHI
     {
         if (binding.Capacity < 2 || binding.Capacity > kMaximumReadOnlyTextureTableCapacity
             || binding.TextureRegister != 0 || binding.SamplerRegister != 0 || binding.RegisterSpace != 1
-            || binding.VulkanTextureBindingOffset != 1 || binding.VulkanSamplerBindingOffset != 2) return false;
+            || binding.VulkanTextureBindingOffset != 100 || binding.VulkanSamplerBindingOffset != 300) return false;
         for (const RootConstantBufferBinding& constantBuffer : constantBuffers)
             if (constantBuffer.RegisterSpace == binding.RegisterSpace) return false;
         return true;

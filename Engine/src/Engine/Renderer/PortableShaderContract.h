@@ -51,13 +51,13 @@ namespace Engine
 
     struct PortableShaderConventions
     {
-        u32 Version = 1;
+        u32 Version = 2;
         bool RowMajor = true;
         bool ZeroToOneDepth = true;
         bool VulkanYFlip = true;
         bool ClockwiseFrontFace = true;
         std::string Coordinates = "RightHanded";
-        std::string BindingPolicy = "D3DRegisterSpace";
+        std::string BindingPolicy = "D3DRegisterSpaceVulkanClassOffsets0_100_200_300";
 
         bool operator==(const PortableShaderConventions&) const = default;
     };

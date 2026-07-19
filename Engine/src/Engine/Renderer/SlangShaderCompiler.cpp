@@ -326,6 +326,13 @@ namespace Engine
             return entry;
         }
 
+        slang::CompilerOptionEntry IntegerPairOption(slang::CompilerOptionName name, int first, int second)
+        {
+            slang::CompilerOptionEntry entry = IntegerOption(name, first);
+            entry.value.intValue1 = second;
+            return entry;
+        }
+
         slang::CompilerOptionEntry StringOption(slang::CompilerOptionName name, const char* value)
         {
             slang::CompilerOptionEntry entry {};
@@ -755,6 +762,32 @@ namespace Engine
                 && std::equal(left.Bindings.begin(), left.Bindings.end(), right.Bindings.begin(), SameBinding)
                 && std::equal(left.VertexInputs.begin(), left.VertexInputs.end(), right.VertexInputs.begin(), SameVertexInput);
         }
+
+        bool NormalizeSpirvBindings(ReflectedInterface& reflection, std::string& error)
+        {
+            for (PortableShaderBinding& binding : reflection.Bindings)
+            {
+                const u32 offset = binding.Kind == 't' ? 100u
+                    : binding.Kind == 'u' ? 200u
+                    : binding.Kind == 's' ? 300u
+                    : 0u;
+                if (binding.Register < offset)
+                {
+                    error = "SPIR-V reflected binding is outside the admitted class offset";
+                    return false;
+                }
+                binding.Register -= offset;
+            }
+            std::sort(reflection.Bindings.begin(), reflection.Bindings.end(), [](const auto& left, const auto& right)
+            {
+                if (left.Space != right.Space) return left.Space < right.Space;
+                if (left.Register != right.Register) return left.Register < right.Register;
+                if (left.Kind != right.Kind) return left.Kind < right.Kind;
+                return left.Name < right.Name;
+            });
+            return true;
+        }
+
     }
 
     SlangShaderCompiler::SlangShaderCompiler(std::filesystem::path cacheDirectory)
@@ -821,9 +854,15 @@ namespace Engine
         std::vector<PortableShaderTarget> targetKinds;
         targets.reserve(request.Targets.size());
         targetKinds.reserve(request.Targets.size());
-        std::array<slang::CompilerOptionEntry, 2> spirvConventionOptions = {
+        std::array<slang::CompilerOptionEntry, 5> spirvConventionOptions = {
             IntegerOption(slang::CompilerOptionName::VulkanInvertY, 1),
-            IntegerOption(slang::CompilerOptionName::VulkanUseDxPositionW, 1)
+            IntegerOption(slang::CompilerOptionName::VulkanUseDxPositionW, 1),
+            IntegerPairOption(slang::CompilerOptionName::VulkanBindShiftAll,
+                2, 100),
+            IntegerPairOption(slang::CompilerOptionName::VulkanBindShiftAll,
+                0, 200),
+            IntegerPairOption(slang::CompilerOptionName::VulkanBindShiftAll,
+                1, 300)
         };
         for (PortableShaderTarget target : request.Targets)
         {
@@ -921,13 +960,26 @@ namespace Engine
                     detail.empty() ? reflectionError : detail + ": " + reflectionError);
                 return package;
             }
+            if (target == PortableShaderTarget::Spirv
+                && !NormalizeSpirvBindings(targetReflections[static_cast<size_t>(targetIndex)], reflectionError))
+            {
+                AddDiagnostic(package, request, TargetName(target), reflectionError);
+                return package;
+            }
         }
 
         for (size_t targetIndex = 1; targetIndex < targetReflections.size(); ++targetIndex)
         {
             if (!SameReflection(targetReflections[0], targetReflections[targetIndex]))
             {
-                AddDiagnostic(package, request, "", "requested target program/entry-point reflections differ semantically");
+                std::ostringstream mismatch;
+                mismatch << "requested target program/entry-point reflections differ semantically; first=";
+                for (const PortableShaderBinding& binding : targetReflections[0].Bindings)
+                    mismatch << '[' << binding.Name << ':' << binding.Kind << binding.Register << ",space" << binding.Space << ']';
+                mismatch << "; other=";
+                for (const PortableShaderBinding& binding : targetReflections[targetIndex].Bindings)
+                    mismatch << '[' << binding.Name << ':' << binding.Kind << binding.Register << ",space" << binding.Space << ']';
+                AddDiagnostic(package, request, "", mismatch.str());
                 return package;
             }
         }

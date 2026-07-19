@@ -8,6 +8,7 @@
 #include "Engine/Assets/AssetRegistry.h"
 #include "Engine/Assets/MeshArtifact.h"
 #include "Engine/RHI/NVRHI/NVRHID3D12Device.h"
+#include "Engine/RHI/TextureBindingTable.h"
 #include "Engine/RenderGraph/RenderGraph.h"
 
 #include <algorithm>
@@ -132,6 +133,8 @@ namespace Engine
             {
                 Log::Error("Vulkan RHI texture-upload smoke failed"); m_VulkanContext->Shutdown(); m_VulkanContext.reset(); return false;
             }
+            if (args.HasFlag("--rhi-sampled-table-smoke") && !RunRHISampledTextureTableSmoke(*m_VulkanContext->GetRHIDevice(), "Vulkan"))
+            { Log::Error("Vulkan RHI sampled-table smoke failed"); m_VulkanContext->Shutdown(); m_VulkanContext.reset(); return false; }
             if (args.HasFlag("--render-graph-execution-smoke") && !RunRenderGraphExecutionSmoke(*m_VulkanContext->GetRHIDevice(), "Vulkan"))
             {
                 Log::Error("Vulkan render-graph execution smoke failed"); m_VulkanContext->Shutdown(); m_VulkanContext.reset(); return false;
@@ -225,6 +228,8 @@ namespace Engine
             {
                 Log::Error("D3D12 RHI texture-upload smoke failed"); m_Device.reset(); return false;
             }
+            if (args.HasFlag("--rhi-sampled-table-smoke") && !RunRHISampledTextureTableSmoke(*m_Device, "D3D12"))
+            { Log::Error("D3D12 RHI sampled-table smoke failed"); m_Device.reset(); return false; }
             if (args.HasFlag("--render-graph-execution-smoke") && !RunRenderGraphExecutionSmoke(*m_Device, "D3D12"))
             {
                 Log::Error("D3D12 render-graph execution smoke failed"); return false;
@@ -1172,6 +1177,105 @@ namespace Engine
             ", bytes=", bytesMatch ? "pass" : "fail",
             ", result=", passed ? "pass" : "fail");
         return passed;
+    }
+
+    bool NVRHIRenderBackend::RunRHISampledTextureTableSmoke(RHI::Device& device, std::string_view backendName)
+    {
+        constexpr u32 width = 32, height = 24, tableCapacity = 2;
+        const bool vulkan = device.GetCapabilities().ActiveBackend == RHI::Backend::NVRHIVulkan;
+        struct Vertex { float Position[3]; float Color[3]; float UV[2]; };
+        struct Constants { float ViewProjection[16]; };
+        const std::array<Vertex, 3> vertices {{{ { -0.7f, -0.6f, 0.5f }, {}, { 0.0f, 1.0f } }, { { 0.7f, -0.6f, 0.5f }, {}, { 1.0f, 1.0f } }, { { 0.0f, 0.7f, 0.5f }, {}, { 0.5f, 0.0f } } }};
+        const std::array<u16, 3> indices {{ 0, 1, 2 }};
+        const Constants constants {{ 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f }};
+        const std::string source = R"(
+cbuffer ViewportConstants : register(b0, space0) { row_major float4x4 ViewProjection; };
+Texture2D ReadOnlyTextures[2] : register(t0, space1);
+SamplerState ReadOnlySamplers[2] : register(s0, space1);
+struct VertexInput { float3 Position : POSITION; float3 Color : COLOR; float2 UV : TEXCOORD; };
+struct PixelInput { float4 Position : SV_Position; float2 UV : TEXCOORD; };
+PixelInput VSMain(VertexInput input) { PixelInput output; output.Position = mul(float4(input.Position, 1.0), ViewProjection); output.UV = input.UV; return output; }
+float4 PSMain(PixelInput input) : SV_Target { return ReadOnlyTextures[1].SampleLevel(ReadOnlySamplers[1], input.UV, 0.0); }
+)";
+        auto makeRequest = [&source](RHI::ShaderStage stage, const char* entry)
+        {
+            PortableShaderRequest request;
+            request.SourceName = "RHIReadOnlySampledTableSmokeV1.slang"; request.Source = source; request.EntryPoint = entry; request.Stage = stage;
+#ifdef _WIN32
+            request.Targets = { PortableShaderTarget::Dxil, PortableShaderTarget::Spirv };
+            request.DownstreamCompilerPackageHash = GE_DXC_PACKAGE_SHA256;
+#else
+            request.Targets = { PortableShaderTarget::Spirv };
+#endif
+            request.CompilerIdentity = "Slang"; request.CompilerVersion = "2026.13.1"; request.CompilerPackageHash = GE_SLANG_PACKAGE_SHA256;
+            request.ExpectedLayout = {
+                { "ViewportConstants", 'b', 0, 0, stage, "ConstantBuffer", "struct{ViewProjection:float32x4x4:row-major@0}", 1, 64, 0, 0 },
+                { "ReadOnlySamplers", 's', 0, 1, stage, "SamplerState", "sampler", tableCapacity, 0, 0, 0 },
+                { "ReadOnlyTextures", 't', 0, 1, stage, "Texture2D", "float32x4", tableCapacity, 0, 1, 4 }
+            };
+            if (stage == RHI::ShaderStage::Vertex)
+                request.ExpectedVertexInputs = {{ "Position", "POSITION", 0, 0, "float32x3", 12, 1, 3 }, { "Color", "COLOR", 0, 1, "float32x3", 12, 1, 3 }, { "UV", "TEXCOORD", 0, 2, "float32x2", 8, 1, 2 }};
+            return request;
+        };
+        SlangShaderCompiler compiler(std::filesystem::path("output") / "cache" / "shaders");
+        const PortableShaderRequest vertexRequest = makeRequest(RHI::ShaderStage::Vertex, "VSMain");
+        const PortableShaderRequest pixelRequest = makeRequest(RHI::ShaderStage::Pixel, "PSMain");
+        const PortableShaderPackage vertexPackage = compiler.Compile(vertexRequest);
+        const PortableShaderPackage pixelPackage = compiler.Compile(pixelRequest);
+        for (const PortableShaderDiagnostic& diagnostic : vertexPackage.Diagnostics)
+            Log::Error("RHIReadOnlySampledTableSmokeV1 vertex diagnostic: ", diagnostic.Target, ": ", diagnostic.Message);
+        for (const PortableShaderDiagnostic& diagnostic : pixelPackage.Diagnostics)
+            Log::Error("RHIReadOnlySampledTableSmokeV1 pixel diagnostic: ", diagnostic.Target, ": ", diagnostic.Message);
+        std::string validationError;
+        const bool packages = PortableShaderContract::ValidatePackage(vertexRequest, vertexPackage, validationError)
+            && PortableShaderContract::ValidatePackage(pixelRequest, pixelPackage, validationError);
+        RHI::ShaderDescription vs; vs.DebugName = "RHIReadOnlySampledTableSmokeV1 VS"; vs.SourceName = vertexRequest.SourceName; vs.EntryPoint = vulkan ? "main" : "VSMain"; vs.Stage = RHI::ShaderStage::Vertex; vs.BinaryFormat = vulkan ? RHI::ShaderBinaryFormat::Spirv : RHI::ShaderBinaryFormat::Dxil; vs.Binary = vulkan ? vertexPackage.Spirv : vertexPackage.Dxil; vs.Reflection = vertexPackage.Reflection;
+        RHI::ShaderDescription ps; ps.DebugName = "RHIReadOnlySampledTableSmokeV1 PS"; ps.SourceName = pixelRequest.SourceName; ps.EntryPoint = vulkan ? "main" : "PSMain"; ps.Stage = RHI::ShaderStage::Pixel; ps.BinaryFormat = vulkan ? RHI::ShaderBinaryFormat::Spirv : RHI::ShaderBinaryFormat::Dxil; ps.Binary = vulkan ? pixelPackage.Spirv : pixelPackage.Dxil; ps.Reflection = pixelPackage.Reflection;
+        Scope<RHI::Shader> vertexShader = packages ? device.CreateShader(vs) : nullptr;
+        Scope<RHI::Shader> pixelShader = packages ? device.CreateShader(ps) : nullptr;
+        RHI::PipelineDescription pipelineDescription; pipelineDescription.DebugName = "RHIReadOnlySampledTableSmokeV1 Pipeline"; pipelineDescription.VertexShader = vertexShader.get(); pipelineDescription.PixelShader = pixelShader.get();
+        pipelineDescription.VertexInputs = {{ "POSITION", 0, RHI::Format::R32G32B32Float, 0, offsetof(Vertex, Position) }, { "COLOR", 0, RHI::Format::R32G32B32Float, 0, offsetof(Vertex, Color) }, { "TEXCOORD", 0, RHI::Format::R32G32Float, 0, offsetof(Vertex, UV) }};
+        pipelineDescription.ConstantBufferBindings = {{ 0, 0, RHI::ShaderStage::AllGraphics }}; pipelineDescription.SampledTextureTable = RHI::SampledTextureTableBinding { tableCapacity }; pipelineDescription.ColorFormat = RHI::Format::R8G8B8A8Unorm; pipelineDescription.DepthFormat = RHI::Format::D32Float; pipelineDescription.DepthTestEnable = false; pipelineDescription.DepthWriteEnable = false; pipelineDescription.RasterCullMode = RHI::CullMode::None;
+        Scope<RHI::Pipeline> pipeline = vertexShader && pixelShader ? device.CreatePipeline(pipelineDescription) : nullptr;
+        auto createBuffer = [&device](const char* name, u64 size, u32 stride, RHI::BufferUsage usage) { RHI::BufferDescription d; d.DebugName = name; d.SizeBytes = size; d.StrideBytes = stride; d.Usage = static_cast<RHI::BufferUsage>(static_cast<u32>(usage) | static_cast<u32>(RHI::BufferUsage::CopyDest)); return device.CreateBuffer(d); };
+        Scope<RHI::Buffer> vertexBuffer = createBuffer("RHIReadOnlySampledTableSmokeV1 Vertices", sizeof(vertices), sizeof(Vertex), RHI::BufferUsage::Vertex);
+        Scope<RHI::Buffer> indexBuffer = createBuffer("RHIReadOnlySampledTableSmokeV1 Indices", sizeof(indices), sizeof(u16), RHI::BufferUsage::Index);
+        Scope<RHI::Buffer> constantBuffer = createBuffer("RHIReadOnlySampledTableSmokeV1 Constants", sizeof(constants), 0, RHI::BufferUsage::Constant);
+        auto createSampledTexture = [&device](const char* name, const std::array<u8, 4>& pixel) -> Ref<RHI::Texture>
+        {
+            RHI::TextureDescription description; description.DebugName = name; description.Extent = { 1, 1 }; description.TextureFormat = RHI::Format::R8G8B8A8Unorm; description.Usage = static_cast<RHI::TextureUsage>(static_cast<u32>(RHI::TextureUsage::CopyDest) | static_cast<u32>(RHI::TextureUsage::ShaderResource)); description.InitialState = RHI::ResourceState::CopyDest;
+            Scope<RHI::Texture> texture = device.CreateTexture(description); if (!texture) return nullptr;
+            const Ref<std::vector<u8>> bytes = CreateRef<std::vector<u8>>(pixel.begin(), pixel.end());
+            if (!device.UploadTexture(*texture, { { 1, 1 }, RHI::Format::R8G8B8A8Unorm, 4, bytes })) return nullptr;
+            return Ref<RHI::Texture>(texture.release());
+        };
+        const Ref<RHI::Texture> errorTexture = createSampledTexture("RHIReadOnlySampledTableSmokeV1 Error", {{ 255, 0, 255, 255 }});
+        const Ref<RHI::Texture> sampledTexture = createSampledTexture("RHIReadOnlySampledTableSmokeV1 Sample", {{ 51, 102, 204, 255 }});
+        Scope<RHI::TextureBindingTable> table = errorTexture ? RHI::TextureBindingTable::Create(device, { tableCapacity, errorTexture, RHI::TextureSampler::PointClamp }) : nullptr;
+        const RHI::TextureBindingHandle sampledHandle = table && sampledTexture ? table->Allocate(sampledTexture, RHI::TextureSampler::LinearClamp) : RHI::TextureBindingHandle {};
+        RHI::TextureDescription colorDescription; colorDescription.DebugName = "RHIReadOnlySampledTableSmokeV1 Color"; colorDescription.Extent = { width, height }; colorDescription.TextureFormat = RHI::Format::R8G8B8A8Unorm; colorDescription.Usage = static_cast<RHI::TextureUsage>(static_cast<u32>(RHI::TextureUsage::RenderTarget) | static_cast<u32>(RHI::TextureUsage::CopySource));
+        RHI::TextureDescription depthDescription = colorDescription; depthDescription.DebugName = "RHIReadOnlySampledTableSmokeV1 Depth"; depthDescription.TextureFormat = RHI::Format::D32Float; depthDescription.Usage = RHI::TextureUsage::DepthStencil;
+        Scope<RHI::Texture> color = device.CreateTexture(colorDescription); Scope<RHI::Texture> depth = device.CreateTexture(depthDescription);
+        const bool uploads = vertexBuffer && indexBuffer && constantBuffer && sampledHandle.Index == 1
+            && device.UploadBuffer(*vertexBuffer, vertices.data(), sizeof(vertices)) && device.UploadBuffer(*indexBuffer, indices.data(), sizeof(indices)) && device.UploadBuffer(*constantBuffer, &constants, sizeof(constants));
+        Scope<RHI::CommandList> list = uploads && pipeline && table && color && depth ? device.CreateCommandList(RHI::QueueType::Graphics, "RHIReadOnlySampledTableSmokeV1") : nullptr;
+        RHI::ViewportClear clear; clear.Color[0] = 0.04f; clear.Color[1] = 0.05f; clear.Color[2] = 0.06f; clear.Color[3] = 1.0f;
+        const bool recording = list && list->Begin() && list->BindViewportOutputs(*color, depth.get())
+            && list->TransitionTexture(*color, RHI::ResourceState::RenderTarget)
+            && list->TransitionTexture(*depth, RHI::ResourceState::DepthWrite)
+            && list->ClearViewportOutputs(clear)
+            && list->TransitionTexture(*color, RHI::ResourceState::RenderTarget)
+            && list->TransitionTexture(*depth, RHI::ResourceState::DepthWrite);
+        bool bound = false;
+        if (recording) { list->SetGraphicsPipeline(*pipeline); list->SetViewport({ 0.0f, 0.0f, static_cast<float>(width), static_cast<float>(height), 0.0f, 1.0f }); list->SetScissorRect({ 0, 0, static_cast<int>(width), static_cast<int>(height) }); list->SetVertexBuffer(0, *vertexBuffer); list->SetIndexBuffer(*indexBuffer, RHI::IndexFormat::Uint16); list->SetGraphicsConstantBuffer(0, *constantBuffer); bound = list->BindGraphicsSampledTextureTable(*table); if (bound) list->DrawIndexed(3, 1, 0, 0, 0); }
+        const bool submitted = recording && bound && list->TransitionTexture(*color, RHI::ResourceState::CopySource) && list->End() && device.SubmitAndWait(*list);
+        RHI::TextureReadback readback; const bool read = submitted && device.ReadbackTexture(*color, readback);
+        const size_t center = read ? static_cast<size_t>(12) * readback.RowPitchBytes + 16u * 4u : 0;
+        const std::array<u8, 4> actual = read && readback.Data.size() >= center + 4
+            ? std::array<u8, 4> {{ readback.Data[center], readback.Data[center + 1], readback.Data[center + 2], readback.Data[center + 3] }} : std::array<u8, 4> {};
+        const bool sampled = read && readback.Data.size() >= center + 4 && std::abs(static_cast<int>(readback.Data[center]) - 51) <= 2 && std::abs(static_cast<int>(readback.Data[center + 1]) - 102) <= 2 && std::abs(static_cast<int>(readback.Data[center + 2]) - 204) <= 2 && readback.Data[center + 3] == 255;
+        Log::Info("RHIReadOnlySampledTableSmokeV1 backend=", backendName, ", package=", packages ? "pass" : "fail", ", pipeline=", pipeline ? "pass" : "fail", ", capacity=", tableCapacity, ", bind=", bound ? "pass" : "fail", ", submit=", submitted ? "pass" : "fail", ", readback=", read ? "pass" : "fail", ", sampledPixel=", sampled ? "pass" : "fail", ", actual=", static_cast<u32>(actual[0]), ",", static_cast<u32>(actual[1]), ",", static_cast<u32>(actual[2]), ",", static_cast<u32>(actual[3]), ", result=", sampled ? "pass" : "fail", ", validation=", validationError);
+        return sampled;
     }
 
     bool NVRHIRenderBackend::RunRenderGraphExecutionSmoke(RHI::Device& device, std::string_view backendName)

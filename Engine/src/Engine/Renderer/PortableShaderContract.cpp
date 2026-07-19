@@ -181,9 +181,9 @@ namespace Engine
         bool IsValidCachedPackage(const PortableShaderPackage& package)
         {
             if (package.Version != 2 || !package.Succeeded()
-                || package.Conventions.Version != 1
+                || package.Conventions.Version != 2
                 || package.Conventions.Coordinates != "RightHanded"
-                || package.Conventions.BindingPolicy != "D3DRegisterSpace"
+                || package.Conventions.BindingPolicy != "D3DRegisterSpaceVulkanClassOffsets0_100_200_300"
                 || !package.Conventions.RowMajor
                 || !package.Conventions.ZeroToOneDepth
                 || !package.Conventions.VulkanYFlip
@@ -400,9 +400,9 @@ namespace Engine
             error = "source, entry point, and stage are required";
             return false;
         }
-        if (request.Conventions.Version != 1
+        if (request.Conventions.Version != 2
             || request.Conventions.Coordinates != "RightHanded"
-            || request.Conventions.BindingPolicy != "D3DRegisterSpace"
+            || request.Conventions.BindingPolicy != "D3DRegisterSpaceVulkanClassOffsets0_100_200_300"
             || !request.Conventions.RowMajor
             || !request.Conventions.ZeroToOneDepth
             || !request.Conventions.VulkanYFlip

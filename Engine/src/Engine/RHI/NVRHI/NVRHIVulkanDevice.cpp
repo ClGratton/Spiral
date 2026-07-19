@@ -4,6 +4,7 @@
 
 #include "Engine/Core/Log.h"
 #include "Engine/RHI/SubmissionDependency.h"
+#include "Engine/RHI/TextureBindingTable.h"
 
 #if defined(GE_HAS_NVRHI_VULKAN)
     #include <nvrhi/nvrhi.h>
@@ -199,11 +200,12 @@ namespace Engine::RHI
         class VulkanPipeline final : public Pipeline
         {
         public:
-            VulkanPipeline(PipelineDescription description, nvrhi::InputLayoutHandle inputLayout, nvrhi::BindingLayoutHandle bindings, nvrhi::ShaderHandle vertex, nvrhi::ShaderHandle pixel)
-                : m_Description(std::move(description)), m_InputLayout(std::move(inputLayout)), m_Bindings(std::move(bindings)), m_Vertex(std::move(vertex)), m_Pixel(std::move(pixel)) {}
+            VulkanPipeline(PipelineDescription description, nvrhi::InputLayoutHandle inputLayout, nvrhi::BindingLayoutHandle bindings, nvrhi::BindingLayoutHandle tableBindings, nvrhi::ShaderHandle vertex, nvrhi::ShaderHandle pixel)
+                : m_Description(std::move(description)), m_InputLayout(std::move(inputLayout)), m_Bindings(std::move(bindings)), m_TableBindings(std::move(tableBindings)), m_Vertex(std::move(vertex)), m_Pixel(std::move(pixel)) {}
             const PipelineDescription& GetDescription() const override { return m_Description; }
             nvrhi::IInputLayout* InputLayout() const { return m_InputLayout; }
             nvrhi::IBindingLayout* Bindings() const { return m_Bindings; }
+            nvrhi::IBindingLayout* TableBindings() const { return m_TableBindings; }
             nvrhi::IGraphicsPipeline* GetOrCreateNative(nvrhi::IDevice* device, const nvrhi::FramebufferInfo& framebufferInfo)
             {
                 if (m_NativePipeline && m_FramebufferInfo == framebufferInfo)
@@ -213,18 +215,22 @@ namespace Engine::RHI
                 nvrhi::GraphicsPipelineDesc pipeline;
                 pipeline.setPrimType(nvrhi::PrimitiveType::TriangleList).setInputLayout(m_InputLayout)
                     .setVertexShader(m_Vertex).setPixelShader(m_Pixel).addBindingLayout(m_Bindings);
+                if (m_TableBindings) pipeline.addBindingLayout(m_TableBindings);
                 pipeline.renderState.rasterState.setCullNone().setFrontCounterClockwise(false);
                 pipeline.renderState.depthStencilState.depthTestEnable = m_Description.DepthTestEnable;
                 pipeline.renderState.depthStencilState.depthWriteEnable = m_Description.DepthWriteEnable;
                 m_NativePipeline = device->createGraphicsPipeline(pipeline, framebufferInfo);
                 if (m_NativePipeline)
                     m_FramebufferInfo = framebufferInfo;
+                else
+                    Log::Error("Vulkan native graphics pipeline creation failed: ", m_Description.DebugName);
                 return m_NativePipeline;
             }
         private:
             PipelineDescription m_Description;
             nvrhi::InputLayoutHandle m_InputLayout;
             nvrhi::BindingLayoutHandle m_Bindings;
+            nvrhi::BindingLayoutHandle m_TableBindings;
             nvrhi::ShaderHandle m_Vertex;
             nvrhi::ShaderHandle m_Pixel;
             nvrhi::GraphicsPipelineHandle m_NativePipeline;
@@ -275,10 +281,11 @@ namespace Engine::RHI
                 std::function<QueueType(QueueType)> resolveQueue,
                 std::function<u32(QueueType)> queueFamily,
                 std::function<bool(const Buffer*, QueueType)> canUseBuffer,
-                std::function<bool(const Texture*, QueueType)> canUseTexture)
+                std::function<bool(const Texture*, QueueType)> canUseTexture,
+                Device* ownerDevice)
                 : m_QueueType(queueType), m_Name(std::move(name)), m_List(std::move(list)), m_Device(device),
                 m_QueryCompletion(std::move(queryCompletion)), m_TimestampRetirements(timestampRetirements),
-                m_OwnershipTracker(ownershipTracker), m_TextureOwnershipTracker(textureOwnershipTracker), m_ResolveQueue(std::move(resolveQueue)), m_QueueFamily(std::move(queueFamily)), m_CanUseBuffer(std::move(canUseBuffer)), m_CanUseTexture(std::move(canUseTexture)) {}
+                m_OwnershipTracker(ownershipTracker), m_TextureOwnershipTracker(textureOwnershipTracker), m_ResolveQueue(std::move(resolveQueue)), m_QueueFamily(std::move(queueFamily)), m_CanUseBuffer(std::move(canUseBuffer)), m_CanUseTexture(std::move(canUseTexture)), m_OwnerDevice(ownerDevice) {}
             QueueType GetQueueType() const override { return m_QueueType; }
             bool Begin() override
             {
@@ -298,6 +305,13 @@ namespace Engine::RHI
                 m_TimestampTransactions.clear();
                 m_PublishedTimestampStates.clear();
                 m_TextureOwnershipOperations.clear();
+                m_Pipeline = nullptr;
+                m_BindingSet = nullptr;
+                m_TableBindingSet = nullptr;
+                m_ConstantBuffer = nullptr;
+                m_TextureTable = nullptr;
+                m_TableSamplers.clear();
+                m_BoundTableTextures.clear();
                 m_State = State::Recording;
                 return true;
             }
@@ -450,14 +464,62 @@ namespace Engine::RHI
                 m_OwnershipOperations.push_back(operation);
                 return true;
             }
-            void SetGraphicsPipeline(Pipeline& pipeline) override { m_Pipeline = dynamic_cast<VulkanPipeline*>(&pipeline); }
+            void SetGraphicsPipeline(Pipeline& pipeline) override
+            {
+                m_Pipeline = dynamic_cast<VulkanPipeline*>(&pipeline);
+                m_BindingSet = nullptr;
+                m_TableBindingSet = nullptr;
+                m_ConstantBuffer = nullptr;
+                m_TextureTable = nullptr;
+                m_TableSamplers.clear();
+                m_BoundTableTextures.clear();
+            }
             void SetGraphicsConstantBuffer(u32 rootParameterIndex, Buffer& buffer) override
             {
                 auto* native = dynamic_cast<VulkanBuffer*>(&buffer);
                 if (!m_Pipeline || !native || rootParameterIndex != 0 || !CanUseBuffer(&buffer)) { m_BindingSet = nullptr; return; }
+                m_ConstantBuffer = native;
                 nvrhi::BindingSetDesc bindings;
                 bindings.bindings.push_back(nvrhi::BindingSetItem::ConstantBuffer(rootParameterIndex, native->Native()));
                 m_BindingSet = m_Device->createBindingSet(bindings, m_Pipeline->Bindings());
+            }
+            bool BindGraphicsSampledTextureTable(TextureBindingTable& table) override
+            {
+                if (m_State != State::Recording || !m_Pipeline || !m_OwnerDevice
+                    || !m_Pipeline->GetDescription().SampledTextureTable
+                    || !IsValidSampledTextureTablePipeline(m_Pipeline->GetDescription())
+                    || m_Pipeline->GetDescription().SampledTextureTable->Capacity != table.GetCapacity()
+                    || !table.IsOwnedBy(*m_OwnerDevice) || !m_Pipeline->TableBindings())
+                    return false;
+                nvrhi::BindingSetDesc tableBindings;
+                std::vector<nvrhi::SamplerHandle> samplers;
+                std::vector<Ref<Texture>> retained;
+                samplers.reserve(table.GetCapacity());
+                retained.reserve(table.GetCapacity());
+                for (u32 index = 0; index < table.GetCapacity(); ++index)
+                {
+                    const TextureBindingView view = table.ResolvePublishedSlot(index);
+                    auto* texture = dynamic_cast<VulkanTexture*>(view.TextureResource.get());
+                    if (!texture || !CanUseTexture(texture) || texture->GetCurrentState() != ResourceState::ShaderResource)
+                        return false;
+                    nvrhi::SamplerDesc samplerDescription;
+                    const bool point = view.Sampler == TextureSampler::PointClamp || view.Sampler == TextureSampler::PointWrap;
+                    const bool wrap = view.Sampler == TextureSampler::LinearWrap || view.Sampler == TextureSampler::PointWrap;
+                    samplerDescription.setAllFilters(!point).setAllAddressModes(wrap ? nvrhi::SamplerAddressMode::Wrap : nvrhi::SamplerAddressMode::Clamp);
+                    nvrhi::SamplerHandle sampler = m_Device->createSampler(samplerDescription);
+                    if (!sampler) return false;
+                    tableBindings.bindings.push_back(nvrhi::BindingSetItem::Texture_SRV(0, texture->Native()).setArrayElement(index));
+                    tableBindings.bindings.push_back(nvrhi::BindingSetItem::Sampler(0, sampler).setArrayElement(index));
+                    samplers.push_back(sampler);
+                    retained.push_back(view.TextureResource);
+                }
+                nvrhi::BindingSetHandle bindingSet = m_Device->createBindingSet(tableBindings, m_Pipeline->TableBindings());
+                if (!bindingSet) return false;
+                m_TableBindingSet = std::move(bindingSet);
+                m_TableSamplers = std::move(samplers);
+                m_BoundTableTextures = std::move(retained);
+                m_TextureTable = &table;
+                return true;
             }
             void SetViewport(const Viewport& viewport) override { m_Viewport = viewport; }
             void SetScissorRect(const ScissorRect& rect) override { m_Scissor = rect; }
@@ -493,6 +555,8 @@ namespace Engine::RHI
                 state.setPipeline(nativePipeline).setFramebuffer(m_Framebuffer).setViewport(viewport).addBindingSet(m_BindingSet)
                     .addVertexBuffer(nvrhi::VertexBufferBinding().setBuffer(m_Vertex->Native()).setSlot(0).setOffset(0))
                     .setIndexBuffer(nvrhi::IndexBufferBinding().setBuffer(m_Index->Native()).setFormat(m_IndexFormat == IndexFormat::Uint16 ? nvrhi::Format::R16_UINT : nvrhi::Format::R32_UINT).setOffset(0));
+                if (m_Pipeline->GetDescription().SampledTextureTable && !m_TableBindingSet) return;
+                if (m_TableBindingSet) state.addBindingSet(m_TableBindingSet);
                 m_List->setGraphicsState(state);
                 m_List->drawIndexed(nvrhi::DrawArguments().setVertexCount(indexCount).setInstanceCount(instanceCount).setStartIndexLocation(startIndex).setStartVertexLocation(0).setStartInstanceLocation(startInstance));
             }
@@ -717,6 +781,12 @@ namespace Engine::RHI
             nvrhi::IDevice* m_Device = nullptr;
             nvrhi::FramebufferHandle m_Framebuffer;
             nvrhi::BindingSetHandle m_BindingSet;
+            nvrhi::BindingSetHandle m_TableBindingSet;
+            VulkanBuffer* m_ConstantBuffer = nullptr;
+            TextureBindingTable* m_TextureTable = nullptr;
+            Device* m_OwnerDevice = nullptr;
+            std::vector<nvrhi::SamplerHandle> m_TableSamplers;
+            std::vector<Ref<Texture>> m_BoundTableTextures;
             VulkanTexture* m_Color = nullptr;
             VulkanTexture* m_Depth = nullptr;
             VulkanPipeline* m_Pipeline = nullptr;
@@ -883,15 +953,13 @@ namespace Engine::RHI
             }
             Scope<Pipeline> CreatePipeline(const PipelineDescription& description) override
             {
-                if (description.SampledTextureTable)
-                {
-                    Log::Error("Vulkan RHI sampled texture-table binding is not implemented by the native descriptor path");
-                    return nullptr;
-                }
+                if (description.SampledTextureTable && !IsValidSampledTextureTablePipeline(description))
+                { Log::Error("Vulkan sampled-table pipeline rejected by portable declaration/reflection validation"); return nullptr; }
                 auto* vertex = dynamic_cast<VulkanShader*>(description.VertexShader);
                 auto* pixel = dynamic_cast<VulkanShader*>(description.PixelShader);
                 if (!m_Device || description.Type != PipelineType::Graphics || !vertex || !pixel || description.VertexInputs.size() != 3 || description.ConstantBufferBindings.size() != 1
-                    || description.ConstantBufferBindings[0].ShaderRegister != 0 || description.ConstantBufferBindings[0].RegisterSpace != 0) return nullptr;
+                    || description.ConstantBufferBindings[0].ShaderRegister != 0 || description.ConstantBufferBindings[0].RegisterSpace != 0)
+                { Log::Error("Vulkan sampled-table pipeline rejected by core graphics declaration validation"); return nullptr; }
                 std::vector<nvrhi::VertexAttributeDesc> attributes;
                 for (const VertexInputAttribute& input : description.VertexInputs)
                 {
@@ -911,7 +979,27 @@ namespace Engine::RHI
                     .setBindingOffsets(bindingOffsets)
                     .addItem(nvrhi::BindingLayoutItem::ConstantBuffer(0));
                 nvrhi::BindingLayoutHandle bindings = m_Device->createBindingLayout(bindingLayout);
-                return inputLayout && bindings ? CreateScope<VulkanPipeline>(description, inputLayout, bindings, vertex->NativeHandle(), pixel->NativeHandle()) : nullptr;
+                nvrhi::BindingLayoutHandle tableBindings;
+                if (description.SampledTextureTable)
+                {
+                    nvrhi::VulkanBindingOffsets tableOffsets;
+                    tableOffsets.setShaderResourceOffset(description.SampledTextureTable->VulkanTextureBindingOffset)
+                        .setSamplerOffset(description.SampledTextureTable->VulkanSamplerBindingOffset);
+                    nvrhi::BindingLayoutDesc tableLayout;
+                    tableLayout.setVisibility(nvrhi::ShaderType::Pixel)
+                        .setRegisterSpaceAndDescriptorSet(description.SampledTextureTable->RegisterSpace)
+                        .setBindingOffsets(tableOffsets)
+                        .addItem(nvrhi::BindingLayoutItem::Texture_SRV(description.SampledTextureTable->TextureRegister).setSize(description.SampledTextureTable->Capacity))
+                        .addItem(nvrhi::BindingLayoutItem::Sampler(description.SampledTextureTable->SamplerRegister).setSize(description.SampledTextureTable->Capacity));
+                    tableBindings = m_Device->createBindingLayout(tableLayout);
+                }
+                if (!inputLayout || !bindings || (description.SampledTextureTable && !tableBindings))
+                {
+                    Log::Error("Vulkan sampled-table native layout creation failed: input=", inputLayout ? "yes" : "no",
+                        ", constants=", bindings ? "yes" : "no", ", table=", tableBindings ? "yes" : "no");
+                    return nullptr;
+                }
+                return CreateScope<VulkanPipeline>(description, inputLayout, bindings, tableBindings, vertex->NativeHandle(), pixel->NativeHandle());
             }
             Scope<QueryPool> CreateQueryPool(const QueryPoolDescription& description) override
             {
@@ -955,7 +1043,7 @@ namespace Engine::RHI
                     [this](QueueType requested) { return ResolveQueue(requested).Effective; },
                     [this](QueueType queue) { const QueueResolution resolution = ResolveQueue(queue); return resolution.Effective == QueueType::Compute ? m_QueueTopology.ComputeFamily : resolution.Effective == QueueType::Copy ? m_QueueTopology.CopyFamily : m_QueueTopology.GraphicsFamily; },
                     [this](const Buffer* resource, QueueType queue) { return CanUseBufferOnQueue(resource, queue); },
-                    [this](const Texture* resource, QueueType queue) { return CanUseTextureOnQueue(resource, queue); }) : nullptr;
+                    [this](const Texture* resource, QueueType queue) { return CanUseTextureOnQueue(resource, queue); }, this) : nullptr;
             }
             bool UploadBuffer(Buffer& destination, const void* data, u64 size, u64 offset) override
             {

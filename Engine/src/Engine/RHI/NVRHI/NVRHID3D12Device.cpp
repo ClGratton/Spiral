@@ -2,6 +2,7 @@
 
 #include "Engine/Core/Log.h"
 #include "Engine/RHI/SubmissionDependency.h"
+#include "Engine/RHI/TextureBindingTable.h"
 
 #if defined(GE_HAS_NVRHI_D3D12)
     #ifndef WIN32_LEAN_AND_MEAN
@@ -643,11 +644,14 @@ namespace Engine::RHI
                 return m_PipelineState.Get();
             }
 
+            u32 GetTextureTableRootParameterIndex() const { return static_cast<u32>(m_Description.ConstantBufferBindings.size()); }
+            u32 GetSamplerTableRootParameterIndex() const { return GetTextureTableRootParameterIndex() + 1; }
+
         private:
             bool CreateRootSignature(ID3D12Device* device)
             {
                 std::vector<D3D12_ROOT_PARAMETER> rootParameters;
-                rootParameters.reserve(m_Description.ConstantBufferBindings.size());
+                rootParameters.reserve(m_Description.ConstantBufferBindings.size() + (m_Description.SampledTextureTable ? 2u : 0u));
                 for (const RootConstantBufferBinding& binding : m_Description.ConstantBufferBindings)
                 {
                     D3D12_ROOT_PARAMETER rootParameter {};
@@ -656,6 +660,32 @@ namespace Engine::RHI
                     rootParameter.Descriptor.RegisterSpace = binding.RegisterSpace;
                     rootParameter.ShaderVisibility = ConvertShaderVisibility(binding.Visibility);
                     rootParameters.push_back(rootParameter);
+                }
+
+                std::array<D3D12_DESCRIPTOR_RANGE, 2> tableRanges {};
+                if (m_Description.SampledTextureTable)
+                {
+                    tableRanges[0].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+                    tableRanges[0].NumDescriptors = m_Description.SampledTextureTable->Capacity;
+                    tableRanges[0].BaseShaderRegister = m_Description.SampledTextureTable->TextureRegister;
+                    tableRanges[0].RegisterSpace = m_Description.SampledTextureTable->RegisterSpace;
+                    tableRanges[0].OffsetInDescriptorsFromTableStart = 0;
+                    D3D12_ROOT_PARAMETER textureTable {};
+                    textureTable.ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+                    textureTable.DescriptorTable = { 1, &tableRanges[0] };
+                    textureTable.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+                    rootParameters.push_back(textureTable);
+
+                    tableRanges[1].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER;
+                    tableRanges[1].NumDescriptors = m_Description.SampledTextureTable->Capacity;
+                    tableRanges[1].BaseShaderRegister = m_Description.SampledTextureTable->SamplerRegister;
+                    tableRanges[1].RegisterSpace = m_Description.SampledTextureTable->RegisterSpace;
+                    tableRanges[1].OffsetInDescriptorsFromTableStart = 0;
+                    D3D12_ROOT_PARAMETER samplerTable {};
+                    samplerTable.ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+                    samplerTable.DescriptorTable = { 1, &tableRanges[1] };
+                    samplerTable.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+                    rootParameters.push_back(samplerTable);
                 }
 
                 D3D12_ROOT_SIGNATURE_DESC rootSignatureDesc {};
@@ -859,7 +889,8 @@ namespace Engine::RHI
                 TimestampQueryRetirementQueue* timestampRetirements,
                 BufferOwnershipTracker* ownershipTracker,
                 TextureOwnershipTracker* textureOwnershipTracker,
-                std::function<QueueType(QueueType)> resolveQueue)
+                std::function<QueueType(QueueType)> resolveQueue,
+                Device* ownerDevice)
                 : m_QueueType(queueType)
                 , m_EffectiveQueueType(effectiveQueueType)
                 , m_CommandAllocator(std::move(commandAllocator))
@@ -872,6 +903,7 @@ namespace Engine::RHI
                 , m_OwnershipTracker(ownershipTracker)
                 , m_TextureOwnershipTracker(textureOwnershipTracker)
                 , m_ResolveQueue(std::move(resolveQueue))
+                , m_OwnerDevice(ownerDevice)
             {
             }
 
@@ -913,6 +945,10 @@ namespace Engine::RHI
                 m_PublishedTimestampStates.clear();
                 m_OwnershipOperations.clear();
                 m_TextureOwnershipOperations.clear();
+                m_ActivePipeline = nullptr;
+                m_SrvHeap.Reset();
+                m_SamplerHeap.Reset();
+                m_BoundTableTextures.clear();
                 return true;
             }
 
@@ -1248,6 +1284,10 @@ namespace Engine::RHI
                 m_CommandList->SetGraphicsRootSignature(nativePipeline->GetRootSignature());
                 m_CommandList->SetPipelineState(nativePipeline->GetPipelineState());
                 m_CommandList->IASetPrimitiveTopology(ConvertPrimitiveTopology(pipeline.GetDescription().Topology));
+                m_ActivePipeline = nativePipeline;
+                m_SrvHeap.Reset();
+                m_SamplerHeap.Reset();
+                m_BoundTableTextures.clear();
             }
 
             void SetGraphicsConstantBuffer(u32 rootParameterIndex, Buffer& buffer) override
@@ -1260,6 +1300,77 @@ namespace Engine::RHI
                     return;
 
                 m_CommandList->SetGraphicsRootConstantBufferView(rootParameterIndex, resource->GetGPUVirtualAddress());
+            }
+
+            bool BindGraphicsSampledTextureTable(TextureBindingTable& table) override
+            {
+                if (m_State != State::Recording || !m_CommandList || !m_Device || !m_OwnerDevice || !m_ActivePipeline
+                    || !m_ActivePipeline->GetDescription().SampledTextureTable
+                    || !IsValidSampledTextureTablePipeline(m_ActivePipeline->GetDescription())
+                    || m_ActivePipeline->GetDescription().SampledTextureTable->Capacity != table.GetCapacity()
+                    || !table.IsOwnedBy(*m_OwnerDevice))
+                    return false;
+
+                const u32 capacity = table.GetCapacity();
+                D3D12_DESCRIPTOR_HEAP_DESC srvHeapDescription {};
+                srvHeapDescription.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+                srvHeapDescription.NumDescriptors = capacity;
+                srvHeapDescription.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+                D3D12_DESCRIPTOR_HEAP_DESC samplerHeapDescription = srvHeapDescription;
+                samplerHeapDescription.Type = D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER;
+                ComPtr<ID3D12DescriptorHeap> srvHeap;
+                ComPtr<ID3D12DescriptorHeap> samplerHeap;
+                if (FAILED(m_Device->CreateDescriptorHeap(&srvHeapDescription, IID_PPV_ARGS(&srvHeap)))
+                    || FAILED(m_Device->CreateDescriptorHeap(&samplerHeapDescription, IID_PPV_ARGS(&samplerHeap))))
+                    return false;
+
+                const UINT srvIncrement = m_Device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+                const UINT samplerIncrement = m_Device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER);
+                D3D12_CPU_DESCRIPTOR_HANDLE srv = srvHeap->GetCPUDescriptorHandleForHeapStart();
+                D3D12_CPU_DESCRIPTOR_HANDLE sampler = samplerHeap->GetCPUDescriptorHandleForHeapStart();
+                std::vector<Ref<Texture>> retained;
+                retained.reserve(capacity);
+                for (u32 index = 0; index < capacity; ++index)
+                {
+                    const TextureBindingView view = table.ResolvePublishedSlot(index);
+                    auto* texture = dynamic_cast<NVRHID3D12Texture*>(view.TextureResource.get());
+                    if (!texture || !texture->GetResource() || !m_TextureOwnershipTracker
+                        || !m_TextureOwnershipTracker->CanUse(texture)
+                        || texture->GetTrackedState() != ResourceState::ShaderResource)
+                        return false;
+                    const TextureDescription& description = texture->GetDescription();
+                    const DXGI_FORMAT format = ConvertFormat(description.TextureFormat);
+                    if (format == DXGI_FORMAT_UNKNOWN || description.ArrayLayers != 1 || description.SampleCount != 1)
+                        return false;
+                    D3D12_SHADER_RESOURCE_VIEW_DESC srvDescription {};
+                    srvDescription.Format = format;
+                    srvDescription.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+                    srvDescription.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+                    srvDescription.Texture2D.MipLevels = description.MipLevels;
+                    m_Device->CreateShaderResourceView(texture->GetResource(), &srvDescription, srv);
+
+                    D3D12_SAMPLER_DESC samplerDescription {};
+                    const bool point = view.Sampler == TextureSampler::PointClamp || view.Sampler == TextureSampler::PointWrap;
+                    const bool wrap = view.Sampler == TextureSampler::LinearWrap || view.Sampler == TextureSampler::PointWrap;
+                    samplerDescription.Filter = point ? D3D12_FILTER_MIN_MAG_MIP_POINT : D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+                    samplerDescription.AddressU = samplerDescription.AddressV = samplerDescription.AddressW = wrap ? D3D12_TEXTURE_ADDRESS_MODE_WRAP : D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+                    samplerDescription.ComparisonFunc = D3D12_COMPARISON_FUNC_ALWAYS;
+                    samplerDescription.MaxLOD = D3D12_FLOAT32_MAX;
+                    samplerDescription.MaxAnisotropy = 1;
+                    m_Device->CreateSampler(&samplerDescription, sampler);
+                    retained.push_back(view.TextureResource);
+                    srv.ptr += srvIncrement;
+                    sampler.ptr += samplerIncrement;
+                }
+
+                ID3D12DescriptorHeap* heaps[] { srvHeap.Get(), samplerHeap.Get() };
+                m_CommandList->SetDescriptorHeaps(2, heaps);
+                m_CommandList->SetGraphicsRootDescriptorTable(m_ActivePipeline->GetTextureTableRootParameterIndex(), srvHeap->GetGPUDescriptorHandleForHeapStart());
+                m_CommandList->SetGraphicsRootDescriptorTable(m_ActivePipeline->GetSamplerTableRootParameterIndex(), samplerHeap->GetGPUDescriptorHandleForHeapStart());
+                m_SrvHeap = std::move(srvHeap);
+                m_SamplerHeap = std::move(samplerHeap);
+                m_BoundTableTextures = std::move(retained);
+                return true;
             }
 
             void SetViewport(const Viewport& viewport) override
@@ -1392,7 +1503,8 @@ namespace Engine::RHI
 
             void DrawIndexed(u32 indexCount, u32 instanceCount, u32 startIndex, int baseVertex, u32 startInstance) override
             {
-                if (m_CommandList)
+                if (m_CommandList && m_ActivePipeline
+                    && (!m_ActivePipeline->GetDescription().SampledTextureTable || (m_SrvHeap && m_SamplerHeap)))
                     m_CommandList->DrawIndexedInstanced(indexCount, instanceCount, startIndex, baseVertex, startInstance);
             }
 
@@ -1548,6 +1660,11 @@ namespace Engine::RHI
             ComPtr<ID3D12GraphicsCommandList> m_OwnedCommandList;
             ID3D12GraphicsCommandList* m_CommandList = nullptr;
             ID3D12Device* m_Device = nullptr;
+            Device* m_OwnerDevice = nullptr;
+            NVRHID3D12Pipeline* m_ActivePipeline = nullptr;
+            ComPtr<ID3D12DescriptorHeap> m_SrvHeap;
+            ComPtr<ID3D12DescriptorHeap> m_SamplerHeap;
+            std::vector<Ref<Texture>> m_BoundTableTextures;
             D3D12_CPU_DESCRIPTOR_HANDLE m_BoundColorRtv {};
             D3D12_CPU_DESCRIPTOR_HANDLE m_BoundDepthDsv {};
             std::string m_DebugName;
@@ -1740,11 +1857,7 @@ namespace Engine::RHI
 
             Scope<Pipeline> CreatePipeline(const PipelineDescription& description) override
             {
-                if (description.SampledTextureTable)
-                {
-                    Log::Error("D3D12 RHI sampled texture-table binding is not implemented by the native descriptor path");
-                    return nullptr;
-                }
+                if (description.SampledTextureTable && !IsValidSampledTextureTablePipeline(description)) return nullptr;
                 Scope<NVRHID3D12Pipeline> pipeline = CreateScope<NVRHID3D12Pipeline>(description);
                 if (!pipeline->Initialize(m_Device.Get()))
                     return nullptr;
@@ -1843,7 +1956,7 @@ namespace Engine::RHI
                 return CreateScope<NVRHID3D12CommandList>(queueType, effectiveQueue, std::move(allocator), std::move(commandList),
                     m_Device.Get(), std::string(debugName), [this](const CompletionToken& token) { return QueryCompletion(token); },
                     &m_TimestampRetirements, &m_BufferOwnership, &m_TextureOwnership,
-                    [this](QueueType requested) { return ResolveQueue(requested).Effective; });
+                    [this](QueueType requested) { return ResolveQueue(requested).Effective; }, this);
             }
 
             bool UploadBuffer(Buffer& destination, const void* sourceData, u64 sizeBytes, u64 destinationOffset) override

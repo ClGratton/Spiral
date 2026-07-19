@@ -68,6 +68,9 @@ namespace Engine::RHI
         // mutate publication or make a slot reusable.
         bool Retire(const CompletionToken& token);
         TextureBindingView Resolve(TextureBindingHandle handle) const;
+        // Native bounded-table realization can observe published slots but has
+        // no access to queued replacements/removals.
+        TextureBindingView ResolvePublishedSlot(u32 index) const;
         u32 GetPendingOperationCount() const;
 
     private:
