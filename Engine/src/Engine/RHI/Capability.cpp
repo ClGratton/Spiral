@@ -174,6 +174,7 @@ namespace Engine::RHI
             case DeviceFeature::BufferDeviceAddress: return "Buffer Device Address";
             case DeviceFeature::PlacedResources: return "Placed Resources";
             case DeviceFeature::AliasingBarriers: return "Aliasing Barriers";
+            case DeviceFeature::DescriptorIndexing: return "Descriptor Indexing";
             case DeviceFeature::Count: break;
         }
         return "Unknown";
@@ -199,6 +200,8 @@ namespace Engine::RHI
             case CapabilityPath::GpuTimestamps: return "GpuTimestamps";
             case CapabilityPath::PlacedAliasedTransient: return "PlacedAliasedTransient";
             case CapabilityPath::NonAliasedGpuRetiredPool: return "NonAliasedGpuRetiredPool";
+            case CapabilityPath::ReadOnlyBindlessDescriptorTable: return "ReadOnlyBindlessDescriptorTable";
+            case CapabilityPath::BoundedReadOnlyTextureTable: return "BoundedReadOnlyTextureTable";
             case CapabilityPath::Count: break;
         }
         return "Unknown";

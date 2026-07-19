@@ -7,6 +7,7 @@
 #include "Engine/RHI/SubmissionDependency.h"
 #include "Engine/RHI/BufferOwnership.h"
 #include "Engine/RHI/TextureOwnership.h"
+#include "Engine/RHI/TextureBindingTable.h"
 #include "Engine/RHI/NVRHI/NVRHID3D12Device.h"
 #include "Engine/RHI/NVRHI/VulkanQueueAdmission.h"
 #include "Engine/Renderer/CapabilityDiagnostics.h"
@@ -45,6 +46,7 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <unordered_map>
 #include <vector>
 
 namespace
@@ -5877,7 +5879,10 @@ float4 main(VertexInput input) : SV_Position
     class OwnershipTestTexture final : public Engine::RHI::Texture
     {
     public:
-        explicit OwnershipTestTexture(Engine::u64 ownerId, Engine::RHI::ResourceState state = Engine::RHI::ResourceState::CopyDest) : m_OwnerId(ownerId), m_State(state) {}
+        explicit OwnershipTestTexture(Engine::u64 ownerId, Engine::RHI::ResourceState state = Engine::RHI::ResourceState::CopyDest,
+            Engine::RHI::TextureDescription description = {}, Engine::Ref<Engine::u32> destructionCount = {})
+            : m_Description(std::move(description)), m_OwnerId(ownerId), m_State(state), m_DestructionCount(std::move(destructionCount)) {}
+        ~OwnershipTestTexture() override { if (m_DestructionCount) ++*m_DestructionCount; }
         const Engine::RHI::TextureDescription& GetDescription() const override { return m_Description; }
         Engine::u64 OwnerId() const { return m_OwnerId; }
         Engine::RHI::ResourceState State() const { return m_State; }
@@ -5885,6 +5890,7 @@ float4 main(VertexInput input) : SV_Position
         Engine::RHI::TextureDescription m_Description;
         Engine::u64 m_OwnerId;
         Engine::RHI::ResourceState m_State;
+        Engine::Ref<Engine::u32> m_DestructionCount;
     };
 
     class ForeignOwnershipTestBuffer final : public Engine::RHI::Buffer
@@ -5928,7 +5934,16 @@ float4 main(VertexInput input) : SV_Position
         bool UploadBuffer(Engine::RHI::Buffer&, const void*, Engine::u64, Engine::u64) override { return false; }
         bool ReadbackTexture(Engine::RHI::Texture&, Engine::RHI::TextureReadback&) override { return false; }
         Engine::RHI::CompletionToken Submit(Engine::RHI::CommandList&) override { return {}; }
-        Engine::RHI::CompletionStatus QueryCompletion(const Engine::RHI::CompletionToken&) override { return Engine::RHI::CompletionStatus::Invalid; }
+        Engine::RHI::CompletionStatus QueryCompletion(const Engine::RHI::CompletionToken& token) override
+        {
+            if (token.DeviceId != m_OwnerId) return Engine::RHI::CompletionStatus::Invalid;
+            const auto found = m_Completions.find(token.SubmissionId);
+            return found == m_Completions.end() ? Engine::RHI::CompletionStatus::Invalid : found->second;
+        }
+        void SetCompletion(Engine::RHI::CompletionToken token, Engine::RHI::CompletionStatus status)
+        {
+            if (token.DeviceId == m_OwnerId) m_Completions[token.SubmissionId] = status;
+        }
         bool WaitForCompletion(const Engine::RHI::CompletionToken&, Engine::u32) override { return false; }
         bool SubmitAndWait(Engine::RHI::CommandList&) override { return false; }
         void WaitIdle() override {}
@@ -5936,6 +5951,7 @@ float4 main(VertexInput input) : SV_Position
         Engine::RHI::DeviceDescription m_Description;
         Engine::RHI::DeviceCapabilities m_Capabilities;
         Engine::u64 m_OwnerId;
+        std::unordered_map<Engine::u64, Engine::RHI::CompletionStatus> m_Completions;
     };
 
     bool TestRhiResourceOwnershipContract()
@@ -5962,6 +5978,80 @@ float4 main(VertexInput input) : SV_Position
             && Expect(!first.QueryResourceState(static_cast<const Engine::RHI::Buffer*>(nullptr), observed)
                 && !first.QueryResourceState(static_cast<const Engine::RHI::Texture*>(nullptr), observed), "null resources are rejected")
             && Expect(!first.QueryResourceState(&unknownBuffer, observed) && !first.QueryResourceState(&unknownTexture, observed), "unknown states are rejected");
+    }
+
+    bool TestReadOnlyTextureBindingTableContract()
+    {
+        using namespace Engine::RHI;
+        TextureDescription sampled;
+        sampled.Usage = TextureUsage::ShaderResource;
+        TextureDescription writable = sampled;
+        writable.Usage = static_cast<TextureUsage>(static_cast<Engine::u32>(TextureUsage::ShaderResource) | static_cast<Engine::u32>(TextureUsage::RenderTarget));
+        const TextureSampler invalidSampler = static_cast<TextureSampler>(99);
+        OwnershipTestDevice device(101);
+        const Engine::Ref<Engine::u32> errorDestroyed = Engine::CreateRef<Engine::u32>(0);
+        const Engine::Ref<Engine::u32> firstDestroyed = Engine::CreateRef<Engine::u32>(0);
+        const Engine::Ref<Engine::u32> replacementDestroyed = Engine::CreateRef<Engine::u32>(0);
+        Engine::Ref<Texture> error = Engine::CreateRef<OwnershipTestTexture>(101, ResourceState::ShaderResource, sampled, errorDestroyed);
+        Engine::Ref<Texture> first = Engine::CreateRef<OwnershipTestTexture>(101, ResourceState::ShaderResource, sampled, firstDestroyed);
+        Engine::Ref<Texture> replacement = Engine::CreateRef<OwnershipTestTexture>(101, ResourceState::ShaderResource, sampled, replacementDestroyed);
+        Engine::Ref<Texture> second = Engine::CreateRef<OwnershipTestTexture>(101, ResourceState::ShaderResource, sampled);
+        const Engine::Ref<Texture> writableTexture = Engine::CreateRef<OwnershipTestTexture>(101, ResourceState::ShaderResource, writable);
+        const Engine::Ref<Texture> foreign = Engine::CreateRef<OwnershipTestTexture>(202, ResourceState::ShaderResource, sampled);
+        TextureBindingTableDescription description { 3, error, TextureSampler::PointClamp };
+        const bool invalidCreationRejected = !TextureBindingTable::Create(device, { 1, error, TextureSampler::LinearClamp })
+            && !TextureBindingTable::Create(device, { kMaximumReadOnlyTextureTableCapacity + 1, error, TextureSampler::LinearClamp })
+            && !TextureBindingTable::Create(device, { 3, error, invalidSampler });
+        Engine::Scope<TextureBindingTable> table = TextureBindingTable::Create(device, description);
+        description.ErrorTexture.reset();
+        DeviceCapabilities indexedCapabilities;
+        indexedCapabilities.GetFeature(DeviceFeature::DescriptorIndexing) = MakeCapabilityState(
+            true, true, true, false, "deterministic descriptor-indexing capability");
+        const TextureBindingHandle firstHandle = table ? table->Allocate(first, TextureSampler::LinearWrap) : TextureBindingHandle {};
+        const TextureBindingHandle secondHandle = table ? table->Allocate(second, TextureSampler::PointWrap) : TextureBindingHandle {};
+        TextureBindingView errorView = table ? table->Resolve({}) : TextureBindingView {};
+        error.reset();
+        const bool rejectsWithoutMutation = table && !table->Allocate(writableTexture, TextureSampler::LinearClamp).IsValid()
+            && !table->Allocate(foreign, TextureSampler::LinearClamp).IsValid()
+            && !table->Allocate(second, invalidSampler).IsValid() && table->GetPendingOperationCount() == 0;
+        const CompletionToken update { 101, 11 }, foreignToken { 202, 11 }, removal { 101, 12 };
+        device.SetCompletion(update, CompletionStatus::Incomplete);
+        const bool queuedUpdate = table && table->QueueUpdate(firstHandle, replacement, TextureSampler::PointClamp, update)
+            && !table->QueueRemoval(firstHandle, foreignToken) && !table->QueueUpdate(firstHandle, replacement, invalidSampler, update)
+            && table->Resolve(firstHandle).TextureResource == first
+            && !table->Retire(update) && table->GetPendingOperationCount() == 1;
+        first.reset();
+        replacement.reset();
+        const bool retainedWhilePending = *firstDestroyed == 0 && *replacementDestroyed == 0 && *errorDestroyed == 0;
+        device.SetCompletion(update, CompletionStatus::Complete);
+        const bool updateRetired = table && table->Retire(update) && *firstDestroyed == 1 && *replacementDestroyed == 0
+            && table->Resolve(firstHandle).TextureResource && table->Resolve(firstHandle).Sampler == TextureSampler::PointClamp;
+        device.SetCompletion(removal, CompletionStatus::Incomplete);
+        const bool queuedRemoval = table && table->QueueRemoval(firstHandle, removal) && !table->Allocate(second, TextureSampler::LinearClamp).IsValid();
+        device.SetCompletion(removal, CompletionStatus::Failed);
+        const bool removalRetired = table && table->Retire(removal) && *replacementDestroyed == 1;
+        Engine::Ref<Texture> reusedTexture = Engine::CreateRef<OwnershipTestTexture>(101, ResourceState::ShaderResource, sampled);
+        const TextureBindingHandle reused = table ? table->Allocate(reusedTexture, TextureSampler::LinearClamp) : TextureBindingHandle {};
+        const bool selectedBoundedFallback = table && table->GetSelectedPath() == CapabilityPath::BoundedReadOnlyTextureTable;
+        const bool errorViewWasRetained = errorView.IsError && errorView.TextureResource && errorView.Sampler == TextureSampler::PointClamp;
+        table.reset();
+        const bool errorRetainedByView = *errorDestroyed == 0 && errorView.TextureResource;
+        errorView = {};
+        const bool errorReleasedAfterView = *errorDestroyed == 1;
+        return Expect(selectedBoundedFallback,
+                "unimplemented descriptor indexing selects the declared bounded table fallback")
+            && Expect(SelectReadOnlyTextureTablePath(indexedCapabilities) == CapabilityPath::ReadOnlyBindlessDescriptorTable,
+                "the bindless path is selected only from the usable capability lifecycle")
+            && Expect(invalidCreationRejected, "below-minimum above-maximum and invalid-error-sampler table descriptions are rejected")
+            && Expect(firstHandle.IsValid() && secondHandle.IsValid(),
+                "allocation is deterministic and capacity includes the error slot")
+            && Expect(errorViewWasRetained && errorReleasedAfterView,
+                "invalid identities resolve through a retained exact-owned error texture")
+            && Expect(rejectsWithoutMutation, "writable foreign and invalid-sampler inputs are rejected without table mutation")
+            && Expect(queuedUpdate && retainedWhilePending && updateRetired, "table retains old and replacement resources until its exact GPU token retires")
+            && Expect(queuedRemoval && removalRetired && reused.Index == firstHandle.Index && reused.Generation != firstHandle.Generation,
+                "Complete and Failed retirement block reuse until the exact token and then advance generation")
+            && Expect(errorRetainedByView, "resolved views retain the error resource after caller and table release");
     }
 
     class BufferOwnershipTestBuffer final : public Engine::RHI::Buffer
@@ -6361,6 +6451,7 @@ int main(int argc, char** argv)
         FAST_TEST("RHI submission dependencies reject invalid token graphs", TestRhiSubmissionDependencyValidation),
         FAST_TEST("RHI queue topology submits dependencies without premature publication", TestRhiQueueTopologyDependencySubmissionContract),
         FAST_TEST("RHI resource-state query rejects null foreign and unknown resources", TestRhiResourceOwnershipContract),
+        FAST_TEST("RHI read-only texture binding table preserves error and GPU-retired identities", TestReadOnlyTextureBindingTableContract),
         FAST_TEST("RHI buffer ownership lifecycle publishes only accepted exact-token pairs", TestRhiBufferOwnershipLifecycleContract),
         FAST_TEST("RHI buffer ownership recovery and adapter seams preserve fallback semantics", TestRhiBufferOwnershipRecoveryAndAdapterSeams),
         FAST_TEST("RHI texture ownership tracker preserves accepted-token pending publication", TestRhiTextureOwnershipLifecycleContract),

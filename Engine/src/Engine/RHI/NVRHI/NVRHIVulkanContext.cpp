@@ -306,6 +306,9 @@ namespace Engine::RHI
             m_Capabilities.GetFeature(DeviceFeature::AliasingBarriers) = MakeCapabilityState(
                 false, false, false, false,
                 "Vulkan alias-barrier translation is not implemented by the backend-neutral RHI");
+            m_Capabilities.GetFeature(DeviceFeature::DescriptorIndexing) = MakeCapabilityState(
+                false, false, false, false,
+                "Native descriptor-indexing translation is not implemented by the backend-neutral RHI");
 
             m_Capabilities.Fallbacks = m_SelectionFallbacks;
 

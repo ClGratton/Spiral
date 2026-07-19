@@ -30,6 +30,7 @@ namespace Engine::RHI
         BufferDeviceAddress,
         PlacedResources,
         AliasingBarriers,
+        DescriptorIndexing,
         Count
     };
 
@@ -57,6 +58,8 @@ namespace Engine::RHI
         GpuTimestamps,
         PlacedAliasedTransient,
         NonAliasedGpuRetiredPool,
+        ReadOnlyBindlessDescriptorTable,
+        BoundedReadOnlyTextureTable,
         Count
     };
 
