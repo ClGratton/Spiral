@@ -2,6 +2,8 @@
 
 Updated 2026-07-19. This is a recovery aid; `PLAN.md` remains the sole roadmap and checkbox authority. A new agent must begin with `AGENTS.md`, `PLAN.md`, `Docs/README.md`, `Docs/ROADMAP_GOVERNANCE.md`, `Docs/TESTING_STRATEGY.md`, `Docs/VERIFICATION.md`, and `Docs/Architecture/README.md`. For the next roadmap item, also read `Docs/Architecture/RHI_AND_LIGHTING_DECISIONS.md`, `Docs/Architecture/RENDERING_FEATURE_AND_PERFORMANCE_DECISIONS.md`, and the renderer/Core ownership files.
 
+The Profiler now displays a 240-frame rolling application-frametime graph directly below the current frame duration. It uses the existing editor timestep, preserves chronological order after the ring wraps, and scales to at least 33.333 ms while expanding for spikes. This user-authorized 3%-reserve edit was intentionally not built or runtime-validated; inspect the Profiler visually during the next normal Editor verification.
+
 ## Accepted Scene Mesh GPU Integration
 
 Phase 3D integration removes private prototype vertex/index buffers from the D3D12 and Vulkan Scene viewport paths. Each immutable raster instance resolves its stable mesh handle through the published resolver, acquires the exact-device cache bundle, issues every artifact primitive as `UInt32` with `BaseVertex = 0`, and uses its per-instance constant buffer. RenderGraph raster and direct byte-comparison reference paths receive the same selected draw list. Accepted graph frames retain constants, the replaceable selected pipeline, and bundle references until exact completion-token retirement; each cache clears only after device idle and retained-frame release. Missing/invalid resolver or cache results fail explicitly and never fall back to another mesh.

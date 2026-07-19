@@ -566,6 +566,9 @@ void EditorLayer::OnUpdate(Engine::Timestep timestep)
 {
     ++m_FrameCounter;
     m_LastFrameMs = timestep.GetMilliseconds();
+    m_FrameTimeHistory[m_FrameTimeHistoryOffset] = m_LastFrameMs;
+    m_FrameTimeHistoryOffset = (m_FrameTimeHistoryOffset + 1) % m_FrameTimeHistory.size();
+    m_FrameTimeHistoryCount = std::min(m_FrameTimeHistoryCount + 1, m_FrameTimeHistory.size());
     PublishFramePacingPolicy();
     PublishPresentationPolicy();
     RunPresentationPolicySmoke();
@@ -2043,6 +2046,16 @@ void EditorLayer::DrawProfilerPanel()
 
     ImGui::Text("Frame: %u", m_FrameCounter);
     ImGui::Text("Last frame: %.3f ms", m_LastFrameMs);
+    if (m_FrameTimeHistoryCount > 0)
+    {
+        const float graphMaximum = std::max(33.333f,
+            *std::max_element(m_FrameTimeHistory.begin(), m_FrameTimeHistory.end()) * 1.1f);
+        const int graphOffset = m_FrameTimeHistoryCount == m_FrameTimeHistory.size()
+            ? static_cast<int>(m_FrameTimeHistoryOffset) : 0;
+        ImGui::PlotLines("##FrameTimeHistory", m_FrameTimeHistory.data(),
+            static_cast<int>(m_FrameTimeHistoryCount), graphOffset, "Application frame time (ms)",
+            0.0f, graphMaximum, ImVec2(ImGui::GetContentRegionAvail().x, 90.0f));
+    }
     ImGui::Text("Workers: %u", Engine::JobSystem::Get().GetWorkerCount());
     ImGui::Separator();
     ImGui::Text("Renderer CPU: %.3f ms", timing.CpuMilliseconds);

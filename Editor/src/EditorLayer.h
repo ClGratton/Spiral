@@ -95,6 +95,9 @@ private:
 private:
     unsigned int m_FrameCounter = 0;
     float m_LastFrameMs = 0.0f;
+    std::array<float, 240> m_FrameTimeHistory {};
+    size_t m_FrameTimeHistoryCount = 0;
+    size_t m_FrameTimeHistoryOffset = 0;
     bool m_ShowDemoWindow = false;
     bool m_ResetDockLayout = true;
     bool m_CaptureViewportRequested = false;
