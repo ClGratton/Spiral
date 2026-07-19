@@ -24,6 +24,7 @@ sync_git_dependency() {
 
 include_nvrhi=false
 include_nvrhi_platform_headers=false
+include_ktx_software=false
 
 for arg in "$@"; do
     case "$arg" in
@@ -32,6 +33,9 @@ for arg in "$@"; do
             ;;
         --include-nvrhi-platform-headers)
             include_nvrhi_platform_headers=true
+            ;;
+        --include-ktx-software)
+            include_ktx_software=true
             ;;
     esac
 done
@@ -56,6 +60,26 @@ if [[ "$include_nvrhi_platform_headers" == true ]]; then
         "https://github.com/microsoft/DirectX-Headers.git" \
         "v1.717.0-preview" \
         "Vendor/DirectX-Headers"
+fi
+
+if [[ "$include_ktx_software" == true ]]; then
+    sync_git_dependency \
+        "KTX-Software" \
+        "https://github.com/KhronosGroup/KTX-Software.git" \
+        "4d6fc70eaf62ad0558e63e8d97eb9766118327a6" \
+        "Vendor/KTX-Software"
+
+    ktx_path="$ROOT/Vendor/KTX-Software"
+    [[ "$(git -C "$ktx_path" rev-parse HEAD)" == "4d6fc70eaf62ad0558e63e8d97eb9766118327a6" ]] || {
+        echo "KTX-Software did not resolve to the admitted source commit." >&2
+        exit 1
+    }
+    for notice in LICENSE.md LICENSES NOTICE.md; do
+        [[ -e "$ktx_path/$notice" ]] || {
+            echo "KTX-Software source is missing required notice path: $notice" >&2
+            exit 1
+        }
+    done
 fi
 
 echo "Dependency fetch complete."

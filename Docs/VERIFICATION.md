@@ -40,6 +40,17 @@ Get-ChildItem -Recurse -Filter *.md |
 if ($Broken.Count) { $Broken; throw 'Broken Markdown links found.' }
 ```
 
+### Opt-in dependency source admission
+
+An optional source dependency is admitted before linkage only when its fetch path resolves the exact recorded commit and retains the license and third-party notice paths named in [DEPENDENCIES.md](DEPENDENCIES.md). For the Phase 3D libktx prerequisite, run:
+
+```powershell
+.\Scripts\FetchDependencies.ps1 -IncludeKtxSoftware
+git -C Vendor/KTX-Software rev-parse HEAD
+```
+
+The revision must be `4d6fc70eaf62ad0558e63e8d97eb9766118327a6`, and `LICENSE.md`, `LICENSES/`, and `NOTICE.md` must exist. The equivalent non-Windows acquisition is `bash Scripts/FetchDependencies.sh --include-ktx-software`. This verifies source identity and notice retention only; it does not prove the future private build exclusions, importer behavior, artifact cooking, linkage, staging, redistribution closure, or runtime qualification.
+
 ## Test Selection And Generated Failures
 
 Classify new tests as Fast contract, Integration/headless, Headed/platform, or Stress/fuzz/soak using [TESTING_STRATEGY.md](TESTING_STRATEGY.md). `EngineTests --tier fast` selects only deterministic in-memory contract tests under a 60-second execution budget. `EngineTests --tier integration` is the complete ordered registry, including filesystem and shader/toolchain cases, under a 300-second execution budget; it is also the compatibility default when no selector is supplied. `--list`, exact `--test`, substring `--filter`, positive `--budget-ms`, and schema-1 `--report-json` provide discovery, focused reruns, explicit overrides, per-test/total durations, and machine-readable evidence. Zero matches and invalid/conflicting selectors fail.

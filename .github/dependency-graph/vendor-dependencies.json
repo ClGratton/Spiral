@@ -51,6 +51,14 @@
       "license": "MIT"
     },
     {
+      "name": "KTX-Software",
+      "package_url": "pkg:github/KhronosGroup/KTX-Software@4d6fc70eaf62ad0558e63e8d97eb9766118327a6",
+      "relationship": "direct",
+      "scope": "development",
+      "source_location": "Vendor/KTX-Software",
+      "license": "NOASSERTION"
+    },
+    {
       "name": "Vulkan-Headers",
       "package_url": "pkg:github/KhronosGroup/Vulkan-Headers@v1.4.352",
       "relationship": "direct",

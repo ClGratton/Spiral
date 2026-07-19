@@ -26,6 +26,9 @@ Vendor/DXC/*
 !Vendor/DXC/README.md
 !Vendor/DXC/NOTICE.md
 
+# Optional pinned libktx source acquired for the Phase 3D importer boundary.
+Vendor/KTX-Software/
+
 
 # OS/editor noise
 .DS_Store
