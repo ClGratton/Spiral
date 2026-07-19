@@ -1,6 +1,7 @@
 #include "Engine/Core/Application.h"
 
 #include "Engine/Core/Log.h"
+#include "Engine/Events/MouseEvent.h"
 #include "Engine/Jobs/FrameTaskGraph.h"
 #include "Engine/RHI/Device.h"
 #include "Engine/Renderer/Renderer.h"
@@ -105,6 +106,52 @@ namespace Engine
         {
             std::ifstream input(path, std::ios::binary);
             return input ? std::string(std::istreambuf_iterator<char>(input), {}) : std::string();
+        }
+
+        std::string EscapeJsonString(std::string_view value)
+        {
+            std::string escaped;
+            escaped.reserve(value.size());
+            for (const char character : value)
+            {
+                switch (character)
+                {
+                    case '\\': escaped += "\\\\"; break;
+                    case '"': escaped += "\\\""; break;
+                    case '\n': escaped += "\\n"; break;
+                    case '\r': escaped += "\\r"; break;
+                    case '\t': escaped += "\\t"; break;
+                    default: escaped += character; break;
+                }
+            }
+            return escaped;
+        }
+
+        bool WriteOpticalMarkerArtifact(const Application& application, const OpticalResponseMarker& marker,
+            const RendererInputSample& input, std::string_view triggerId, bool syntheticTrigger, std::string& error)
+        {
+            const std::string_view output = application.GetSpecification().CommandLineArgs.GetOptionValue("--optical-input-correlation-marker-output");
+            if (output.empty()) { error = "optical marker output path is required"; return false; }
+            const std::filesystem::path path = AbsoluteNormalizedPath(std::filesystem::path(output));
+            if (path.empty() || std::filesystem::exists(path)) { error = "optical marker output is unresolved or already exists"; return false; }
+#if !defined(GE_PLATFORM_WINDOWS)
+            error = "optical marker artifact requires Windows process/QPC identity"; return false;
+#else
+            LARGE_INTEGER frequency {}, tick {}; std::array<char, 32768> executable {};
+            if (!QueryPerformanceFrequency(&frequency) || !QueryPerformanceCounter(&tick) || !GetModuleFileNameA(nullptr, executable.data(), static_cast<DWORD>(std::size(executable)))) { error = "could not resolve optical marker process/QPC identity"; return false; }
+            const RendererPresentationPolicyDiagnostics presentation = Renderer::GetPresentationPolicyDiagnostics();
+            const std::filesystem::path temporary = path.string() + ".tmp." + std::to_string(GetCurrentProcessId());
+            std::ofstream stream(temporary, std::ios::binary | std::ios::trunc);
+            stream << "{\n  \"schema\":1,\n  \"runId\":\"optical-" << GetCurrentProcessId() << "-" << tick.QuadPart << "\",\n  \"processId\":" << GetCurrentProcessId()
+                << ",\n  \"executablePath\":\"" << EscapeJsonString(AbsoluteNormalizedPath(executable.data()).string()) << "\",\n  \"qpcFrequency\":" << frequency.QuadPart << ",\n  \"qpcTick\":" << tick.QuadPart
+                << ",\n  \"markerId\":\"" << EscapeJsonString(marker.MarkerId) << "\",\n  \"frame\":" << marker.ApplicationFrameIndex << ",\n  \"inputFrame\":" << marker.InputFrameIndex << ",\n  \"inputQpc\":" << input.QpcTick
+                << ",\n  \"triggerId\":\"" << EscapeJsonString(triggerId) << "\",\n  \"triggerSource\":\"" << (syntheticTrigger ? "synthetic-smoke" : "physical-mouse-button")
+                << "\",\n  \"backend\":\"" << EscapeJsonString(Renderer::GetActiveBackendName()) << "\",\n  \"requestedPresentationMode\":\"" << EscapeJsonString(ToString(presentation.Requested)) << "\",\n  \"actualPresentationMode\":\"" << EscapeJsonString(ToString(presentation.Actual)) << "\",\n  \"presentationGeneration\":" << presentation.SwapchainGeneration
+                << ",\n  \"unavailable\":{\"panelCadence\":\"unavailable\",\"vrrActive\":\"unavailable\",\"peripheralInput\":\"unavailable\",\"clickToPhoton\":\"unavailable\"}\n}\n";
+            stream.close(); if (!stream) { std::filesystem::remove(temporary); error = "could not write optical marker artifact"; return false; }
+            std::error_code ec; std::filesystem::rename(temporary, path, ec); if (ec) { std::filesystem::remove(temporary); error = "could not atomically publish optical marker artifact"; return false; }
+            return true;
+#endif
         }
 
         u32 AttachmentTimeoutMilliseconds(const ApplicationCommandLineArgs& args)
@@ -336,10 +383,33 @@ namespace Engine
             if (!m_Minimized)
             {
                 Renderer::BeginFrame(m_FrameIndex, preFramePacing);
+                m_OpticalTriggerArmed = !m_OpticalCapturePublished
+                    && (m_Specification.CommandLineArgs.HasFlag("--optical-input-correlation-smoke")
+                        || !m_Specification.CommandLineArgs.GetOptionValue("--optical-input-correlation-marker-output").empty());
                 m_Window->PollEvents();
                 const std::optional<RendererInputSample> inputSample = Renderer::RecordInputSample(m_FrameIndex);
                 if (!inputSample)
                     throw std::logic_error("input sample did not preserve the active frame lifecycle invariant");
+                if (m_Specification.CommandLineArgs.HasFlag("--optical-input-correlation-smoke") && m_FrameIndex == 1 && m_OpticalTriggerId.empty())
+                { m_OpticalTriggerSynthetic = true; m_OpticalTriggerId = "synthetic-smoke-" + std::to_string(++m_OpticalTriggerSequence); }
+                if (!m_OpticalTriggerId.empty())
+                {
+                    OpticalResponseMarker marker;
+                    marker.MarkerId = "optical-smoke-frame-" + std::to_string(m_FrameIndex);
+                    marker.ApplicationFrameIndex = m_FrameIndex;
+                    marker.InputFrameIndex = inputSample->FrameIndex;
+                    marker.InputQpcTick = inputSample->QpcTick;
+                    if (!Renderer::ScheduleOpticalResponseMarker(marker))
+                        throw std::runtime_error("optical response marker rejected its exact input/frame identity");
+                    std::string artifactError;
+                    if (!WriteOpticalMarkerArtifact(*this, marker, *inputSample, m_OpticalTriggerId, m_OpticalTriggerSynthetic, artifactError))
+                        throw std::runtime_error("optical marker artifact publication failed: " + artifactError);
+                    m_OpticalCapturePublished = true;
+                    Log::Info("OpticalInputCorrelationSmokeV1 markerId=", marker.MarkerId,
+                        " frame=", marker.ApplicationFrameIndex, " inputFrame=", marker.InputFrameIndex,
+                        " panelCadence=unavailable vrr=unavailable peripheralInput=unavailable clickToPhoton=unavailable result=armed");
+                    m_OpticalTriggerId.clear(); m_OpticalTriggerArmed = false;
+                }
 
                 FramePublication<ApplicationFrameInput> frameInput;
                 FrameTaskGraph frameTasks;
@@ -581,6 +651,12 @@ namespace Engine
 
     void Application::OnEvent(Event& event)
     {
+        if (m_OpticalTriggerArmed && m_OpticalTriggerId.empty() && event.GetEventType() == EventType::MouseButtonPressed)
+        {
+            m_OpticalTriggerSynthetic = false;
+            const int button = static_cast<const MouseButtonPressedEvent&>(event).GetMouseButton();
+            m_OpticalTriggerId = "mouse-button-" + std::to_string(button) + "-" + std::to_string(++m_OpticalTriggerSequence);
+        }
         EventDispatcher dispatcher(event);
         dispatcher.Dispatch<WindowCloseEvent>(GE_BIND_EVENT_FN(Application::OnWindowClose));
         dispatcher.Dispatch<WindowResizeEvent>(GE_BIND_EVENT_FN(Application::OnWindowResize));

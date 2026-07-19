@@ -643,6 +643,17 @@ void EditorLayer::OnUiRender()
 
     if (m_ShowDemoWindow)
         ImGui::ShowDemoWindow(&m_ShowDemoWindow);
+
+    if (const auto marker = Engine::Renderer::GetOpticalResponseMarker(Engine::Application::Get().GetFrameIndex()))
+    {
+        ImGuiViewport* viewport = ImGui::GetMainViewport();
+        ImGui::GetForegroundDrawList(viewport)->AddRectFilled(viewport->Pos,
+            { viewport->Pos.x + viewport->Size.x, viewport->Pos.y + viewport->Size.y }, IM_COL32(255, 255, 255, 255));
+        Engine::Log::Info("OpticalResponseMarkerV1 markerId=", marker->MarkerId,
+            " frame=", marker->ApplicationFrameIndex, " inputFrame=", marker->InputFrameIndex,
+            " inputQpc=", marker->InputQpcTick, " contrast=white result=drawn");
+        Engine::Renderer::ClearOpticalResponseMarker(marker->ApplicationFrameIndex);
+    }
 }
 
 void EditorLayer::OnEvent(Engine::Event& event)

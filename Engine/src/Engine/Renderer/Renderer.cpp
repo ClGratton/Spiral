@@ -91,6 +91,7 @@ namespace Engine
         bool s_RendererFrameTimingActive = false;
         bool s_FramePacingBenchmarkQpcActive = false;
         Scope<FramePacingBenchmarkCapture> s_FramePacingBenchmark;
+        std::optional<OpticalResponseMarker> s_OpticalResponseMarker;
 
         RendererFrameTiming* FindRetainedTiming(u64 frameIndex)
         {
@@ -803,6 +804,30 @@ namespace Engine
         if (!RefreshRendererInputLatencyIntervals(s_FrameTiming))
             return std::nullopt;
         return sample;
+    }
+
+    bool Renderer::ScheduleOpticalResponseMarker(const OpticalResponseMarker& marker)
+    {
+        if (!s_RendererFrameTimingActive || !s_FrameTiming.InputSample || marker.MarkerId.empty()
+            || !marker.HighContrast || marker.ApplicationFrameIndex != s_FrameTiming.FrameIndex
+            || marker.InputFrameIndex != s_FrameTiming.InputSample->FrameIndex
+            || marker.InputQpcTick != s_FrameTiming.InputSample->QpcTick)
+            return false;
+        s_OpticalResponseMarker = marker;
+        return true;
+    }
+
+    std::optional<OpticalResponseMarker> Renderer::GetOpticalResponseMarker(u64 applicationFrameIndex)
+    {
+        if (!s_OpticalResponseMarker || s_OpticalResponseMarker->ApplicationFrameIndex != applicationFrameIndex)
+            return std::nullopt;
+        return s_OpticalResponseMarker;
+    }
+
+    void Renderer::ClearOpticalResponseMarker(u64 applicationFrameIndex)
+    {
+        if (s_OpticalResponseMarker && s_OpticalResponseMarker->ApplicationFrameIndex == applicationFrameIndex)
+            s_OpticalResponseMarker.reset();
     }
 
     void Renderer::RecordFrameLifecyclePhase(u64 applicationFrameIndex, RendererFrameLifecyclePhase phase)

@@ -4,6 +4,7 @@
 #include "Engine/RenderGraph/RenderGraph.h"
 #include "Engine/Renderer/FramePacingPolicy.h"
 #include "Engine/Renderer/PresentationPolicy.h"
+#include "Engine/Renderer/OpticalInputCorrelation.h"
 #include "Engine/RHI/RHICommon.h"
 #include "Engine/Renderer/SceneRasterPreparation.h"
 #include "Engine/Scene/SceneRenderSnapshot.h"
@@ -382,6 +383,9 @@ namespace Engine
         static PresentationPolicy GetPresentationPolicy();
         static RendererPresentationPolicyDiagnostics GetPresentationPolicyDiagnostics();
         static std::optional<RendererInputSample> RecordInputSample(u64 applicationFrameIndex);
+        static bool ScheduleOpticalResponseMarker(const OpticalResponseMarker& marker);
+        static std::optional<OpticalResponseMarker> GetOpticalResponseMarker(u64 applicationFrameIndex);
+        static void ClearOpticalResponseMarker(u64 applicationFrameIndex);
         static void RecordFrameLifecyclePhase(u64 applicationFrameIndex, RendererFrameLifecyclePhase phase);
         static void RecordFrameWait(u64 applicationFrameIndex, RendererFrameWaitKind kind, bool applied, double milliseconds);
         static FramePacingWaitResult ApplySmoothFrametimeCandidate(SmoothFrametimeCandidate candidate);

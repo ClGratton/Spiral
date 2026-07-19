@@ -76,6 +76,11 @@ namespace Engine
         u32 m_FramePacingAttachmentProcessId = 0;
         std::string m_FramePacingAttachmentExecutablePath;
         u64 m_FramePacingAttachmentQpcFrequency = 0;
+        bool m_OpticalTriggerArmed = false;
+        bool m_OpticalTriggerSynthetic = false;
+        bool m_OpticalCapturePublished = false;
+        std::string m_OpticalTriggerId;
+        u64 m_OpticalTriggerSequence = 0;
 
         static Application* s_Instance;
 
