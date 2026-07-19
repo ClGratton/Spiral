@@ -59,6 +59,9 @@ namespace Engine::RHI
         CapabilityPath GetSelectedPath() const { return m_SelectedPath; }
         u32 GetCapacity() const { return static_cast<u32>(m_Slots.size()); }
         TextureBindingHandle GetErrorHandle() const { return { 0, m_Slots[0].Generation }; }
+        // Public binding validation intentionally exposes only exact-device
+        // identity; native descriptor ownership remains backend-private.
+        bool IsOwnedBy(const Device& device) const { return &m_Device == &device; }
         TextureBindingHandle Allocate(const Ref<Texture>& texture, TextureSampler sampler);
         bool QueueUpdate(TextureBindingHandle handle, const Ref<Texture>& replacement, TextureSampler sampler, const CompletionToken& retireToken);
         bool QueueRemoval(TextureBindingHandle handle, const CompletionToken& retireToken);

@@ -5903,7 +5903,7 @@ float4 main(VertexInput input) : SV_Position
         Engine::RHI::BufferDescription m_Description;
     };
 
-    class OwnershipTestDevice final : public Engine::RHI::Device
+    class OwnershipTestDevice : public Engine::RHI::Device
     {
     public:
         explicit OwnershipTestDevice(Engine::u64 ownerId) : m_OwnerId(ownerId) {}
@@ -5952,6 +5952,76 @@ float4 main(VertexInput input) : SV_Position
         Engine::RHI::DeviceCapabilities m_Capabilities;
         Engine::u64 m_OwnerId;
         std::unordered_map<Engine::u64, Engine::RHI::CompletionStatus> m_Completions;
+    };
+
+    class SampledTextureTableTestPipeline final : public Engine::RHI::Pipeline
+    {
+    public:
+        explicit SampledTextureTableTestPipeline(Engine::RHI::PipelineDescription description)
+            : m_Description(std::move(description)) {}
+        const Engine::RHI::PipelineDescription& GetDescription() const override { return m_Description; }
+    private:
+        Engine::RHI::PipelineDescription m_Description;
+    };
+
+    class SampledTextureTableTestCommandList final : public Engine::RHI::CommandList
+    {
+    public:
+        explicit SampledTextureTableTestCommandList(Engine::RHI::Device& device) : m_Device(device) {}
+        Engine::RHI::QueueType GetQueueType() const override { return Engine::RHI::QueueType::Graphics; }
+        bool Begin() override { if (m_Recording) return false; m_Recording = true; m_Pipeline = nullptr; m_Table = nullptr; return true; }
+        bool End() override { if (!m_Recording) return false; m_Recording = false; return true; }
+        void BeginDebugMarker(std::string_view) override {}
+        void EndDebugMarker() override {}
+        bool BindViewportOutputs(Engine::RHI::Texture&, Engine::RHI::Texture*) override { return false; }
+        bool ClearViewportOutputs(const Engine::RHI::ViewportClear&) override { return false; }
+        bool TransitionTexture(Engine::RHI::Texture&, Engine::RHI::ResourceState) override { return false; }
+        bool TransitionBuffer(Engine::RHI::Buffer&, Engine::RHI::ResourceState) override { return false; }
+        void SetGraphicsPipeline(Engine::RHI::Pipeline& pipeline) override { m_Pipeline = m_Recording ? &pipeline : nullptr; m_Table = nullptr; }
+        void SetGraphicsConstantBuffer(Engine::u32, Engine::RHI::Buffer&) override {}
+        bool BindGraphicsSampledTextureTable(Engine::RHI::TextureBindingTable& table) override
+        {
+            if (!m_Recording || !m_Pipeline || !m_Pipeline->GetDescription().SampledTextureTable
+                || !Engine::RHI::IsValidSampledTextureTableBinding(*m_Pipeline->GetDescription().SampledTextureTable,
+                    m_Pipeline->GetDescription().ConstantBufferBindings) || !table.IsOwnedBy(m_Device)) return false;
+            m_Table = &table;
+            return true;
+        }
+        void SetViewport(const Engine::RHI::Viewport&) override {}
+        void SetScissorRect(const Engine::RHI::ScissorRect&) override {}
+        void SetVertexBuffer(Engine::u32, Engine::RHI::Buffer&) override {}
+        void SetIndexBuffer(Engine::RHI::Buffer&, Engine::RHI::IndexFormat) override {}
+        bool CopyBuffer(Engine::RHI::Buffer&, Engine::u64, Engine::RHI::Buffer&, Engine::u64, Engine::u64) override { return false; }
+        void DrawIndexed(Engine::u32, Engine::u32, Engine::u32, int, Engine::u32) override
+        {
+            if (m_Recording && m_Pipeline && (!m_Pipeline->GetDescription().SampledTextureTable || m_Table)) ++DrawCount;
+        }
+        bool ResetQueryPool(Engine::RHI::QueryPool&, Engine::u32, Engine::u32) override { return false; }
+        bool WriteTimestamp(Engine::RHI::QueryPool&, Engine::u32) override { return false; }
+        bool ResolveQueryPool(Engine::RHI::QueryPool&, Engine::u32, Engine::u32) override { return false; }
+        Engine::u32 DrawCount = 0;
+    private:
+        Engine::RHI::Device& m_Device;
+        bool m_Recording = false;
+        Engine::RHI::Pipeline* m_Pipeline = nullptr;
+        Engine::RHI::TextureBindingTable* m_Table = nullptr;
+    };
+
+    class SampledTextureTableTestDevice final : public OwnershipTestDevice
+    {
+    public:
+        using OwnershipTestDevice::OwnershipTestDevice;
+        Engine::Scope<Engine::RHI::Pipeline> CreatePipeline(const Engine::RHI::PipelineDescription& description) override
+        {
+            if (!description.SampledTextureTable || !Engine::RHI::IsValidSampledTextureTableBinding(
+                *description.SampledTextureTable, description.ConstantBufferBindings)) return nullptr;
+            return Engine::CreateScope<SampledTextureTableTestPipeline>(description);
+        }
+        Engine::Scope<Engine::RHI::CommandList> CreateCommandList(Engine::RHI::QueueType queue, std::string_view) override
+        {
+            if (queue != Engine::RHI::QueueType::Graphics) return nullptr;
+            return Engine::CreateScope<SampledTextureTableTestCommandList>(*this);
+        }
     };
 
     bool TestRhiResourceOwnershipContract()
@@ -6052,6 +6122,51 @@ float4 main(VertexInput input) : SV_Position
             && Expect(queuedRemoval && removalRetired && reused.Index == firstHandle.Index && reused.Generation != firstHandle.Generation,
                 "Complete and Failed retirement block reuse until the exact token and then advance generation")
             && Expect(errorRetainedByView, "resolved views retain the error resource after caller and table release");
+    }
+
+    bool TestSampledTextureTableBindingContract()
+    {
+        using namespace Engine::RHI;
+        TextureDescription sampled;
+        sampled.Usage = TextureUsage::ShaderResource;
+        SampledTextureTableTestDevice device(301), foreignDevice(302);
+        const Engine::Ref<Texture> error = Engine::CreateRef<OwnershipTestTexture>(301, ResourceState::ShaderResource, sampled);
+        const Engine::Ref<Texture> foreignError = Engine::CreateRef<OwnershipTestTexture>(302, ResourceState::ShaderResource, sampled);
+        Engine::Scope<TextureBindingTable> table = TextureBindingTable::Create(device, { 2, error, TextureSampler::LinearClamp });
+        Engine::Scope<TextureBindingTable> foreignTable = TextureBindingTable::Create(foreignDevice, { 2, foreignError, TextureSampler::LinearClamp });
+
+        PipelineDescription declaration;
+        declaration.ConstantBufferBindings = {{ 0, 0, ShaderStage::AllGraphics }};
+        declaration.SampledTextureTable = SampledTextureTableBinding {};
+        PipelineDescription collidingSpace = declaration;
+        collidingSpace.SampledTextureTable->RegisterSpace = 0;
+        PipelineDescription collidingOffsets = declaration;
+        collidingOffsets.SampledTextureTable->VulkanSamplerBindingOffset = 1;
+        PipelineDescription wrongTextureRegister = declaration;
+        wrongTextureRegister.SampledTextureTable->TextureRegister = 1;
+        PipelineDescription wrongSamplerRegister = declaration;
+        wrongSamplerRegister.SampledTextureTable->SamplerRegister = 1;
+        Engine::Scope<Pipeline> pipeline = device.CreatePipeline(declaration);
+        Engine::Scope<Pipeline> rejectedSpace = device.CreatePipeline(collidingSpace);
+        Engine::Scope<Pipeline> rejectedOffsets = device.CreatePipeline(collidingOffsets);
+        Engine::Scope<Pipeline> rejectedTextureRegister = device.CreatePipeline(wrongTextureRegister);
+        Engine::Scope<Pipeline> rejectedSamplerRegister = device.CreatePipeline(wrongSamplerRegister);
+        Engine::Scope<CommandList> list = device.CreateCommandList(QueueType::Graphics, "sampled-table-contract");
+        auto* recording = dynamic_cast<SampledTextureTableTestCommandList*>(list.get());
+        const bool bindingFlow = list && recording && table && foreignTable && list->Begin()
+            && !list->BindGraphicsSampledTextureTable(*table)
+            && pipeline && (list->SetGraphicsPipeline(*pipeline), true)
+            && !list->BindGraphicsSampledTextureTable(*foreignTable)
+            && list->BindGraphicsSampledTextureTable(*table)
+            && (list->DrawIndexed(3, 1, 0, 0, 0), recording->DrawCount == 1)
+            && list->End();
+
+        return Expect(IsValidSampledTextureTableBinding(*declaration.SampledTextureTable, declaration.ConstantBufferBindings),
+                "sampled texture table reserves space one and Vulkan offsets one/two away from b0 space zero")
+            && Expect(!rejectedSpace && !rejectedOffsets && !rejectedTextureRegister && !rejectedSamplerRegister,
+                "pipeline creation rejects sampled-table declarations outside the fixed registers, space, or Vulkan offsets")
+            && Expect(bindingFlow,
+                "recording rejects absent-pipeline and foreign-table binds then permits exact-device declared-table consumption");
     }
 
     class BufferOwnershipTestBuffer final : public Engine::RHI::Buffer
@@ -6452,6 +6567,7 @@ int main(int argc, char** argv)
         FAST_TEST("RHI queue topology submits dependencies without premature publication", TestRhiQueueTopologyDependencySubmissionContract),
         FAST_TEST("RHI resource-state query rejects null foreign and unknown resources", TestRhiResourceOwnershipContract),
         FAST_TEST("RHI read-only texture binding table preserves error and GPU-retired identities", TestReadOnlyTextureBindingTableContract),
+        FAST_TEST("RHI sampled texture-table binding validates pipeline space offsets and exact ownership", TestSampledTextureTableBindingContract),
         FAST_TEST("RHI buffer ownership lifecycle publishes only accepted exact-token pairs", TestRhiBufferOwnershipLifecycleContract),
         FAST_TEST("RHI buffer ownership recovery and adapter seams preserve fallback semantics", TestRhiBufferOwnershipRecoveryAndAdapterSeams),
         FAST_TEST("RHI texture ownership tracker preserves accepted-token pending publication", TestRhiTextureOwnershipLifecycleContract),

@@ -12,6 +12,8 @@
 
 namespace Engine::RHI
 {
+    class TextureBindingTable;
+
     enum class IndexFormat
     {
         Uint16,
@@ -87,6 +89,15 @@ namespace Engine::RHI
         virtual bool AcquireTextureOwnership(const TextureOwnershipAcquire& acquire) { (void)acquire; return false; }
         virtual void SetGraphicsPipeline(Pipeline& pipeline) = 0;
         virtual void SetGraphicsConstantBuffer(u32 rootParameterIndex, Buffer& buffer) = 0;
+        // Returns false before native recording unless this command list and the
+        // supplied table share an exact device and the active pipeline declares
+        // the fixed sampled-table binding. Backends without native descriptor
+        // realization retain the default explicit rejection.
+        virtual bool BindGraphicsSampledTextureTable(TextureBindingTable& table)
+        {
+            (void)table;
+            return false;
+        }
         virtual void SetViewport(const Viewport& viewport) = 0;
         virtual void SetScissorRect(const ScissorRect& rect) = 0;
         virtual void SetVertexBuffer(u32 slot, Buffer& buffer) = 0;

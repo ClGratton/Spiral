@@ -1740,6 +1740,11 @@ namespace Engine::RHI
 
             Scope<Pipeline> CreatePipeline(const PipelineDescription& description) override
             {
+                if (description.SampledTextureTable)
+                {
+                    Log::Error("D3D12 RHI sampled texture-table binding is not implemented by the native descriptor path");
+                    return nullptr;
+                }
                 Scope<NVRHID3D12Pipeline> pipeline = CreateScope<NVRHID3D12Pipeline>(description);
                 if (!pipeline->Initialize(m_Device.Get()))
                     return nullptr;

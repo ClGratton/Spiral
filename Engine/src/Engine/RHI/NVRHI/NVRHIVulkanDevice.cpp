@@ -883,6 +883,11 @@ namespace Engine::RHI
             }
             Scope<Pipeline> CreatePipeline(const PipelineDescription& description) override
             {
+                if (description.SampledTextureTable)
+                {
+                    Log::Error("Vulkan RHI sampled texture-table binding is not implemented by the native descriptor path");
+                    return nullptr;
+                }
                 auto* vertex = dynamic_cast<VulkanShader*>(description.VertexShader);
                 auto* pixel = dynamic_cast<VulkanShader*>(description.PixelShader);
                 if (!m_Device || description.Type != PipelineType::Graphics || !vertex || !pixel || description.VertexInputs.size() != 3 || description.ConstantBufferBindings.size() != 1
