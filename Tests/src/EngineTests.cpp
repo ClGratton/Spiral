@@ -18,6 +18,7 @@
 #include "Engine/Renderer/PortableShaderContract.h"
 #include "Engine/Renderer/SlangShaderCompiler.h"
 #include "Engine/Renderer/SceneRasterPreparation.h"
+#include "Engine/Renderer/MeshGpuResourceCache.h"
 #include "Engine/Assets/MeshArtifact.h"
 #include "Engine/Assets/AssetRegistry.h"
 #include "Engine/Scene/Scene.h"
@@ -28,6 +29,7 @@
 #include <atomic>
 #include <charconv>
 #include <chrono>
+#include <cstring>
 #include <cmath>
 #include <condition_variable>
 #include <filesystem>
@@ -1676,6 +1678,129 @@ namespace
             && Expect(loaded.GetMainCamera().BackgroundColor.X == 0.21f
                 && loaded.GetMainCamera().BackgroundColor.Y == 0.34f
                 && loaded.GetMainCamera().BackgroundColor.Z == 0.55f, "camera background color round trips");
+    }
+
+    class MeshGpuCacheTestBuffer final : public Engine::RHI::Buffer
+    {
+    public:
+        explicit MeshGpuCacheTestBuffer(Engine::RHI::BufferDescription description) : m_Description(std::move(description)) {}
+        const Engine::RHI::BufferDescription& GetDescription() const override { return m_Description; }
+        void* Map() override { return nullptr; }
+        void Unmap() override {}
+        std::vector<Engine::u8> Bytes;
+    private:
+        Engine::RHI::BufferDescription m_Description;
+    };
+
+    class MeshGpuCacheTestDevice final : public Engine::RHI::Device
+    {
+    public:
+        const Engine::RHI::DeviceDescription& GetDescription() const override { return m_Description; }
+        const Engine::RHI::DeviceCapabilities& GetCapabilities() const override { return m_Capabilities; }
+        Engine::Scope<Engine::RHI::Buffer> CreateBuffer(const Engine::RHI::BufferDescription& description) override
+        {
+            CreatedDescriptions.push_back(description);
+            return FailCreate || description.SizeBytes == 0 ? nullptr : Engine::CreateScope<MeshGpuCacheTestBuffer>(description);
+        }
+        Engine::Scope<Engine::RHI::Texture> CreateTexture(const Engine::RHI::TextureDescription&) override { return nullptr; }
+        bool OwnsResource(const Engine::RHI::Buffer* resource) const override { return dynamic_cast<const MeshGpuCacheTestBuffer*>(resource) != nullptr; }
+        bool OwnsResource(const Engine::RHI::Texture*) const override { return false; }
+        bool QueryResourceState(const Engine::RHI::Buffer*, Engine::RHI::ResourceState&) const override { return false; }
+        bool QueryResourceState(const Engine::RHI::Texture*, Engine::RHI::ResourceState&) const override { return false; }
+        Engine::Scope<Engine::RHI::Shader> CreateShader(const Engine::RHI::ShaderDescription&) override { return nullptr; }
+        Engine::Scope<Engine::RHI::Pipeline> CreatePipeline(const Engine::RHI::PipelineDescription&) override { return nullptr; }
+        Engine::Scope<Engine::RHI::QueryPool> CreateQueryPool(const Engine::RHI::QueryPoolDescription&) override { return nullptr; }
+        Engine::Scope<Engine::RHI::CommandList> CreateCommandList(Engine::RHI::QueueType, std::string_view) override { return nullptr; }
+        bool UploadBuffer(Engine::RHI::Buffer& destination, const void* source, Engine::u64 size, Engine::u64) override
+        {
+            ++UploadCount;
+            auto* buffer = dynamic_cast<MeshGpuCacheTestBuffer*>(&destination);
+            if (FailUpload || !buffer || !source || size != buffer->GetDescription().SizeBytes) return false;
+            const auto* bytes = static_cast<const Engine::u8*>(source);
+            buffer->Bytes.assign(bytes, bytes + size);
+            return true;
+        }
+        bool ReadbackTexture(Engine::RHI::Texture&, Engine::RHI::TextureReadback&) override { return false; }
+        Engine::RHI::CompletionToken Submit(Engine::RHI::CommandList&) override { return {}; }
+        Engine::RHI::CompletionStatus QueryCompletion(const Engine::RHI::CompletionToken&) override { return Engine::RHI::CompletionStatus::Invalid; }
+        bool WaitForCompletion(const Engine::RHI::CompletionToken&, Engine::u32) override { return false; }
+        bool SubmitAndWait(Engine::RHI::CommandList&) override { return false; }
+        void WaitIdle() override {}
+
+        bool FailCreate = false;
+        bool FailUpload = false;
+        int UploadCount = 0;
+        std::vector<Engine::RHI::BufferDescription> CreatedDescriptions;
+    private:
+        Engine::RHI::DeviceDescription m_Description;
+        Engine::RHI::DeviceCapabilities m_Capabilities;
+    };
+
+    Engine::MeshArtifact MakeMeshGpuCacheArtifact()
+    {
+        Engine::MeshArtifact artifact;
+        artifact.Asset = 71;
+        artifact.SourcePath = "Assets/Geometry/../Triangle.gltf";
+        Engine::MeshArtifactVertex first, second, third;
+        second.Position[0] = 1.0f;
+        third.Position[1] = 1.0f;
+        artifact.Vertices = { first, second, third };
+        artifact.Indices = { 0, 1, 2 };
+        artifact.Primitives = { { 2, 3, 0, sizeof(Engine::MeshArtifactVertex) * 3ull, 0, sizeof(Engine::u32) * 3ull } };
+        return artifact;
+    }
+
+    bool TestMeshGpuResourceCache()
+    {
+        using namespace Engine;
+        MeshGpuResourceCache cache(2);
+        MeshGpuCacheTestDevice firstDevice, secondDevice;
+        MeshArtifact artifact = MakeMeshGpuCacheArtifact();
+        Ref<const MeshGpuResourceBundle> first, reused, changed, secondDeviceBundle, survivor;
+        std::string error;
+        const bool created = cache.Acquire(firstDevice, artifact, first, error);
+        const auto* vertex = first ? dynamic_cast<const MeshGpuCacheTestBuffer*>(first->VertexBuffer.get()) : nullptr;
+        const auto* index = first ? dynamic_cast<const MeshGpuCacheTestBuffer*>(first->IndexBuffer.get()) : nullptr;
+        const bool descriptionsAndBytes = created && vertex && index && first->Primitives.size() == 1
+            && first->Primitives[0].FirstVertex == 0 && first->Primitives[0].VertexCount == 3
+            && first->Primitives[0].FirstIndex == 0 && first->Primitives[0].IndexCount == 3 && first->Primitives[0].BaseVertex == 0
+            && firstDevice.CreatedDescriptions.size() == 2 && firstDevice.UploadCount == 2
+            && vertex->GetDescription().CpuAccess == RHI::BufferCpuAccess::None
+            && vertex->GetDescription().StrideBytes == sizeof(MeshArtifactVertex)
+            && index->GetDescription().StrideBytes == sizeof(u32)
+            && vertex->Bytes.size() == artifact.Vertices.size() * sizeof(MeshArtifactVertex)
+            && index->Bytes.size() == artifact.Indices.size() * sizeof(u32)
+            && std::memcmp(vertex->Bytes.data(), artifact.Vertices.data(), vertex->Bytes.size()) == 0
+            && std::memcmp(index->Bytes.data(), artifact.Indices.data(), index->Bytes.size()) == 0;
+        MeshArtifact normalizedProvenance = artifact;
+        normalizedProvenance.SourcePath = "Assets/Triangle.gltf";
+        const bool exactReuse = cache.Acquire(firstDevice, normalizedProvenance, reused, error) && reused == first && firstDevice.UploadCount == 2;
+        MeshArtifact modified = artifact;
+        modified.Vertices[1].Color[0] = 0.5f;
+        const bool replacement = cache.Acquire(firstDevice, modified, changed, error) && changed != first && changed->Generation > first->Generation;
+        const bool wrongDeviceSeparate = cache.Acquire(secondDevice, artifact, secondDeviceBundle, error) && secondDeviceBundle != first;
+        survivor = first;
+        MeshArtifact third = modified;
+        third.Asset = 72;
+        const bool bounded = cache.Acquire(firstDevice, third, changed, error) && cache.GetEntryCount() == 2 && survivor->VertexBuffer;
+        const int uploadsBeforeEvictionProbe = secondDevice.UploadCount;
+        const bool retainedMostRecent = cache.Acquire(secondDevice, artifact, reused, error)
+            && reused == secondDeviceBundle && secondDevice.UploadCount == uploadsBeforeEvictionProbe;
+        const int uploadsBeforeRecreate = firstDevice.UploadCount;
+        const bool evictedLeastRecent = cache.Acquire(firstDevice, artifact, reused, error)
+            && reused != survivor && firstDevice.UploadCount == uploadsBeforeRecreate + 2;
+        const size_t beforeFailure = cache.GetEntryCount();
+        firstDevice.FailUpload = true;
+        MeshArtifact failed = third;
+        failed.Asset = 73;
+        const bool failureAtomic = !cache.Acquire(firstDevice, failed, changed, error) && cache.GetEntryCount() == beforeFailure && changed->Generation > first->Generation;
+        return Expect(descriptionsAndBytes, "mesh GPU cache creates immutable RHI buffers with exact uploaded artifact bytes and draw ranges")
+            && Expect(exactReuse, "mesh GPU cache exactly reuses a matching artifact identity")
+            && Expect(replacement, "mesh GPU cache creates a new generation for changed vertex values")
+            && Expect(wrongDeviceSeparate, "mesh GPU cache separates exact RHI device instances")
+            && Expect(bounded && retainedMostRecent && evictedLeastRecent,
+                "mesh GPU cache evicts the deterministic least-recent entry while external Ref bundles survive")
+            && Expect(failureAtomic, "mesh GPU cache leaves accepted entries unchanged after upload failure");
     }
 
     bool TestMeshArtifactValidationAndResolution()
@@ -6078,6 +6203,7 @@ int main(int argc, char** argv)
         FAST_TEST("Frame task graph rejects invalid dependencies", TestFrameTaskGraphRejectsInvalidDependencies),
         INTEGRATION_TEST("Scene round trip", TestSceneRoundTrip),
         INTEGRATION_TEST("Cooked mesh artifacts validate and resolve transactionally", TestMeshArtifactValidationAndResolution),
+        FAST_TEST("Mesh GPU resource cache preserves exact immutable generations", TestMeshGpuResourceCache),
         INTEGRATION_TEST("Scene version 4 canonical persistence", TestSceneVersionFourCanonicalPersistence),
         INTEGRATION_TEST("Scene loads legacy absolute transforms", TestSceneLoadsLegacyAbsoluteTransforms),
         INTEGRATION_TEST("Scene rejects invalid version 4 world state", TestSceneRejectsInvalidVersionFourWorldState),
