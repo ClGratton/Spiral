@@ -1,7 +1,7 @@
 # KTX2/Basis Texture Import Plan
 
-Status: Accepted import plan v1
-Date: 2026-07-10
+Status: Accepted import plan v2
+Date: 2026-07-19
 
 ## Decision
 
@@ -13,7 +13,7 @@ Do not use KTX-Software's OpenGL or Vulkan upload helpers. Texture upload must p
 
 ## Current Implementation Boundary
 
-The accepted first prerequisite is deliberately smaller than KTX2 ingestion. `TextureImporter::CookNormalizedRgba8` accepts decoder-supplied normalized 2D RGBA8 mip payloads, validates an explicit material role/color-space pair, registers the stable `Texture` asset, and atomically writes a schema-1 engine-owned `RGBAFallback` artifact with exact contiguous mip ranges. Loading and resolution reject invalid enum semantics, corruption, truncation, trailing bytes, wrong types, and mismatched provenance transactionally. It has no file decoder, libktx dependency, compressed target encoder, runtime upload, sampler/descriptor binding, or mip generation. `DesktopBC` and `Astc` requests fail explicitly until the pinned/audited libktx transcode implementation exists. This boundary makes canonical source provenance and semantics available before later RHI upload/sampling work rather than allowing renderer-local payloads or extensions to define them.
+`TextureImporter::CookNormalizedRgba8` remains the decoder-to-importer fallback boundary. `TextureImporter::CookKtx2Basis` is the private libktx-backed KTX2/Basis boundary: it accepts only caller-owned bytes and explicit role/color-space settings, validates 2D LDR single-face BasisLZ/ETC1S or UASTC containers and their transfer/primaries metadata, then copies every transcoded mip into a schema-2 Spiral artifact before destroying the libktx object. No ktx type crosses a public Engine API. Schema 2 adds `HasAlpha` and block-aware mip validation; it writes only engine-owned `DesktopBC`, `Astc`, or qualified `RGBAFallback` pages. Schema-1 RGBA fallback artifacts remain readable and conservatively report `HasAlpha=true`, because that schema did not retain the source alpha state. A rejected source does not register a new asset, replace a cooked file, or mutate the caller artifact.
 
 ## Scope
 
@@ -59,7 +59,7 @@ Material semantics choose import settings. File names and extensions do not.
 | --- | --- | --- | --- | --- | --- |
 | Base color / emissive | sRGB | ETC1S by default; UASTC for hero, alpha-tested, or quality-sensitive content | BC7 sRGB | ASTC 4x4 sRGB | RGBA8 sRGB |
 | Normal / bent normal | Linear, normal-aware validation | UASTC with linear metrics | BC5 | ASTC 4x4 UNORM | RGBA8 UNORM |
-| ORM / masks / height | Linear | UASTC | BC4/BC5 where channel layout permits; otherwise BC7 UNORM | ASTC 4x4 UNORM | RGBA8 UNORM |
+| ORM / masks / height | Linear | UASTC | BC7 UNORM in the current artifact contract | ASTC 4x4 UNORM | RGBA8 UNORM |
 | UI / fonts / pixel-critical images | Explicit color space | Native lossless or carefully reviewed UASTC | Native format selected by UI path | Native format selected by UI path | RGBA8 |
 | HDR lighting / environment | Linear HDR | Not Basis in v0 | RGBA16F initially; later BC6H after quality validation | RGBA16F; later ASTC HDR after capability validation | RGBA16F |
 
@@ -100,6 +100,8 @@ The adapter responsibilities are limited to:
 
 No `ktxTexture*`, Vulkan, OpenGL, or Basis implementation types may appear in `TextureAsset`, scene, material, renderer, or RHI public headers.
 
+Normal `Scripts/Setup.*` fetches the exact ignored source checkout and verifies its commit/notices before generation, but no libktx binary is staged at runtime. The private static subset compiles only KTX2 read/container, DFD, Basis transcoding, and bundled zstd sources. Its explicit compile-time exclusions are KTX1, GL/Vulkan upload helpers, writers/encoders, tools, upstream tests, `external/etcdec/etcdec.cxx`, software ETC unpack, and ASTC decode. KTX-Software v4.4.2's common texture object retains one link reference to its KTX1 constructor even when `texture1.c` is excluded; the pin-specific private `Ktx2OnlyLinkShim.cpp` satisfies only that symbol by returning `KTX_UNSUPPORTED_TEXTURE_TYPE`, rather than compiling KTX1 support. Basis output targets are deterministic: BaseColor/Emissive select BC7 sRGB or ASTC 4x4 sRGB; Normal selects BC5 UNORM or ASTC 4x4 UNORM; ORM/Mask select BC7 UNORM or ASTC 4x4 UNORM; `RGBAFallback` remains RGBA8 matching the explicit color space. The first implementation deliberately does not infer role or color space from a path, extension, or container name.
+
 ## Validation And Test Plan
 
 Importer unit/smoke coverage must include:
@@ -113,7 +115,7 @@ Importer unit/smoke coverage must include:
 - Async streaming: only the resident tail is initially uploaded; no render-thread disk I/O or transcode occurs.
 - glTF material fixture using `KHR_texture_basisu`: validates its KTX2 image and assigns the imported texture handle once the material step exists.
 
-CI will run a headless texture-import smoke for `DesktopBC` and `RGBAFallback`. An Apple runner validates the `Astc` artifact-selection path even before a Metal renderer exists. Reference fixtures must be small, licensed for redistribution, and include source hashes in their manifest.
+The headless integration test carries two fixed Base64 KTX2 fixtures from the pinned v4.4.2 source (`cyan_rgb_reference_basis.ktx2`, SHA-256 `2b2ceb5627e3f70969c7d99d5c75d462d156c0df0a431c747e43c9307d6cb131`; `rg_reference_uastc.ktx2`, SHA-256 `5716c6042bb629894bb23705555d8f002691057b376c57d8e8088506ac9e67f4`) and does not depend on upstream test fixture paths. It proves ETC1S DesktopBC/RGBAFallback, UASTC normal DesktopBC/Astc, malformed-input replacement rollback, invalid enum rejection, and schema-1 fallback readability. This is headless CPU artifact evidence only; it does not qualify a backend, device, Apple runner, runtime upload, or redistribution closure.
 
 ## Rollout
 

@@ -11,6 +11,30 @@ project "Engine"
     {
         "src/**.h",
         "src/**.cpp",
+        "%{wks.location}/Vendor/KTX-Software/lib/basis_transcode.cpp",
+        "%{wks.location}/Vendor/KTX-Software/lib/checkheader.c",
+        "%{wks.location}/Vendor/KTX-Software/lib/filestream.c",
+        "%{wks.location}/Vendor/KTX-Software/lib/glformat_str.c",
+        "%{wks.location}/Vendor/KTX-Software/lib/hashlist.c",
+        "%{wks.location}/Vendor/KTX-Software/lib/info.c",
+        "%{wks.location}/Vendor/KTX-Software/lib/memstream.c",
+        "%{wks.location}/Vendor/KTX-Software/lib/miniz_wrapper.cpp",
+        "%{wks.location}/Vendor/KTX-Software/lib/strings.c",
+        "%{wks.location}/Vendor/KTX-Software/lib/swap.c",
+        "%{wks.location}/Vendor/KTX-Software/lib/texture.c",
+        "%{wks.location}/Vendor/KTX-Software/lib/texture2.c",
+        "%{wks.location}/Vendor/KTX-Software/lib/vkformat_check.c",
+        "%{wks.location}/Vendor/KTX-Software/lib/vkformat_check_variant.c",
+        "%{wks.location}/Vendor/KTX-Software/lib/vkformat_str.c",
+        "%{wks.location}/Vendor/KTX-Software/lib/vkformat_typesize.c",
+        "%{wks.location}/Vendor/KTX-Software/external/basisu/transcoder/basisu_transcoder.cpp",
+        "%{wks.location}/Vendor/KTX-Software/external/basisu/zstd/zstd.c",
+        "%{wks.location}/Vendor/KTX-Software/external/dfdutils/createdfd.c",
+        "%{wks.location}/Vendor/KTX-Software/external/dfdutils/colourspaces.c",
+        "%{wks.location}/Vendor/KTX-Software/external/dfdutils/interpretdfd.c",
+        "%{wks.location}/Vendor/KTX-Software/external/dfdutils/printdfd.c",
+        "%{wks.location}/Vendor/KTX-Software/external/dfdutils/queries.c",
+        "%{wks.location}/Vendor/KTX-Software/external/dfdutils/vk2dfd.c",
         "Shaders/**.hlsl"
     }
 
@@ -20,7 +44,15 @@ project "Engine"
         "%{wks.location}/Vendor/GLFW/include",
         "%{wks.location}/Vendor/ImGui",
         "%{wks.location}/Vendor/ImGui/backends",
-        "%{wks.location}/Vendor/cgltf"
+        "%{wks.location}/Vendor/cgltf",
+        "%{wks.location}/Vendor/KTX-Software/include",
+        "%{wks.location}/Vendor/KTX-Software/lib",
+        "%{wks.location}/Vendor/KTX-Software/external",
+        "%{wks.location}/Vendor/KTX-Software/external/dfdutils",
+        "%{wks.location}/Vendor/KTX-Software/external/basisu/transcoder",
+        "%{wks.location}/Vendor/KTX-Software/external/basisu/zstd",
+        "%{wks.location}/Vendor/KTX-Software/other_include",
+        "%{wks.location}/Vendor/KTX-Software/utils"
     }
 
     links
@@ -78,7 +110,26 @@ project "Engine"
 
     defines
     {
-        "_CRT_SECURE_NO_WARNINGS"
+        "_CRT_SECURE_NO_WARNINGS",
+        "LIBKTX",
+        "KHRONOS_STATIC",
+        "KTX_FEATURE_KTX2",
+        "KTX_OMIT_VULKAN=1",
+        "SUPPORT_SOFTWARE_ETC_UNPACK=0",
+        "BASISD_SUPPORT_KTX2=1",
+        "BASISD_SUPPORT_KTX2_ZSTD=1",
+        "BASISD_SUPPORT_DXT1=0",
+        "BASISD_SUPPORT_DXT5A=1",
+        "BASISD_SUPPORT_BC7=1",
+        "BASISD_SUPPORT_BC7_MODE5=1",
+        "BASISD_SUPPORT_UASTC=1",
+        "BASISD_SUPPORT_ASTC=1",
+        "BASISD_SUPPORT_ATC=0",
+        "BASISD_SUPPORT_PVRTC1=0",
+        "BASISD_SUPPORT_PVRTC2=0",
+        "BASISD_SUPPORT_ETC2_EAC_A8=0",
+        "BASISD_SUPPORT_ETC2_EAC_RG11=0",
+        "BASISD_SUPPORT_FXT1=0"
     }
 
     filter "system:windows"
@@ -104,6 +155,9 @@ project "Engine"
 
     filter "toolset:gcc or toolset:clang"
         buildoptions { "-Wall", "-Wextra", "-Wpedantic" }
+
+    filter "files:../Vendor/KTX-Software/**"
+        warnings "Off"
 
     filter "files:Shaders/**.hlsl"
         buildaction "None"

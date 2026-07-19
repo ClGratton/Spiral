@@ -2007,6 +2007,78 @@ namespace
                 "texture artifact loading and resolution reject corruption trailing bytes and provenance mismatches");
     }
 
+    bool TestKtx2BasisCooking()
+    {
+        using namespace Engine;
+        const auto decode = [](std::string_view encoded)
+        {
+            const std::string alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+            std::vector<u8> bytes;
+            u32 accumulator = 0; int bits = -8;
+            for (const char character : encoded)
+            {
+                if (character == '=') break;
+                const size_t position = alphabet.find(character);
+                if (position == std::string::npos) return std::vector<u8> {};
+                accumulator = (accumulator << 6) | static_cast<u32>(position); bits += 6;
+                if (bits >= 0) { bytes.push_back(static_cast<u8>((accumulator >> bits) & 0xff)); bits -= 8; }
+            }
+            return bytes;
+        };
+        const std::string etc1s = "q0tUWCAyMLsNChoKAAAAAAEAAABAAAAAQAAAAAAAAAAAAAAAAQAAAAEAAAABAAAAaAAAACwAAACUAAAAeAAAABABAAAAAAAAhAAAAAAAAACUAQAAAAAAAA4AAAAAAAAAAAAAAAAAAAAsAAAAAAAAAAIAKACjAQIAAwMAAAgAAAAAAAAAAAA/AAAAAAAAAAAA/////xIAAABLVFhvcmllbnRhdGlvbgByZAAAADsAAABLVFh3cml0ZXIAdG9rdHggdjQuMC5fX2RlZmF1bHRfXyAvIGxpYmt0eCB2NC4wLl9fZGVmYXVsdF9fAAAZAAAAS1RYd3JpdGVyU2NQYXJhbXMALS1iY21wAAAAAAAAAAABAAEAKQAAAAUAAAAuAAAAAAAAAAAAAAAAAAAADgAAAAAAAAAAAAAAAcAEAAAAAAAAIgKYCAAAAAAAQBIIACYAAAAAAAAQAcAEAAAAAAAAggBUVVVVBQFBhAABAAAAiAvy/6sAYAIAAAAAAAAhBEwEAAAAAAAgbYCAiQAAAAAAACQNEAChP4CHPOQhD3nIQx7yAA==";
+        const std::string uastc = "q0tUWCAyMLsNChoKAAAAAAEAAAAgAAAAIAAAAAAAAAAAAAAAAQAAAAEAAAAAAAAAaAAAACwAAACUAAAAjAAAAAAAAAAAAAAAAAAAAAAAAAAgAQAAAAAAAAAEAAAAAAAAAAQAAAAAAAAsAAAAAAAAAAIAKACmAQEAAwMAABAAAAAAAAAAAAB/AAAAAAAAAAAA/////xIAAABLVFhvcmllbnRhdGlvbgByZAAAABAAAABLVFhzd2l6emxlAHJnMDEAOwAAAEtUWHdyaXRlcgB0b2t0eCB2NC4wLl9fZGVmYXVsdF9fIC8gbGlia3R4IHY0LjAuX19kZWZhdWx0X18AABoAAABLVFh3cml0ZXJTY1BhcmFtcwAtLXVhc3RjAAAAG4FBARAOMAAQMlR2mLrc/luBQSEQDnIAEDJUdpi63P5bgZEnEA60AEDIUdli6nP7W4GRRxAO9gBAyFHZYupz+1uBAVQQzs8AEDJUdpi63P4bgcFNEM6NABAyVHaYutz+G4HFLRDOSwAQMlR2mLrc/huBgQcQzgkAEDJUdpi63P5bgcMCkB4wABAyVHaYutz+W4HBIpAecgAQMlR2mLrc/luBESmQHrQAQMhR2WLqc/tbgRFJkB72AEDIUdli6nP7W4GBVZDezwAQMlR2mLrc/luBQU+Q3o0AEDJUdpi63P5bgUUvkN5LABAyVHaYutz+W4EDCZDeCQAQMlR2mLrc/luBAwMQLzAAEDJUdpi63P5bgQEjEC9yABAyVHaYutz+W4FRKRAvtABAyFHZYupz+1uBUUkQL/YAQMhR2WLqc/tbgcFVEO/PABAyVHaYutz+W4GBTxDvjQAQMlR2mLrc/luBhS8Q70sAEDJUdpi63P5bgUMJEO8JABAyVHaYutz+W4FDBJA/MAAQMlR2mLrc/luBQSSQP3IAEDJUdpi63P5bgZEqkD+0AEDIUdli6nP7W4GRSpA/9gBAyFHZYupz+1uBAVeQ/88AEDJUdpi63P5bgcFQkP+NABAyVHaYutz+W4HFMJD/SwAQMlR2mLrc/luBgwqQ/wkAEDJUdpi63P5bg8MB4DEwABAyVHaYutz+W4HBIeAxcgAQMlR2mLrc/luBESjgMbQAQMhR2WLqc/tbgQFI4DH2ABAyVHaYutz+W4GBVODxzwAQMlR2mLrc/luBQU7g8Y0AEDJUdpi63P5bgUUu4PFLABAyVHaYutz+W4EDCODxCQAQMlR2mLrc/luBgwFgITAAEDJUdpi63P5bgIEhYCFyABAyVHaYutz+W4DBJ2AhtAAQMlR2mLrc/luAwUdgIfYAEDJUdpi63P5bgEFUYOHPABAyVHaYutz+W4EBTmDhjQAQMlR2mLrc/luBBS5g4UsAEDJUdpi63P5bgcMHYOEJABAyVHaYutz+W4FDAOAQMAAQMlR2mLrc/luAQSDgEHIAEDJUdpi63P5bgJEm4BC0AEDIUdli6nP7W4GRRuAQ9gBAyFHZYupz+1uBAVPg0M8AEDJUdpi63P5bgcFM4NCNABAyVHaYutz+W4HFLODQSwAQMlR2mLrc/luBgwbg0AkAEDJUdpi63P5bgQMAYAAwABAyVHaYutz+24MRIGAAcgBAyFHZYupz+9uDUSZgALQAQMhR2WLqc/tbgVFGYAD2AEDIUdli6nP7W4HRUmDAzwBAyFHZYupz+9uDkUxgwI0AQMhR2WLqc/vbg5EsYMBLAEDIUdli6nP725NTBmDACQBAyFHZYupz+w==";
+        AssetRegistry registry; TextureArtifact cooked, preserved; std::string error;
+        Ktx2BasisTextureSource color { "Tests/Fixtures/CyanEtc1s.ktx2", TextureRole::BaseColor, TextureColorSpace::Srgb, decode(etc1s) };
+        const bool colorBc = TextureImporter::CookKtx2Basis(color, registry, TextureTargetProfile::DesktopBC, cooked, error)
+            && cooked.CookedFormat == TextureCookedFormat::Bc7Srgb && cooked.Mips.size() == 1
+            && cooked.Mips[0].Width == 64 && cooked.Mips[0].Height == 64 && cooked.Mips[0].ByteSize == 4096;
+        const bool fallback = TextureImporter::CookKtx2Basis(color, registry, TextureTargetProfile::RGBAFallback, cooked, error)
+            && cooked.CookedFormat == TextureCookedFormat::R8G8B8A8Srgb && cooked.Payload.size() == 16384;
+        TextureArtifact publishedColor;
+        const AssetHandle colorAsset = registry.FindAssetByPath(AssetType::Texture, color.SourcePath);
+        const bool colorPublished = fallback && ResolveTextureArtifact(registry, colorAsset, publishedColor, error);
+        Ktx2BasisTextureSource normal { "Tests/Fixtures/RgUastc.ktx2", TextureRole::Normal, TextureColorSpace::Linear, decode(uastc) };
+        const bool normalTargets = TextureImporter::CookKtx2Basis(normal, registry, TextureTargetProfile::DesktopBC, cooked, error)
+            && cooked.CookedFormat == TextureCookedFormat::Bc5Unorm && !cooked.HasAlpha && cooked.Mips.size() == 1
+            && cooked.Mips[0].Width == 32 && cooked.Mips[0].Height == 32 && cooked.Mips[0].ByteSize == 1024
+            && TextureImporter::CookKtx2Basis(normal, registry, TextureTargetProfile::Astc, cooked, error)
+            && cooked.CookedFormat == TextureCookedFormat::Astc4x4Unorm && cooked.Payload.size() == 1024;
+        preserved = cooked; Ktx2BasisTextureSource corrupt = color; corrupt.Bytes.resize(8);
+        const size_t before = registry.GetAssets().size();
+        const bool failureAtomic = !TextureImporter::CookKtx2Basis(corrupt, registry, TextureTargetProfile::DesktopBC, cooked, error)
+            && cooked.Payload == preserved.Payload && registry.GetAssets().size() == before;
+        TextureArtifact replacementResolved;
+        const bool failedReplacementPreservesFile = failureAtomic && ResolveTextureArtifact(registry, colorAsset, replacementResolved, error)
+            && replacementResolved.Payload == publishedColor.Payload && replacementResolved.CookedFormat == publishedColor.CookedFormat;
+        const bool invalidTargetRejected = !TextureImporter::CookKtx2Basis(color, registry, static_cast<TextureTargetProfile>(255), cooked, error)
+            && registry.GetAssets().size() == before && cooked.Payload == preserved.Payload;
+        TextureArtifact invalidFormat = publishedColor;
+        invalidFormat.CookedFormat = static_cast<TextureCookedFormat>(255);
+        const bool invalidFormatRejected = !StoreTextureArtifact(GetCookedTextureArtifactPath(colorAsset), invalidFormat, error)
+            && ResolveTextureArtifact(registry, colorAsset, replacementResolved, error) && replacementResolved.Payload == publishedColor.Payload;
+        const AssetHandle legacyAsset = registry.RegisterAsset(AssetType::Texture, "Tests/Fixtures/LegacySchema1.raw");
+        const std::filesystem::path legacyPath = GetCookedTextureArtifactPath(legacyAsset);
+        std::filesystem::create_directories(legacyPath.parent_path());
+        {
+            std::ofstream legacyFile(legacyPath, std::ios::binary | std::ios::trunc);
+            legacyFile << "SpiralTextureArtifact 1\nSource \"Tests/Fixtures/LegacySchema1.raw\"\nTextureAsset " << legacyAsset
+                << "\nRole BaseColor\nColorSpace Srgb\nTargetProfile RGBAFallback\nCookedFormat R8G8B8A8Srgb\nMipCount 1\nMip 1 1 0 4\nPayloadBytes 4\nPayload\n";
+            legacyFile.write("\x01\x02\x03\x04", 4);
+        }
+        TextureArtifact legacyResolved;
+        const bool schemaOneCompatible = ResolveTextureArtifact(registry, legacyAsset, legacyResolved, error)
+            && legacyResolved.HasAlpha && legacyResolved.Payload.size() == 4;
+        std::error_code filesystemError;
+        std::filesystem::remove(GetCookedTextureArtifactPath(colorAsset), filesystemError);
+        std::filesystem::remove(GetCookedTextureArtifactPath(registry.FindAssetByPath(AssetType::Texture, normal.SourcePath)), filesystemError);
+        std::filesystem::remove(legacyPath, filesystemError);
+        return Expect(colorBc && fallback, "ETC1S KTX2 cooks deterministic BC7 sRGB and RGBA fallback artifacts")
+            && Expect(normalTargets, "UASTC normal KTX2 cooks linear BC5 and ASTC artifacts")
+            && Expect(failedReplacementPreservesFile, "KTX2 failed replacement preserves the published artifact file")
+            && Expect(invalidTargetRejected && invalidFormatRejected, "texture invalid target and format enums reject without publication")
+            && Expect(schemaOneCompatible, "schema-1 RGBA fallback artifact resolves with conservative alpha metadata");
+    }
+
     bool TestSceneVersionFourCanonicalPersistence()
     {
         using namespace Engine;
@@ -6305,6 +6377,7 @@ int main(int argc, char** argv)
         INTEGRATION_TEST("Scene round trip", TestSceneRoundTrip),
         INTEGRATION_TEST("Cooked mesh artifacts validate and resolve transactionally", TestMeshArtifactValidationAndResolution),
         INTEGRATION_TEST("Texture artifacts cook the deterministic RGBA fallback transactionally", TestTextureArtifactFallbackCooking),
+        INTEGRATION_TEST("KTX2 Basis textures cook deterministic compressed targets transactionally", TestKtx2BasisCooking),
         FAST_TEST("Mesh GPU resource cache preserves exact immutable generations", TestMeshGpuResourceCache),
         INTEGRATION_TEST("Scene version 4 canonical persistence", TestSceneVersionFourCanonicalPersistence),
         INTEGRATION_TEST("Scene loads legacy absolute transforms", TestSceneLoadsLegacyAbsoluteTransforms),

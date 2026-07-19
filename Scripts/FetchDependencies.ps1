@@ -80,16 +80,29 @@ if ($IncludeNVRHIPlatformHeaders) {
 }
 
 if ($IncludeKtxSoftware) {
-    Sync-GitDependency `
-        -Name "KTX-Software" `
-        -Url "https://github.com/KhronosGroup/KTX-Software.git" `
-        -Commit "4d6fc70eaf62ad0558e63e8d97eb9766118327a6" `
-        -Path "Vendor/KTX-Software"
-
     $KtxPath = Join-Path $Root "Vendor/KTX-Software"
+    $KtxReady = Test-Path -LiteralPath (Join-Path $KtxPath ".git")
+    if ($KtxReady) {
+        $KtxReady = (& git -C $KtxPath rev-parse HEAD).Trim() -eq "4d6fc70eaf62ad0558e63e8d97eb9766118327a6" `
+            -and @(& git -C $KtxPath status --porcelain).Count -eq 0
+        foreach ($Notice in @("LICENSE.md", "LICENSES", "NOTICE.md")) {
+            $KtxReady = $KtxReady -and (Test-Path -LiteralPath (Join-Path $KtxPath $Notice))
+        }
+    }
+    if (!$KtxReady) {
+        Sync-GitDependency `
+            -Name "KTX-Software" `
+            -Url "https://github.com/KhronosGroup/KTX-Software.git" `
+            -Commit "4d6fc70eaf62ad0558e63e8d97eb9766118327a6" `
+            -Path "Vendor/KTX-Software"
+    }
+
     $KtxCommit = (& git -C $KtxPath rev-parse HEAD).Trim()
     if ($LASTEXITCODE -ne 0 -or $KtxCommit -ne "4d6fc70eaf62ad0558e63e8d97eb9766118327a6") {
         throw "KTX-Software did not resolve to the admitted source commit."
+    }
+    if (@(& git -C $KtxPath status --porcelain).Count -ne 0) {
+        throw "KTX-Software checkout contains local modifications."
     }
     foreach ($Notice in @("LICENSE.md", "LICENSES", "NOTICE.md")) {
         if (!(Test-Path -LiteralPath (Join-Path $KtxPath $Notice))) {

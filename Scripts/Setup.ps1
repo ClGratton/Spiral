@@ -29,6 +29,7 @@ if (!(Test-Path $PremakeExe)) {
 # belongs to native commands and may be unset or stale in a clean session.
 & (Join-Path $PSScriptRoot "FetchSlang.ps1")
 & (Join-Path $PSScriptRoot "FetchDXC.ps1")
+& (Join-Path $PSScriptRoot "FetchDependencies.ps1") -IncludeKtxSoftware
 
 if (!(Test-Path $PremakeExe)) {
     throw "Premake executable was not found after setup: $PremakeExe"

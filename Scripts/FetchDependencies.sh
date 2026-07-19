@@ -63,15 +63,28 @@ if [[ "$include_nvrhi_platform_headers" == true ]]; then
 fi
 
 if [[ "$include_ktx_software" == true ]]; then
-    sync_git_dependency \
-        "KTX-Software" \
-        "https://github.com/KhronosGroup/KTX-Software.git" \
-        "4d6fc70eaf62ad0558e63e8d97eb9766118327a6" \
-        "Vendor/KTX-Software"
-
     ktx_path="$ROOT/Vendor/KTX-Software"
+    ktx_ready=false
+    if [[ -d "$ktx_path/.git" ]] \
+        && [[ "$(git -C "$ktx_path" rev-parse HEAD)" == "4d6fc70eaf62ad0558e63e8d97eb9766118327a6" ]] \
+        && [[ -z "$(git -C "$ktx_path" status --porcelain)" ]] \
+        && [[ -e "$ktx_path/LICENSE.md" && -e "$ktx_path/LICENSES" && -e "$ktx_path/NOTICE.md" ]]; then
+        ktx_ready=true
+    fi
+    if [[ "$ktx_ready" == false ]]; then
+        sync_git_dependency \
+            "KTX-Software" \
+            "https://github.com/KhronosGroup/KTX-Software.git" \
+            "4d6fc70eaf62ad0558e63e8d97eb9766118327a6" \
+            "Vendor/KTX-Software"
+    fi
+
     [[ "$(git -C "$ktx_path" rev-parse HEAD)" == "4d6fc70eaf62ad0558e63e8d97eb9766118327a6" ]] || {
         echo "KTX-Software did not resolve to the admitted source commit." >&2
+        exit 1
+    }
+    [[ -z "$(git -C "$ktx_path" status --porcelain)" ]] || {
+        echo "KTX-Software checkout contains local modifications." >&2
         exit 1
     }
     for notice in LICENSE.md LICENSES NOTICE.md; do

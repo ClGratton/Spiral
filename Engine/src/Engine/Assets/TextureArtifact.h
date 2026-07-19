@@ -14,7 +14,7 @@ namespace Engine
     enum class TextureRole { BaseColor, Emissive, Normal, Orm, Mask };
     enum class TextureColorSpace { Srgb, Linear };
     enum class TextureTargetProfile { DesktopBC, Astc, RGBAFallback };
-    enum class TextureCookedFormat { R8G8B8A8Unorm, R8G8B8A8Srgb };
+    enum class TextureCookedFormat { R8G8B8A8Unorm, R8G8B8A8Srgb, Bc5Unorm, Bc7Unorm, Bc7Srgb, Astc4x4Unorm, Astc4x4Srgb };
 
     const char* ToString(TextureRole value);
     const char* ToString(TextureColorSpace value);
@@ -37,13 +37,12 @@ namespace Engine
         TextureColorSpace ColorSpace = TextureColorSpace::Srgb;
         TextureTargetProfile TargetProfile = TextureTargetProfile::RGBAFallback;
         TextureCookedFormat CookedFormat = TextureCookedFormat::R8G8B8A8Srgb;
+        bool HasAlpha = false;
         std::vector<TextureArtifactMip> Mips;
         std::vector<u8> Payload;
     };
 
-    // This is the decoder-to-importer boundary, not a source-image decoder. The
-    // first implementation deliberately accepts only already-normalized RGBA8
-    // pixels and preserves every supplied mip; KTX2/libktx ingestion is later.
+    // This is the decoder-to-importer boundary, not a source-image decoder.
     struct NormalizedTextureSource
     {
         std::string SourcePath;
@@ -52,6 +51,16 @@ namespace Engine
         u32 Width = 0;
         u32 Height = 0;
         std::vector<std::vector<u8>> Mips;
+    };
+
+    // A KTX2/Basis input is copied by the caller into engine-owned memory before
+    // import. It intentionally exposes no libktx or Basis implementation type.
+    struct Ktx2BasisTextureSource
+    {
+        std::string SourcePath;
+        TextureRole Role = TextureRole::BaseColor;
+        TextureColorSpace ColorSpace = TextureColorSpace::Srgb;
+        std::vector<u8> Bytes;
     };
 
     std::filesystem::path GetCookedTextureArtifactPath(AssetHandle asset);
@@ -63,9 +72,9 @@ namespace Engine
     class TextureImporter
     {
     public:
-        // The only selected profile is the uncompressed fallback. DesktopBC and
-        // Astc require the still-unadmitted KTX2/Basis transcode boundary.
         static bool CookNormalizedRgba8(const NormalizedTextureSource& source, AssetRegistry& registry,
+            TextureTargetProfile target, TextureArtifact& outArtifact, std::string& outError);
+        static bool CookKtx2Basis(const Ktx2BasisTextureSource& source, AssetRegistry& registry,
             TextureTargetProfile target, TextureArtifact& outArtifact, std::string& outError);
     };
 }

@@ -82,6 +82,7 @@ if [[ ! -x "$PREMAKE_EXE" ]]; then
 fi
 
 bash "$ROOT/Scripts/FetchSlang.sh"
+bash "$ROOT/Scripts/FetchDependencies.sh" --include-ktx-software
 
 case "$(uname -s)" in
     MINGW*|MSYS*|CYGWIN*) bash "$ROOT/Scripts/FetchDXC.sh" ;;
