@@ -956,7 +956,7 @@ void EditorLayer::DrawMainMenuBar()
         {
             ImGui::TextUnformatted("Frame Pacing");
             ImGui::TextDisabled("Responsive has no intentional pacing wait.");
-            ImGui::TextDisabled("Smooth Frametime is opt-in experimental pacing; VSync/VRR/tearing stay separate.");
+            ImGui::TextDisabled("Smooth Frametime is opt-in InterFrame pacing; VSync/VRR/tearing stay separate.");
 
             ImGui::Separator();
             ImGui::TextUnformatted("Presentation policy");
@@ -2073,29 +2073,8 @@ void EditorLayer::DrawProfilerPanel()
         ImGui::EndCombo();
     }
 
-    const Engine::SmoothFrametimeCandidate candidates[] = {
-        Engine::SmoothFrametimeCandidate::InterFrame,
-        Engine::SmoothFrametimeCandidate::SubmissionGate
-    };
-    if (ImGui::BeginCombo("Smooth candidate", Engine::ToString(m_GameFramePacingSettings.GetCandidate())))
-    {
-        for (Engine::SmoothFrametimeCandidate candidate : candidates)
-        {
-            const bool selected = candidate == m_GameFramePacingSettings.GetCandidate();
-            if (ImGui::Selectable(Engine::ToString(candidate), selected))
-            {
-                m_GameFramePacingSettings.SetCandidate(candidate);
-                framePacingChanged = true;
-            }
-            if (selected)
-                ImGui::SetItemDefaultFocus();
-        }
-        ImGui::EndCombo();
-    }
-    if (m_GameFramePacingSettings.GetCandidate() == Engine::SmoothFrametimeCandidate::InterFrame)
-        ImGui::TextDisabled("InterFrame: after prior Present before next input.");
-    else
-        ImGui::TextDisabled("SubmissionGate: pre-native-submit; not FES/current-Present delay.");
+    ImGui::TextDisabled("Smooth uses InterFrame after prior Present before next input.");
+    ImGui::TextDisabled("SubmissionGate is exercised only by explicit benchmark/smoke CLI conditions.");
 
     if (framePacingChanged)
         PublishFramePacingPolicy();

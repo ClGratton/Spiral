@@ -91,7 +91,7 @@ namespace Engine
             else
                 throw std::runtime_error("Smooth Frametime candidate smoke selector is invalid");
             policy.Behavior = policy.Candidate == SmoothFrametimeCandidate::InterFrame
-                ? "experimental-inter-frame" : "experimental-submission-gate";
+                ? "benchmark-inter-frame" : "benchmark-submission-gate";
             Renderer::SetFramePacingPolicy(policy);
         }
 

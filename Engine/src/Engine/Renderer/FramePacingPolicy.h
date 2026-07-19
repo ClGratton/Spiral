@@ -25,9 +25,9 @@ namespace Engine
         SmoothFrametime
     };
 
-    // This is a developer-only experimental control-point selector. It is not
-    // serialized as a product presentation setting: both candidates consume
-    // the same resolved opt-in policy target and are compared independently.
+    // SubmissionGate is retained for explicit benchmark/smoke CLI conditions.
+    // It is not a product presentation setting; product/game Smooth Frametime
+    // always resolves to InterFrame.
     enum class SmoothFrametimeCandidate
     {
         InterFrame,
@@ -115,7 +115,8 @@ namespace Engine
         if (resolved.EffectiveMode == FramePacingMode::SmoothFrametime)
         {
             resolved.SmoothTargetFramesPerSecond = projectPolicy.SmoothTargetFramesPerSecond;
-            resolved.Behavior = "experimental-inter-frame";
+            resolved.Candidate = SmoothFrametimeCandidate::InterFrame;
+            resolved.Behavior = "inter-frame";
         }
         else
             resolved.Behavior = "no-intentional-wait";
@@ -142,19 +143,11 @@ namespace Engine
         ResolvedFramePacingPolicy Resolve(const FramePacingPolicy& projectPolicy) const
         {
             ResolvedFramePacingPolicy resolved = ResolveFramePacingPolicy(projectPolicy, m_RuntimeOverride);
-            resolved.Candidate = m_Candidate;
-            if (resolved.EffectiveMode == FramePacingMode::SmoothFrametime)
-                resolved.Behavior = resolved.Candidate == SmoothFrametimeCandidate::InterFrame
-                    ? "experimental-inter-frame" : "experimental-submission-gate";
             return resolved;
         }
 
-        SmoothFrametimeCandidate GetCandidate() const { return m_Candidate; }
-        void SetCandidate(SmoothFrametimeCandidate candidate) { m_Candidate = candidate; }
-
     private:
         FramePacingOverride m_RuntimeOverride = FramePacingOverride::InheritProject;
-        SmoothFrametimeCandidate m_Candidate = SmoothFrametimeCandidate::InterFrame;
     };
 
     // A deliberately small, backend-neutral deadline state machine. The system

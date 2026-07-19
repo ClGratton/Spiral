@@ -609,9 +609,7 @@ namespace
         const Engine::ResolvedFramePacingPolicy overridden = gameSettings.Resolve(responsiveProject);
         gameSettings.ClearRuntimeOverride();
         const Engine::ResolvedFramePacingPolicy cleared = gameSettings.Resolve(smoothProject);
-        gameSettings.SetCandidate(Engine::SmoothFrametimeCandidate::InterFrame);
         const Engine::ResolvedFramePacingPolicy interFrameSnapshot = gameSettings.Resolve(smoothProject);
-        gameSettings.SetCandidate(Engine::SmoothFrametimeCandidate::SubmissionGate);
         gameSettings.SetRuntimeOverride(Engine::FramePacingOverride::Responsive, smoothProject);
         const Engine::ResolvedFramePacingPolicy nextFrameSnapshot = gameSettings.Resolve(smoothProject);
 
@@ -639,9 +637,9 @@ namespace
                 "clearing the runtime override restores the project default")
             && Expect(interFrameSnapshot.Candidate == Engine::SmoothFrametimeCandidate::InterFrame
                     && interFrameSnapshot.EffectiveMode == Engine::FramePacingMode::SmoothFrametime
-                    && nextFrameSnapshot.Candidate == Engine::SmoothFrametimeCandidate::SubmissionGate
+                    && nextFrameSnapshot.Candidate == Engine::SmoothFrametimeCandidate::InterFrame
                     && nextFrameSnapshot.EffectiveMode == Engine::FramePacingMode::Responsive,
-                "resolved frame-pacing policies are immutable value snapshots across runtime changes")
+                "game Smooth resolves only to InterFrame across runtime changes")
             && Expect(invalidOverrideRejected
                     && gameSettings.GetRuntimeOverride() == beforeRejectedUpdate,
                 "invalid Smooth Frametime override updates leave the prior runtime state unchanged");
