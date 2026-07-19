@@ -120,6 +120,7 @@ $RequiredMarkers = @(
     "RHITextureReadbackSmokeV1 backend=D3D12, invalidState=rejected, unsupportedFormat=rejected, submit=pass, readback=pass, layout=tight, result=pass"
     "SceneRasterPreparationV1 mode=parallel task=Frame.PrepareSceneRaster worker="
     "SceneViewportRenderGraphV1 backend=D3D12 passes=3 labels=clear,raster,output-handoff execution=pass reference=direct comparator=exact-byte-pass"
+    "SceneMeshGpuIntegrationV1 backend=D3D12 snapshot=pass resolver=pass cache=pass indexFormat=UInt32 baseVertex=0"
     "ProductionRenderGraphRetirementV1 backend=D3D12"
     "RenderGraphTimestampScopesV1 backend=D3D12"
     "RendererGpuTimingV1 backend=NVRHI D3D12"

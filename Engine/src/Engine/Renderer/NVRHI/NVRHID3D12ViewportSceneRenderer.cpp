@@ -2,17 +2,18 @@
 
 #include "Engine/Core/Application.h"
 #include "Engine/Core/Log.h"
+#include "Engine/Assets/MeshArtifact.h"
 #include "Engine/Math/Math.h"
 #include "Engine/RHI/NVRHI/NVRHID3D12Device.h"
 #include "Engine/RenderGraph/RenderGraph.h"
 #include "Engine/Renderer/AsyncShaderPackageService.h"
+#include "Engine/Renderer/MeshGpuResourceCache.h"
 #include "Engine/Renderer/NVRHI/D3D12DebugMarkers.h"
 #include "Engine/Renderer/NVRHI/D3D12ViewportShaderReloadCoordinator.h"
 #include "Engine/Renderer/ShaderLibrary.h"
 #include "Engine/Renderer/SlangShaderCompiler.h"
 
 #if defined(GE_HAS_NVRHI_D3D12)
-    #include <array>
     #include <cstddef>
 #include <filesystem>
 #include <memory>
@@ -33,13 +34,6 @@ namespace Engine
             const std::string_view overridePath = Application::Get().GetSpecification().CommandLineArgs.GetOptionValue("--viewport-shader-path");
             return overridePath.empty() ? kViewportShaderPath : overridePath;
         }
-
-        struct ViewportVertex
-        {
-            float Position[3];
-            float Color[3];
-            float UV[2];
-        };
 
         struct ViewportConstants
         {
@@ -64,6 +58,13 @@ namespace Engine
             std::vector<ConstantBufferAllocation> Allocations;
         };
 
+        struct SceneMeshDraw
+        {
+            Ref<const MeshGpuResourceBundle> Bundle;
+            MeshGpuPrimitiveRange Primitive;
+            size_t ConstantIndex = 0;
+        };
+
         class ScopedCommandListDebugMarker final
         {
         public:
@@ -83,42 +84,6 @@ namespace Engine
 
         private:
             RHI::CommandList& m_CommandList;
-        };
-
-        constexpr std::array<ViewportVertex, 24> kPrototypeMeshVertices = {
-            ViewportVertex{{ -0.75f, -0.75f, -0.75f }, { 0.22f, 0.68f, 1.00f }, { 0.0f, 1.0f }},
-            ViewportVertex{{ -0.75f,  0.75f, -0.75f }, { 0.22f, 0.68f, 1.00f }, { 0.0f, 0.0f }},
-            ViewportVertex{{  0.75f,  0.75f, -0.75f }, { 0.22f, 0.68f, 1.00f }, { 1.0f, 0.0f }},
-            ViewportVertex{{  0.75f, -0.75f, -0.75f }, { 0.22f, 0.68f, 1.00f }, { 1.0f, 1.0f }},
-            ViewportVertex{{  0.75f, -0.75f,  0.75f }, { 0.95f, 0.72f, 0.28f }, { 0.0f, 1.0f }},
-            ViewportVertex{{  0.75f,  0.75f,  0.75f }, { 0.95f, 0.72f, 0.28f }, { 0.0f, 0.0f }},
-            ViewportVertex{{ -0.75f,  0.75f,  0.75f }, { 0.95f, 0.72f, 0.28f }, { 1.0f, 0.0f }},
-            ViewportVertex{{ -0.75f, -0.75f,  0.75f }, { 0.95f, 0.72f, 0.28f }, { 1.0f, 1.0f }},
-            ViewportVertex{{ -0.75f, -0.75f,  0.75f }, { 0.26f, 0.88f, 0.55f }, { 0.0f, 1.0f }},
-            ViewportVertex{{ -0.75f,  0.75f,  0.75f }, { 0.26f, 0.88f, 0.55f }, { 0.0f, 0.0f }},
-            ViewportVertex{{ -0.75f,  0.75f, -0.75f }, { 0.26f, 0.88f, 0.55f }, { 1.0f, 0.0f }},
-            ViewportVertex{{ -0.75f, -0.75f, -0.75f }, { 0.26f, 0.88f, 0.55f }, { 1.0f, 1.0f }},
-            ViewportVertex{{  0.75f, -0.75f, -0.75f }, { 0.88f, 0.35f, 0.37f }, { 0.0f, 1.0f }},
-            ViewportVertex{{  0.75f,  0.75f, -0.75f }, { 0.88f, 0.35f, 0.37f }, { 0.0f, 0.0f }},
-            ViewportVertex{{  0.75f,  0.75f,  0.75f }, { 0.88f, 0.35f, 0.37f }, { 1.0f, 0.0f }},
-            ViewportVertex{{  0.75f, -0.75f,  0.75f }, { 0.88f, 0.35f, 0.37f }, { 1.0f, 1.0f }},
-            ViewportVertex{{ -0.75f,  0.75f, -0.75f }, { 0.72f, 0.52f, 0.96f }, { 0.0f, 1.0f }},
-            ViewportVertex{{ -0.75f,  0.75f,  0.75f }, { 0.72f, 0.52f, 0.96f }, { 0.0f, 0.0f }},
-            ViewportVertex{{  0.75f,  0.75f,  0.75f }, { 0.72f, 0.52f, 0.96f }, { 1.0f, 0.0f }},
-            ViewportVertex{{  0.75f,  0.75f, -0.75f }, { 0.72f, 0.52f, 0.96f }, { 1.0f, 1.0f }},
-            ViewportVertex{{ -0.75f, -0.75f,  0.75f }, { 0.24f, 0.75f, 0.82f }, { 0.0f, 1.0f }},
-            ViewportVertex{{ -0.75f, -0.75f, -0.75f }, { 0.24f, 0.75f, 0.82f }, { 0.0f, 0.0f }},
-            ViewportVertex{{  0.75f, -0.75f, -0.75f }, { 0.24f, 0.75f, 0.82f }, { 1.0f, 0.0f }},
-            ViewportVertex{{  0.75f, -0.75f,  0.75f }, { 0.24f, 0.75f, 0.82f }, { 1.0f, 1.0f }},
-        };
-
-        constexpr std::array<u16, 36> kPrototypeMeshIndices = {
-            0, 1, 2, 0, 2, 3,
-            4, 5, 6, 4, 6, 7,
-            8, 9, 10, 8, 10, 11,
-            12, 13, 14, 12, 14, 15,
-            16, 17, 18, 16, 18, 19,
-            20, 21, 22, 20, 22, 23,
         };
 
         D3D12_RESOURCE_BARRIER TransitionBarrier(ID3D12Resource* resource, D3D12_RESOURCE_STATES before, D3D12_RESOURCE_STATES after)
@@ -145,7 +110,7 @@ namespace Engine
             const RHI::ViewportClear& clear,
             const SceneRasterFrame& rasterFrame,
             const std::vector<ConstantBufferAllocation>* constantBuffers,
-            size_t drawCount)
+            const std::vector<SceneMeshDraw>& draws)
         {
             Scope<RHI::CommandList> commands = m_RHIDevice->CreateCommandList(RHI::QueueType::Graphics, "Scene Viewport Bootstrap Reference");
             if (!commands || !commands->Begin()
@@ -154,14 +119,18 @@ namespace Engine
                 || !commands->BindViewportOutputs(colorTexture, &depthTexture)
                 || !commands->ClearViewportOutputs(clear)) return false;
             commands->BeginDebugMarker("Scene Viewport Bootstrap Reference Raster");
-            if (m_Pipeline && m_VertexBuffer && m_IndexBuffer && rasterFrame.HasValidView && !rasterFrame.Instances.empty())
+            if (m_Pipeline && rasterFrame.HasValidView && !rasterFrame.Instances.empty())
             {
                 commands->SetGraphicsPipeline(*m_Pipeline);
                 commands->SetViewport({ 0.0f, 0.0f, static_cast<float>(width), static_cast<float>(height), 0.0f, 1.0f });
                 commands->SetScissorRect({ 0, 0, static_cast<int>(width), static_cast<int>(height) });
-                commands->SetVertexBuffer(0, *m_VertexBuffer);
-                commands->SetIndexBuffer(*m_IndexBuffer, RHI::IndexFormat::Uint16);
-                for (size_t index = 0; index < drawCount; ++index) { commands->SetGraphicsConstantBuffer(0, *(*constantBuffers)[index].Buffer); commands->DrawIndexed(m_IndexCount, 1, 0, 0, 0); }
+                for (const SceneMeshDraw& draw : draws)
+                {
+                    commands->SetVertexBuffer(0, *draw.Bundle->VertexBuffer);
+                    commands->SetIndexBuffer(*draw.Bundle->IndexBuffer, RHI::IndexFormat::Uint32);
+                    commands->SetGraphicsConstantBuffer(0, *(*constantBuffers)[draw.ConstantIndex].Buffer);
+                    commands->DrawIndexed(draw.Primitive.IndexCount, 1, draw.Primitive.FirstIndex, draw.Primitive.BaseVertex, 0);
+                }
             }
             commands->EndDebugMarker();
             return commands->TransitionTexture(colorTexture, RHI::ResourceState::CopySource)
@@ -186,7 +155,7 @@ namespace Engine
 
             if (!RequestInitialPipeline())
                 return false;
-            return CreateMeshResources();
+            return true;
         }
 
         void Shutdown()
@@ -195,16 +164,14 @@ namespace Engine
             if (m_RHIDevice)
                 m_RHIDevice->WaitIdle();
             m_SubmittedGraphFrames.ReleaseAfterDeviceIdle();
+            m_MeshResourceCache.Clear();
             m_FrameConstantBuffers.clear();
-            m_IndexBuffer.reset();
-            m_VertexBuffer.reset();
             m_Pipeline.reset();
             m_PixelShader.reset();
             m_VertexShader.reset();
             if (m_ShaderPackages)
                 m_ShaderPackages->Shutdown();
             m_ShaderPackages.reset();
-            m_IndexCount = 0;
             m_RHIDevice = nullptr;
         }
 
@@ -263,7 +230,7 @@ namespace Engine
             SceneRasterFrame rasterFrame;
             Ref<ConstantBufferSet> constantBufferSet;
             std::vector<ConstantBufferAllocation>* constantBuffers = nullptr;
-            size_t drawCount = 0;
+            std::vector<SceneMeshDraw> draws;
             const std::shared_ptr<const SceneRenderSnapshot> snapshot = Renderer::GetSceneRenderSnapshot();
             const std::shared_ptr<const SceneRasterFrame> prepared = Renderer::GetPreparedSceneRasterFrame();
             if (snapshot)
@@ -284,8 +251,6 @@ namespace Engine
 
             bool renderSucceeded = true;
             if (m_Pipeline
-                && m_VertexBuffer
-                && m_IndexBuffer
                 && rasterFrame.HasValidView
                 && !rasterFrame.Instances.empty())
             {
@@ -297,12 +262,36 @@ namespace Engine
                 else
                 {
                     constantBuffers = &constantBufferSet->Allocations;
-                    drawCount = rasterFrame.Instances.size();
                     for (size_t index = 0; index < rasterFrame.Instances.size(); ++index)
                     {
                         ViewportConstants constants {};
                         std::memcpy(constants.ViewProjection, rasterFrame.Instances[index].ModelViewProjection.Values, sizeof(constants.ViewProjection));
                         std::memcpy((*constantBuffers)[index].Mapped, &constants, sizeof(constants));
+                    }
+                    std::string meshError;
+                    for (size_t index = 0; index < rasterFrame.Instances.size(); ++index)
+                    {
+                        MeshArtifact artifact;
+                        if (!Renderer::ResolvePublishedMeshArtifact(rasterFrame.Instances[index].MeshAsset, artifact, meshError))
+                        {
+                            Log::Error("D3D12 Scene viewport could not resolve snapshot mesh artifact: ", meshError);
+                            renderSucceeded = false;
+                            break;
+                        }
+                        Ref<const MeshGpuResourceBundle> bundle;
+                        if (!m_MeshResourceCache.Acquire(*m_RHIDevice, artifact, bundle, meshError))
+                        {
+                            Log::Error("D3D12 Scene viewport could not acquire snapshot mesh GPU resources: ", meshError);
+                            renderSucceeded = false;
+                            break;
+                        }
+                        for (const MeshGpuPrimitiveRange& primitive : bundle->Primitives)
+                            draws.push_back({ bundle, primitive, index });
+                    }
+                    if (draws.empty())
+                    {
+                        Log::Error("D3D12 Scene viewport resolved a snapshot mesh with no drawable primitives");
+                        renderSucceeded = false;
                     }
                 }
             }
@@ -331,19 +320,24 @@ namespace Engine
             graph->AddWrite(rasterPass, color, RHI::ResourceState::RenderTarget);
             graph->AddWrite(rasterPass, depth, RHI::ResourceState::DepthWrite);
             const Ref<RHI::Pipeline> activePipeline = m_Pipeline;
-            graph->SetPassCallback(rasterPass, [this, activePipeline, width, height, &rasterFrame, constantBuffers, drawCount](RenderGraph::ExecutionContext& context)
+            graph->SetPassCallback(rasterPass, [activePipeline, width, height, &rasterFrame, constantBuffers, draws](RenderGraph::ExecutionContext& context)
             {
                 RHI::Texture* graphColor = context.GetTexture({ 0 });
                 RHI::Texture* graphDepth = context.GetTexture({ 1 });
                 RHI::CommandList& commands = context.GetCommandList();
                 if (!graphColor || !graphDepth || !commands.BindViewportOutputs(*graphColor, graphDepth)) return false;
-                if (!activePipeline || !m_VertexBuffer || !m_IndexBuffer || !rasterFrame.HasValidView || rasterFrame.Instances.empty()) return true;
+                if (!activePipeline || !rasterFrame.HasValidView || rasterFrame.Instances.empty()) return true;
                 commands.SetGraphicsPipeline(*activePipeline);
                 commands.SetViewport({ 0.0f, 0.0f, static_cast<float>(width), static_cast<float>(height), 0.0f, 1.0f });
                 commands.SetScissorRect({ 0, 0, static_cast<int>(width), static_cast<int>(height) });
-                commands.SetVertexBuffer(0, *m_VertexBuffer);
-                commands.SetIndexBuffer(*m_IndexBuffer, RHI::IndexFormat::Uint16);
-                for (size_t index = 0; index < drawCount; ++index) { commands.SetGraphicsConstantBuffer(0, *(*constantBuffers)[index].Buffer); commands.DrawIndexed(m_IndexCount, 1, 0, 0, 0); ++rasterFrame.IssuedDrawCount; }
+                for (const SceneMeshDraw& draw : draws)
+                {
+                    commands.SetVertexBuffer(0, *draw.Bundle->VertexBuffer);
+                    commands.SetIndexBuffer(*draw.Bundle->IndexBuffer, RHI::IndexFormat::Uint32);
+                    commands.SetGraphicsConstantBuffer(0, *(*constantBuffers)[draw.ConstantIndex].Buffer);
+                    commands.DrawIndexed(draw.Primitive.IndexCount, 1, draw.Primitive.FirstIndex, draw.Primitive.BaseVertex, 0);
+                    ++rasterFrame.IssuedDrawCount;
+                }
                 return true;
             });
             const RenderGraph::PassHandle handoffPass = graph->AddPass("Scene Viewport Graph Output Handoff", RHI::QueueType::Graphics);
@@ -364,6 +358,8 @@ namespace Engine
                 // selected while recording alive until its accepted GPU work retires.
                 if (activePipeline)
                     payloads.emplace_back(activePipeline);
+                for (const SceneMeshDraw& draw : draws)
+                    payloads.emplace_back(std::const_pointer_cast<MeshGpuResourceBundle>(draw.Bundle));
                 std::string retentionError;
                 if (!m_SubmittedGraphFrames.Retain(Application::Get().GetFrameIndex(), std::move(graph), compiled,
                     executed, std::move(payloads), &retentionError))
@@ -375,6 +371,10 @@ namespace Engine
             }
             if (!executed.Success)
                 return false;
+            if (Application::Get().GetSpecification().CommandLineArgs.HasFlag("--scene-viewport-render-graph-smoke")
+                && m_Pipeline && rasterFrame.HasValidView && !rasterFrame.Instances.empty() && !draws.empty())
+                Log::Info("SceneMeshGpuIntegrationV1 backend=D3D12 snapshot=pass resolver=pass cache=pass indexFormat=UInt32 baseVertex=0 instances=", rasterFrame.Instances.size(),
+                    " draws=", draws.size(), " constants=per-instance retained=gpu-retirement result=pass");
             if (Application::Get().GetSpecification().CommandLineArgs.HasFlag("--scene-viewport-render-graph-smoke"))
                 Log::Info("ProductionRenderGraphRetirementV1 backend=D3D12 frame=", Application::Get().GetFrameIndex(),
                     " passes=", executed.AcceptedPassCount, " cpuWaitBetween=no pending=", m_SubmittedGraphFrames.GetPendingCount(), " result=pass");
@@ -389,7 +389,7 @@ namespace Engine
                 Scope<RHI::Texture> referenceDepth = m_RHIDevice->CreateTexture(referenceDepthDescription);
                 RHI::TextureReadback graphReadback, referenceReadback;
                 const bool referenceRendered = referenceColor && referenceDepth && RecordBootstrapReference(
-                    *referenceColor, *referenceDepth, width, height, clear, rasterFrame, constantBuffers, drawCount);
+                    *referenceColor, *referenceDepth, width, height, clear, rasterFrame, constantBuffers, draws);
                 const bool readBack = referenceRendered && ReadbackGraphOutput(colorTexture, graphReadback)
                     && m_RHIDevice->ReadbackTexture(*referenceColor, referenceReadback);
                 const bool equivalent = readBack && graphReadback.Extent.Width == referenceReadback.Extent.Width
@@ -604,14 +604,14 @@ namespace Engine
                 return false;
 
             RHI::PipelineDescription pipelineDesc;
-            pipelineDesc.DebugName = "Editor Viewport Prototype Mesh Pipeline";
+            pipelineDesc.DebugName = "Editor Viewport Scene Mesh Pipeline";
             pipelineDesc.Type = RHI::PipelineType::Graphics;
             pipelineDesc.VertexShader = vertexShader.get();
             pipelineDesc.PixelShader = pixelShader.get();
             pipelineDesc.VertexInputs = {
-                { "POSITION", 0, RHI::Format::R32G32B32Float, 0, offsetof(ViewportVertex, Position) },
-                { "COLOR", 0, RHI::Format::R32G32B32Float, 0, offsetof(ViewportVertex, Color) },
-                { "TEXCOORD", 0, RHI::Format::R32G32Float, 0, offsetof(ViewportVertex, UV) }
+                { "POSITION", 0, RHI::Format::R32G32B32Float, 0, offsetof(MeshArtifactVertex, Position) },
+                { "COLOR", 0, RHI::Format::R32G32B32Float, 0, offsetof(MeshArtifactVertex, Color) },
+                { "TEXCOORD", 0, RHI::Format::R32G32Float, 0, offsetof(MeshArtifactVertex, UV) }
             };
             pipelineDesc.ConstantBufferBindings = {
                 { 0, 0, RHI::ShaderStage::AllGraphics }
@@ -687,39 +687,6 @@ namespace Engine
             return true;
         }
 
-        bool CreateMeshResources()
-        {
-            const u64 vertexBufferSize = sizeof(ViewportVertex) * kPrototypeMeshVertices.size();
-            RHI::BufferDescription vertexBufferDesc;
-            vertexBufferDesc.DebugName = "Editor Viewport Prototype Vertex Buffer";
-            vertexBufferDesc.SizeBytes = vertexBufferSize;
-            vertexBufferDesc.StrideBytes = sizeof(ViewportVertex);
-            vertexBufferDesc.Usage = static_cast<RHI::BufferUsage>(
-                static_cast<u32>(RHI::BufferUsage::Vertex) | static_cast<u32>(RHI::BufferUsage::CopyDest));
-            if (!CreateRhiBuffer(vertexBufferDesc, m_VertexBuffer))
-                return false;
-
-            if (!m_RHIDevice->UploadBuffer(*m_VertexBuffer, kPrototypeMeshVertices.data(), vertexBufferSize))
-                return false;
-
-            const u64 indexBufferSize = sizeof(u16) * kPrototypeMeshIndices.size();
-            RHI::BufferDescription indexBufferDesc;
-            indexBufferDesc.DebugName = "Editor Viewport Prototype Index Buffer";
-            indexBufferDesc.SizeBytes = indexBufferSize;
-            indexBufferDesc.StrideBytes = sizeof(u16);
-            indexBufferDesc.Usage = static_cast<RHI::BufferUsage>(
-                static_cast<u32>(RHI::BufferUsage::Index) | static_cast<u32>(RHI::BufferUsage::CopyDest));
-            if (!CreateRhiBuffer(indexBufferDesc, m_IndexBuffer))
-                return false;
-
-            if (!m_RHIDevice->UploadBuffer(*m_IndexBuffer, kPrototypeMeshIndices.data(), indexBufferSize))
-                return false;
-
-            m_IndexCount = static_cast<u32>(kPrototypeMeshIndices.size());
-
-            return true;
-        }
-
         Ref<ConstantBufferSet> AcquireConstantBuffers(u32 frameSlot, size_t requiredCount)
         {
             if (frameSlot >= m_FrameConstantBuffers.size())
@@ -765,11 +732,10 @@ namespace Engine
         }
 
         RHI::Device* m_RHIDevice = nullptr;
+        MeshGpuResourceCache m_MeshResourceCache { 32 };
         Ref<RHI::Pipeline> m_Pipeline;
         Ref<RHI::Shader> m_VertexShader;
         Ref<RHI::Shader> m_PixelShader;
-        Scope<RHI::Buffer> m_VertexBuffer;
-        Scope<RHI::Buffer> m_IndexBuffer;
         std::vector<Ref<ConstantBufferSet>> m_FrameConstantBuffers;
         SubmittedRenderGraphFrameOwner m_SubmittedGraphFrames;
         ShaderSourceFile m_ShaderSource;
@@ -781,7 +747,6 @@ namespace Engine
         D3D12ViewportShaderReloadCoordinator m_ReloadCoordinator;
         D3D12ViewportShaderReloadCoordinator::Ticket m_ReloadTicket;
         bool m_ShaderPipelineTerminalFailure = false;
-        u32 m_IndexCount = 0;
     };
 
     NVRHID3D12ViewportSceneRenderer::NVRHID3D12ViewportSceneRenderer() = default;

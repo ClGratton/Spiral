@@ -99,6 +99,7 @@ REQUIRED_MARKERS=(
     "VulkanSceneOutputCaptureV1 outputGeneration="
     "VulkanSceneOutputHandoffV1 producer=pass"
     "SceneViewportRenderGraphV1 backend=Vulkan passes=3 labels=clear,raster,output-handoff execution=pass reference=direct comparator=exact-byte-pass"
+    "SceneMeshGpuIntegrationV1 backend=Vulkan snapshot=pass resolver=pass cache=pass indexFormat=UInt32 baseVertex=0"
     "ProductionRenderGraphRetirementV1 backend=Vulkan"
     "RenderGraphTimestampScopesV1 backend=Vulkan"
     "RendererGpuTimingV1 backend=NVRHI Vulkan"

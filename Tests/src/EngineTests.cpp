@@ -1794,13 +1794,17 @@ namespace
         MeshArtifact failed = third;
         failed.Asset = 73;
         const bool failureAtomic = !cache.Acquire(firstDevice, failed, changed, error) && cache.GetEntryCount() == beforeFailure && changed->Generation > first->Generation;
+        cache.Clear();
+        const bool clearReleasesOnlyCacheOwnership = cache.GetEntryCount() == 0 && survivor->VertexBuffer && survivor->IndexBuffer;
         return Expect(descriptionsAndBytes, "mesh GPU cache creates immutable RHI buffers with exact uploaded artifact bytes and draw ranges")
             && Expect(exactReuse, "mesh GPU cache exactly reuses a matching artifact identity")
             && Expect(replacement, "mesh GPU cache creates a new generation for changed vertex values")
             && Expect(wrongDeviceSeparate, "mesh GPU cache separates exact RHI device instances")
             && Expect(bounded && retainedMostRecent && evictedLeastRecent,
                 "mesh GPU cache evicts the deterministic least-recent entry while external Ref bundles survive")
-            && Expect(failureAtomic, "mesh GPU cache leaves accepted entries unchanged after upload failure");
+            && Expect(failureAtomic, "mesh GPU cache leaves accepted entries unchanged after upload failure")
+            && Expect(clearReleasesOnlyCacheOwnership,
+                "mesh GPU cache clear releases cache ownership while a retained bundle remains valid for GPU retirement");
     }
 
     bool TestMeshArtifactValidationAndResolution()

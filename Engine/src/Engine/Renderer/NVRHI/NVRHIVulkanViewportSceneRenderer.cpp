@@ -2,6 +2,8 @@
 
 #include "Engine/Core/Application.h"
 #include "Engine/Core/Log.h"
+#include "Engine/Assets/MeshArtifact.h"
+#include "Engine/Renderer/MeshGpuResourceCache.h"
 #include "Engine/Renderer/PortableShaderContract.h"
 #include "Engine/Renderer/SceneRasterPreparation.h"
 #include "Engine/Renderer/ShaderLibrary.h"
@@ -9,7 +11,6 @@
 #include "Engine/RenderGraph/RenderGraph.h"
 
 #if defined(GE_HAS_NVRHI_VULKAN)
-    #include <array>
     #include <cstddef>
     #include <cstring>
     #include <filesystem>
@@ -22,29 +23,15 @@ namespace Engine
     {
         constexpr u32 kConstantBufferSize = 256;
 
-        struct Vertex
-        {
-            float Position[3];
-            float Color[3];
-            float UV[2];
-        };
-
         struct Constants { float ViewProjection[16]; };
 
-        constexpr std::array<Vertex, 24> kVertices = {
-            Vertex{{ -0.75f, -0.75f, -0.75f }, { 0.22f, 0.68f, 1.00f }, { 0.0f, 1.0f }}, Vertex{{ -0.75f,  0.75f, -0.75f }, { 0.22f, 0.68f, 1.00f }, { 0.0f, 0.0f }}, Vertex{{  0.75f,  0.75f, -0.75f }, { 0.22f, 0.68f, 1.00f }, { 1.0f, 0.0f }}, Vertex{{  0.75f, -0.75f, -0.75f }, { 0.22f, 0.68f, 1.00f }, { 1.0f, 1.0f }},
-            Vertex{{  0.75f, -0.75f,  0.75f }, { 0.95f, 0.72f, 0.28f }, { 0.0f, 1.0f }}, Vertex{{  0.75f,  0.75f,  0.75f }, { 0.95f, 0.72f, 0.28f }, { 0.0f, 0.0f }}, Vertex{{ -0.75f,  0.75f,  0.75f }, { 0.95f, 0.72f, 0.28f }, { 1.0f, 0.0f }}, Vertex{{ -0.75f, -0.75f,  0.75f }, { 0.95f, 0.72f, 0.28f }, { 1.0f, 1.0f }},
-            Vertex{{ -0.75f, -0.75f,  0.75f }, { 0.26f, 0.88f, 0.55f }, { 0.0f, 1.0f }}, Vertex{{ -0.75f,  0.75f,  0.75f }, { 0.26f, 0.88f, 0.55f }, { 0.0f, 0.0f }}, Vertex{{ -0.75f,  0.75f, -0.75f }, { 0.26f, 0.88f, 0.55f }, { 1.0f, 0.0f }}, Vertex{{ -0.75f, -0.75f, -0.75f }, { 0.26f, 0.88f, 0.55f }, { 1.0f, 1.0f }},
-            Vertex{{  0.75f, -0.75f, -0.75f }, { 0.88f, 0.35f, 0.37f }, { 0.0f, 1.0f }}, Vertex{{  0.75f,  0.75f, -0.75f }, { 0.88f, 0.35f, 0.37f }, { 0.0f, 0.0f }}, Vertex{{  0.75f,  0.75f,  0.75f }, { 0.88f, 0.35f, 0.37f }, { 1.0f, 0.0f }}, Vertex{{  0.75f, -0.75f,  0.75f }, { 0.88f, 0.35f, 0.37f }, { 1.0f, 1.0f }},
-            Vertex{{ -0.75f,  0.75f, -0.75f }, { 0.72f, 0.52f, 0.96f }, { 0.0f, 1.0f }}, Vertex{{ -0.75f,  0.75f,  0.75f }, { 0.72f, 0.52f, 0.96f }, { 0.0f, 0.0f }}, Vertex{{  0.75f,  0.75f,  0.75f }, { 0.72f, 0.52f, 0.96f }, { 1.0f, 0.0f }}, Vertex{{  0.75f,  0.75f, -0.75f }, { 0.72f, 0.52f, 0.96f }, { 1.0f, 1.0f }},
-            Vertex{{ -0.75f, -0.75f,  0.75f }, { 0.24f, 0.75f, 0.82f }, { 0.0f, 1.0f }}, Vertex{{ -0.75f, -0.75f, -0.75f }, { 0.24f, 0.75f, 0.82f }, { 0.0f, 0.0f }}, Vertex{{  0.75f, -0.75f, -0.75f }, { 0.24f, 0.75f, 0.82f }, { 1.0f, 0.0f }}, Vertex{{  0.75f, -0.75f,  0.75f }, { 0.24f, 0.75f, 0.82f }, { 1.0f, 1.0f }}
-        };
-        constexpr std::array<u16, 36> kIndices = { 0,1,2,0,2,3, 4,5,6,4,6,7, 8,9,10,8,10,11, 12,13,14,12,14,15, 16,17,18,16,18,19, 20,21,22,20,22,23 };
+        struct SceneMeshDraw { Ref<const MeshGpuResourceBundle> Bundle; MeshGpuPrimitiveRange Primitive; size_t ConstantIndex = 0; };
 
         RHI::BufferUsage WithUsage(RHI::BufferUsage first, RHI::BufferUsage second)
         {
             return static_cast<RHI::BufferUsage>(static_cast<u32>(first) | static_cast<u32>(second));
         }
+
     }
 
     struct NVRHIVulkanViewportSceneRenderer::Impl
@@ -56,7 +43,8 @@ namespace Engine
             u32 height,
             const RHI::ViewportClear& clear,
             const SceneRasterFrame& frame,
-            const std::vector<Scope<RHI::Buffer>>& constants)
+            const std::vector<Scope<RHI::Buffer>>& constants,
+            const std::vector<SceneMeshDraw>& draws)
         {
             Scope<RHI::CommandList> commands = m_Device->CreateCommandList(RHI::QueueType::Graphics, "Scene Viewport Bootstrap Reference");
             if (!commands || !commands->Begin()
@@ -65,10 +53,10 @@ namespace Engine
                 || !commands->BindViewportOutputs(colorTexture, &depthTexture)
                 || !commands->ClearViewportOutputs(clear)) return false;
             commands->BeginDebugMarker("Scene Viewport Bootstrap Reference Raster");
-            if (m_Pipeline && m_VertexBuffer && m_IndexBuffer && frame.HasValidView && !frame.Instances.empty())
+            if (m_Pipeline && frame.HasValidView && !frame.Instances.empty())
             {
-                commands->SetGraphicsPipeline(*m_Pipeline); commands->SetViewport({ 0.0f, 0.0f, static_cast<float>(width), static_cast<float>(height), 0.0f, 1.0f }); commands->SetScissorRect({ 0, 0, static_cast<int>(width), static_cast<int>(height) }); commands->SetVertexBuffer(0, *m_VertexBuffer); commands->SetIndexBuffer(*m_IndexBuffer, RHI::IndexFormat::Uint16);
-                for (const Scope<RHI::Buffer>& constant : constants) { commands->SetGraphicsConstantBuffer(0, *constant); commands->DrawIndexed(static_cast<u32>(kIndices.size()), 1, 0, 0, 0); }
+                commands->SetGraphicsPipeline(*m_Pipeline); commands->SetViewport({ 0.0f, 0.0f, static_cast<float>(width), static_cast<float>(height), 0.0f, 1.0f }); commands->SetScissorRect({ 0, 0, static_cast<int>(width), static_cast<int>(height) });
+                for (const SceneMeshDraw& draw : draws) { commands->SetVertexBuffer(0, *draw.Bundle->VertexBuffer); commands->SetIndexBuffer(*draw.Bundle->IndexBuffer, RHI::IndexFormat::Uint32); commands->SetGraphicsConstantBuffer(0, *constants[draw.ConstantIndex]); commands->DrawIndexed(draw.Primitive.IndexCount, 1, draw.Primitive.FirstIndex, draw.Primitive.BaseVertex, 0); }
             }
             commands->EndDebugMarker();
             return commands->TransitionTexture(colorTexture, RHI::ResourceState::CopySource)
@@ -115,12 +103,9 @@ namespace Engine
             RHI::ShaderDescription vs; vs.DebugName = "Vulkan Scene Viewport VS"; vs.SourceName = source.ResolvedPath.string(); vs.EntryPoint = "main"; vs.Stage = RHI::ShaderStage::Vertex; vs.BinaryFormat = RHI::ShaderBinaryFormat::Spirv; vs.Binary = vertex.Spirv;
             RHI::ShaderDescription ps = vs; ps.DebugName = "Vulkan Scene Viewport PS"; ps.Stage = RHI::ShaderStage::Pixel; ps.Binary = pixel.Spirv;
             m_VertexShader = m_Device->CreateShader(vs); m_PixelShader = m_Device->CreateShader(ps);
-            RHI::PipelineDescription pipeline; pipeline.DebugName = "Vulkan Scene Viewport Pipeline"; pipeline.VertexShader = m_VertexShader.get(); pipeline.PixelShader = m_PixelShader.get(); pipeline.VertexInputs = {{ "POSITION", 0, RHI::Format::R32G32B32Float, 0, offsetof(Vertex, Position) }, { "COLOR", 0, RHI::Format::R32G32B32Float, 0, offsetof(Vertex, Color) }, { "TEXCOORD", 0, RHI::Format::R32G32Float, 0, offsetof(Vertex, UV) }}; pipeline.ConstantBufferBindings = {{ 0, 0, RHI::ShaderStage::AllGraphics }}; pipeline.ColorFormat = RHI::Format::R8G8B8A8Unorm; pipeline.DepthFormat = RHI::Format::D32Float; pipeline.DepthTestEnable = true; pipeline.DepthWriteEnable = true; pipeline.RasterCullMode = RHI::CullMode::None;
+            RHI::PipelineDescription pipeline; pipeline.DebugName = "Vulkan Scene Viewport Pipeline"; pipeline.VertexShader = m_VertexShader.get(); pipeline.PixelShader = m_PixelShader.get(); pipeline.VertexInputs = {{ "POSITION", 0, RHI::Format::R32G32B32Float, 0, offsetof(MeshArtifactVertex, Position) }, { "COLOR", 0, RHI::Format::R32G32B32Float, 0, offsetof(MeshArtifactVertex, Color) }, { "TEXCOORD", 0, RHI::Format::R32G32Float, 0, offsetof(MeshArtifactVertex, UV) }}; pipeline.ConstantBufferBindings = {{ 0, 0, RHI::ShaderStage::AllGraphics }}; pipeline.ColorFormat = RHI::Format::R8G8B8A8Unorm; pipeline.DepthFormat = RHI::Format::D32Float; pipeline.DepthTestEnable = true; pipeline.DepthWriteEnable = true; pipeline.RasterCullMode = RHI::CullMode::None;
             m_Pipeline = m_VertexShader && m_PixelShader ? m_Device->CreatePipeline(pipeline) : nullptr;
-            auto buffer = [this](const char* name, u64 size, u32 stride, RHI::BufferUsage usage) { RHI::BufferDescription d; d.DebugName = name; d.SizeBytes = size; d.StrideBytes = stride; d.Usage = WithUsage(usage, RHI::BufferUsage::CopyDest); return m_Device->CreateBuffer(d); };
-            m_VertexBuffer = buffer("Vulkan Scene Viewport Vertices", sizeof(kVertices), sizeof(Vertex), RHI::BufferUsage::Vertex);
-            m_IndexBuffer = buffer("Vulkan Scene Viewport Indices", sizeof(kIndices), sizeof(u16), RHI::BufferUsage::Index);
-            return m_Pipeline && m_VertexBuffer && m_IndexBuffer && m_Device->UploadBuffer(*m_VertexBuffer, kVertices.data(), sizeof(kVertices)) && m_Device->UploadBuffer(*m_IndexBuffer, kIndices.data(), sizeof(kIndices));
+            return m_Pipeline != nullptr;
         }
 
         bool EnsureOutputs(u32 width, u32 height)
@@ -156,6 +141,17 @@ namespace Engine
             if (!frame.HasValidView || frame.Instances.empty()) return false;
             Ref<std::vector<Scope<RHI::Buffer>>> constants = CreateRef<std::vector<Scope<RHI::Buffer>>>(); constants->reserve(frame.Instances.size());
             for (const SceneRasterInstance& instance : frame.Instances) { RHI::BufferDescription d; d.DebugName = "Vulkan Scene Viewport Instance Constants"; d.SizeBytes = kConstantBufferSize; d.Usage = WithUsage(RHI::BufferUsage::Constant, RHI::BufferUsage::CopyDest); Scope<RHI::Buffer> b = m_Device->CreateBuffer(d); Constants c {}; std::memcpy(c.ViewProjection, instance.ModelViewProjection.Values, sizeof(c.ViewProjection)); if (!b || !m_Device->UploadBuffer(*b, &c, sizeof(c))) return false; constants->push_back(std::move(b)); }
+            std::vector<SceneMeshDraw> draws;
+            std::string meshError;
+            for (size_t index = 0; index < frame.Instances.size(); ++index)
+            {
+                MeshArtifact artifact;
+                if (!Renderer::ResolvePublishedMeshArtifact(frame.Instances[index].MeshAsset, artifact, meshError)) { Log::Error("Vulkan Scene viewport could not resolve snapshot mesh artifact: ", meshError); return false; }
+                Ref<const MeshGpuResourceBundle> bundle;
+                if (!m_MeshResourceCache.Acquire(*m_Device, artifact, bundle, meshError)) { Log::Error("Vulkan Scene viewport could not acquire snapshot mesh GPU resources: ", meshError); return false; }
+                for (const MeshGpuPrimitiveRange& primitive : bundle->Primitives) draws.push_back({ bundle, primitive, index });
+            }
+            if (draws.empty()) { Log::Error("Vulkan Scene viewport resolved a snapshot mesh with no drawable primitives"); return false; }
             RHI::ResourceState colorState = RHI::ResourceState::Unknown;
             RHI::ResourceState depthState = RHI::ResourceState::Unknown;
             if (!m_Device->QueryResourceState(m_Color.get(), colorState) || !m_Device->QueryResourceState(m_Depth.get(), depthState)) return false;
@@ -171,12 +167,12 @@ namespace Engine
             graph->SetPassWorkerRecordingEligible(clearPass);
             const RenderGraph::PassHandle rasterPass = graph->AddPass("Scene Viewport Graph Raster", RHI::QueueType::Graphics);
             graph->AddWrite(rasterPass, color, RHI::ResourceState::RenderTarget); graph->AddWrite(rasterPass, depth, RHI::ResourceState::DepthWrite);
-            graph->SetPassCallback(rasterPass, [this, width, height, &frame, constants](RenderGraph::ExecutionContext& context)
+            graph->SetPassCallback(rasterPass, [this, width, height, &frame, constants, draws](RenderGraph::ExecutionContext& context)
             {
                 RHI::Texture* graphColor = context.GetTexture({ 0 }); RHI::Texture* graphDepth = context.GetTexture({ 1 }); RHI::CommandList& commands = context.GetCommandList();
                 if (!graphColor || !graphDepth || !commands.BindViewportOutputs(*graphColor, graphDepth)) return false;
-                commands.SetGraphicsPipeline(*m_Pipeline); commands.SetViewport({ 0.0f, 0.0f, static_cast<float>(width), static_cast<float>(height), 0.0f, 1.0f }); commands.SetScissorRect({ 0, 0, static_cast<int>(width), static_cast<int>(height) }); commands.SetVertexBuffer(0, *m_VertexBuffer); commands.SetIndexBuffer(*m_IndexBuffer, RHI::IndexFormat::Uint16);
-                for (const Scope<RHI::Buffer>& constant : *constants) { commands.SetGraphicsConstantBuffer(0, *constant); commands.DrawIndexed(static_cast<u32>(kIndices.size()), 1, 0, 0, 0); ++frame.IssuedDrawCount; }
+                commands.SetGraphicsPipeline(*m_Pipeline); commands.SetViewport({ 0.0f, 0.0f, static_cast<float>(width), static_cast<float>(height), 0.0f, 1.0f }); commands.SetScissorRect({ 0, 0, static_cast<int>(width), static_cast<int>(height) });
+                for (const SceneMeshDraw& draw : draws) { commands.SetVertexBuffer(0, *draw.Bundle->VertexBuffer); commands.SetIndexBuffer(*draw.Bundle->IndexBuffer, RHI::IndexFormat::Uint32); commands.SetGraphicsConstantBuffer(0, *(*constants)[draw.ConstantIndex]); commands.DrawIndexed(draw.Primitive.IndexCount, 1, draw.Primitive.FirstIndex, draw.Primitive.BaseVertex, 0); ++frame.IssuedDrawCount; }
                 return true;
             });
             const RenderGraph::PassHandle handoffPass = graph->AddPass("Scene Viewport Graph Output Handoff", RHI::QueueType::Graphics);
@@ -190,8 +186,10 @@ namespace Engine
             if (!executed.Completions.empty())
             {
                 std::string retentionError;
+                std::vector<Ref<void>> payloads { constants };
+                for (const SceneMeshDraw& draw : draws) payloads.emplace_back(std::const_pointer_cast<MeshGpuResourceBundle>(draw.Bundle));
                 if (!m_SubmittedGraphFrames.Retain(snapshot.FrameIndex, std::move(graph), compiled, executed,
-                    { constants }, &retentionError))
+                    std::move(payloads), &retentionError))
                 {
                     Log::Error("Vulkan Scene viewport could not retain an accepted RenderGraph submission: ", retentionError);
                     m_Device->WaitIdle();
@@ -199,6 +197,7 @@ namespace Engine
                 }
             }
             if (!executed.Success) { Log::Error("Vulkan Scene viewport render graph failed: ", executed.Error); return false; }
+            if (Application::Get().GetSpecification().CommandLineArgs.HasFlag("--scene-viewport-render-graph-smoke")) Log::Info("SceneMeshGpuIntegrationV1 backend=Vulkan snapshot=pass resolver=pass cache=pass indexFormat=UInt32 baseVertex=0 instances=", frame.Instances.size(), " draws=", draws.size(), " constants=per-instance retained=gpu-retirement result=pass");
             if (Application::Get().GetSpecification().CommandLineArgs.HasFlag("--scene-viewport-render-graph-smoke")) Log::Info("ProductionRenderGraphRetirementV1 backend=Vulkan frame=", snapshot.FrameIndex, " passes=", executed.AcceptedPassCount, " cpuWaitBetween=no pending=", m_SubmittedGraphFrames.GetPendingCount(), " result=pass");
             const bool comparisonRequested = Application::Get().GetSpecification().CommandLineArgs.HasFlag("--scene-viewport-render-graph-smoke");
             if (comparisonRequested)
@@ -208,7 +207,7 @@ namespace Engine
                 Scope<RHI::Texture> referenceColor = m_Device->CreateTexture(referenceColorDescription);
                 Scope<RHI::Texture> referenceDepth = m_Device->CreateTexture(referenceDepthDescription);
                 RHI::TextureReadback graphReadback, referenceReadback;
-                const bool referenceRendered = referenceColor && referenceDepth && RecordBootstrapReference(*referenceColor, *referenceDepth, width, height, clear, frame, *constants);
+                const bool referenceRendered = referenceColor && referenceDepth && RecordBootstrapReference(*referenceColor, *referenceDepth, width, height, clear, frame, *constants, draws);
                 const bool readBack = referenceRendered && ReadbackGraphOutput(*m_Color, graphReadback) && m_Device->ReadbackTexture(*referenceColor, referenceReadback);
                 const bool equivalent = readBack && graphReadback.Extent.Width == referenceReadback.Extent.Width && graphReadback.Extent.Height == referenceReadback.Extent.Height
                     && graphReadback.RowPitchBytes == referenceReadback.RowPitchBytes && graphReadback.Data == referenceReadback.Data;
@@ -221,8 +220,8 @@ namespace Engine
         }
 
         bool ReadbackColor(RHI::TextureReadback& readback) const { return m_Device && m_Color && m_Device->ReadbackTexture(*m_Color, readback); }
-        void Shutdown() { if (m_Device) m_Device->WaitIdle(); m_SubmittedGraphFrames.ReleaseAfterDeviceIdle(); m_Color.reset(); m_Depth.reset(); m_IndexBuffer.reset(); m_VertexBuffer.reset(); m_Pipeline.reset(); m_PixelShader.reset(); m_VertexShader.reset(); m_Device = nullptr; }
-        RHI::Device* m_Device = nullptr; Scope<RHI::Shader> m_VertexShader, m_PixelShader; Scope<RHI::Pipeline> m_Pipeline; Scope<RHI::Buffer> m_VertexBuffer, m_IndexBuffer; Scope<RHI::Texture> m_Color, m_Depth; SubmittedRenderGraphFrameOwner m_SubmittedGraphFrames; u32 m_Width = 0, m_Height = 0; u64 m_OutputGeneration = 0;
+        void Shutdown() { if (m_Device) m_Device->WaitIdle(); m_SubmittedGraphFrames.ReleaseAfterDeviceIdle(); m_MeshResourceCache.Clear(); m_Color.reset(); m_Depth.reset(); m_Pipeline.reset(); m_PixelShader.reset(); m_VertexShader.reset(); m_Device = nullptr; }
+        RHI::Device* m_Device = nullptr; MeshGpuResourceCache m_MeshResourceCache { 32 }; Scope<RHI::Shader> m_VertexShader, m_PixelShader; Scope<RHI::Pipeline> m_Pipeline; Scope<RHI::Texture> m_Color, m_Depth; SubmittedRenderGraphFrameOwner m_SubmittedGraphFrames; u32 m_Width = 0, m_Height = 0; u64 m_OutputGeneration = 0;
     };
 
     NVRHIVulkanViewportSceneRenderer::NVRHIVulkanViewportSceneRenderer() = default;
