@@ -200,6 +200,14 @@ Immutable GPU buffers use `BufferCpuAccess::None` and declare `BufferUsage::Copy
 
 The initial implementation signals and waits on an engine-owned D3D12 queue fence before the staging resource is released or the destination is used by another queue. The destination is returned to its prior state, currently `Common`, so the first graphics read can use D3D12 common-state promotion. A future asynchronous uploader must retain this explicit fence ownership in the render graph; it must not release staging allocations merely after recording a copy.
 
+### D3D12 Viewport Pipeline Reload Contract
+
+The current D3D12 viewport renderer watches its selected Slang source and submits DXIL/SPIR-V package work through the shared asynchronous shader service. Each observed source revision receives a monotonic ticket in the current renderer/device epoch. A newer ticket supersedes older work; shutdown or device replacement invalidates every outstanding ticket. Only the current, previously unpublished ticket may publish.
+
+Publication is failure-atomic at the renderer boundary: both portable packages, both D3D12 shader objects, and the complete graphics PSO must be valid before the active shader/pipeline references change. Compilation or PSO creation failure leaves the last valid generation active. The render graph captures the active PSO when recording a frame, and its submitted-frame owner retains that exact reference until the accepted GPU work retires, so live replacement cannot destroy an in-flight generation.
+
+This is the smallest current consumer-specific mechanism. The source-path override and bounded smoke mode exist only to exercise a disposable copy without mutating the checked-in shader. They are not a public asset workflow, a generic file-watcher or hot-reload framework, or evidence for Vulkan and other backends; those boundaries require real consumers and backend-specific verification before extraction.
+
 ## Advanced Backend Features
 
 The RHI facade must reserve extension points for features that are too new or too vendor/platform-specific to be baseline:

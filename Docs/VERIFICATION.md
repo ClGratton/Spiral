@@ -232,6 +232,14 @@ The script must exit successfully with no surviving Editor, report timestamps ad
 
 ## Renderer Verification
 
+For the Windows D3D12 viewport live-pipeline slice, run the zero-warning Debug build and complete deterministic suite, then:
+
+```powershell
+.\Scripts\TestLiveD3D12PipelineRebuild.ps1 -Configuration Debug -TimeoutSeconds 60
+```
+
+The script copies `Engine/Shaders/EditorViewport.hlsl` beneath ignored `output/`, launches one bounded hidden Editor against that disposable source, and requires three published generations: initial source, a valid source edit, and recovery after restoring the source. An intervening invalid Slang edit must report failure while explicitly retaining the last valid D3D12 viewport pipeline. Success additionally requires the process to end without forced cleanup after the bounded application-stop marker and complete engine log shutdown; Windows PowerShell 5 does not expose an exit code for this redirected `Start-Process` path. The deterministic `D3D12 viewport shader reload` test independently proves unchanged-revision suppression, stale-ticket rejection, failure retention, single publication, epoch invalidation, and a fresh replacement epoch. This evidence is D3D12 viewport-only; it does not qualify a generic hot-reload system or another backend.
+
 ## Render Graph Construction Verification
 
 The construction compiler is verified by deterministic `EngineTests`, not a renderer capture: tests must prove stable topological ordering (including independent passes), RAW/WAR/WAW edges, transient read-before-write rejection, invalid declaration diagnostics, explicit dependency-cycle rejection, lifetimes in compiled rather than registration order, state barriers, and cross-queue transition records paired with a resource dependency. This evidence verifies only the logical plan. Physical/imported binding, RHI barrier emission, queue signal/wait submission, callback execution, GPU retirement, transient allocation/reuse, and viewport integration require the next execution/integration item and its runtime evidence.

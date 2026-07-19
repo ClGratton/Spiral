@@ -7,6 +7,7 @@
 #include "Engine/RenderGraph/RenderGraph.h"
 #include "Engine/Renderer/AsyncShaderPackageService.h"
 #include "Engine/Renderer/NVRHI/D3D12DebugMarkers.h"
+#include "Engine/Renderer/NVRHI/D3D12ViewportShaderReloadCoordinator.h"
 #include "Engine/Renderer/ShaderLibrary.h"
 #include "Engine/Renderer/SlangShaderCompiler.h"
 
@@ -26,6 +27,12 @@ namespace Engine
     {
         constexpr u32 kViewportConstantBufferSize = 256;
         constexpr std::string_view kViewportShaderPath = "Engine/Shaders/EditorViewport.hlsl";
+
+        std::string_view ViewportShaderPath()
+        {
+            const std::string_view overridePath = Application::Get().GetSpecification().CommandLineArgs.GetOptionValue("--viewport-shader-path");
+            return overridePath.empty() ? kViewportShaderPath : overridePath;
+        }
 
         struct ViewportVertex
         {
@@ -184,6 +191,7 @@ namespace Engine
 
         void Shutdown()
         {
+            m_ReloadCoordinator.Invalidate();
             if (m_RHIDevice)
                 m_RHIDevice->WaitIdle();
             m_SubmittedGraphFrames.ReleaseAfterDeviceIdle();
@@ -235,8 +243,11 @@ namespace Engine
                 return false;
             }
 
-            PollShaderCompilation();
             PollShaderHotReload();
+            // Source observation establishes the requested revision before a completed
+            // worker result is allowed to reach the native pipeline boundary. This
+            // prevents an older completion from briefly replacing newer source intent.
+            PollShaderCompilation();
 
             RHI::ResourceState colorState = RHI::ResourceState::Unknown;
             RHI::ResourceState depthState = RHI::ResourceState::Unknown;
@@ -319,14 +330,15 @@ namespace Engine
             const RenderGraph::PassHandle rasterPass = graph->AddPass("Scene Viewport Graph Raster", RHI::QueueType::Graphics);
             graph->AddWrite(rasterPass, color, RHI::ResourceState::RenderTarget);
             graph->AddWrite(rasterPass, depth, RHI::ResourceState::DepthWrite);
-            graph->SetPassCallback(rasterPass, [this, width, height, &rasterFrame, constantBuffers, drawCount](RenderGraph::ExecutionContext& context)
+            const Ref<RHI::Pipeline> activePipeline = m_Pipeline;
+            graph->SetPassCallback(rasterPass, [this, activePipeline, width, height, &rasterFrame, constantBuffers, drawCount](RenderGraph::ExecutionContext& context)
             {
                 RHI::Texture* graphColor = context.GetTexture({ 0 });
                 RHI::Texture* graphDepth = context.GetTexture({ 1 });
                 RHI::CommandList& commands = context.GetCommandList();
                 if (!graphColor || !graphDepth || !commands.BindViewportOutputs(*graphColor, graphDepth)) return false;
-                if (!m_Pipeline || !m_VertexBuffer || !m_IndexBuffer || !rasterFrame.HasValidView || rasterFrame.Instances.empty()) return true;
-                commands.SetGraphicsPipeline(*m_Pipeline);
+                if (!activePipeline || !m_VertexBuffer || !m_IndexBuffer || !rasterFrame.HasValidView || rasterFrame.Instances.empty()) return true;
+                commands.SetGraphicsPipeline(*activePipeline);
                 commands.SetViewport({ 0.0f, 0.0f, static_cast<float>(width), static_cast<float>(height), 0.0f, 1.0f });
                 commands.SetScissorRect({ 0, 0, static_cast<int>(width), static_cast<int>(height) });
                 commands.SetVertexBuffer(0, *m_VertexBuffer);
@@ -348,6 +360,10 @@ namespace Engine
                 std::vector<Ref<void>> payloads;
                 if (constantBufferSet)
                     payloads.emplace_back(constantBufferSet);
+                // The graph may be retired asynchronously. Keep the exact pipeline
+                // selected while recording alive until its accepted GPU work retires.
+                if (activePipeline)
+                    payloads.emplace_back(activePipeline);
                 std::string retentionError;
                 if (!m_SubmittedGraphFrames.Retain(Application::Get().GetFrameIndex(), std::move(graph), compiled,
                     executed, std::move(payloads), &retentionError))
@@ -392,7 +408,7 @@ namespace Engine
 
         bool RequestInitialPipeline()
         {
-            m_ShaderSource = ShaderLibrary::LoadSource(kViewportShaderPath, "Editor Viewport");
+            m_ShaderSource = ShaderLibrary::LoadSource(ViewportShaderPath(), "Editor Viewport");
             if (m_ShaderSource.Status != ShaderSourceStatus::Loaded)
             {
                 Log::Error("Could not load viewport shader: ", m_ShaderSource.ResolvedPath.string(), " (", ShaderLibrary::ToString(m_ShaderSource.Status), ")");
@@ -502,6 +518,8 @@ namespace Engine
             m_PixelRequest = m_ShaderPackages->Request(pixelRequest);
             m_LastProcessedVertexRequest = 0;
             m_LastProcessedPixelRequest = 0;
+            m_ReloadTicket = m_ReloadCoordinator.Request(m_ShaderSource.Revision);
+            if (!m_ReloadTicket.IsValid()) return;
             m_ShaderPipelineTerminalFailure = false;
             Log::Info("PortableShaderRequestV1 status=pending request=", m_VertexRequest.Id,
                 " stage=vertex cacheMode=pending cacheSource=none compiler=Slang-2026.13.1 backend=Slang",
@@ -534,8 +552,15 @@ namespace Engine
             m_LastProcessedPixelRequest = m_PixelRequest.Id;
             LogTerminalResult("vertex", vertex);
             LogTerminalResult("pixel", pixel);
+            if (!m_ReloadCoordinator.IsCurrent(m_ReloadTicket))
+            {
+                Log::Info("D3D12LivePipelineRebuildV1 status=stale-rejected requestedRevision=", m_ReloadTicket.Revision,
+                    " activeGeneration=", m_ReloadCoordinator.ActiveGeneration());
+                return;
+            }
             if (!vertex.Succeeded() || !pixel.Succeeded())
             {
+                m_ReloadCoordinator.Publish(m_ReloadTicket, false);
                 if (!m_Pipeline)
                     m_ShaderPipelineTerminalFailure = true;
                 const ShaderPackageRequestDiagnostic& diagnostic = !vertex.Succeeded() ? vertex.Diagnostic : pixel.Diagnostic;
@@ -548,12 +573,16 @@ namespace Engine
 
             if (!BuildPipeline(*vertex.Package, *pixel.Package))
             {
+                m_ReloadCoordinator.Publish(m_ReloadTicket, false);
                 if (!m_Pipeline)
                     m_ShaderPipelineTerminalFailure = true;
                 Log::Error("Portable shader packages were valid but D3D12 pipeline mutation failed; last valid viewport pipeline remains active");
                 return;
             }
             m_ShaderPipelineTerminalFailure = false;
+            m_ReloadCoordinator.Publish(m_ReloadTicket, true);
+            Log::Info("D3D12LivePipelineRebuildV1 status=published requestedRevision=", m_ReloadTicket.Revision,
+                " generation=", m_ReloadCoordinator.ActiveGeneration(), " boundary=frame-start retainedUntil=gpu-retirement");
             Log::Info("D3D12PortablePipelineV1 status=active vertexStatus=",
                 AsyncShaderPackageService::ToString(vertex.Status), " vertexCacheMode=", CacheMode(vertex),
                 " vertexCacheSource=", CacheSource(vertex), " vertexKey=", vertex.Package->Key,
@@ -597,9 +626,14 @@ namespace Engine
             Scope<RHI::Pipeline> pipeline = m_RHIDevice->CreatePipeline(pipelineDesc);
             if (!pipeline)
                 return false;
-            m_VertexShader = std::move(vertexShader);
-            m_PixelShader = std::move(pixelShader);
-            m_Pipeline = std::move(pipeline);
+            // Construct every replacement before publication. Ref ownership lets an
+            // accepted RenderGraph frame retain the exact generation it recorded.
+            Ref<RHI::Shader> replacementVertex(vertexShader.release());
+            Ref<RHI::Shader> replacementPixel(pixelShader.release());
+            Ref<RHI::Pipeline> replacementPipeline(pipeline.release());
+            m_VertexShader = std::move(replacementVertex);
+            m_PixelShader = std::move(replacementPixel);
+            m_Pipeline = std::move(replacementPipeline);
             return true;
         }
 
@@ -731,9 +765,9 @@ namespace Engine
         }
 
         RHI::Device* m_RHIDevice = nullptr;
-        Scope<RHI::Pipeline> m_Pipeline;
-        Scope<RHI::Shader> m_VertexShader;
-        Scope<RHI::Shader> m_PixelShader;
+        Ref<RHI::Pipeline> m_Pipeline;
+        Ref<RHI::Shader> m_VertexShader;
+        Ref<RHI::Shader> m_PixelShader;
         Scope<RHI::Buffer> m_VertexBuffer;
         Scope<RHI::Buffer> m_IndexBuffer;
         std::vector<Ref<ConstantBufferSet>> m_FrameConstantBuffers;
@@ -744,6 +778,8 @@ namespace Engine
         ShaderPackageRequestHandle m_PixelRequest;
         u64 m_LastProcessedVertexRequest = 0;
         u64 m_LastProcessedPixelRequest = 0;
+        D3D12ViewportShaderReloadCoordinator m_ReloadCoordinator;
+        D3D12ViewportShaderReloadCoordinator::Ticket m_ReloadTicket;
         bool m_ShaderPipelineTerminalFailure = false;
         u32 m_IndexCount = 0;
     };

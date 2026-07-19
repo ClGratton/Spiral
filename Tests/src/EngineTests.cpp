@@ -14,6 +14,7 @@
 #include "Engine/Renderer/FramePacingBenchmark.h"
 #include "Engine/Renderer/Renderer.h"
 #include "Engine/Renderer/AsyncShaderPackageService.h"
+#include "Engine/Renderer/NVRHI/D3D12ViewportShaderReloadCoordinator.h"
 #include "Engine/Renderer/PortableShaderContract.h"
 #include "Engine/Renderer/SlangShaderCompiler.h"
 #include "Engine/Renderer/SceneRasterPreparation.h"
@@ -3301,6 +3302,30 @@ float4 main(VertexInput input) : SV_Position
             && Expect(exceptionRetry, "compiler exceptions publish terminal failure, clear in-flight state, and permit retry");
     }
 
+    bool TestD3D12ViewportShaderReloadTickets()
+    {
+        Engine::D3D12ViewportShaderReloadCoordinator gate;
+        const auto first = gate.Request(1);
+        const auto unchanged = gate.Request(1);
+        const auto newer = gate.Request(2);
+        const bool staleRejected = first.IsValid() && newer.IsValid() && !unchanged.IsValid()
+            && !gate.IsCurrent(first) && !gate.Publish(first, true) && gate.ActiveGeneration() == 0;
+        const bool failureRetained = gate.IsCurrent(newer) && !gate.Publish(newer, false) && gate.ActiveGeneration() == 0;
+        const auto recovery = gate.Request(3);
+        const bool publishedOnce = recovery.IsValid() && gate.Publish(recovery, true) && gate.ActiveGeneration() == 1
+            && !gate.Publish(recovery, true) && gate.ActiveGeneration() == 1;
+        gate.Invalidate();
+        const bool shutdownRejected = !gate.IsCurrent(newer) && !gate.Publish(newer, true) && gate.ActiveGeneration() == 1;
+        const auto replacementEpoch = gate.Request(2);
+        const bool replacementAccepted = replacementEpoch.IsValid() && gate.IsCurrent(replacementEpoch)
+            && gate.Publish(replacementEpoch, true) && gate.ActiveGeneration() == 2;
+        return Expect(staleRejected, "newer D3D12 viewport shader intent rejects an older ticket without publication")
+            && Expect(failureRetained, "current D3D12 viewport shader failure preserves the active generation")
+            && Expect(publishedOnce, "current D3D12 viewport shader ticket advances only through explicit publication")
+            && Expect(shutdownRejected, "shutdown or device replacement invalidates outstanding D3D12 viewport shader tickets")
+            && Expect(replacementAccepted, "a replacement device epoch accepts a fresh D3D12 viewport shader ticket");
+    }
+
     Engine::RHI::TextureDescription MakeGraphTexture(std::string name, Engine::RHI::ResourceState initialState = Engine::RHI::ResourceState::Common)
     {
         Engine::RHI::TextureDescription description;
@@ -5908,6 +5933,7 @@ int main(int argc, char** argv)
         INTEGRATION_TEST("Slang compiler emits validated portable shader packages", TestSlangShaderCompilerProducesPortableValidatedPackages),
         INTEGRATION_TEST("Async shader publication is nonblocking deduplicated and atomic", TestAsyncShaderPackagePublicationIsNonblockingDeduplicatedAndAtomic),
         INTEGRATION_TEST("Async shader failure retention inline equivalence and shutdown safety", TestAsyncShaderFailureRetentionInlineEquivalenceAndShutdownSafety),
+        FAST_TEST("D3D12 viewport shader reload tickets reject stale publication", TestD3D12ViewportShaderReloadTickets),
         FAST_TEST("Render graph orders hazards and lifetimes deterministically", TestRenderGraphOrdersHazardsAndLifetimesDeterministically),
         FAST_TEST("Generated render-graph hazards match the reference state model", TestGeneratedRenderGraphHazardProperties),
         FAST_TEST("Render graph tracks RAW WAR WAW barriers and queue transitions", TestRenderGraphTracksRawWarWawBarriersAndQueueTransitions),
