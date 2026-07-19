@@ -98,6 +98,7 @@ private:
     std::array<float, 240> m_FrameTimeHistory {};
     size_t m_FrameTimeHistoryCount = 0;
     size_t m_FrameTimeHistoryOffset = 0;
+    std::optional<Engine::u64> m_LastFrameTimeSampledFrame;
     bool m_ShowDemoWindow = false;
     bool m_ResetDockLayout = true;
     bool m_CaptureViewportRequested = false;

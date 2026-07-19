@@ -566,9 +566,15 @@ void EditorLayer::OnUpdate(Engine::Timestep timestep)
 {
     ++m_FrameCounter;
     m_LastFrameMs = timestep.GetMilliseconds();
-    m_FrameTimeHistory[m_FrameTimeHistoryOffset] = m_LastFrameMs;
-    m_FrameTimeHistoryOffset = (m_FrameTimeHistoryOffset + 1) % m_FrameTimeHistory.size();
-    m_FrameTimeHistoryCount = std::min(m_FrameTimeHistoryCount + 1, m_FrameTimeHistory.size());
+    const Engine::RendererFrameTiming& completedTiming = Engine::Renderer::GetLastCompletedFrameTiming();
+    if (completedTiming.StartToStartMilliseconds > 0.0
+        && (!m_LastFrameTimeSampledFrame || *m_LastFrameTimeSampledFrame != completedTiming.FrameIndex))
+    {
+        m_FrameTimeHistory[m_FrameTimeHistoryOffset] = static_cast<float>(completedTiming.StartToStartMilliseconds);
+        m_FrameTimeHistoryOffset = (m_FrameTimeHistoryOffset + 1) % m_FrameTimeHistory.size();
+        m_FrameTimeHistoryCount = std::min(m_FrameTimeHistoryCount + 1, m_FrameTimeHistory.size());
+        m_LastFrameTimeSampledFrame = completedTiming.FrameIndex;
+    }
     PublishFramePacingPolicy();
     PublishPresentationPolicy();
     RunPresentationPolicySmoke();
@@ -2048,13 +2054,28 @@ void EditorLayer::DrawProfilerPanel()
     ImGui::Text("Last frame: %.3f ms", m_LastFrameMs);
     if (m_FrameTimeHistoryCount > 0)
     {
-        const float graphMaximum = std::max(33.333f,
+        const float graphMaximum = std::max(16.667f,
             *std::max_element(m_FrameTimeHistory.begin(), m_FrameTimeHistory.end()) * 1.1f);
         const int graphOffset = m_FrameTimeHistoryCount == m_FrameTimeHistory.size()
             ? static_cast<int>(m_FrameTimeHistoryOffset) : 0;
+        ImGui::TextUnformatted("Renderer FrameStart-to-FrameStart cadence (ms)");
+        const ImVec2 graphPosition = ImGui::GetCursorScreenPos();
+        const ImVec2 graphSize(ImGui::GetContentRegionAvail().x, 90.0f);
         ImGui::PlotLines("##FrameTimeHistory", m_FrameTimeHistory.data(),
-            static_cast<int>(m_FrameTimeHistoryCount), graphOffset, "Application frame time (ms)",
-            0.0f, graphMaximum, ImVec2(ImGui::GetContentRegionAvail().x, 90.0f));
+            static_cast<int>(m_FrameTimeHistoryCount), graphOffset, nullptr,
+            0.0f, graphMaximum, graphSize);
+        ImDrawList* drawList = ImGui::GetWindowDrawList();
+        const ImU32 gridColor = IM_COL32(255, 255, 255, 45);
+        for (int step = 0; step <= 2; ++step)
+        {
+            const float fraction = static_cast<float>(step) * 0.5f;
+            const float y = graphPosition.y + graphSize.y * fraction;
+            drawList->AddLine({ graphPosition.x, y }, { graphPosition.x + graphSize.x, y }, gridColor);
+            char label[24];
+            std::snprintf(label, sizeof(label), "%.1f ms", graphMaximum * (1.0f - fraction));
+            drawList->AddText({ graphPosition.x + 5.0f, y + (step == 2 ? -ImGui::GetTextLineHeight() : 2.0f) },
+                IM_COL32(220, 220, 220, 220), label);
+        }
     }
     ImGui::Text("Workers: %u", Engine::JobSystem::Get().GetWorkerCount());
     ImGui::Separator();

@@ -2,7 +2,7 @@
 
 Updated 2026-07-19. This is a recovery aid; `PLAN.md` remains the sole roadmap and checkbox authority. A new agent must begin with `AGENTS.md`, `PLAN.md`, `Docs/README.md`, `Docs/ROADMAP_GOVERNANCE.md`, `Docs/TESTING_STRATEGY.md`, `Docs/VERIFICATION.md`, and `Docs/Architecture/README.md`. For the next roadmap item, also read `Docs/Architecture/RHI_AND_LIGHTING_DECISIONS.md`, `Docs/Architecture/RENDERING_FEATURE_AND_PERFORMANCE_DECISIONS.md`, and the renderer/Core ownership files.
 
-The Profiler now displays a 240-frame rolling application-frametime graph directly below the current frame duration. It uses the existing editor timestep, preserves chronological order after the ring wraps, and scales to at least 33.333 ms while expanding for spikes. The follow-up incremental Debug build completed with zero warnings/errors; visual inspection in the running Profiler remains the final UI check.
+The Profiler displays a 240-frame rolling renderer FrameStart-to-FrameStart cadence graph, sampling each completed timing frame once and preserving chronological order after wrap. It scales from at least 16.667 ms while expanding for spikes and draws labelled maximum/midpoint/zero millisecond grid lines. This replaced the first misleading generic Editor-timestep plot after visual review exposed recurring plateaus rather than a flat cadence.
 
 ## Accepted Scene Mesh GPU Integration
 
