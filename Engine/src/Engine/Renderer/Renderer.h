@@ -26,7 +26,9 @@ namespace Engine::RHI
 
 namespace Engine
 {
+    class AssetRegistry;
     class FramePacingBenchmarkCapture;
+    struct MeshArtifact;
     struct FramePacingBenchmarkSnapshot;
     struct ClearColor
     {
@@ -395,12 +397,17 @@ namespace Engine
         static void RecordGpuCompletionObservation(u64 completedApplicationFrameIndex);
         static void PublishSceneRenderSnapshot(SceneRenderSnapshot snapshot);
         static std::shared_ptr<const SceneRenderSnapshot> GetSceneRenderSnapshot();
+        static void PublishMeshArtifactResolver(const AssetRegistry& registry);
+        static bool ResolvePublishedMeshArtifact(AssetHandle asset, MeshArtifact& outArtifact, std::string& outError);
         // CPU-only preparation is safe on a FrameTaskGraph worker: it consumes only
         // the immutable scene snapshot and publishes one immutable raster frame.
         static bool PrepareCurrentSceneRasterFrame();
         static std::shared_ptr<const SceneRasterFrame> GetPreparedSceneRasterFrame();
         static void PublishSceneRasterFrame(SceneRasterFrame frame);
         static std::shared_ptr<const SceneRasterFrame> GetLastSceneRasterFrame();
+
+    private:
+        static void ClearMeshArtifactResolver();
     };
 
     inline const char* ToString(RendererTimingStatus status)

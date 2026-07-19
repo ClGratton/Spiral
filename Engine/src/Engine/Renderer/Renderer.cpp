@@ -487,6 +487,7 @@ namespace Engine
     void Renderer::Shutdown()
     {
         s_SceneRenderSnapshot.Store({});
+        ClearMeshArtifactResolver();
         s_PreparedSceneRasterFrame.Store({});
         s_SceneRasterFrame.Store({});
         s_PreviousRendererFrameStart.reset();

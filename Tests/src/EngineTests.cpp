@@ -1744,6 +1744,19 @@ namespace
             && StoreMeshArtifact(resolvedPath, resolvedArtifact, error)
             && ResolveMeshArtifact(registry, registered, resolved, error)
             && resolved.Asset == registered && resolved.SourcePath == artifact.SourcePath;
+        Renderer::PublishMeshArtifactResolver(registry);
+        MeshArtifact resolverResolved = preserved;
+        const bool publishedResolverSucceeded = Renderer::ResolvePublishedMeshArtifact(registered, resolverResolved, error)
+            && resolverResolved.Asset == registered;
+        registry.RemoveAsset(registered);
+        MeshArtifact retainedResolverResult = preserved;
+        const bool immutableResolverRetainsPublishedCatalog = Renderer::ResolvePublishedMeshArtifact(
+            registered, retainedResolverResult, error) && retainedResolverResult.Asset == registered;
+        Renderer::PublishMeshArtifactResolver(registry);
+        const MeshArtifact retainedOnFailure = retainedResolverResult;
+        const bool replacementFailurePreservesCallerOutput = !Renderer::ResolvePublishedMeshArtifact(
+            registered, retainedResolverResult, error) && retainedResolverResult.Asset == retainedOnFailure.Asset
+            && retainedResolverResult.Indices == retainedOnFailure.Indices;
         resolvedArtifact.SourcePath = "Other.gltf";
         const bool provenanceRejected = StoreMeshArtifact(resolvedPath, resolvedArtifact, error)
             && !ResolveMeshArtifact(registry, registered, resolved, error)
@@ -1763,7 +1776,9 @@ namespace
             && Expect(malformedRejected && invalidRejected && unsupportedRejected,
                 "mesh artifact loading rejects malformed unsupported and invalid data without mutating the destination")
             && Expect(missingRejected && resolvedSuccessfully && provenanceRejected && wrongTypeRejected,
-                "mesh artifact resolution rejects missing wrong-type and mismatched provenance without partial publication");
+                "mesh artifact resolution rejects missing wrong-type and mismatched provenance without partial publication")
+            && Expect(publishedResolverSucceeded && immutableResolverRetainsPublishedCatalog && replacementFailurePreservesCallerOutput,
+                "renderer-facing mesh resolution uses immutable registry publication and preserves caller output on failure");
     }
 
     bool TestSceneVersionFourCanonicalPersistence()

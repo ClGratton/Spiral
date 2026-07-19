@@ -327,4 +327,20 @@ namespace Engine
         outArtifact = std::move(candidate);
         return true;
     }
+
+    MeshArtifactResolver::MeshArtifactResolver(const AssetRegistry& registry)
+        : m_Registry(std::make_shared<const AssetRegistry>(registry))
+    {
+    }
+
+    bool MeshArtifactResolver::Resolve(AssetHandle asset, MeshArtifact& outArtifact, std::string& outError) const
+    {
+        if (!m_Registry)
+        {
+            outError = "mesh artifact resolver has no published asset registry";
+            return false;
+        }
+
+        return ResolveMeshArtifact(*m_Registry, asset, outArtifact, outError);
+    }
 }

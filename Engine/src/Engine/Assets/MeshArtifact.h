@@ -4,6 +4,7 @@
 #include "Engine/Core/Base.h"
 
 #include <filesystem>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -35,6 +36,19 @@ namespace Engine
         std::vector<MeshArtifactPrimitive> Primitives;
         std::vector<MeshArtifactVertex> Vertices;
         std::vector<u32> Indices;
+    };
+
+    // Immutable renderer-consumable view of the asset catalog. It owns a
+    // registry copy so mutable editor state is never read during render work.
+    class MeshArtifactResolver
+    {
+    public:
+        explicit MeshArtifactResolver(const AssetRegistry& registry);
+
+        bool Resolve(AssetHandle asset, MeshArtifact& outArtifact, std::string& outError) const;
+
+    private:
+        std::shared_ptr<const AssetRegistry> m_Registry;
     };
 
     std::filesystem::path GetCookedMeshArtifactPath(AssetHandle asset);
