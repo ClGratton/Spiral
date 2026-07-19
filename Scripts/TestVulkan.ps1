@@ -76,7 +76,6 @@ $RequiredMarkers = @(
     "Renderer initialized with backend: NVRHI Vulkan",
     "FrameLifecycleTelemetryV1 backend=NVRHI Vulkan frame=",
     "gpuCompletion=observed completedFrame=",
-    "completionSwapchainGeneration=2",
     "mandatoryWaits=vulkan-acquire+fence",
     "Vulkan swapchain and ImGui presentation initialized",
     "Vulkan render smoke requested window resize",
@@ -93,7 +92,7 @@ $RequiredMarkers = @(
     "VulkanRHICoreV1",
     "lifecycle=pass, cpuMapNone=pass, markers=executed-balanced",
     "VulkanRHIIndexedDrawV1 package=pass reflection=pass pipeline=pass constants=pass draw=pass submit=pass readback=pass interior=pass background=pass"
-    "VulkanSceneViewportRasterV1 snapshot=pass pipeline=pass raster=pass readback=pass geometry=pass background=pass resize=pass"
+    "VulkanSceneViewportRasterV1 snapshot=pass artifact=pass pipeline=pass raster=pass readback=pass geometry=pass background=pass resize=pass"
     "VulkanSceneOutputCaptureV1 outputGeneration="
     "VulkanSceneOutputHandoffV1 producer=pass"
     "SceneRasterPreparationV1 mode=parallel task=Frame.PrepareSceneRaster worker="
@@ -116,6 +115,11 @@ foreach ($Marker in $RequiredMarkers) {
     if (!$JoinedLog.Contains($Marker)) {
         throw "Vulkan render smoke did not emit required marker: $Marker"
     }
+}
+$CompletionGenerationMatches = [regex]::Matches($JoinedLog, 'completionSwapchainGeneration=(\d+)')
+if ($CompletionGenerationMatches.Count -eq 0 -or
+    !($CompletionGenerationMatches | Where-Object { [uint64]$_.Groups[1].Value -ge 2 })) {
+    throw "Vulkan render smoke did not observe GPU completion for a post-resize swapchain generation."
 }
 if ($JoinedLog -notmatch 'FrameLifecycleTelemetryV1 backend=NVRHI Vulkan frame=\d+ phases=frame-start,input-sample,input-simulation,render-submission,present-begin,present-end .*mandatoryWaits=vulkan-acquire\+fence') {
     throw "Vulkan render smoke did not prove the ordered input-sample lifecycle boundary while retaining mandatory acquire/fence waits."

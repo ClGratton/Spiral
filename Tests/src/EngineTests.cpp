@@ -1834,6 +1834,17 @@ namespace
         artifact.Indices = { 0, 1, 2 };
         artifact.Primitives = { { 0, 0, 0, sizeof(MeshArtifactVertex) * 3ull, 0, sizeof(u32) * 3ull } };
         std::string error;
+        MeshArtifact defaultSceneArtifact;
+        const bool defaultSceneArtifactValid = CreateDefaultSceneMeshArtifact(91, defaultSceneArtifact, error)
+            && defaultSceneArtifact.Asset == 91
+            && defaultSceneArtifact.SourcePath == GetDefaultSceneMeshSourcePath()
+            && defaultSceneArtifact.Vertices.size() == 24 && defaultSceneArtifact.Indices.size() == 36
+            && defaultSceneArtifact.Primitives.size() == 1
+            && defaultSceneArtifact.Primitives.front().VertexByteSize == sizeof(MeshArtifactVertex) * 24ull
+            && defaultSceneArtifact.Primitives.front().IndexByteSize == sizeof(u32) * 36ull;
+        const MeshArtifact defaultScenePreserved = defaultSceneArtifact;
+        const bool invalidDefaultHandleRejected = !CreateDefaultSceneMeshArtifact(kInvalidAssetHandle, defaultSceneArtifact, error)
+            && defaultSceneArtifact.Asset == defaultScenePreserved.Asset && defaultSceneArtifact.Indices == defaultScenePreserved.Indices;
         MeshArtifact loaded;
         const bool storedAndLoaded = StoreMeshArtifact(path, artifact, error) && LoadMeshArtifact(path, loaded, error);
         const bool primitiveRoundTrip = loaded.Primitives.size() == 1
@@ -1895,9 +1906,24 @@ namespace
         }
         const bool unsupportedRejected = !LoadMeshArtifact(path, loaded, error) && loaded.Asset == preserved.Asset;
 
+        AssetRegistry defaultSceneRegistry;
+        AssetHandle defaultSceneHandle = kInvalidAssetHandle;
+        const bool defaultSceneStored = EnsureDefaultSceneMeshArtifact(defaultSceneRegistry, defaultSceneHandle, error);
+        const std::filesystem::path defaultScenePath = GetCookedMeshArtifactPath(defaultSceneHandle);
+        Renderer::PublishMeshArtifactResolver(defaultSceneRegistry);
+        MeshArtifact defaultSceneResolved = preserved;
+        const bool defaultScenePublished = defaultSceneStored
+            && Renderer::ResolvePublishedMeshArtifact(defaultSceneHandle, defaultSceneResolved, error)
+            && defaultSceneResolved.Asset == defaultSceneHandle
+            && defaultSceneResolved.SourcePath == GetDefaultSceneMeshSourcePath()
+            && defaultSceneResolved.Indices.size() == 36;
+
         std::filesystem::remove(path, filesystemError);
         std::filesystem::remove(resolvedPath, filesystemError);
-        return Expect(roundTrip, "versioned cooked mesh artifacts round trip deterministically")
+        std::filesystem::remove(defaultScenePath, filesystemError);
+        return Expect(defaultSceneArtifactValid && invalidDefaultHandleRejected && defaultScenePublished,
+                "the default scene cube is one validated UInt32 cooked artifact with transactional construction")
+            && Expect(roundTrip, "versioned cooked mesh artifacts round trip deterministically")
             && Expect(malformedRejected && invalidRejected && unsupportedRejected,
                 "mesh artifact loading rejects malformed unsupported and invalid data without mutating the destination")
             && Expect(missingRejected && resolvedSuccessfully && provenanceRejected && wrongTypeRejected,

@@ -741,12 +741,17 @@ void EditorLayer::ConfigureSceneOriginRasterSmoke()
     if (Engine::Renderer::GetActiveBackend() != Engine::RendererBackend::NVRHID3D12)
         throw std::runtime_error("Scene origin raster smoke requires the active NVRHI D3D12 backend");
 
+    const Engine::AssetHandle defaultMeshAsset = m_AssetRegistry.FindAssetByPath(
+        Engine::AssetType::Mesh, std::string(Engine::GetDefaultSceneMeshSourcePath()));
+    if (defaultMeshAsset == Engine::kInvalidAssetHandle)
+        throw std::runtime_error("Scene origin raster smoke requires the published default scene mesh artifact");
+
     constexpr double base = 1000000000000.0;
     constexpr double sectorBoundaryOffset = 2048.0;
     m_ActiveScene = Engine::Scene("Scene Origin Raster Smoke");
     m_SceneOriginRasterMeshEntity = m_ActiveScene.CreateEntity("Scene Origin Raster Mesh");
     Engine::MeshRendererComponent meshRenderer;
-    meshRenderer.MeshAsset = 42;
+    meshRenderer.MeshAsset = defaultMeshAsset;
     meshRenderer.MaterialAsset = 84;
     m_ActiveScene.AddMeshRendererComponent(m_SceneOriginRasterMeshEntity, meshRenderer);
     m_ActiveScene.SetEntityWorldPosition(m_SceneOriginRasterMeshEntity, { base + sectorBoundaryOffset - 0.5, 0.0, 0.0 });
@@ -3499,6 +3504,15 @@ bool EditorLayer::LoadProject()
         }
     }
 
+    Engine::AssetHandle defaultMeshAsset = Engine::kInvalidAssetHandle;
+    std::string defaultMeshError;
+    if (!Engine::EnsureDefaultSceneMeshArtifact(loadedRegistry, defaultMeshAsset, defaultMeshError))
+    {
+        Engine::Log::Error("Could not prepare default scene mesh artifact: ", defaultMeshError);
+        m_ConsoleLines.emplace_back("Project load failed: default scene mesh artifact");
+        return false;
+    }
+
     m_ScenePath = std::move(manifest.ScenePath);
     m_AssetRegistryPath = std::move(manifest.AssetRegistryPath);
     m_ProjectFramePacingPolicy = manifest.FramePacingPolicy;
@@ -3692,10 +3706,10 @@ bool EditorLayer::SaveMaterialAssets()
 
 void EditorLayer::EnsureDefaultSceneEntities()
 {
-    const Engine::AssetHandle prototypeMeshAsset = m_AssetRegistry.RegisterAsset(
-        Engine::AssetType::Mesh,
-        "Engine/Generated/PrototypeCube.mesh",
-        "Prototype Cube");
+    Engine::AssetHandle prototypeMeshAsset = Engine::kInvalidAssetHandle;
+    std::string prototypeMeshError;
+    if (!Engine::EnsureDefaultSceneMeshArtifact(m_AssetRegistry, prototypeMeshAsset, prototypeMeshError))
+        throw std::runtime_error("could not publish the default scene mesh artifact: " + prototypeMeshError);
     const std::filesystem::path prototypeMaterialPath = std::filesystem::path(m_AssetRegistryPath).parent_path() / "PrototypeDefault.spiralmat";
     const Engine::AssetHandle prototypeMaterialAsset = m_AssetRegistry.RegisterAsset(
         Engine::AssetType::Material,

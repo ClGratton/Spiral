@@ -5,6 +5,8 @@
 
 #include "Engine/Core/Log.h"
 #include "Engine/Core/Application.h"
+#include "Engine/Assets/AssetRegistry.h"
+#include "Engine/Assets/MeshArtifact.h"
 #include "Engine/RHI/NVRHI/NVRHID3D12Device.h"
 #include "Engine/RenderGraph/RenderGraph.h"
 
@@ -1320,6 +1322,16 @@ namespace Engine
         if (!m_VulkanSceneRenderer->Initialize(device))
             return false;
 
+        AssetRegistry smokeRegistry;
+        AssetHandle smokeMesh = kInvalidAssetHandle;
+        std::string artifactError;
+        if (!EnsureDefaultSceneMeshArtifact(smokeRegistry, smokeMesh, artifactError))
+        {
+            Log::Error("Vulkan Scene viewport smoke could not publish its default mesh artifact: ", artifactError);
+            return false;
+        }
+        Renderer::PublishMeshArtifactResolver(smokeRegistry);
+
         SceneRenderSnapshot snapshot;
         snapshot.FrameIndex = 1;
         snapshot.WorldGridPolicy = Math::WorldGridPolicy {};
@@ -1331,6 +1343,7 @@ namespace Engine
         snapshot.Views.push_back(view);
         SceneRenderMesh mesh;
         mesh.SourceEntity = 1;
+        mesh.MeshAsset = smokeMesh;
         mesh.Transform.Position = view.Camera.TranslationOriginPosition;
         snapshot.Meshes.push_back(mesh);
         Renderer::PublishSceneRenderSnapshot(std::move(snapshot));
@@ -1351,7 +1364,7 @@ namespace Engine
         for (u32 y = 0; readbackOk && y < readback.Extent.Height; ++y) for (u32 x = 0; x < readback.Extent.Width; ++x) { const u8* value = pixel(x, y); const int delta = std::abs(static_cast<int>(value[0]) - expectedBackground[0]) + std::abs(static_cast<int>(value[1]) - expectedBackground[1]) + std::abs(static_cast<int>(value[2]) - expectedBackground[2]); foregroundPixels += delta > 24 ? 1u : 0u; }
         const bool geometryOk = foregroundPixels > 300 && foregroundPixels < 2600;
         const bool resizeOk = firstGeneration == 1 && outputGeneration == 2;
-        Log::Info("VulkanSceneViewportRasterV1 snapshot=pass pipeline=pass raster=", resizedRaster ? "pass" : "fail", " readback=", readbackOk ? "pass" : "fail", " geometry=", geometryOk ? "pass" : "fail", " background=", backgroundOk ? "pass" : "fail", " resize=", resizeOk ? "pass" : "fail", " outputGeneration=", outputGeneration, " size=", readback.Extent.Width, "x", readback.Extent.Height, " foregroundPixels=", foregroundPixels, " rowPitch=", readback.RowPitchBytes);
+        Log::Info("VulkanSceneViewportRasterV1 snapshot=pass artifact=pass pipeline=pass raster=", resizedRaster ? "pass" : "fail", " readback=", readbackOk ? "pass" : "fail", " geometry=", geometryOk ? "pass" : "fail", " background=", backgroundOk ? "pass" : "fail", " resize=", resizeOk ? "pass" : "fail", " outputGeneration=", outputGeneration, " size=", readback.Extent.Width, "x", readback.Extent.Height, " foregroundPixels=", foregroundPixels, " rowPitch=", readback.RowPitchBytes);
         return resizedRaster && readbackOk && geometryOk && backgroundOk && resizeOk;
     }
 }

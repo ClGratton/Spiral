@@ -59,11 +59,96 @@ namespace Engine
         }
 
         static_assert(sizeof(MeshArtifactVertex) == kMeshArtifactVertexStrideBytes);
+
+        constexpr std::string_view kDefaultSceneMeshSourcePath = "Engine/Generated/PrototypeCube.mesh";
     }
 
     std::filesystem::path GetCookedMeshArtifactPath(AssetHandle asset)
     {
         return std::filesystem::path("output") / "imports" / "gltf" / (std::to_string(asset) + ".spiralmesh");
+    }
+
+    std::string_view GetDefaultSceneMeshSourcePath()
+    {
+        return kDefaultSceneMeshSourcePath;
+    }
+
+    bool CreateDefaultSceneMeshArtifact(AssetHandle asset, MeshArtifact& outArtifact, std::string& outError)
+    {
+        if (asset == kInvalidAssetHandle)
+        {
+            outError = "default scene mesh has an invalid asset handle";
+            return false;
+        }
+
+        MeshArtifact candidate;
+        candidate.Asset = asset;
+        candidate.SourcePath = std::string(kDefaultSceneMeshSourcePath);
+        candidate.Vertices = {
+            {{ -0.75f, -0.75f, -0.75f }, { 0.22f, 0.68f, 1.00f }, { 0.0f, 1.0f }},
+            {{ -0.75f,  0.75f, -0.75f }, { 0.22f, 0.68f, 1.00f }, { 0.0f, 0.0f }},
+            {{  0.75f,  0.75f, -0.75f }, { 0.22f, 0.68f, 1.00f }, { 1.0f, 0.0f }},
+            {{  0.75f, -0.75f, -0.75f }, { 0.22f, 0.68f, 1.00f }, { 1.0f, 1.0f }},
+            {{  0.75f, -0.75f,  0.75f }, { 0.95f, 0.72f, 0.28f }, { 0.0f, 1.0f }},
+            {{  0.75f,  0.75f,  0.75f }, { 0.95f, 0.72f, 0.28f }, { 0.0f, 0.0f }},
+            {{ -0.75f,  0.75f,  0.75f }, { 0.95f, 0.72f, 0.28f }, { 1.0f, 0.0f }},
+            {{ -0.75f, -0.75f,  0.75f }, { 0.95f, 0.72f, 0.28f }, { 1.0f, 1.0f }},
+            {{ -0.75f, -0.75f,  0.75f }, { 0.26f, 0.88f, 0.55f }, { 0.0f, 1.0f }},
+            {{ -0.75f,  0.75f,  0.75f }, { 0.26f, 0.88f, 0.55f }, { 0.0f, 0.0f }},
+            {{ -0.75f,  0.75f, -0.75f }, { 0.26f, 0.88f, 0.55f }, { 1.0f, 0.0f }},
+            {{ -0.75f, -0.75f, -0.75f }, { 0.26f, 0.88f, 0.55f }, { 1.0f, 1.0f }},
+            {{  0.75f, -0.75f, -0.75f }, { 0.88f, 0.35f, 0.37f }, { 0.0f, 1.0f }},
+            {{  0.75f,  0.75f, -0.75f }, { 0.88f, 0.35f, 0.37f }, { 0.0f, 0.0f }},
+            {{  0.75f,  0.75f,  0.75f }, { 0.88f, 0.35f, 0.37f }, { 1.0f, 0.0f }},
+            {{  0.75f, -0.75f,  0.75f }, { 0.88f, 0.35f, 0.37f }, { 1.0f, 1.0f }},
+            {{ -0.75f,  0.75f, -0.75f }, { 0.72f, 0.52f, 0.96f }, { 0.0f, 1.0f }},
+            {{ -0.75f,  0.75f,  0.75f }, { 0.72f, 0.52f, 0.96f }, { 0.0f, 0.0f }},
+            {{  0.75f,  0.75f,  0.75f }, { 0.72f, 0.52f, 0.96f }, { 1.0f, 0.0f }},
+            {{  0.75f,  0.75f, -0.75f }, { 0.72f, 0.52f, 0.96f }, { 1.0f, 1.0f }},
+            {{ -0.75f, -0.75f,  0.75f }, { 0.24f, 0.75f, 0.82f }, { 0.0f, 1.0f }},
+            {{ -0.75f, -0.75f, -0.75f }, { 0.24f, 0.75f, 0.82f }, { 0.0f, 0.0f }},
+            {{  0.75f, -0.75f, -0.75f }, { 0.24f, 0.75f, 0.82f }, { 1.0f, 0.0f }},
+            {{  0.75f, -0.75f,  0.75f }, { 0.24f, 0.75f, 0.82f }, { 1.0f, 1.0f }}
+        };
+        candidate.Indices = {
+            0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7, 8, 9, 10, 8, 10, 11,
+            12, 13, 14, 12, 14, 15, 16, 17, 18, 16, 18, 19, 20, 21, 22, 20, 22, 23
+        };
+        candidate.Primitives = {{ 0, 0, 0, sizeof(MeshArtifactVertex) * candidate.Vertices.size(), 0, sizeof(u32) * candidate.Indices.size() }};
+        if (!ValidateMeshArtifact(candidate, outError))
+            return false;
+
+        outArtifact = std::move(candidate);
+        outError.clear();
+        return true;
+    }
+
+    bool StoreDefaultSceneMeshArtifact(AssetHandle asset, std::string& outError)
+    {
+        MeshArtifact artifact;
+        return CreateDefaultSceneMeshArtifact(asset, artifact, outError)
+            && StoreMeshArtifact(GetCookedMeshArtifactPath(asset), artifact, outError);
+    }
+
+    bool EnsureDefaultSceneMeshArtifact(AssetRegistry& registry, AssetHandle& outAsset, std::string& outError)
+    {
+        const AssetHandle existing = registry.FindAssetByPath(AssetType::Mesh, kDefaultSceneMeshSourcePath);
+        const bool newlyRegistered = existing == kInvalidAssetHandle;
+        const AssetHandle candidate = newlyRegistered
+            ? registry.RegisterAsset(AssetType::Mesh, std::string(kDefaultSceneMeshSourcePath), "Prototype Cube")
+            : existing;
+        if (candidate == kInvalidAssetHandle || !StoreDefaultSceneMeshArtifact(candidate, outError))
+        {
+            if (newlyRegistered && candidate != kInvalidAssetHandle)
+                registry.RemoveAsset(candidate);
+            if (candidate == kInvalidAssetHandle && outError.empty())
+                outError = "could not register the default scene mesh";
+            return false;
+        }
+
+        outAsset = candidate;
+        outError.clear();
+        return true;
     }
 
     bool ValidateMeshArtifact(const MeshArtifact& artifact, std::string& outError)

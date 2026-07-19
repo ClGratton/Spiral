@@ -6,6 +6,7 @@
 #include <filesystem>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace Engine
@@ -52,6 +53,14 @@ namespace Engine
     };
 
     std::filesystem::path GetCookedMeshArtifactPath(AssetHandle asset);
+    // The default Editor scene and the bounded backend raster fixtures share
+    // this one versioned cooked payload. It is an engine-owned current
+    // consumer of the normal MeshArtifact publication path, not a second
+    // runtime mesh format or a renderer-side fallback.
+    std::string_view GetDefaultSceneMeshSourcePath();
+    bool CreateDefaultSceneMeshArtifact(AssetHandle asset, MeshArtifact& outArtifact, std::string& outError);
+    bool StoreDefaultSceneMeshArtifact(AssetHandle asset, std::string& outError);
+    bool EnsureDefaultSceneMeshArtifact(AssetRegistry& registry, AssetHandle& outAsset, std::string& outError);
     bool ValidateMeshArtifact(const MeshArtifact& artifact, std::string& outError);
     bool StoreMeshArtifact(const std::filesystem::path& path, const MeshArtifact& artifact, std::string& outError);
     bool LoadMeshArtifact(const std::filesystem::path& path, MeshArtifact& outArtifact, std::string& outError);
