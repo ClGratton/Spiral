@@ -31,22 +31,9 @@ namespace Engine
         bool operator==(const PortableShaderDependency&) const = default;
     };
 
-    struct PortableShaderBinding
-    {
-        std::string Name;
-        char Kind = 'b';
-        u32 Register = 0;
-        u32 Space = 0;
-        RHI::ShaderStage Stages = RHI::ShaderStage::None;
-        std::string ResourceKind;
-        std::string TypeShape;
-        u32 Count = 1;
-        u32 ByteSize = 0;
-        u32 Rows = 0;
-        u32 Columns = 0;
-
-        bool operator==(const PortableShaderBinding&) const = default;
-    };
+    // The portable compiler owns production and validation of this RHI-neutral
+    // reflection representation; RHI only consumes the validated metadata.
+    using PortableShaderBinding = RHI::ShaderReflectionBinding;
 
     struct PortableShaderVertexInput
     {

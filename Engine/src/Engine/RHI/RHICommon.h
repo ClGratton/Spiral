@@ -6,6 +6,11 @@
 
 namespace Engine::RHI
 {
+    // The portable bounded sampled-table contract never exceeds this count.
+    // Keep the limit beside the other backend-neutral RHI scalar contracts so
+    // pipeline and table validation cannot drift.
+    constexpr u32 kMaximumReadOnlyTextureTableCapacity = 4096;
+
     enum class Backend
     {
         None,

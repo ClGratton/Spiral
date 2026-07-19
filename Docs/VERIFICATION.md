@@ -455,6 +455,10 @@ Use `.github/workflows/ci.yml` for platform evidence unavailable locally. For ro
 
 CI job success proves only the workload and device named by that job. Preserve distinctions between build, headless workflow, presentation, representative scene rendering, capture validation, packaging, and production hardware qualification.
 
+## Phase 3D Bounded Sampled-Table Capacity/Reflection
+
+The focused `RHI sampled texture-table binding validates pipeline space offsets and exact ownership` test proves the valid fixed-capacity reflection pair and rejects zero/out-of-range capacity, altered resource kind, missing/mismatched `t0,space1`/`s0,space1` arrays, and table/pipeline capacity disagreement before recording. `Slang compiler emits validated portable shader packages` compiles fixed `Texture2D[2]` and `SamplerState[2]` arrays and requires the exact engine-owned reflection from both requested DXIL/SPIR-V targets. Final local acceptance produced a zero-warning/error Debug build, both focused passes, and 86/86 Integration tests. This remains portable contract evidence only: D3D12 and Vulkan sampled-table pipeline creation is explicitly rejected, so it does not prove native descriptor allocation, sampler realization, shader-visible sampling, or descriptor indexing.
+
 ## RHI Completion Tokens And Recording Reuse
 
 The render-graph completion prerequisite requires both deterministic contract coverage and headed backend evidence. Contract tests must verify invalid token shape rejection. Each headed D3D12 and Vulkan/NVRHI smoke must submit a real closed graphics list, query the returned token without waiting, reject an invalid, cross-device, and unissued/stale token, wait to final completion, and re-record/re-submit the same list only after retirement. Fast devices may legitimately report the first query as complete; tests must accept either `nonblocking-incomplete` or `nonblocking-complete`, but must never manufacture an incomplete state with CPU frame counters or destroy/recreate the context. The required `RHICompletionSmokeV1` marker reports token validation, first query state, wait completion, and retired reuse separately.

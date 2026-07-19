@@ -5,6 +5,7 @@
 
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace Engine::RHI
@@ -59,6 +60,9 @@ namespace Engine::RHI
     // admitted.
     struct SampledTextureTableBinding
     {
+        // The bounded shader arrays and the bound logical table must have this
+        // identical compile-time capacity, including error slot zero.
+        u32 Capacity = 0;
         u32 TextureRegister = 0;
         u32 SamplerRegister = 0;
         u32 RegisterSpace = 1;
@@ -66,15 +70,42 @@ namespace Engine::RHI
         u32 VulkanSamplerBindingOffset = 2;
     };
 
+    struct PipelineDescription;
+
     inline bool IsValidSampledTextureTableBinding(const SampledTextureTableBinding& binding,
         const std::vector<RootConstantBufferBinding>& constantBuffers)
     {
-        if (binding.TextureRegister != 0 || binding.SamplerRegister != 0 || binding.RegisterSpace != 1
+        if (binding.Capacity < 2 || binding.Capacity > kMaximumReadOnlyTextureTableCapacity
+            || binding.TextureRegister != 0 || binding.SamplerRegister != 0 || binding.RegisterSpace != 1
             || binding.VulkanTextureBindingOffset != 1 || binding.VulkanSamplerBindingOffset != 2) return false;
         for (const RootConstantBufferBinding& constantBuffer : constantBuffers)
             if (constantBuffer.RegisterSpace == binding.RegisterSpace) return false;
         return true;
     }
+
+    inline bool ShaderDeclaresSampledTextureTableArray(const Shader* shader, char kind,
+        std::string_view resourceKind, const SampledTextureTableBinding& binding)
+    {
+        if (!shader) return false;
+        for (const ShaderReflectionBinding& reflected : shader->GetDescription().Reflection)
+            if (reflected.Kind == kind && reflected.Register == 0 && reflected.Space == binding.RegisterSpace
+                && reflected.ResourceKind == resourceKind && reflected.Count == binding.Capacity)
+                return true;
+        return false;
+    }
+
+    inline bool HasValidSampledTextureTableReflection(const SampledTextureTableBinding& binding,
+        const Shader* vertexShader, const Shader* pixelShader)
+    {
+        // A table may be consumed by either graphics stage. Both independent
+        // arrays must still be present in the linked graphics interface.
+        return (ShaderDeclaresSampledTextureTableArray(vertexShader, 't', "Texture2D", binding)
+                    || ShaderDeclaresSampledTextureTableArray(pixelShader, 't', "Texture2D", binding))
+            && (ShaderDeclaresSampledTextureTableArray(vertexShader, 's', "SamplerState", binding)
+                    || ShaderDeclaresSampledTextureTableArray(pixelShader, 's', "SamplerState", binding));
+    }
+
+    inline bool IsValidSampledTextureTablePipeline(const PipelineDescription& description);
 
     struct PipelineDescription
     {
@@ -92,6 +123,14 @@ namespace Engine::RHI
         bool DepthTestEnable = false;
         bool DepthWriteEnable = false;
     };
+
+    inline bool IsValidSampledTextureTablePipeline(const PipelineDescription& description)
+    {
+        return description.SampledTextureTable
+            && IsValidSampledTextureTableBinding(*description.SampledTextureTable, description.ConstantBufferBindings)
+            && HasValidSampledTextureTableReflection(*description.SampledTextureTable,
+                description.VertexShader, description.PixelShader);
+    }
 
     class Pipeline
     {

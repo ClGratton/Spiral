@@ -3362,10 +3362,13 @@ cbuffer View : register(b0, space0)
 Texture2D Albedo : register(t1, space0);
 SamplerState LinearSampler : register(s2, space0);
 Texture2D Layers[2] : register(t3, space0);
+Texture2D ReadOnlyTextures[2] : register(t0, space1);
+SamplerState ReadOnlySamplers[2] : register(s0, space1);
 
 float4 main(float4 position : SV_Position) : SV_Target
 {
     return Albedo.Sample(LinearSampler, position.xy) + Layers[1].Sample(LinearSampler, position.xy)
+        + ReadOnlyTextures[1].Sample(ReadOnlySamplers[1], position.xy)
         + ViewProjection[0] + IncludedColor * COLOR_SCALE;
 }
 )";
@@ -3393,7 +3396,9 @@ float4 main(float4 position : SV_Position) : SV_Target
             { "View", 'b', 0, 0, RHI::ShaderStage::Pixel, "ConstantBuffer", "struct{ViewProjection:float32x4x4:row-major@0}", 1, 64, 0, 0 },
             { "Albedo", 't', 1, 0, RHI::ShaderStage::Pixel, "Texture2D", "float32x4", 1, 0, 1, 4 },
             { "LinearSampler", 's', 2, 0, RHI::ShaderStage::Pixel, "SamplerState", "sampler", 1, 0, 0, 0 },
-            { "Layers", 't', 3, 0, RHI::ShaderStage::Pixel, "Texture2D", "float32x4", 2, 0, 1, 4 }
+            { "Layers", 't', 3, 0, RHI::ShaderStage::Pixel, "Texture2D", "float32x4", 2, 0, 1, 4 },
+            { "ReadOnlySamplers", 's', 0, 1, RHI::ShaderStage::Pixel, "SamplerState", "sampler", 2, 0, 0, 0 },
+            { "ReadOnlyTextures", 't', 0, 1, RHI::ShaderStage::Pixel, "Texture2D", "float32x4", 2, 0, 1, 4 }
         };
 
         SlangShaderCompiler compiler(cacheDirectory);
@@ -5964,6 +5969,16 @@ float4 main(VertexInput input) : SV_Position
         Engine::RHI::PipelineDescription m_Description;
     };
 
+    class SampledTextureTableTestShader final : public Engine::RHI::Shader
+    {
+    public:
+        explicit SampledTextureTableTestShader(Engine::RHI::ShaderDescription description)
+            : m_Description(std::move(description)) {}
+        const Engine::RHI::ShaderDescription& GetDescription() const override { return m_Description; }
+    private:
+        Engine::RHI::ShaderDescription m_Description;
+    };
+
     class SampledTextureTableTestCommandList final : public Engine::RHI::CommandList
     {
     public:
@@ -5983,7 +5998,11 @@ float4 main(VertexInput input) : SV_Position
         {
             if (!m_Recording || !m_Pipeline || !m_Pipeline->GetDescription().SampledTextureTable
                 || !Engine::RHI::IsValidSampledTextureTableBinding(*m_Pipeline->GetDescription().SampledTextureTable,
-                    m_Pipeline->GetDescription().ConstantBufferBindings) || !table.IsOwnedBy(m_Device)) return false;
+                    m_Pipeline->GetDescription().ConstantBufferBindings)
+                || !Engine::RHI::HasValidSampledTextureTableReflection(*m_Pipeline->GetDescription().SampledTextureTable,
+                    m_Pipeline->GetDescription().VertexShader, m_Pipeline->GetDescription().PixelShader)
+                || m_Pipeline->GetDescription().SampledTextureTable->Capacity != table.GetCapacity()
+                || !table.IsOwnedBy(m_Device)) return false;
             m_Table = &table;
             return true;
         }
@@ -6013,8 +6032,7 @@ float4 main(VertexInput input) : SV_Position
         using OwnershipTestDevice::OwnershipTestDevice;
         Engine::Scope<Engine::RHI::Pipeline> CreatePipeline(const Engine::RHI::PipelineDescription& description) override
         {
-            if (!description.SampledTextureTable || !Engine::RHI::IsValidSampledTextureTableBinding(
-                *description.SampledTextureTable, description.ConstantBufferBindings)) return nullptr;
+            if (!Engine::RHI::IsValidSampledTextureTablePipeline(description)) return nullptr;
             return Engine::CreateScope<SampledTextureTableTestPipeline>(description);
         }
         Engine::Scope<Engine::RHI::CommandList> CreateCommandList(Engine::RHI::QueueType queue, std::string_view) override
@@ -6162,10 +6180,24 @@ float4 main(VertexInput input) : SV_Position
         const Engine::Ref<Texture> foreignError = Engine::CreateRef<OwnershipTestTexture>(302, ResourceState::ShaderResource, sampled);
         Engine::Scope<TextureBindingTable> table = TextureBindingTable::Create(device, { 2, error, TextureSampler::LinearClamp });
         Engine::Scope<TextureBindingTable> foreignTable = TextureBindingTable::Create(foreignDevice, { 2, foreignError, TextureSampler::LinearClamp });
+        Engine::Scope<TextureBindingTable> differentCapacityTable = TextureBindingTable::Create(device, { 3, error, TextureSampler::LinearClamp });
 
         PipelineDescription declaration;
         declaration.ConstantBufferBindings = {{ 0, 0, ShaderStage::AllGraphics }};
-        declaration.SampledTextureTable = SampledTextureTableBinding {};
+        SampledTextureTableBinding tableDeclaration;
+        tableDeclaration.Capacity = 2;
+        declaration.SampledTextureTable = tableDeclaration;
+        ShaderDescription vertexDescription;
+        vertexDescription.Stage = ShaderStage::Vertex;
+        ShaderDescription pixelDescription;
+        pixelDescription.Stage = ShaderStage::Pixel;
+        pixelDescription.Reflection = {
+            { "ReadOnlyTextures", 't', 0, 1, ShaderStage::Pixel, "Texture2D", "float32x4", tableDeclaration.Capacity, 0, 1, 4 },
+            { "ReadOnlySamplers", 's', 0, 1, ShaderStage::Pixel, "SamplerState", "sampler", tableDeclaration.Capacity, 0, 0, 0 }
+        };
+        SampledTextureTableTestShader vertex(vertexDescription), pixel(pixelDescription);
+        declaration.VertexShader = &vertex;
+        declaration.PixelShader = &pixel;
         PipelineDescription collidingSpace = declaration;
         collidingSpace.SampledTextureTable->RegisterSpace = 0;
         PipelineDescription collidingOffsets = declaration;
@@ -6174,27 +6206,60 @@ float4 main(VertexInput input) : SV_Position
         wrongTextureRegister.SampledTextureTable->TextureRegister = 1;
         PipelineDescription wrongSamplerRegister = declaration;
         wrongSamplerRegister.SampledTextureTable->SamplerRegister = 1;
+        PipelineDescription zeroCapacity = declaration;
+        zeroCapacity.SampledTextureTable->Capacity = 0;
+        PipelineDescription oversizedCapacity = declaration;
+        oversizedCapacity.SampledTextureTable->Capacity = kMaximumReadOnlyTextureTableCapacity + 1;
+        PipelineDescription mismatchedTextureArray = declaration;
+        ShaderDescription mismatchedTextureDescription = pixelDescription;
+        mismatchedTextureDescription.Reflection[0].Count = tableDeclaration.Capacity + 1;
+        SampledTextureTableTestShader mismatchedTexturePixel(mismatchedTextureDescription);
+        mismatchedTextureArray.PixelShader = &mismatchedTexturePixel;
+        PipelineDescription missingSamplerArray = declaration;
+        ShaderDescription missingSamplerDescription = pixelDescription;
+        missingSamplerDescription.Reflection.pop_back();
+        SampledTextureTableTestShader missingSamplerPixel(missingSamplerDescription);
+        missingSamplerArray.PixelShader = &missingSamplerPixel;
+        PipelineDescription wrongTextureKind = declaration;
+        ShaderDescription wrongTextureKindDescription = pixelDescription;
+        wrongTextureKindDescription.Reflection[0].ResourceKind = "StructuredBuffer";
+        SampledTextureTableTestShader wrongTextureKindPixel(wrongTextureKindDescription);
+        wrongTextureKind.PixelShader = &wrongTextureKindPixel;
+        PipelineDescription wrongSamplerKind = declaration;
+        ShaderDescription wrongSamplerKindDescription = pixelDescription;
+        wrongSamplerKindDescription.Reflection[1].ResourceKind = "SamplerComparisonState";
+        SampledTextureTableTestShader wrongSamplerKindPixel(wrongSamplerKindDescription);
+        wrongSamplerKind.PixelShader = &wrongSamplerKindPixel;
         Engine::Scope<Pipeline> pipeline = device.CreatePipeline(declaration);
         Engine::Scope<Pipeline> rejectedSpace = device.CreatePipeline(collidingSpace);
         Engine::Scope<Pipeline> rejectedOffsets = device.CreatePipeline(collidingOffsets);
         Engine::Scope<Pipeline> rejectedTextureRegister = device.CreatePipeline(wrongTextureRegister);
         Engine::Scope<Pipeline> rejectedSamplerRegister = device.CreatePipeline(wrongSamplerRegister);
+        Engine::Scope<Pipeline> rejectedZeroCapacity = device.CreatePipeline(zeroCapacity);
+        Engine::Scope<Pipeline> rejectedOversizedCapacity = device.CreatePipeline(oversizedCapacity);
+        Engine::Scope<Pipeline> rejectedTextureArray = device.CreatePipeline(mismatchedTextureArray);
+        Engine::Scope<Pipeline> rejectedSamplerArray = device.CreatePipeline(missingSamplerArray);
+        Engine::Scope<Pipeline> rejectedTextureKind = device.CreatePipeline(wrongTextureKind);
+        Engine::Scope<Pipeline> rejectedSamplerKind = device.CreatePipeline(wrongSamplerKind);
         Engine::Scope<CommandList> list = device.CreateCommandList(QueueType::Graphics, "sampled-table-contract");
         auto* recording = dynamic_cast<SampledTextureTableTestCommandList*>(list.get());
-        const bool bindingFlow = list && recording && table && foreignTable && list->Begin()
+        const bool bindingFlow = list && recording && table && foreignTable && differentCapacityTable && list->Begin()
             && !list->BindGraphicsSampledTextureTable(*table)
             && pipeline && (list->SetGraphicsPipeline(*pipeline), true)
             && !list->BindGraphicsSampledTextureTable(*foreignTable)
+            && !list->BindGraphicsSampledTextureTable(*differentCapacityTable)
             && list->BindGraphicsSampledTextureTable(*table)
             && (list->DrawIndexed(3, 1, 0, 0, 0), recording->DrawCount == 1)
             && list->End();
 
-        return Expect(IsValidSampledTextureTableBinding(*declaration.SampledTextureTable, declaration.ConstantBufferBindings),
-                "sampled texture table reserves space one and Vulkan offsets one/two away from b0 space zero")
-            && Expect(!rejectedSpace && !rejectedOffsets && !rejectedTextureRegister && !rejectedSamplerRegister,
-                "pipeline creation rejects sampled-table declarations outside the fixed registers, space, or Vulkan offsets")
+        return Expect(IsValidSampledTextureTablePipeline(declaration),
+                "sampled texture table reserves space one and Vulkan offsets one/two with matching reflected bounded arrays")
+            && Expect(!rejectedSpace && !rejectedOffsets && !rejectedTextureRegister && !rejectedSamplerRegister
+                    && !rejectedZeroCapacity && !rejectedOversizedCapacity && !rejectedTextureArray && !rejectedSamplerArray
+                    && !rejectedTextureKind && !rejectedSamplerKind,
+                "pipeline creation rejects invalid capacities and missing or mismatched reflected texture/sampler arrays")
             && Expect(bindingFlow,
-                "recording rejects absent-pipeline and foreign-table binds then permits exact-device declared-table consumption");
+                "recording rejects absent-pipeline, foreign-table, and capacity-mismatched binds before exact declared-table consumption");
     }
 
     class BufferOwnershipTestBuffer final : public Engine::RHI::Buffer

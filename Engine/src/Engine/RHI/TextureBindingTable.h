@@ -19,8 +19,6 @@ namespace Engine::RHI
         PointWrap
     };
 
-    constexpr u32 kMaximumReadOnlyTextureTableCapacity = 4096;
-
     struct TextureBindingTableDescription
     {
         // Includes the mandatory error slot at index zero. The bounded fallback
