@@ -11,6 +11,10 @@ The first implementation will vendor a pinned, audited subset of Khronos KTX-Sof
 
 Do not use KTX-Software's OpenGL or Vulkan upload helpers. Texture upload must pass through `Engine::RHI` so D3D12, Vulkan, and future Metal paths share the same engine-owned lifetime and synchronization rules.
 
+## Current Implementation Boundary
+
+The accepted first prerequisite is deliberately smaller than KTX2 ingestion. `TextureImporter::CookNormalizedRgba8` accepts decoder-supplied normalized 2D RGBA8 mip payloads, validates an explicit material role/color-space pair, registers the stable `Texture` asset, and atomically writes a schema-1 engine-owned `RGBAFallback` artifact with exact contiguous mip ranges. Loading and resolution reject invalid enum semantics, corruption, truncation, trailing bytes, wrong types, and mismatched provenance transactionally. It has no file decoder, libktx dependency, compressed target encoder, runtime upload, sampler/descriptor binding, or mip generation. `DesktopBC` and `Astc` requests fail explicitly until the pinned/audited libktx transcode implementation exists. This boundary makes canonical source provenance and semantics available before later RHI upload/sampling work rather than allowing renderer-local payloads or extensions to define them.
+
 ## Scope
 
 Initial supported source:

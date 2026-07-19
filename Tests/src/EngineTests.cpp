@@ -20,6 +20,7 @@
 #include "Engine/Renderer/SceneRasterPreparation.h"
 #include "Engine/Renderer/MeshGpuResourceCache.h"
 #include "Engine/Assets/MeshArtifact.h"
+#include "Engine/Assets/TextureArtifact.h"
 #include "Engine/Assets/AssetRegistry.h"
 #include "Engine/Scene/Scene.h"
 #include "TestSupport/GeneratedTest.h"
@@ -1934,6 +1935,76 @@ namespace
                 "mesh artifact resolution rejects missing wrong-type and mismatched provenance without partial publication")
             && Expect(publishedResolverSucceeded && immutableResolverRetainsPublishedCatalog && replacementFailurePreservesCallerOutput,
                 "renderer-facing mesh resolution uses immutable registry publication and preserves caller output on failure");
+    }
+
+    bool TestTextureArtifactFallbackCooking()
+    {
+        using namespace Engine;
+        AssetRegistry registry;
+        NormalizedTextureSource source;
+        source.SourcePath = "Assets/Textures/Checker.raw";
+        source.Role = TextureRole::BaseColor;
+        source.ColorSpace = TextureColorSpace::Srgb;
+        source.Width = 2;
+        source.Height = 2;
+        source.Mips = {
+            { 255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255 },
+            { 128, 128, 128, 255 }
+        };
+        TextureArtifact cooked;
+        std::string error;
+        const bool cookedFallback = TextureImporter::CookNormalizedRgba8(source, registry, TextureTargetProfile::RGBAFallback, cooked, error)
+            && cooked.Asset != kInvalidAssetHandle && cooked.Mips.size() == 2 && cooked.Payload.size() == 20
+            && cooked.CookedFormat == TextureCookedFormat::R8G8B8A8Srgb;
+        TextureArtifact resolved;
+        const bool resolvedFallback = cookedFallback && ResolveTextureArtifact(registry, cooked.Asset, resolved, error)
+            && resolved.Payload == cooked.Payload && resolved.Mips[1].ByteOffset == 16 && resolved.Mips[1].ByteSize == 4;
+
+        const TextureArtifact preserved = resolved;
+        NormalizedTextureSource normal = source;
+        normal.SourcePath = "Assets/Textures/Normal.raw";
+        normal.Role = TextureRole::Normal;
+        normal.ColorSpace = TextureColorSpace::Srgb;
+        const bool roleColorRejected = !TextureImporter::CookNormalizedRgba8(normal, registry, TextureTargetProfile::RGBAFallback, resolved, error)
+            && resolved.Payload == preserved.Payload;
+        NormalizedTextureSource invalidRole = source;
+        invalidRole.SourcePath = "Assets/Textures/InvalidRole.raw";
+        invalidRole.Role = static_cast<TextureRole>(255);
+        const bool invalidEnumRejected = !TextureImporter::CookNormalizedRgba8(
+            invalidRole, registry, TextureTargetProfile::RGBAFallback, resolved, error)
+            && resolved.Payload == preserved.Payload;
+        const bool compressedProfilesRejected = !TextureImporter::CookNormalizedRgba8(source, registry, TextureTargetProfile::DesktopBC, resolved, error)
+            && !TextureImporter::CookNormalizedRgba8(source, registry, TextureTargetProfile::Astc, resolved, error)
+            && resolved.Payload == preserved.Payload;
+
+        const std::filesystem::path path = GetCookedTextureArtifactPath(cooked.Asset);
+        {
+            std::ofstream corrupt(path, std::ios::binary | std::ios::trunc);
+            corrupt << "SpiralTextureArtifact 1\nSource \"bad\"\n";
+        }
+        const bool corruptionRejected = !LoadTextureArtifact(path, resolved, error) && resolved.Payload == preserved.Payload;
+        const bool restored = StoreTextureArtifact(path, cooked, error) && ResolveTextureArtifact(registry, cooked.Asset, resolved, error);
+        {
+            std::ofstream trailing(path, std::ios::binary | std::ios::app);
+            trailing.put('!');
+        }
+        const bool trailingRejected = !LoadTextureArtifact(path, resolved, error) && resolved.Payload == preserved.Payload;
+        TextureArtifact mismatched = cooked;
+        mismatched.SourcePath = "Assets/Textures/Other.raw";
+        const bool provenanceRejected = StoreTextureArtifact(path, mismatched, error)
+            && !ResolveTextureArtifact(registry, cooked.Asset, resolved, error)
+            && resolved.Payload == preserved.Payload;
+        const AssetHandle wrongType = registry.RegisterAsset(AssetType::Mesh, "Assets/Textures/Checker.raw", "Wrong Type");
+        const bool wrongTypeRejected = wrongType != kInvalidAssetHandle && !ResolveTextureArtifact(registry, wrongType, resolved, error)
+            && resolved.Asset == cooked.Asset;
+        std::error_code filesystemError;
+        std::filesystem::remove(path, filesystemError);
+        return Expect(cookedFallback && resolvedFallback,
+                "texture artifact fallback cooking publishes and resolves exact mip payloads")
+            && Expect(roleColorRejected && invalidEnumRejected && compressedProfilesRejected,
+                "texture artifact cooking rejects invalid semantics and unavailable target profiles transactionally")
+            && Expect(corruptionRejected && restored && trailingRejected && provenanceRejected && wrongTypeRejected,
+                "texture artifact loading and resolution reject corruption trailing bytes and provenance mismatches");
     }
 
     bool TestSceneVersionFourCanonicalPersistence()
@@ -6233,6 +6304,7 @@ int main(int argc, char** argv)
         FAST_TEST("Frame task graph rejects invalid dependencies", TestFrameTaskGraphRejectsInvalidDependencies),
         INTEGRATION_TEST("Scene round trip", TestSceneRoundTrip),
         INTEGRATION_TEST("Cooked mesh artifacts validate and resolve transactionally", TestMeshArtifactValidationAndResolution),
+        INTEGRATION_TEST("Texture artifacts cook the deterministic RGBA fallback transactionally", TestTextureArtifactFallbackCooking),
         FAST_TEST("Mesh GPU resource cache preserves exact immutable generations", TestMeshGpuResourceCache),
         INTEGRATION_TEST("Scene version 4 canonical persistence", TestSceneVersionFourCanonicalPersistence),
         INTEGRATION_TEST("Scene loads legacy absolute transforms", TestSceneLoadsLegacyAbsoluteTransforms),
