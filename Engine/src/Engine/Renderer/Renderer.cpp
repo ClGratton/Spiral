@@ -772,10 +772,13 @@ namespace Engine
                 *group = std::move(promoted);
             selectedPath = RHI::CapabilityPath::GpuTimestamps;
         }
-        Log::Info("RendererGpuTimingV1 backend=", GetActiveBackendName(),
-            " frame=", publication.FrameIndex, " passes=", publication.Passes.size(),
-            " wholeMs=", publication.GpuMilliseconds, " status=", ToString(publication.Status),
-            " capability=", RHI::ToString(selectedPath), " result=pass");
+        const ApplicationCommandLineArgs& args = Application::Get().GetSpecification().CommandLineArgs;
+        const bool perFrameTrace = args.HasFlag("--renderer-frame-trace") && !args.HasFlag("--frame-pacing-benchmark");
+        if (args.HasFlag("--scene-viewport-render-graph-smoke") || perFrameTrace)
+            Log::Info("RendererGpuTimingV1 backend=", GetActiveBackendName(),
+                " frame=", publication.FrameIndex, " passes=", publication.Passes.size(),
+                " wholeMs=", publication.GpuMilliseconds, " status=", ToString(publication.Status),
+                " capability=", RHI::ToString(selectedPath), " result=pass");
         return true;
     }
 
@@ -847,6 +850,17 @@ namespace Engine
         if (s_FrameTiming.FrameIndex != applicationFrameIndex)
             return;
         s_FrameTiming.Waits.push_back({ kind, applied, milliseconds });
+    }
+
+    void Renderer::RecordCpuPassTiming(std::string name, double milliseconds)
+    {
+        if (!s_RendererFrameTimingActive || name.empty() || !std::isfinite(milliseconds) || milliseconds < 0.0)
+            return;
+        RendererPassTiming pass;
+        pass.Name = std::move(name);
+        pass.CpuMilliseconds = milliseconds;
+        pass.GpuStatus = GetBackendGpuTimingStatus();
+        s_FrameTiming.Passes.push_back(std::move(pass));
     }
 
     FramePacingWaitResult Renderer::ApplySmoothFrametimeCandidate(SmoothFrametimeCandidate candidate)

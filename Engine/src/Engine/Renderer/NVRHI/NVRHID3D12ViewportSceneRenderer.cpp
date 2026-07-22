@@ -186,6 +186,18 @@ namespace Engine
             if (width == 0 || height == 0)
                 return false;
 
+            const ApplicationCommandLineArgs& args = Application::Get().GetSpecification().CommandLineArgs;
+            const bool traceFrame = args.HasFlag("--renderer-frame-trace");
+            auto stageStart = traceFrame ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point {};
+            const auto recordStage = [&](const char* name)
+            {
+                if (!traceFrame)
+                    return;
+                Renderer::RecordCpuPassTiming(name,
+                    std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - stageStart).count());
+                stageStart = std::chrono::steady_clock::now();
+            };
+
             const SubmittedRenderGraphFrameOwner::PollResult retirement = m_SubmittedGraphFrames.Poll(*m_RHIDevice);
             if (!retirement.Success)
             {
@@ -210,11 +222,14 @@ namespace Engine
                 return false;
             }
 
+            recordStage("D3D12 Viewport Retirement");
+
             PollShaderHotReload();
             // Source observation establishes the requested revision before a completed
             // worker result is allowed to reach the native pipeline boundary. This
             // prevents an older completion from briefly replacing newer source intent.
             PollShaderCompilation();
+            recordStage("D3D12 Viewport Shader Poll");
 
             RHI::ResourceState colorState = RHI::ResourceState::Unknown;
             RHI::ResourceState depthState = RHI::ResourceState::Unknown;
@@ -298,6 +313,8 @@ namespace Engine
             if (!renderSucceeded)
                 return false;
 
+            recordStage("D3D12 Viewport Scene Resolve");
+
             Scope<RenderGraph> graph = CreateScope<RenderGraph>();
             RHI::TextureDescription colorDescription = colorTexture.GetDescription();
             colorDescription.InitialState = colorState;
@@ -345,9 +362,18 @@ namespace Engine
             graph->SetPassCallback(handoffPass, [](RenderGraph::ExecutionContext& context) { return context.GetTexture({ 0 }) != nullptr; });
             graph->SetPassWorkerRecordingEligible(handoffPass);
             const RenderGraph::CompileResult compiled = graph->Compile();
-            RenderGraph::ExecuteOptions executeOptions; executeOptions.RecordingMode = Application::Get().GetSpecification().CommandLineArgs.HasFlag("--frame-task-single-thread") ? FrameTaskExecutionMode::DeterministicSingleThread : FrameTaskExecutionMode::Parallel; executeOptions.EnableTimestampScopes = m_RHIDevice->GetCapabilities().GetFeature(RHI::DeviceFeature::Timestamps).IsUsable();
+            recordStage("D3D12 Viewport Graph Build And Compile");
+            RenderGraph::ExecuteOptions executeOptions;
+            executeOptions.RecordingMode = args.HasFlag("--frame-task-single-thread")
+                ? FrameTaskExecutionMode::DeterministicSingleThread : FrameTaskExecutionMode::Parallel;
+            const bool timestampCaptureRequested = args.HasFlag("--renderer-gpu-timestamps")
+                || args.HasFlag("--scene-viewport-render-graph-smoke") || args.HasFlag("--frame-pacing-benchmark");
+            executeOptions.EnableTimestampScopes = timestampCaptureRequested
+                && !args.HasFlag("--renderer-disable-gpu-timestamps")
+                && m_RHIDevice->GetCapabilities().GetFeature(RHI::DeviceFeature::Timestamps).IsUsable();
             const RenderGraph::ExecuteResult executed = graph->BindTexture(color, colorTexture) && graph->BindTexture(depth, depthTexture)
                 ? graph->Execute(*m_RHIDevice, compiled, executeOptions) : RenderGraph::ExecuteResult {};
+            recordStage("D3D12 Viewport Graph Execute");
             if (Application::Get().GetSpecification().CommandLineArgs.HasFlag("--scene-viewport-render-graph-smoke")) Log::Info("RenderGraphRecordingV1 backend=D3D12 mode=", executeOptions.RecordingMode == FrameTaskExecutionMode::Parallel ? "worker" : "inline", " workerPasses=", executed.WorkerRecordedPassCount, " overlap=", executed.WorkerRecordingOverlapObserved ? "yes" : "no", " submitted=", executed.AcceptedPassCount, " result=", executed.Success ? "pass" : "fail");
             if (!executed.Completions.empty())
             {
@@ -401,7 +427,7 @@ namespace Engine
                 if (!equivalent) return false;
             }
             Renderer::PublishSceneRasterFrame(std::move(rasterFrame));
-            if (!comparisonRequested)
+            if (!comparisonRequested && args.HasFlag("--renderer-frame-trace") && !args.HasFlag("--frame-pacing-benchmark"))
                 Log::Trace("Scene viewport graph rendered without the smoke-only bootstrap comparator");
             return true;
         }

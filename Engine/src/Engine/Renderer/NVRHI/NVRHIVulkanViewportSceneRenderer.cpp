@@ -180,7 +180,15 @@ namespace Engine
             graph->SetPassCallback(handoffPass, [](RenderGraph::ExecutionContext& context) { return context.GetTexture({ 0 }) != nullptr; });
             graph->SetPassWorkerRecordingEligible(handoffPass);
             const RenderGraph::CompileResult compiled = graph->Compile();
-            RenderGraph::ExecuteOptions executeOptions; executeOptions.RecordingMode = Application::Get().GetSpecification().CommandLineArgs.HasFlag("--frame-task-single-thread") ? FrameTaskExecutionMode::DeterministicSingleThread : FrameTaskExecutionMode::Parallel; executeOptions.EnableTimestampScopes = m_Device->GetCapabilities().GetFeature(RHI::DeviceFeature::Timestamps).IsUsable();
+            const ApplicationCommandLineArgs& args = Application::Get().GetSpecification().CommandLineArgs;
+            RenderGraph::ExecuteOptions executeOptions;
+            executeOptions.RecordingMode = args.HasFlag("--frame-task-single-thread")
+                ? FrameTaskExecutionMode::DeterministicSingleThread : FrameTaskExecutionMode::Parallel;
+            const bool timestampCaptureRequested = args.HasFlag("--renderer-gpu-timestamps")
+                || args.HasFlag("--scene-viewport-render-graph-smoke") || args.HasFlag("--frame-pacing-benchmark");
+            executeOptions.EnableTimestampScopes = timestampCaptureRequested
+                && !args.HasFlag("--renderer-disable-gpu-timestamps")
+                && m_Device->GetCapabilities().GetFeature(RHI::DeviceFeature::Timestamps).IsUsable();
             const RenderGraph::ExecuteResult executed = graph->BindTexture(color, *m_Color) && graph->BindTexture(depth, *m_Depth) ? graph->Execute(*m_Device, compiled, executeOptions) : RenderGraph::ExecuteResult {};
             if (Application::Get().GetSpecification().CommandLineArgs.HasFlag("--scene-viewport-render-graph-smoke")) Log::Info("RenderGraphRecordingV1 backend=Vulkan mode=", executeOptions.RecordingMode == FrameTaskExecutionMode::Parallel ? "worker" : "inline", " workerPasses=", executed.WorkerRecordedPassCount, " overlap=", executed.WorkerRecordingOverlapObserved ? "yes" : "no", " submitted=", executed.AcceptedPassCount, " result=", executed.Success ? "pass" : "fail");
             if (!executed.Completions.empty())
@@ -215,7 +223,8 @@ namespace Engine
                 if (!equivalent) return false;
             }
             Renderer::PublishSceneRasterFrame(std::move(frame));
-            if (!comparisonRequested) Log::Trace("Scene viewport graph rendered without the smoke-only bootstrap comparator");
+            if (!comparisonRequested && args.HasFlag("--renderer-frame-trace") && !args.HasFlag("--frame-pacing-benchmark"))
+                Log::Trace("Scene viewport graph rendered without the smoke-only bootstrap comparator");
             return true;
         }
 

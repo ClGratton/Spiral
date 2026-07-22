@@ -11,9 +11,11 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cmath>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <map>
 #include <optional>
 #include <stdexcept>
 #include <thread>
@@ -644,6 +646,32 @@ namespace Engine
                 { return timing.GpuHeadroomMilliseconds.has_value(); }));
             Log::Info("FramePacingBenchmarkV1 frames=", snapshot->Frames.size(), " p99Ms=", snapshot->Summary.StartToStartP99Milliseconds,
                 " display=unavailable inputLatency=unavailable gpuHeadroomFrames=", gpuHeadroomFrames, " result=pass");
+            if (m_Specification.CommandLineArgs.HasFlag("--renderer-frame-trace"))
+            {
+                std::map<std::string, std::vector<double>> passSamples;
+                std::vector<double> unaccountedSamples;
+                for (const RendererFrameTiming& timing : snapshot->Frames)
+                {
+                    double accountedMilliseconds = 0.0;
+                    for (const RendererPassTiming& pass : timing.Passes)
+                    {
+                        passSamples[pass.Name].push_back(pass.CpuMilliseconds);
+                        accountedMilliseconds += pass.CpuMilliseconds;
+                    }
+                    unaccountedSamples.push_back(std::max(0.0, timing.CpuActiveMilliseconds - accountedMilliseconds));
+                }
+                const auto percentile = [](std::vector<double> samples, double quantile)
+                {
+                    std::sort(samples.begin(), samples.end());
+                    const size_t index = static_cast<size_t>(std::floor(static_cast<double>(samples.size() - 1) * quantile));
+                    return samples[index];
+                };
+                for (const auto& [name, samples] : passSamples)
+                    Log::Info("RendererFrameTraceSummaryV1 scope=", name, " samples=", samples.size(),
+                        " p50Ms=", percentile(samples, 0.50), " p95Ms=", percentile(samples, 0.95));
+                Log::Info("RendererFrameTraceSummaryV1 scope=UnaccountedEditorAndFrameWork samples=", unaccountedSamples.size(),
+                    " p50Ms=", percentile(unaccountedSamples, 0.50), " p95Ms=", percentile(unaccountedSamples, 0.95));
+            }
         }
 
         Log::Info("Application stopped after ", m_FrameIndex, " frame(s)");

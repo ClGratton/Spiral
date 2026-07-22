@@ -99,6 +99,18 @@ private:
     size_t m_FrameTimeHistoryCount = 0;
     size_t m_FrameTimeHistoryOffset = 0;
     std::optional<Engine::u64> m_LastFrameTimeSampledFrame;
+    struct FrameTimeHistoryCondition
+    {
+        Engine::FramePacingMode Mode = Engine::FramePacingMode::Responsive;
+        std::optional<double> TargetFramesPerSecond;
+        Engine::SmoothFrametimeCandidate Candidate = Engine::SmoothFrametimeCandidate::InterFrame;
+        Engine::PresentationPolicy RequestedPresentation = Engine::PresentationPolicy::Synchronized;
+        Engine::PresentationActualMode ActualPresentation = Engine::PresentationActualMode::Unavailable;
+        Engine::u64 PresentationGeneration = 0;
+
+        bool operator==(const FrameTimeHistoryCondition&) const = default;
+    };
+    std::optional<FrameTimeHistoryCondition> m_FrameTimeHistoryCondition;
     bool m_ShowDemoWindow = false;
     bool m_ResetDockLayout = true;
     bool m_CaptureViewportRequested = false;

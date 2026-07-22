@@ -567,6 +567,22 @@ void EditorLayer::OnUpdate(Engine::Timestep timestep)
     ++m_FrameCounter;
     m_LastFrameMs = timestep.GetMilliseconds();
     const Engine::RendererFrameTiming& completedTiming = Engine::Renderer::GetLastCompletedFrameTiming();
+    const Engine::RendererPresentationPolicyDiagnostics presentation = Engine::Renderer::GetPresentationPolicyDiagnostics();
+    const FrameTimeHistoryCondition condition {
+        completedTiming.FramePacingPolicy.EffectiveMode,
+        completedTiming.FramePacingPolicy.SmoothTargetFramesPerSecond,
+        completedTiming.FramePacingPolicy.Candidate,
+        presentation.Requested,
+        presentation.Actual,
+        presentation.SwapchainGeneration
+    };
+    if (m_FrameTimeHistoryCondition && *m_FrameTimeHistoryCondition != condition)
+    {
+        m_FrameTimeHistoryCount = 0;
+        m_FrameTimeHistoryOffset = 0;
+        m_LastFrameTimeSampledFrame.reset();
+    }
+    m_FrameTimeHistoryCondition = condition;
     if (completedTiming.StartToStartMilliseconds > 0.0
         && (!m_LastFrameTimeSampledFrame || *m_LastFrameTimeSampledFrame != completedTiming.FrameIndex))
     {

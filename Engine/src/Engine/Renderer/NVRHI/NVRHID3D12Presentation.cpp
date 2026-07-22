@@ -1,5 +1,6 @@
 #include "Engine/Renderer/NVRHI/NVRHID3D12Presentation.h"
 
+#include "Engine/Core/Application.h"
 #include "Engine/Core/Log.h"
 #include "Engine/Renderer/NVRHI/D3D12DebugMarkers.h"
 #include "Engine/Renderer/NVRHI/NVRHID3D12ViewportSceneRenderer.h"
@@ -316,7 +317,13 @@ namespace Engine
             m_LastClearColor = clearColor;
             m_FrameIndex = m_Swapchain->GetCurrentBackBufferIndex();
             FrameContext& frame = m_Frames[m_FrameIndex];
+            const ApplicationCommandLineArgs& args = Application::Get().GetSpecification().CommandLineArgs;
+            const bool traceFrame = args.HasFlag("--renderer-frame-trace");
+            const auto fenceWaitStart = traceFrame ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point {};
             WaitForFenceValue(frame.FenceValue);
+            if (traceFrame)
+                Renderer::RecordCpuPassTiming("D3D12 ImGui Frame Fence Wait",
+                    std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - fenceWaitStart).count());
             if (frame.FenceValue != 0)
                 Renderer::RecordGpuCompletionObservation(frame.ApplicationFrameIndex);
             frame.FenceValue = 0;
@@ -340,12 +347,16 @@ namespace Engine
 
                 {
                     ScopedD3D12Marker viewportMarker(m_CommandList.Get(), "Editor Viewport Texture");
+                    const auto viewportStart = traceFrame ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point {};
                     if (!RenderViewportTexture(clearColor))
                     {
                         Log::Error("D3D12 viewport scene pass failed");
                         m_CommandList->Close();
                         return;
                     }
+                    if (traceFrame)
+                        Renderer::RecordCpuPassTiming("D3D12 Viewport RenderGraph CPU",
+                            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - viewportStart).count());
                 }
 
                 {
@@ -363,7 +374,11 @@ namespace Engine
                     ScopedD3D12Marker imguiMarker(m_CommandList.Get(), "Editor ImGui");
                     ID3D12DescriptorHeap* heaps[] = { m_SrvHeap.Get() };
                     m_CommandList->SetDescriptorHeaps(1, heaps);
+                    const auto imguiStart = traceFrame ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point {};
                     ImGui_ImplDX12_RenderDrawData(drawData, m_CommandList.Get());
+                    if (traceFrame)
+                        Renderer::RecordCpuPassTiming("D3D12 ImGui Command Recording",
+                            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - imguiStart).count());
                 }
 
                 D3D12_RESOURCE_BARRIER renderToPresent = TransitionBarrier(m_BackBuffers[m_FrameIndex].Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PRESENT);

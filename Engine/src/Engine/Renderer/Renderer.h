@@ -390,6 +390,7 @@ namespace Engine
         static void ClearOpticalResponseMarker(u64 applicationFrameIndex);
         static void RecordFrameLifecyclePhase(u64 applicationFrameIndex, RendererFrameLifecyclePhase phase);
         static void RecordFrameWait(u64 applicationFrameIndex, RendererFrameWaitKind kind, bool applied, double milliseconds);
+        static void RecordCpuPassTiming(std::string name, double milliseconds);
         static FramePacingWaitResult ApplySmoothFrametimeCandidate(SmoothFrametimeCandidate candidate);
         static void BeginFramePacingBenchmark(size_t capacity, double targetFramesPerSecond, u32 warmupFrames,
             FramePacingBenchmarkIdentity identity = {});
