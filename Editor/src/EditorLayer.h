@@ -139,6 +139,7 @@ private:
     bool m_EditorSettingsSmokeCompleted = false;
     bool m_ViewportNavigationSmokeRequested = false;
     bool m_ViewportNavigationSmokeCompleted = false;
+    bool m_EventTraceEnabled = false;
     bool m_PresentationPolicySmokeRequested = false;
     bool m_PresentationPolicySmokeCompleted = false;
     Engine::u64 m_PresentationPolicySmokeTearingGeneration = 0;

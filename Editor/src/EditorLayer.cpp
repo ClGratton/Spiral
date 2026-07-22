@@ -466,6 +466,7 @@ void EditorLayer::OnAttach()
     m_ConsoleLines.emplace_back("GLFW window backend active");
     m_ConsoleLines.emplace_back(std::string("Renderer backend: ") + Engine::Renderer::GetActiveBackendName());
     const Engine::ApplicationCommandLineArgs& args = Engine::Application::Get().GetSpecification().CommandLineArgs;
+    m_EventTraceEnabled = args.HasFlag("--editor-event-trace");
     const std::string_view presentationOverride = args.GetOptionValue("--presentation-policy");
     if (presentationOverride == "synchronized")
         m_RuntimePresentationPolicyOverride = Engine::PresentationPolicy::Synchronized;
@@ -758,7 +759,8 @@ void EditorLayer::OnEvent(Engine::Event& event)
         m_MouseWheelDelta += static_cast<const Engine::MouseScrolledEvent&>(event).GetYOffset();
     }
 
-    Engine::Log::Trace("Editor received event: ", event.ToString());
+    if (m_EventTraceEnabled)
+        Engine::Log::Trace("Editor received event: ", event.ToString());
 }
 
 void EditorLayer::ConfigureSceneOriginRasterSmoke()

@@ -85,7 +85,6 @@ namespace Engine
         {
             m_Condition = std::move(condition);
             m_Frames.clear();
-            Publish();
         }
 
         void Record(const RendererFrameTiming& timing)
@@ -94,7 +93,6 @@ namespace Engine
                 m_Frames.erase(m_Frames.begin());
             m_Frames.push_back(timing);
             UpdateGpuHeadroom(m_Frames.back());
-            Publish();
         }
 
         bool AmendGpuTiming(const RendererGpuTimingPublication& publication)
@@ -104,7 +102,6 @@ namespace Engine
             if (found == m_Frames.end() || !ApplyRendererGpuTimingPublication(*found, publication))
                 return false;
             UpdateGpuHeadroom(*found);
-            Publish();
             return true;
         }
 
@@ -117,11 +114,17 @@ namespace Engine
                 return false;
             found->EffectiveLimitingSource = source;
             found->EffectiveLimitingSourceFrameIndex = sourceFrameIndex;
-            Publish();
             return true;
         }
 
-        std::shared_ptr<const FramePacingBenchmarkSnapshot> GetSnapshot() const { return m_Snapshot; }
+        std::shared_ptr<const FramePacingBenchmarkSnapshot> GetSnapshot() const
+        {
+            auto snapshot = std::make_shared<FramePacingBenchmarkSnapshot>();
+            snapshot->Condition = m_Condition;
+            snapshot->Frames = m_Frames;
+            snapshot->Summary = Summarize(m_Frames);
+            return snapshot;
+        }
 
         static double Percentile(const std::vector<double>& values, double percentile)
         {
@@ -387,15 +390,8 @@ namespace Engine
             return true;
         }
 
-        void Publish()
-        {
-            auto snapshot = std::make_shared<FramePacingBenchmarkSnapshot>();
-            snapshot->Condition = m_Condition; snapshot->Frames = m_Frames; snapshot->Summary = Summarize(m_Frames); m_Snapshot = std::move(snapshot);
-        }
-
         size_t m_Capacity;
         FramePacingBenchmarkCondition m_Condition;
         std::vector<RendererFrameTiming> m_Frames;
-        std::shared_ptr<const FramePacingBenchmarkSnapshot> m_Snapshot;
     };
 }
