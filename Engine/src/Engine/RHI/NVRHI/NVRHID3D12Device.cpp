@@ -36,6 +36,7 @@
     #include <sstream>
     #include <string>
     #include <unordered_map>
+    #include <unordered_set>
     #include <vector>
 #endif
 
@@ -2183,9 +2184,13 @@ namespace Engine::RHI
                     return {};
                 }
 
+                // Retire older terminal submissions before issuing the next one.
+                // Do not poll the newly submitted token here: query-pool clients
+                // must observe Pending until they explicitly query or wait.
+                CompactTerminalCompletionPrefix();
                 const SubmissionDependencyError dependencyError = ValidateSubmissionDependencies(
                     m_CompletionDeviceId, m_NextCompletionSubmissionId, dependencies,
-                    [this](const CompletionToken& dependency) { return FindCompletionEntry(dependency) != nullptr; });
+                    [this](const CompletionToken& dependency) { return IsIssuedCompletionToken(dependency); });
                 if (dependencyError != SubmissionDependencyError::None)
                 {
                     Log::Error("D3D12 RHI submission rejected dependency validation error ", static_cast<u32>(dependencyError));
@@ -2205,7 +2210,15 @@ namespace Engine::RHI
                 }
                 for (const CompletionToken& dependency : dependencies)
                 {
+                    const CompletionStatus status = QueryCompletion(dependency);
+                    if (status != CompletionStatus::Incomplete)
+                        continue;
                     const CompletionEntry* producer = FindCompletionEntry(dependency);
+                    if (!producer)
+                    {
+                        Log::Error("D3D12 RHI submission lost an incomplete dependency completion entry");
+                        return {};
+                    }
                     if (producer->Queue == consumer.Effective)
                         continue;
                     ID3D12Fence* producerFence = GetSubmissionFence(producer->Queue);
@@ -2251,6 +2264,11 @@ namespace Engine::RHI
 
             CompletionStatus QueryCompletion(const CompletionToken& token) override
             {
+                if (!token.IsValid() || token.DeviceId != m_CompletionDeviceId)
+                    return CompletionStatus::Invalid;
+                if (token.SubmissionId <= m_RetiredCompletionPrefix)
+                    return m_FailedCompletionEntries.contains(token.SubmissionId)
+                        ? CompletionStatus::Failed : CompletionStatus::Complete;
                 CompletionEntry* entry = FindCompletionEntryMutable(token);
                 if (!entry)
                     return CompletionStatus::Invalid;
@@ -2259,6 +2277,10 @@ namespace Engine::RHI
                 ID3D12Fence* fence = GetSubmissionFence(entry->Queue);
                 if (!fence)
                 {
+                    // Compaction may release this entry immediately after this query.
+                    // A missing fence cannot prove readback completion, so publish a
+                    // failed retirement without mapping native readback memory.
+                    (void)FailTimestampQueries(*entry, token);
                     entry->TerminalStatus = CompletionStatus::Failed;
                     return entry->TerminalStatus;
                 }
@@ -2271,11 +2293,16 @@ namespace Engine::RHI
 
             bool WaitForCompletion(const CompletionToken& token, u32 timeoutMilliseconds) override
             {
-                const CompletionEntry* entry = FindCompletionEntry(token);
-                if (!entry || timeoutMilliseconds == 0)
+                if (timeoutMilliseconds == 0)
                     return false;
-                if (QueryCompletion(token) == CompletionStatus::Complete)
+                const CompletionStatus status = QueryCompletion(token);
+                if (status == CompletionStatus::Complete)
                     return true;
+                if (status != CompletionStatus::Incomplete)
+                    return false;
+                const CompletionEntry* entry = FindCompletionEntry(token);
+                if (!entry)
+                    return false;
                 ID3D12Fence* fence = GetSubmissionFence(entry->Queue);
                 HANDLE event = GetSubmissionFenceEvent(entry->Queue);
                 if (!fence || !event || FAILED(fence->SetEventOnCompletion(entry->FenceValue, event)))
@@ -2337,12 +2364,41 @@ namespace Engine::RHI
                 return found == m_CompletionEntries.end() ? nullptr : &found->second;
             }
 
+            bool IsIssuedCompletionToken(const CompletionToken& token) const
+            {
+                // A retired prefix remains issued indefinitely; only the native
+                // queue/fence/timestamp state is compacted after it is terminal.
+                return token.IsValid() && token.DeviceId == m_CompletionDeviceId
+                    && (token.SubmissionId <= m_RetiredCompletionPrefix
+                        || m_CompletionEntries.find(token.SubmissionId) != m_CompletionEntries.end());
+            }
+
             CompletionEntry* FindCompletionEntryMutable(const CompletionToken& token)
             {
                 if (!token.IsValid() || token.DeviceId != m_CompletionDeviceId)
                     return nullptr;
                 const auto found = m_CompletionEntries.find(token.SubmissionId);
                 return found == m_CompletionEntries.end() ? nullptr : &found->second;
+            }
+
+            void CompactTerminalCompletionPrefix()
+            {
+                for (;;)
+                {
+                    const u64 submissionId = m_RetiredCompletionPrefix + 1;
+                    const auto found = m_CompletionEntries.find(submissionId);
+                    if (found == m_CompletionEntries.end())
+                        return;
+
+                    const CompletionToken token { m_CompletionDeviceId, submissionId };
+                    const CompletionStatus status = QueryCompletion(token);
+                    if (status == CompletionStatus::Incomplete || status == CompletionStatus::Invalid)
+                        return;
+                    if (status == CompletionStatus::Failed)
+                        m_FailedCompletionEntries.insert(submissionId);
+                    m_CompletionEntries.erase(found);
+                    m_RetiredCompletionPrefix = submissionId;
+                }
             }
 
             bool FinalizeTimestampQueries(CompletionEntry& entry, const CompletionToken& token)
@@ -2375,6 +2431,20 @@ namespace Engine::RHI
                 }
                 const CompletionStatus retirementStatus = completed ? CompletionStatus::Complete : CompletionStatus::Failed;
                 const bool retired = m_TimestampRetirements.Retire(token, retirementStatus);
+                entry.TimestampStates.clear();
+                return completed && retired;
+            }
+
+            bool FailTimestampQueries(CompletionEntry& entry, const CompletionToken& token)
+            {
+                if (entry.TimestampStates.empty())
+                    return true;
+
+                bool completed = true;
+                for (const NativeQueryState& nativeState : entry.TimestampStates)
+                    if (!m_TimestampRetirements.Complete(nativeState, token, CompletionStatus::Failed))
+                        completed = false;
+                const bool retired = m_TimestampRetirements.Retire(token, CompletionStatus::Failed);
                 entry.TimestampStates.clear();
                 return completed && retired;
             }
@@ -2957,7 +3027,11 @@ namespace Engine::RHI
             TimestampQueryRetirementQueue m_TimestampRetirements;
             u64 m_GraphicsTimestampFrequency = 0;
             u64 m_NextCompletionSubmissionId = 1;
+            // Completed historical submissions are implicit in this prefix. Failed
+            // terminal submissions remain explicit so their public status is stable.
+            u64 m_RetiredCompletionPrefix = 0;
             std::unordered_map<u64, CompletionEntry> m_CompletionEntries;
+            std::unordered_set<u64> m_FailedCompletionEntries;
             BufferOwnershipTracker m_BufferOwnership;
             TextureOwnershipTracker m_TextureOwnership;
             nvrhi::DeviceHandle m_NVRHIDevice;
