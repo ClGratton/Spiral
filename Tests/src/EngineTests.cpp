@@ -22,6 +22,7 @@
 #include "Engine/Renderer/MeshGpuResourceCache.h"
 #include "Engine/Renderer/TextureArtifactUploadPlan.h"
 #include "Engine/Renderer/TextureGpuResourceCache.h"
+#include "Engine/Renderer/TextureTablePublication.h"
 #include "Engine/Assets/MeshArtifact.h"
 #include "Engine/Assets/TextureArtifact.h"
 #include "Engine/Assets/AssetRegistry.h"
@@ -6612,6 +6613,176 @@ float4 main(VertexInput input) : SV_Position
             && Expect(errorRetainedByView, "resolved views retain the error resource after caller and table release");
     }
 
+    Engine::Ref<const Engine::TextureGpuResourceBundle> MakeTextureTablePublicationBundle(
+        Engine::u64 ownerId, Engine::AssetHandle asset, Engine::u64 generation,
+        Engine::RHI::ResourceState state = Engine::RHI::ResourceState::ShaderResource)
+    {
+        using namespace Engine;
+        RHI::TextureDescription description;
+        description.DebugName = "TextureTablePublication " + std::to_string(asset);
+        description.Extent = { 1, 1 };
+        description.TextureFormat = RHI::Format::R8G8B8A8Unorm;
+        description.Usage = static_cast<RHI::TextureUsage>(static_cast<u32>(RHI::TextureUsage::CopyDest)
+            | static_cast<u32>(RHI::TextureUsage::ShaderResource));
+        description.InitialState = RHI::ResourceState::CopyDest;
+
+        Ref<TextureGpuResourceBundle> bundle = CreateRef<TextureGpuResourceBundle>();
+        bundle->Texture = CreateRef<OwnershipTestTexture>(ownerId, state, description);
+        bundle->UploadPlan.Asset = asset;
+        bundle->UploadPlan.SourcePath = "Assets/Textures/Publication.png";
+        bundle->UploadPlan.Role = TextureRole::Normal;
+        bundle->UploadPlan.ColorSpace = TextureColorSpace::Linear;
+        bundle->UploadPlan.TargetProfile = TextureTargetProfile::RGBAFallback;
+        bundle->UploadPlan.Texture = description;
+        bundle->UploadPlan.Subresources = { { 0, { 1, 1 }, 0, 4, 4 } };
+        bundle->UploadPlan.Payload = CreateRef<std::vector<u8>>(4, static_cast<u8>(generation));
+        bundle->Generation = generation;
+        return bundle;
+    }
+
+    bool TestTextureTablePublicationRetirement()
+    {
+        using namespace Engine;
+        using namespace Engine::RHI;
+        TextureDescription errorDescription;
+        errorDescription.DebugName = "TextureTablePublication Error";
+        errorDescription.Extent = { 1, 1 };
+        errorDescription.TextureFormat = Format::R8G8B8A8Unorm;
+        errorDescription.Usage = TextureUsage::ShaderResource;
+        OwnershipTestDevice device(401);
+        Ref<Texture> errorTexture = CreateRef<OwnershipTestTexture>(401,
+            ResourceState::ShaderResource, errorDescription);
+        Scope<TextureTablePublication> publication = TextureTablePublication::Create(device,
+            { 3, errorTexture, TextureSampler::PointClamp });
+        if (!publication) return Expect(false, "texture table publication creates over one exact-device logical table");
+        const TextureBindingHandle errorHandle = publication->GetErrorHandle();
+        const auto isError = [errorHandle](TextureBindingHandle handle)
+        {
+            return handle.Index == errorHandle.Index && handle.Generation == errorHandle.Generation;
+        };
+
+        Ref<const TextureGpuResourceBundle> first = MakeTextureTablePublicationBundle(401, 11, 1);
+        Ref<const TextureGpuResourceBundle> replacement = MakeTextureTablePublicationBundle(401, 11, 2);
+        Ref<const TextureGpuResourceBundle> second = MakeTextureTablePublicationBundle(401, 12, 3);
+        Ref<const TextureGpuResourceBundle> third = MakeTextureTablePublicationBundle(401, 13, 4);
+        const Ref<const TextureGpuResourceBundle> wrongAsset = MakeTextureTablePublicationBundle(401, 14, 5);
+        const Ref<const TextureGpuResourceBundle> foreign = MakeTextureTablePublicationBundle(402, 11, 6);
+        const Ref<const TextureGpuResourceBundle> unready = MakeTextureTablePublicationBundle(
+            401, 11, 7, ResourceState::CopyDest);
+        std::string error;
+        const bool failureUsesError = isError(publication->Publish(11, {}, TextureSampler::LinearClamp, error))
+            && isError(publication->Publish(11, foreign, TextureSampler::LinearClamp, error))
+            && isError(publication->Publish(11, unready, TextureSampler::LinearClamp, error))
+            && isError(publication->Publish(11, wrongAsset, TextureSampler::LinearClamp, error))
+            && publication->GetAssetCount() == 0;
+
+        const TextureBindingHandle firstHandle = publication->Publish(11, first, TextureSampler::LinearWrap, error);
+        const TextureBindingHandle stableHandle = publication->Publish(11, first, TextureSampler::LinearWrap, error);
+        const TextureBindingHandle secondHandle = publication->Publish(12, second, TextureSampler::PointWrap, error);
+        const TextureBindingHandle capacityFailure = publication->Publish(13, third, TextureSampler::LinearClamp, error);
+        const bool stablePublication = firstHandle.IsValid() && firstHandle.Index != 0
+            && stableHandle.Index == firstHandle.Index && stableHandle.Generation == firstHandle.Generation
+            && secondHandle.IsValid() && secondHandle.Index != firstHandle.Index
+            && isError(capacityFailure) && isError(publication->Resolve(99))
+            && publication->GetAssetCount() == 2;
+
+        const CompletionToken firstUse { 401, 41 }, lastUse { 401, 42 }, laterUse { 401, 43 };
+        const CompletionToken foreignToken { 402, 41 }, untracked { 401, 99 };
+        device.SetCompletion(firstUse, CompletionStatus::Incomplete);
+        device.SetCompletion(lastUse, CompletionStatus::Incomplete);
+        device.SetCompletion(laterUse, CompletionStatus::Incomplete);
+        device.SetCompletion(untracked, CompletionStatus::Complete);
+        const bool invalidFrameRejected = !publication->RetainAcceptedFrame(foreignToken, { firstHandle }, error)
+            && !publication->RetainAcceptedFrame(firstUse, {}, error)
+            && !publication->RetainAcceptedFrame(firstUse, { errorHandle }, error);
+        const bool framesRetained = publication->RetainAcceptedFrame(firstUse, { firstHandle }, error)
+            && publication->RetainAcceptedFrame(lastUse, { firstHandle, secondHandle }, error)
+            && !publication->RetainAcceptedFrame(lastUse, { secondHandle }, error)
+            && publication->GetRetainedFrameCount() == 2;
+
+        const RHI::Texture* firstTexture = first->Texture.get();
+        const RHI::Texture* replacementTexture = replacement->Texture.get();
+        std::weak_ptr<const TextureGpuResourceBundle> firstLifetime = first;
+        std::weak_ptr<const TextureGpuResourceBundle> replacementLifetime = replacement;
+        const bool replacementQueued = publication->QueueReplacement(
+            11, replacement, TextureSampler::PointClamp, error)
+            && publication->GetPendingOperationCount() == 1
+            && isError(publication->Resolve(11))
+            && publication->GetBindingTable()->Resolve(firstHandle).TextureResource.get() == firstTexture
+            && !publication->RetainAcceptedFrame(laterUse, { firstHandle }, error)
+            && !publication->QueueRemoval(11, error);
+        first.reset();
+        replacement.reset();
+        const bool generationsRetained = !firstLifetime.expired() && !replacementLifetime.expired();
+
+        device.SetCompletion(firstUse, CompletionStatus::Complete);
+        const bool earlierUseRetiredOnly = publication->Retire(firstUse, error)
+            && publication->GetRetainedFrameCount() == 1
+            && publication->GetPendingOperationCount() == 1
+            && publication->GetBindingTable()->Resolve(firstHandle).TextureResource.get() == firstTexture;
+        const bool incompleteAndUntrackedRejected = !publication->Retire(lastUse, error)
+            && !publication->Retire(untracked, error)
+            && publication->GetPendingOperationCount() == 1;
+        device.SetCompletion(lastUse, CompletionStatus::Failed);
+        const TextureBindingHandle expectedError = publication->GetErrorHandle();
+        const bool replacementRetired = publication->Retire(lastUse, error)
+            && publication->GetRetainedFrameCount() == 0 && publication->GetPendingOperationCount() == 0
+            && publication->Resolve(11).Index == firstHandle.Index
+            && publication->Resolve(11).Generation == firstHandle.Generation
+            && publication->GetBindingTable()->Resolve(firstHandle).TextureResource.get() == replacementTexture
+            && publication->GetBindingTable()->Resolve(firstHandle).Sampler == TextureSampler::PointClamp
+            && firstLifetime.expired() && !replacementLifetime.expired();
+
+        const bool removalQueued = publication->RetainAcceptedFrame(laterUse, { firstHandle }, error)
+            && publication->QueueRemoval(11, error) && isError(publication->Resolve(11))
+            && publication->GetPendingOperationCount() == 1 && publication->GetRetainedFrameCount() == 1;
+        device.SetCompletion(laterUse, CompletionStatus::Failed);
+        const bool removalRetired = publication->Retire(laterUse, error)
+            && publication->GetAssetCount() == 1 && publication->GetPendingOperationCount() == 0
+            && publication->GetRetainedFrameCount() == 0 && replacementLifetime.expired()
+            && publication->Resolve(11).Index == expectedError.Index
+            && publication->Resolve(11).Generation == expectedError.Generation
+            && publication->GetBindingTable()->Resolve(firstHandle).IsError;
+        const TextureBindingHandle reused = publication->Publish(13, third, TextureSampler::LinearClamp, error);
+        const bool generationSafeReuse = reused.IsValid() && reused.Index == firstHandle.Index
+            && reused.Generation != firstHandle.Generation;
+
+        const std::array<CompletionToken, TextureTablePublication::RetainedFrameCapacity + 1> boundedTokens {{
+            { 401, 51 }, { 401, 52 }, { 401, 53 }, { 401, 54 }, { 401, 55 }
+        }};
+        bool boundedRetention = !publication->QueueRemoval(13, error);
+        for (size_t index = 0; boundedRetention && index < TextureTablePublication::RetainedFrameCapacity; ++index)
+        {
+            device.SetCompletion(boundedTokens[index], CompletionStatus::Incomplete);
+            boundedRetention = publication->RetainAcceptedFrame(boundedTokens[index], { reused }, error);
+        }
+        device.SetCompletion(boundedTokens.back(), CompletionStatus::Incomplete);
+        boundedRetention = boundedRetention
+            && publication->GetRetainedFrameCount() == TextureTablePublication::RetainedFrameCapacity
+            && !publication->RetainAcceptedFrame(boundedTokens.back(), { reused }, error);
+        for (size_t index = 0; boundedRetention && index < TextureTablePublication::RetainedFrameCapacity; ++index)
+        {
+            device.SetCompletion(boundedTokens[index], CompletionStatus::Complete);
+            boundedRetention = publication->Retire(boundedTokens[index], error);
+        }
+        boundedRetention = boundedRetention && publication->GetRetainedFrameCount() == 0;
+
+        publication->ReleaseAfterDeviceIdle();
+        const bool idleRelease = publication->GetBindingTable() == nullptr
+            && publication->GetAssetCount() == 0 && publication->GetRetainedFrameCount() == 0
+            && publication->GetPendingOperationCount() == 0;
+        return Expect(failureUsesError, "texture table publication keeps the declared error handle on invalid T4B bundles")
+            && Expect(stablePublication, "stable texture assets allocate one generation-safe table handle only after T4B publication")
+            && Expect(invalidFrameRejected && framesRetained, "accepted frame references validate exact tokens handles and bounded retention")
+            && Expect(replacementQueued && generationsRetained && earlierUseRetiredOnly && incompleteAndUntrackedRejected,
+                "replacement stays hidden and retains old and new bundles through the exact latest accepted use")
+            && Expect(replacementRetired, "Failed is terminal for exact replacement publication and retained-frame release")
+            && Expect(removalQueued && removalRetired && generationSafeReuse,
+                "exact Failed removal advances the slot generation before deterministic reuse")
+            && Expect(boundedRetention, "accepted-frame bundle retention enforces and retires its exact four-frame bound")
+            && Expect(idleRelease, "device-idle release drops the table assets operations and accepted-frame references");
+    }
+
     bool TestReadOnlyTextureUploadContract()
     {
         using namespace Engine::RHI;
@@ -7167,6 +7338,7 @@ int main(int argc, char** argv)
         FAST_TEST("RHI queue topology submits dependencies without premature publication", TestRhiQueueTopologyDependencySubmissionContract),
         FAST_TEST("RHI resource-state query rejects null foreign and unknown resources", TestRhiResourceOwnershipContract),
         FAST_TEST("RHI read-only texture binding table preserves error and GPU-retired identities", TestReadOnlyTextureBindingTableContract),
+        FAST_TEST("Texture table publication retires exact stable-asset generations", TestTextureTablePublicationRetirement),
         FAST_TEST("RHI read-only texture upload validates the full-subresource contract", TestReadOnlyTextureUploadContract),
         FAST_TEST("RHI sampled texture-table binding validates pipeline space offsets and exact ownership", TestSampledTextureTableBindingContract),
         FAST_TEST("RHI buffer ownership lifecycle publishes only accepted exact-token pairs", TestRhiBufferOwnershipLifecycleContract),
