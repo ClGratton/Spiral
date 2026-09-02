@@ -505,7 +505,7 @@ void EditorLayer::OnAttach()
     PublishFramePacingPolicy();
     PublishPresentationPolicy();
     SyncEditorCameraStateFromMainCamera(true);
-    ResetFusionNavigationPivotFromScene();
+    ResetFusionNavigationPivotFromSelectionOrScene();
     m_CaptureViewportRequested = Engine::Application::Get().GetSpecification().CommandLineArgs.HasFlag("--capture-viewport");
     m_SaveSceneSmokeRequested = Engine::Application::Get().GetSpecification().CommandLineArgs.HasFlag("--save-scene-smoke");
     m_AssetWatchSmokeRequested = Engine::Application::Get().GetSpecification().CommandLineArgs.HasFlag("--asset-watch-smoke");
@@ -1611,7 +1611,7 @@ void EditorLayer::BeginFusionOrbitPivot()
     if (m_FusionNavigationPivotValid)
         return;
 
-    ResetFusionNavigationPivotFromScene();
+    ResetFusionNavigationPivotFromSelectionOrScene();
 }
 
 void EditorLayer::SetFusionNavigationPivot(const Engine::Math::DVec3& pivot)
@@ -1620,8 +1620,11 @@ void EditorLayer::SetFusionNavigationPivot(const Engine::Math::DVec3& pivot)
     m_FusionNavigationPivotValid = true;
 }
 
-void EditorLayer::ResetFusionNavigationPivotFromScene()
+void EditorLayer::ResetFusionNavigationPivotFromSelectionOrScene()
 {
+    if (RetargetFusionNavigationPivotToSelectedEntity())
+        return;
+
     bool hasVisibleMeshPosition = false;
     Engine::Math::DVec3 minimum {};
     Engine::Math::DVec3 maximum {};
@@ -3168,8 +3171,9 @@ void EditorLayer::RunViewportNavigationSmoke()
         m_SelectedEntity, selectedEntityPosition);
     const Engine::Math::DVec3 cameraBeforeSelectionRetarget = m_EditorCamera.GetPosition();
     SetFusionNavigationPivot({ initialPivot.X + 0.75, initialPivot.Y, initialPivot.Z });
-    const bool selectionPivotRetargeted = RetargetFusionNavigationPivotToSelectedEntity()
-        && hasSelectedEntityPosition && sameVector(m_FusionNavigationPivot, selectedEntityPosition)
+    ResetFusionNavigationPivotFromSelectionOrScene();
+    const bool startupSelectionPivotRetargeted = hasSelectedEntityPosition
+        && sameVector(m_FusionNavigationPivot, selectedEntityPosition)
         && sameVector(m_EditorCamera.GetPosition(), cameraBeforeSelectionRetarget);
     SetFusionNavigationPivot(initialPivot);
 
@@ -3473,7 +3477,7 @@ void EditorLayer::RunViewportNavigationSmoke()
     const bool focusLossReleased = !m_CursorCaptured && !m_RightMouseDown
         && !m_KeyDown[static_cast<size_t>('W')] && m_MouseDeltaX == 0.0f && m_MouseDeltaY == 0.0f;
     m_ViewportNavigationPreset = previousPreset;
-    if (!selectionPivotRetargeted || !fusionMiddleFocusAcquire || !fusionScrollFocusAcquire
+    if (!startupSelectionPivotRetargeted || !fusionMiddleFocusAcquire || !fusionScrollFocusAcquire
         || !fusionLeftNoOp || !fusionRightNoOp || !staleCaptureMotionIgnored || !quickReleaseBeforeCaptureArm
         || !pendingCaptureFocusLossReleased || !transitionCaptureMotionIgnored || !normalCaptureDrag
         || !fusionCameraPlanePan || !fusionCursorZoom || !fusionOrbitContinuous || !fusionWheelWhileMiddleHeld)
@@ -3481,7 +3485,7 @@ void EditorLayer::RunViewportNavigationSmoke()
     if (!unrealLeftDragMoved || !sceneMatches || !unrealFlyMoved || !focusDiscontinuous || !focusLossReleased)
         throw std::runtime_error("Viewport navigation smoke failed");
 
-    Engine::Log::Info("ViewportNavigationSmokeV7 selectionPivot=pass focusAcquire=pass deferredCapture=pass fusionPlanePan=pass cursorZoom=pass orbitContinuity=pass wheelHeld=pass stablePivot=pass unreal=pass dvec3=pass sceneAuthority=pass focusDiscontinuity=pass focusLossRelease=pass result=pass");
+    Engine::Log::Info("ViewportNavigationSmokeV8 startupSelectionPivot=pass focusAcquire=pass deferredCapture=pass fusionPlanePan=pass cursorZoom=pass orbitContinuity=pass wheelHeld=pass stablePivot=pass unreal=pass dvec3=pass sceneAuthority=pass focusDiscontinuity=pass focusLossRelease=pass result=pass");
     m_ConsoleLines.emplace_back("Viewport navigation smoke passed");
 }
 
@@ -3558,7 +3562,7 @@ bool EditorLayer::CreateNewProject(std::string name, const std::filesystem::path
 
     EnsureDefaultSceneEntities();
     SyncEditorCameraStateFromMainCamera(true);
-    ResetFusionNavigationPivotFromScene();
+    ResetFusionNavigationPivotFromSelectionOrScene();
     m_AssetWatcher.SyncRegistry(m_AssetRegistry);
     if (!SaveProject())
     {
@@ -3686,7 +3690,7 @@ bool EditorLayer::LoadProject()
     m_SelectedEntity = m_PrototypeMeshEntity ? m_PrototypeMeshEntity : m_ActiveScene.GetMainCameraEntity();
     m_AssetWatcher.SyncRegistry(m_AssetRegistry);
     SyncEditorCameraStateFromMainCamera(true);
-    ResetFusionNavigationPivotFromScene();
+    ResetFusionNavigationPivotFromSelectionOrScene();
 
     Engine::Log::Info("Project loaded: ", m_ProjectPath);
     Engine::Log::Info("Frame pacing policy loaded: ",
@@ -3729,7 +3733,7 @@ void EditorLayer::RestoreHistoryState(const HistoryState& state)
         m_SelectedEntity = m_PrototypeMeshEntity ? m_PrototypeMeshEntity : m_ActiveScene.GetMainCameraEntity();
 
     SyncEditorCameraStateFromMainCamera(true);
-    ResetFusionNavigationPivotFromScene();
+    ResetFusionNavigationPivotFromSelectionOrScene();
     m_AssetWatcher.SyncRegistry(m_AssetRegistry);
 }
 

@@ -48,7 +48,7 @@ private:
     bool TryAcquireViewportNavigationFocus();
     bool IsShiftNavigationModifierDown() const;
     void BeginFusionOrbitPivot();
-    void ResetFusionNavigationPivotFromScene();
+    void ResetFusionNavigationPivotFromSelectionOrScene();
     bool RetargetFusionNavigationPivotToSelectedEntity();
     void SetFusionNavigationPivot(const Engine::Math::DVec3& pivot);
     bool SaveEditorSettings();
