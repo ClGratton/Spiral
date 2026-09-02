@@ -134,6 +134,25 @@ Linux/macOS:
 
 Use the actual generated system/architecture path on the host.
 
+## Live Editor Visual And Interaction Gate
+
+For an editor-facing, viewport, or input claim on a host with a desktop, launch the current workspace's actual Debug Editor after the coherent build. Use the native backend under test; on Linux the current Vulkan command is:
+
+```bash
+./bin/Debug-linux-x86_64-gmake/Editor/Editor --renderer-vulkan
+```
+
+Acceptance records all applicable evidence separately:
+
+1. Confirm the live process resolves to the expected current-workspace Debug executable.
+2. Confirm the Editor log and diagnostics name the selected backend and physical/software device actually running.
+3. Confirm the compositor/OS places the Editor on the display requested by the user; do not infer placement from where the launch command ran.
+4. Inspect the live viewport, including whether it is the native renderer target or a fallback preview. A screenshot is visual evidence, not input evidence.
+5. Focus the real viewport and exercise the exact mouse/keyboard controls being claimed. Record the input sequence, initial preset/state, and visible or persisted result.
+6. Treat workspace settings, saved scenes, navigation presets, and restored layout as explicit test inputs. Reproduce both the intended default and relevant persisted state when their behavior differs.
+
+Source inspection, headless smoke, process creation, log markers, and automated captures remain useful diagnostics, but none substitutes for the live interaction step when interaction is part of the checkbox or user report. If automation cannot inject trustworthy real input, run the manual gate with the user and keep the claim qualified until they report its result.
+
 ## Portable Slang Runtime And Snapshot Publication
 
 Actions run `29350139365` passed Windows D3D12 but failed before portable
