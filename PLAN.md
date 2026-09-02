@@ -451,7 +451,7 @@ Required:
 - [ ] Portable tiled-quadtree heightfield rendering with geometric-error selection, crack-free continuous LOD, immutable publication, and resident parent/coarse fallback; geometry clipmaps remain a measured optional candidate for very large regular heightfields.
 - [ ] Terrain world-partition and residency scheduler with prioritized render/collision/navigation/gameplay radii, cancellable jobs, bounded CPU/GPU/disk caches, teleports, upload/retirement, and explicit failure fallbacks that never block the render thread.
 - [ ] Hybrid terrain routing for caves, overhangs, cliffs, and project-selected voxel/SDF regions through the general mesh/virtual-geometry streamer, with explicit render/collision/material authority at representation boundaries.
-- [ ] Terrain layer/cook pipeline for macro shape, regional hydrology/erosion, local detail, authored constraints and sparse edits, material/biome masks, roads/rivers/water, and downstream vegetation/navigation inputs with deterministic provenance.
+- [ ] Terrain layer/cook pipeline for macro shape, regional hydrology/erosion, local detail, authored constraints and sparse edits, material/biome masks, roads, and canonical shoreline/bathymetry/river-flow/water-obstruction plus downstream vegetation/navigation inputs with deterministic provenance; runtime water remains owned by Phase 8W.
 - [ ] Terrain Diffusion evaluation at a pinned revision as an optional offline or asynchronous macro terrain/climate source, compared with imported and deterministic procedural baselines for seams, determinism, quality, latency, memory, renderer contention, portability, failure behavior, reproducibility, and license/data risk; record keep/defer/reject before admitting any model or Python/PyTorch/CUDA runtime boundary.
 - [ ] Portable runtime GPU culling and LOD selection through compute plus indirect indexed draws, with mesh shaders only as a capability-gated fast path.
 - [ ] GPU-driven instancing and selective static assembly/material consolidation that preserves occlusion bounds, streaming cells, lighting zones, LOD independence, and material quality.
@@ -493,6 +493,31 @@ Exit criteria:
 - Dynamic characters do not pop out of baked environments.
 - Day/night indirect lighting blends by measured lighting error, not equal time slices.
 
+## Phase 8W: Water Bodies, Rendering, And Optional Interaction Foundation
+
+Goal: deliver scalable photorealistic oceans, rivers, lakes, pools, and bounded interactive water without making one solver or optional GPU path universal.
+
+Required:
+
+- [ ] Phase 8W water capability group for compute/subgroup limits, formats, image views, async execution, readback, surface submission, reflection/refraction paths, memory budgets, and exercised portable fallbacks.
+- [ ] Planned `Engine::Water` body/profile/artifact/query contracts with stable IDs, versions/provenance, explicit epochs/validity/recapture state, origin-rebase continuity, immutable render snapshots, and deterministic fixed-tick CPU surface queries.
+- [ ] Cascaded directional spectral deep-water simulation with deterministic seeds/phases, independently budgeted wavelength bands, portable GPU FFT where qualified, and a finite directional-wave fallback shared with the CPU low-frequency query evaluator.
+- [ ] Camera-relative quadtree or projected-grid surface generation with continuous LOD, multi-camera policy, bounded patches, stable horizon/filtering, and geometric wave energy transitioning into filtered normals/BRDF at distance.
+- [ ] Bounded 2.5D shallow-water zones with terrain/bathymetry capture, wet/dry cells, sources, drains, forces, slow dynamic-obstacle rerouting, explicit static recapture, neighbor/body connections, cache/eviction policy, and fast-obstacle failure handling under strict per-zone memory/time budgets.
+- [ ] Explicit non-heightfield routes for breaking waves, waterfalls, and impacts using streamable authored/baked cross-sections, ribbons/sheets, or bounded deformation volumes plus sparse spray/foam particles and cheaper fallbacks.
+- [ ] Water optical model integrated with the Phase 8 linear-HDR sun/sky/probe/volumetric/exposure system: dielectric Fresnel/transmission, depth-valid refraction, RGB absorption/scattering, multi-scale slopes, shoreline transitions, stable glitter, and exposure-aware non-emissive foam.
+- [ ] Underwater rendering integrated with froxel lighting and local water volumes, including stable air/water crossing, Snell window/total internal reflection, absorption/scattering, optional bounded caustics, transparency ordering, and no double fog.
+- [ ] Reflection routing through sky/probes, current-frame SSR, bounded per-body planar views, and optional Phase 9 sparse RT miss fill; every route reports validity/cost and retains a correct non-RT fallback.
+- [ ] Foam, wakes, wetness, spray, mist, and bubbles from separately budgeted crest, shoreline/intersection, shallow-flow, physics, and authored sources, with explicit history rejection and non-temporal/flowmap fallbacks.
+- [ ] Editor authoring and diagnostics for water bodies, zones, effectors, optical/spectrum profiles, terrain dependencies, recapture/cache state, simulation/query authority, reflection routes, memory, and per-pass CPU/GPU cost.
+- [ ] Focused Vulkan/D3D12 qualification and calm/storm/shore/river/obstacle/multi-elevation/underwater scenes covering deterministic replay, CPU/GPU low-band agreement, LOD/origin continuity, wet/dry and flux bounds, static recapture versus dynamic obstacles, fast-motion fallback, cache and boundary behavior, optical fallbacks, p50/p95/p99 cost, memory, waits, and critical path.
+
+Exit criteria:
+
+- Large and local water remain visually stable and lighting-coherent while scaling simulation, mesh, reflection, refraction, underwater, caustic, foam, and particle costs independently.
+- A bounded zone visibly reroutes flow around supported dynamic obstacles, static terrain changes recapture explicitly, unsupported heightfield cases use declared fallbacks, and no world-sized interaction grid is required.
+- Gameplay and later physics receive deterministic fixed-tick water queries without waiting for renderer/GPU water; missing or stale data produces an explicit safe fallback.
+
 ## Phase 9: Sparse Ray Residual Rendering
 
 Goal: implement the signature renderer idea: stable raster base plus sparse current-frame ray correction.
@@ -506,7 +531,7 @@ Required:
 - [ ] Ray-budget classifier.
 - [ ] Receiver-aware shadow caster culling, per-material/object culling modes, proxy shadows, conservative exclusions, and reason/cost diagnostics.
 - [ ] BRDF-aware current-frame stochastic SSR candidate pass with hierarchical traversal, spatial resolve, confidence, and explicit miss classification.
-- [ ] Planar/reflected-scene path for bounded hero mirrors, water, glasses, and cinematics where it is cheaper or more reliable than full-rate rays.
+- [ ] Planar/reflected-scene path for bounded hero mirrors, glasses, cinematics, and Phase 8W per-body water bounds where it is cheaper or more reliable than full-rate rays.
 - [ ] Sparse RT shadow residuals.
 - [ ] Sparse RT reflection miss fill.
 - [ ] Sparse RT AO/GI residuals.
@@ -559,6 +584,7 @@ Required:
 
 - [ ] Qualified CPU-authoritative rigid-body backend with body, shape, constraint, material, filter, event, threading, serialization, and fallback contracts on every claimed platform.
 - [ ] General rigid bodies: broadphase, narrowphase, islands, constraints, sleeping/waking, triggers, and deterministic contact-event publication.
+- [ ] Optional water buoyancy/hydrodynamics consuming Phase 8W fixed-tick immutable CPU query snapshots through bounded pontoons/spheres or volume probes, with displaced-volume buoyancy, relative-flow drag, explicit missing/stale fallbacks, and delayed visual wake/impulse publication that never waits for GPU water.
 - [ ] Continuous collision detection and speculative-contact policy for fast translation/rotation, with per-body controls and tunneling fixtures.
 - [ ] Snapshot-scoped immediate and asynchronous batched ray/shape-cast/overlap queries with filters, result epochs, cancellation/lifetime, stable ordering, and stale-result rules.
 - [ ] Collision-resolved character controller/body pipeline consuming Phase 10 locomotion/root-motion intent, including slopes, steps, moving platforms, grounding, and push interaction.

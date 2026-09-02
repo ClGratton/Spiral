@@ -112,6 +112,12 @@ The CPU frame task graph schedules physics. The render graph does not schedule C
 
 Late commands, entity destruction, origin rebasing, pause/single-step, catch-up overflow, and failed ticks must have deterministic documented behavior. Physics never reads mutable editor or Scene component storage while solving.
 
+### Water Coupling
+
+The future `Engine::Water` module publishes immutable, fixed-tick CPU surface-query snapshots containing body identity, tick/epoch, authority and validity, surface position/normal/velocity, flow, and depth/submergence. Physics may use bounded pontoon/sphere or volume probes for displaced-volume buoyancy and body-relative drag, with optional lift, planing, propulsion, and slam approximations. It never waits for render-time FFT, shallow-water, foam, spray, or readback work.
+
+Physics may publish bounded obstacle transforms, displacement estimates, wake emitters, or impulses for a later visual-water update. That coupling is allowed to be delayed and must report latency; GPU detail remains visual and cannot enter gameplay, networking, save, or replay authority without a separate deterministic state-capability decision. Missing, stale, evicted, recapturing, teleporting, and origin-rebased water queries require explicit fallbacks and tests. The full boundary is defined by [WATER_ARCHITECTURE_AND_RESEARCH.md](WATER_ARCHITECTURE_AND_RESEARCH.md).
+
 ## Fixed-Step And Authority Contract
 
 Before backend selection, Spiral must specify:

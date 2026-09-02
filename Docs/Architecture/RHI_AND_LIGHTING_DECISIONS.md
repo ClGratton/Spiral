@@ -414,6 +414,12 @@ Optional quality modes:
 - **High**: 10-16 adaptive keys, directional lightmaps, probe volumes, reflection keys, ray residuals.
 - **Cinematic/static**: direct lighting may be baked into keyframes for fixed scenes.
 
+## Water Lighting Integration
+
+Water is a consumer of the same scene-referred linear-HDR sun, sky, atmosphere, probes, reflection routing, froxel/volumetric lighting, shadowing, and exposure contracts. It must not introduce a water-only light or exposure authority. Its baseline combines dielectric Fresnel with complementary transmission, depth-valid refraction of a defined pre-water opaque scene, RGB absorption over traveled water distance, bounded in-scattering, and exposure-aware non-emissive foam/spray.
+
+Sky and reflection probes are the portable reflection fallback; current-frame SSR, bounded per-body planar reflection, and sparse Phase 9 ray miss fill are independently capability- and budget-gated. Underwater rendering reuses the volumetric-lighting contract and handles the air/water boundary, Snell window/total internal reflection, and waterline stability without double-applying fog. Caustics, temporal histories, anisotropic glitter, and spectral/local-zone-derived optics are optional paths with explicit non-temporal fallbacks and separate cost reporting. The complete simulation, query, optical, and physics contract is [WATER_ARCHITECTURE_AND_RESEARCH.md](WATER_ARCHITECTURE_AND_RESEARCH.md).
+
 ## Compression
 
 Naively storing 10 full HDR lightmap sets can be expensive.

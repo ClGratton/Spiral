@@ -48,6 +48,7 @@ It may consume `Core`, `Jobs`, diagnostics contracts, cooked `Assets` artifacts,
 | `Scene` | References terrain assets/profiles and stable terrain instances; it does not own generator caches. |
 | `Renderer` | Selects visible LODs and consumes immutable render payloads; it does not call Python, mutate sources, or own gameplay elevation. |
 | `Physics` | Consumes finalized collision tiles and publishes readiness/results through its own contract. |
+| `Water` | Consumes versioned shoreline, bathymetry, river-flow, obstruction, and wettable-surface artifacts; it owns water bodies and runtime simulation. |
 | `Automation` | Drives reproducible terrain workflows through public terrain and asset APIs. |
 | `Editor` | Owns profile selection, import/generation UI, previews, sculpting, diagnostics views, and user-facing errors. |
 
@@ -168,7 +169,7 @@ Terrain participates in the existing selected-occluder, depth, shadow, material,
 ## Gameplay, Collision, Navigation, And Persistence
 
 - CPU fixed-step gameplay consumes cooked terrain collision, not transient render displacement.
-- Navigation, vegetation, water, audio, AI, and gameplay systems consume canonical masks or public spatial queries rather than reading renderer buffers.
+- Navigation, vegetation, audio, AI, and gameplay systems consume canonical masks or public spatial queries rather than reading renderer buffers. Water consumes versioned shoreline, bathymetry, river-flow, obstruction, and wettable-surface artifacts and retains its own body/simulation authority.
 - Base terrain identity is the project profile, seed, source configuration, source revisions, and generator/model versions.
 - Persistent edits are sparse, ordered, versioned layers when possible. A cooked shipping build may materialize them into tiles while retaining provenance.
 - Regeneration after a source or model change is a migration with previewable affected regions and explicit edit compatibility; it is not a silent cache refresh.
