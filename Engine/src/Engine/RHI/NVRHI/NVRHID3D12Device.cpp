@@ -2106,8 +2106,8 @@ namespace Engine::RHI
                 if (!texture || !OwnsResource(&source)
                     || !m_TextureOwnership.CanUse(&source)
                     || mipLevel >= description.MipLevels
+                    || !IsTextureReadbackFormatSupported(description.TextureFormat)
                     || !GetTextureFormatBlockLayout(description.TextureFormat, layout)
-                    || description.TextureFormat == Format::D24UnormS8Uint || description.TextureFormat == Format::D32Float
                     || !HasTextureUsage(description.Usage, TextureUsage::CopySource)
                     || HasTextureUsage(description.Usage, TextureUsage::DepthStencil)
                     || description.Extent.Width == 0 || description.Extent.Height == 0

@@ -60,6 +60,13 @@ namespace Engine::RHI
         return true;
     }
 
+    inline bool IsTextureReadbackFormatSupported(Format format)
+    {
+        return format == Format::R8G8B8A8Unorm || format == Format::R8G8B8A8UnormSrgb
+            || format == Format::BC5Unorm || format == Format::BC7Unorm
+            || format == Format::BC7UnormSrgb;
+    }
+
     inline u32 CalculateMaximumTextureMipLevels(Extent2D extent)
     {
         if (extent.Width == 0 || extent.Height == 0)

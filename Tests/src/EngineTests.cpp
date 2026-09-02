@@ -2187,7 +2187,13 @@ namespace
 
         u64 rowPitch = 0, byteCount = 0;
         const bool blockLayout = RHI::CalculateTextureSubresourceStorage(RHI::Format::BC7Unorm, { 7, 5 }, rowPitch, byteCount)
-            && rowPitch == 32 && byteCount == 64;
+            && rowPitch == 32 && byteCount == 64
+            && RHI::IsTextureReadbackFormatSupported(RHI::Format::R8G8B8A8Unorm)
+            && RHI::IsTextureReadbackFormatSupported(RHI::Format::BC5Unorm)
+            && RHI::IsTextureReadbackFormatSupported(RHI::Format::BC7UnormSrgb)
+            && !RHI::IsTextureReadbackFormatSupported(RHI::Format::R8Unorm)
+            && !RHI::IsTextureReadbackFormatSupported(RHI::Format::D32Float)
+            && !RHI::IsTextureReadbackFormatSupported(RHI::Format::ASTC4x4Unorm);
         return Expect(identity && description, "texture upload plan preserves artifact identity, semantics, payload, and RHI description")
             && Expect(subresources && astcMapped, "texture upload plan maps exact compressed format and block-aware mip ranges")
             && Expect(transactional && blockLayout && batchBuilt && batchTransactional && relabelRejected,

@@ -1101,8 +1101,8 @@ namespace Engine::RHI
                 auto* texture = dynamic_cast<VulkanTexture*>(&source); const auto& d = source.GetDescription(); QueueType owner = QueueType::Graphics;
                 TextureFormatBlockLayout layout;
                 if (!texture || !OwnsResource(&source) || !m_TextureOwnership.QueryOwner(&source, owner) || !CanUseTextureOnQueue(&source, owner)
-                    || mipLevel >= d.MipLevels || !GetTextureFormatBlockLayout(d.TextureFormat, layout)
-                    || d.TextureFormat == Format::D24UnormS8Uint || d.TextureFormat == Format::D32Float
+                    || mipLevel >= d.MipLevels || !IsTextureReadbackFormatSupported(d.TextureFormat)
+                    || !GetTextureFormatBlockLayout(d.TextureFormat, layout)
                     || !HasTextureUsage(d.Usage, TextureUsage::CopySource)) return false;
                 Extent2D extent = d.Extent;
                 for (u32 index = 0; index < mipLevel; ++index)
