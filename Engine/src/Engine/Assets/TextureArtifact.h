@@ -15,6 +15,7 @@ namespace Engine
     enum class TextureColorSpace { Srgb, Linear };
     enum class TextureTargetProfile { DesktopBC, Astc, RGBAFallback };
     enum class TextureCookedFormat { R8G8B8A8Unorm, R8G8B8A8Srgb, Bc5Unorm, Bc7Unorm, Bc7Srgb, Astc4x4Unorm, Astc4x4Srgb };
+    enum class TextureMipPolicy { PreserveAuthored, CompleteMissing };
 
     const char* ToString(TextureRole value);
     const char* ToString(TextureColorSpace value);
@@ -51,6 +52,7 @@ namespace Engine
         u32 Width = 0;
         u32 Height = 0;
         std::vector<std::vector<u8>> Mips;
+        TextureMipPolicy MipPolicy = TextureMipPolicy::PreserveAuthored;
     };
 
     // A KTX2/Basis input is copied by the caller into engine-owned memory before
@@ -61,6 +63,7 @@ namespace Engine
         TextureRole Role = TextureRole::BaseColor;
         TextureColorSpace ColorSpace = TextureColorSpace::Srgb;
         std::vector<u8> Bytes;
+        TextureMipPolicy MipPolicy = TextureMipPolicy::PreserveAuthored;
     };
 
     std::filesystem::path GetCookedTextureArtifactPath(AssetHandle asset);
@@ -72,6 +75,8 @@ namespace Engine
     class TextureImporter
     {
     public:
+        static bool ApplyNormalizedRgba8MipPolicy(const NormalizedTextureSource& source,
+            NormalizedTextureSource& outSource, u32& outGeneratedMipCount, std::string& outError);
         static bool CookNormalizedRgba8(const NormalizedTextureSource& source, AssetRegistry& registry,
             TextureTargetProfile target, TextureArtifact& outArtifact, std::string& outError);
         static bool CookKtx2Basis(const Ktx2BasisTextureSource& source, AssetRegistry& registry,

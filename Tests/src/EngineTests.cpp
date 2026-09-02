@@ -1955,14 +1955,13 @@ namespace
         source.ColorSpace = TextureColorSpace::Srgb;
         source.Width = 2;
         source.Height = 2;
-        source.Mips = {
-            { 255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255 },
-            { 128, 128, 128, 255 }
-        };
+        source.Mips = { { 255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255 } };
+        source.MipPolicy = TextureMipPolicy::CompleteMissing;
         TextureArtifact cooked;
         std::string error;
         const bool cookedFallback = TextureImporter::CookNormalizedRgba8(source, registry, TextureTargetProfile::RGBAFallback, cooked, error)
             && cooked.Asset != kInvalidAssetHandle && cooked.Mips.size() == 2 && cooked.Payload.size() == 20
+            && cooked.Payload[16] == 188 && cooked.Payload[17] == 188 && cooked.Payload[18] == 188 && cooked.Payload[19] == 255
             && cooked.CookedFormat == TextureCookedFormat::R8G8B8A8Srgb;
         TextureArtifact resolved;
         const bool resolvedFallback = cookedFallback && ResolveTextureArtifact(registry, cooked.Asset, resolved, error)
@@ -2015,6 +2014,99 @@ namespace
                 "texture artifact loading and resolution reject corruption trailing bytes and provenance mismatches");
     }
 
+    bool TestTextureMipCompletionPolicy()
+    {
+        using namespace Engine;
+        NormalizedTextureSource complete;
+        complete.SourcePath = "Assets/Textures/Complete.raw";
+        complete.Role = TextureRole::BaseColor;
+        complete.ColorSpace = TextureColorSpace::Srgb;
+        complete.Width = 2;
+        complete.Height = 2;
+        complete.Mips = {
+            { 0, 0, 0, 10, 255, 255, 255, 20, 0, 0, 0, 30, 255, 255, 255, 40 },
+            { 17, 18, 19, 20 }
+        };
+        complete.MipPolicy = TextureMipPolicy::CompleteMissing;
+        NormalizedTextureSource prepared;
+        u32 generated = 99;
+        std::string error;
+        const bool completePreserved = TextureImporter::ApplyNormalizedRgba8MipPolicy(complete, prepared, generated, error)
+            && generated == 0 && prepared.Mips == complete.Mips;
+
+        NormalizedTextureSource srgb = complete;
+        srgb.SourcePath = "Assets/Textures/Srgb.raw";
+        srgb.Mips.resize(1);
+        const bool srgbCompleted = TextureImporter::ApplyNormalizedRgba8MipPolicy(srgb, prepared, generated, error)
+            && generated == 1 && prepared.Mips.size() == 2
+            && prepared.Mips[1] == std::vector<u8>({ 188, 188, 188, 25 });
+
+        NormalizedTextureSource normal;
+        normal.SourcePath = "Assets/Textures/Normal.raw";
+        normal.Role = TextureRole::Normal;
+        normal.ColorSpace = TextureColorSpace::Linear;
+        normal.Width = 2;
+        normal.Height = 2;
+        normal.Mips = { {
+            255, 128, 128, 10, 128, 255, 128, 20,
+            255, 128, 128, 30, 128, 255, 128, 40
+        } };
+        normal.MipPolicy = TextureMipPolicy::CompleteMissing;
+        const bool normalCompleted = TextureImporter::ApplyNormalizedRgba8MipPolicy(normal, prepared, generated, error)
+            && generated == 1 && prepared.Mips[1] == std::vector<u8>({ 218, 218, 128, 25 });
+
+        NormalizedTextureSource orm;
+        orm.SourcePath = "Assets/Textures/OddOrm.raw";
+        orm.Role = TextureRole::Orm;
+        orm.ColorSpace = TextureColorSpace::Linear;
+        orm.Width = 3;
+        orm.Height = 1;
+        orm.Mips = { { 0, 10, 20, 30, 30, 40, 50, 60, 60, 70, 80, 90 } };
+        orm.MipPolicy = TextureMipPolicy::CompleteMissing;
+        const bool oddDataCompleted = TextureImporter::ApplyNormalizedRgba8MipPolicy(orm, prepared, generated, error)
+            && generated == 1 && prepared.Mips[1] == std::vector<u8>({ 30, 40, 50, 60 });
+
+        NormalizedTextureSource mask = orm;
+        mask.SourcePath = "Assets/Textures/OneDimensionalMask.raw";
+        mask.Role = TextureRole::Mask;
+        mask.Width = 1;
+        mask.Height = 4;
+        mask.Mips = { { 0, 0, 0, 0, 10, 10, 10, 10, 20, 20, 20, 20, 30, 30, 30, 30 } };
+        const bool oneDimensionalCompleted = TextureImporter::ApplyNormalizedRgba8MipPolicy(mask, prepared, generated, error)
+            && generated == 2 && prepared.Mips.size() == 3
+            && prepared.Mips[1] == std::vector<u8>({ 5, 5, 5, 5, 25, 25, 25, 25 })
+            && prepared.Mips[2] == std::vector<u8>({ 15, 15, 15, 15 });
+
+        NormalizedTextureSource preserve = orm;
+        preserve.SourcePath = "Assets/Textures/Preserve.raw";
+        preserve.MipPolicy = TextureMipPolicy::PreserveAuthored;
+        const bool incompletePreserved = TextureImporter::ApplyNormalizedRgba8MipPolicy(preserve, prepared, generated, error)
+            && generated == 0 && prepared.Mips == preserve.Mips;
+
+        NormalizedTextureSource invalid = complete;
+        invalid.SourcePath = "Assets/Textures/InvalidMip.raw";
+        invalid.Mips.push_back({ 1, 2, 3, 4 });
+        NormalizedTextureSource retained = preserve;
+        generated = 77;
+        const bool invalidRejected = !TextureImporter::ApplyNormalizedRgba8MipPolicy(invalid, retained, generated, error)
+            && retained.SourcePath == preserve.SourcePath && retained.Mips == preserve.Mips && generated == 77
+            && error.find("legal 1x1") != std::string::npos;
+        invalid = complete;
+        invalid.SourcePath = "Assets/Textures/InvalidPolicy.raw";
+        invalid.MipPolicy = static_cast<TextureMipPolicy>(255);
+        const bool invalidPolicyRejected = !TextureImporter::ApplyNormalizedRgba8MipPolicy(invalid, retained, generated, error)
+            && retained.SourcePath == preserve.SourcePath && generated == 77;
+
+        return Expect(completePreserved && incompletePreserved,
+                "mip policy preserves complete canonical and explicitly preserved authored chains byte-for-byte")
+            && Expect(srgbCompleted && normalCompleted,
+                "missing color and normal suffixes use fixed-point linear-light and vector-normal filtering")
+            && Expect(oddDataCompleted && oneDimensionalCompleted,
+                "linear data filtering covers every odd and single-axis texel through the legal 1x1 bound")
+            && Expect(invalidRejected && invalidPolicyRejected,
+                "invalid mip chains and policies fail transactionally with visible diagnostics");
+    }
+
     bool TestKtx2BasisCooking()
     {
         using namespace Engine;
@@ -2045,6 +2137,13 @@ namespace
         TextureArtifact publishedColor;
         const AssetHandle colorAsset = registry.FindAssetByPath(AssetType::Texture, color.SourcePath);
         const bool colorPublished = fallback && ResolveTextureArtifact(registry, colorAsset, publishedColor, error);
+        Ktx2BasisTextureSource compressedCompletion = color;
+        compressedCompletion.MipPolicy = TextureMipPolicy::CompleteMissing;
+        const TextureArtifact beforeUnsupportedCompletion = cooked;
+        const bool compressedCompletionRejected = !TextureImporter::CookKtx2Basis(
+            compressedCompletion, registry, TextureTargetProfile::RGBAFallback, cooked, error)
+            && cooked.Payload == beforeUnsupportedCompletion.Payload
+            && error.find("normalized RGBA8 source") != std::string::npos;
         Ktx2BasisTextureSource normal { "Tests/Fixtures/RgUastc.ktx2", TextureRole::Normal, TextureColorSpace::Linear, decode(uastc) };
         const bool normalTargets = TextureImporter::CookKtx2Basis(normal, registry, TextureTargetProfile::DesktopBC, cooked, error)
             && cooked.CookedFormat == TextureCookedFormat::Bc5Unorm && !cooked.HasAlpha && cooked.Mips.size() == 1
@@ -2082,6 +2181,7 @@ namespace
         std::filesystem::remove(legacyPath, filesystemError);
         return Expect(colorBc && fallback && colorPublished, "ETC1S KTX2 cooks, publishes, and resolves deterministic BC7 sRGB and RGBA fallback artifacts")
             && Expect(normalTargets, "UASTC normal KTX2 cooks linear BC5 and ASTC artifacts")
+            && Expect(compressedCompletionRejected, "incomplete compressed mip completion fails visibly and preserves the caller artifact")
             && Expect(failedReplacementPreservesFile, "KTX2 failed replacement preserves the published artifact file")
             && Expect(invalidTargetRejected && invalidFormatRejected, "texture invalid target and format enums reject without publication")
             && Expect(schemaOneCompatible, "schema-1 RGBA fallback artifact resolves with conservative alpha metadata");
@@ -6855,6 +6955,7 @@ int main(int argc, char** argv)
         INTEGRATION_TEST("Cooked mesh artifacts validate and resolve transactionally", TestMeshArtifactValidationAndResolution),
         INTEGRATION_TEST("Texture artifacts cook the deterministic RGBA fallback transactionally", TestTextureArtifactFallbackCooking),
         INTEGRATION_TEST("KTX2 Basis textures cook deterministic compressed targets transactionally", TestKtx2BasisCooking),
+        FAST_TEST("Texture mip completion preserves authority and role filters", TestTextureMipCompletionPolicy),
         FAST_TEST("Texture artifacts select exact-device immutable mip upload plans", TestTextureArtifactUploadPlan),
         FAST_TEST("Mesh GPU resource cache preserves exact immutable generations", TestMeshGpuResourceCache),
         INTEGRATION_TEST("Scene version 4 canonical persistence", TestSceneVersionFourCanonicalPersistence),
