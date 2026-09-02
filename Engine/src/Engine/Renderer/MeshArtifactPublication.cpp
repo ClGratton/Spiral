@@ -1,6 +1,7 @@
 #include "Engine/Renderer/Renderer.h"
 
 #include "Engine/Assets/AssetRegistry.h"
+#include "Engine/Assets/MaterialAsset.h"
 #include "Engine/Assets/MeshArtifact.h"
 #include "Engine/Assets/TextureArtifact.h"
 
@@ -13,12 +14,15 @@ namespace Engine
     {
         struct ArtifactResolverCatalog
         {
-            explicit ArtifactResolverCatalog(const AssetRegistry& registry)
-                : Registry(std::make_shared<const AssetRegistry>(registry)), Mesh(Registry), Texture(Registry)
+            ArtifactResolverCatalog(const AssetRegistry& registry, const MaterialLibrary& materials)
+                : Registry(std::make_shared<const AssetRegistry>(registry)),
+                  Materials(std::make_shared<const MaterialLibrary>(materials)),
+                  Mesh(Registry), Texture(Registry)
             {
             }
 
             std::shared_ptr<const AssetRegistry> Registry;
+            std::shared_ptr<const MaterialLibrary> Materials;
             MeshArtifactResolver Mesh;
             TextureArtifactResolver Texture;
         };
@@ -61,7 +65,14 @@ namespace Engine
 
     void Renderer::PublishArtifactResolvers(const AssetRegistry& registry)
     {
-        std::shared_ptr<const ArtifactResolverCatalog> published = std::make_shared<const ArtifactResolverCatalog>(registry);
+        PublishArtifactResolvers(registry, MaterialLibrary {});
+    }
+
+    void Renderer::PublishArtifactResolvers(
+        const AssetRegistry& registry, const MaterialLibrary& materials)
+    {
+        std::shared_ptr<const ArtifactResolverCatalog> published
+            = std::make_shared<const ArtifactResolverCatalog>(registry, materials);
         StoreResolvers(std::move(published));
     }
 
@@ -122,6 +133,34 @@ namespace Engine
     {
         const std::shared_ptr<const ArtifactResolverState> state = LoadResolverState();
         return state ? state->Generation : 0;
+    }
+
+    bool Renderer::ResolvePublishedMaterialAsset(AssetHandle asset,
+        MaterialAsset& outMaterial, u64& outCatalogGeneration, std::string& outError)
+    {
+        const std::shared_ptr<const ArtifactResolverState> state = LoadResolverState();
+        outCatalogGeneration = state ? state->Generation : 0;
+        if (!state || !state->Catalog || !state->Catalog->Registry || !state->Catalog->Materials)
+        {
+            outError = "renderer has no published material catalog";
+            return false;
+        }
+        const AssetMetadata* metadata = state->Catalog->Registry->GetAsset(asset);
+        if (!metadata || metadata->Type != AssetType::Material)
+        {
+            outError = !metadata ? "material asset is not registered in the published catalog"
+                : "published asset is not a material";
+            return false;
+        }
+        const MaterialAsset* material = state->Catalog->Materials->Get(asset);
+        if (!material)
+        {
+            outError = "material asset has no content in the published catalog";
+            return false;
+        }
+        outMaterial = *material;
+        outError.clear();
+        return true;
     }
 
     void Renderer::ClearArtifactResolvers()

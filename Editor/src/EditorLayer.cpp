@@ -533,7 +533,7 @@ void EditorLayer::OnAttach()
         m_AssetRegistry.RegisterAsset(Engine::AssetType::Mesh, m_AssetWatchSmokePath, "Asset Watch Smoke");
     }
     m_AssetWatcher.SyncRegistry(m_AssetRegistry);
-    Engine::Renderer::PublishArtifactResolvers(m_AssetRegistry);
+    Engine::Renderer::PublishArtifactResolvers(m_AssetRegistry, m_MaterialLibrary);
     m_ConsoleLines.emplace_back("File watching active: " + std::to_string(m_AssetWatcher.GetTrackedCount()) + " asset source(s)");
     if (m_CaptureViewportRequested)
         m_ConsoleLines.emplace_back(std::string("Viewport capture requested: ") + m_CaptureViewportPath);
@@ -1469,6 +1469,8 @@ bool EditorLayer::DrawMaterialAssetControls(Engine::AssetHandle handle)
 
     if (ImGui::Button("Save Material"))
         SaveMaterialAsset(handle);
+    if (materialChanged)
+        Engine::Renderer::PublishArtifactResolvers(m_AssetRegistry, m_MaterialLibrary);
     ImGui::PopID();
     return materialChanged;
 }
@@ -3000,7 +3002,7 @@ bool EditorLayer::ImportGltfAsset(const std::filesystem::path& sourcePath)
     }
 
     m_AssetWatcher.SyncRegistry(m_AssetRegistry);
-    Engine::Renderer::PublishArtifactResolvers(m_AssetRegistry);
+    Engine::Renderer::PublishArtifactResolvers(m_AssetRegistry, m_MaterialLibrary);
     m_ConsoleLines.emplace_back(
         "glTF imported: " + m_LastGltfImport.SourcePath + " ("
         + std::to_string(m_LastGltfImport.Meshes.size()) + " mesh(es))");
@@ -3681,8 +3683,8 @@ bool EditorLayer::LoadProject()
     PublishFramePacingPolicy();
     PublishPresentationPolicy();
     m_AssetRegistry = std::move(loadedRegistry);
-    Engine::Renderer::PublishArtifactResolvers(m_AssetRegistry);
     m_MaterialLibrary = std::move(loadedMaterials);
+    Engine::Renderer::PublishArtifactResolvers(m_AssetRegistry, m_MaterialLibrary);
     m_ActiveScene = std::move(loadedScene);
     m_PrototypeMeshEntity = m_ActiveScene.FindEntityByName("Prototype Mesh");
     m_DirectionalLightEntity = m_ActiveScene.FindEntityByName("Directional Light");
@@ -3718,8 +3720,8 @@ void EditorLayer::RestoreHistoryState(const HistoryState& state)
 {
     m_ActiveScene = state.Scene;
     m_AssetRegistry = state.AssetRegistry;
-    Engine::Renderer::PublishArtifactResolvers(m_AssetRegistry);
     m_MaterialLibrary = state.MaterialLibrary;
+    Engine::Renderer::PublishArtifactResolvers(m_AssetRegistry, m_MaterialLibrary);
     m_SelectedEntity = state.SelectedEntity;
     m_CameraPosition = state.CameraPosition;
     m_CameraRotation = state.CameraRotation;
@@ -3832,6 +3834,7 @@ bool EditorLayer::SaveMaterialAsset(Engine::AssetHandle handle)
     const bool saved = m_MaterialLibrary.Save(handle, path);
     if (saved)
     {
+        Engine::Renderer::PublishArtifactResolvers(m_AssetRegistry, m_MaterialLibrary);
         m_AssetWatcher.Acknowledge(handle);
         m_ConsoleLines.emplace_back("Material saved: " + metadata->SourcePath);
         Engine::Log::Info("Material saved: ", metadata->SourcePath);

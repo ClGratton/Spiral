@@ -28,7 +28,9 @@ namespace Engine
 {
     class AssetRegistry;
     class FramePacingBenchmarkCapture;
+    class MaterialLibrary;
     enum class TextureTargetProfile;
+    struct MaterialAsset;
     struct MeshArtifact;
     struct TextureArtifact;
     struct TextureArtifactVariantSet;
@@ -412,6 +414,8 @@ namespace Engine
         static void PublishSceneRenderSnapshot(SceneRenderSnapshot snapshot);
         static std::shared_ptr<const SceneRenderSnapshot> GetSceneRenderSnapshot();
         static void PublishArtifactResolvers(const AssetRegistry& registry);
+        static void PublishArtifactResolvers(
+            const AssetRegistry& registry, const MaterialLibrary& materials);
         // Compatibility entry point for existing mesh-only tests. Publication
         // is now one atomic mesh+texture catalog generation.
         static void PublishMeshArtifactResolver(const AssetRegistry& registry);
@@ -423,6 +427,8 @@ namespace Engine
         static bool ResolvePublishedTextureArtifactVariantSet(AssetHandle asset,
             TextureTargetProfile preferredTarget, TextureArtifactVariantSet& outVariants,
             u64& outCatalogGeneration, std::string& outError);
+        static bool ResolvePublishedMaterialAsset(AssetHandle asset,
+            MaterialAsset& outMaterial, u64& outCatalogGeneration, std::string& outError);
         static u64 GetPublishedArtifactResolverGeneration();
         // Explicitly clears the immutable catalog. Renderer shutdown invokes
         // this before backend/device destruction.

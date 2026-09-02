@@ -25,6 +25,7 @@
 #include "Engine/Renderer/TextureTablePublication.h"
 #include "Engine/Renderer/TextureRuntimePublication.h"
 #include "Engine/Assets/MeshArtifact.h"
+#include "Engine/Assets/MaterialAsset.h"
 #include "Engine/Assets/TextureArtifact.h"
 #include "Engine/Assets/AssetRegistry.h"
 #include "Engine/Scene/Scene.h"
@@ -2240,6 +2241,102 @@ namespace
                 "invalid and error-only runtime use never aliases another asset or fabricates a retained token")
             && Expect(released,
                 "device-idle release clears cache table payload and accepted-frame ownership before device destruction");
+    }
+
+    bool TestImmutableMaterialCatalogPublication()
+    {
+        using namespace Engine;
+
+        AssetRegistry registry;
+        const std::string materialSource = AssetRegistry::NormalizeSourcePath(
+            "Assets/Materials/PublishedMaterial.spiralmat");
+        const AssetHandle materialHandle = registry.RegisterAsset(
+            AssetType::Material, materialSource, "Published Material");
+        const AssetHandle textureHandle = registry.RegisterAsset(
+            AssetType::Texture, "Assets/Textures/PublishedBase.ktx2", "Published Base");
+        MaterialAsset material;
+        material.Name = "Published Material";
+        material.BaseColor = { 0.2f, 0.4f, 0.8f };
+        material.Roughness = 0.27f;
+        material.Textures.BaseColor = textureHandle;
+        MaterialLibrary materials;
+        const bool stored = materials.Set(materialHandle, material);
+
+        Renderer::PublishArtifactResolvers(registry, materials);
+        const u64 initialPublishedGeneration = Renderer::GetPublishedArtifactResolverGeneration();
+        MaterialAsset resolved;
+        u64 resolvedGeneration = 0;
+        std::string error;
+        const bool initialResolved = stored
+            && Renderer::ResolvePublishedMaterialAsset(
+                materialHandle, resolved, resolvedGeneration, error)
+            && resolvedGeneration == initialPublishedGeneration
+            && resolved.Name == material.Name
+            && resolved.Textures.BaseColor == textureHandle
+            && std::abs(resolved.Roughness - material.Roughness) < 0.0001f;
+
+        MaterialAsset* mutableMaterial = materials.Get(materialHandle);
+        if (mutableMaterial)
+            mutableMaterial->Roughness = 0.91f;
+        registry.RemoveAsset(materialHandle);
+        MaterialAsset immutableResolved;
+        u64 immutableGeneration = 0;
+        const bool immutableSnapshot = Renderer::ResolvePublishedMaterialAsset(
+                materialHandle, immutableResolved, immutableGeneration, error)
+            && immutableGeneration == initialPublishedGeneration
+            && std::abs(immutableResolved.Roughness - material.Roughness) < 0.0001f;
+
+        Renderer::PublishArtifactResolvers(registry, materials);
+        const MaterialAsset preserved = immutableResolved;
+        u64 missingGeneration = 0;
+        const bool missingRegistryRejected = !Renderer::ResolvePublishedMaterialAsset(
+                materialHandle, immutableResolved, missingGeneration, error)
+            && missingGeneration > initialPublishedGeneration
+            && immutableResolved.Name == preserved.Name
+            && std::abs(immutableResolved.Roughness - preserved.Roughness) < 0.0001f;
+
+        const AssetHandle restoredHandle = registry.RegisterAsset(
+            AssetType::Material, materialSource, "Published Material");
+        MaterialLibrary emptyMaterials;
+        Renderer::PublishArtifactResolvers(registry, emptyMaterials);
+        u64 emptyGeneration = 0;
+        const bool missingContentRejected = restoredHandle == materialHandle
+            && !Renderer::ResolvePublishedMaterialAsset(
+                materialHandle, immutableResolved, emptyGeneration, error)
+            && emptyGeneration > missingGeneration
+            && immutableResolved.Name == preserved.Name;
+
+        MaterialAsset wrongTypeMaterial = material;
+        wrongTypeMaterial.Name = "Wrong Type";
+        materials.Set(textureHandle, wrongTypeMaterial);
+        Renderer::PublishArtifactResolvers(registry, materials);
+        u64 wrongTypeGeneration = 0;
+        const bool wrongTypeRejected = !Renderer::ResolvePublishedMaterialAsset(
+                textureHandle, immutableResolved, wrongTypeGeneration, error)
+            && wrongTypeGeneration > emptyGeneration
+            && immutableResolved.Name == preserved.Name;
+        MaterialAsset updated;
+        u64 updatedGeneration = 0;
+        const bool updatedResolved = Renderer::ResolvePublishedMaterialAsset(
+                materialHandle, updated, updatedGeneration, error)
+            && updatedGeneration == wrongTypeGeneration
+            && std::abs(updated.Roughness - 0.91f) < 0.0001f;
+
+        Renderer::ClearArtifactResolvers();
+        const MaterialAsset beforeClear = updated;
+        u64 clearedGeneration = 0;
+        const bool clearRejected = !Renderer::ResolvePublishedMaterialAsset(
+                materialHandle, updated, clearedGeneration, error)
+            && clearedGeneration > updatedGeneration
+            && updated.Name == beforeClear.Name
+            && std::abs(updated.Roughness - beforeClear.Roughness) < 0.0001f;
+
+        return Expect(initialResolved && immutableSnapshot,
+                "material resolution reads one immutable registry and library generation")
+            && Expect(missingRegistryRejected && missingContentRejected && wrongTypeRejected,
+                "material resolution requires matching registry type and library content without mutating caller output")
+            && Expect(updatedResolved && clearRejected,
+                "material catalog replacement publishes the complete new generation and explicit clear rejects transactionally");
     }
 
     bool TestMeshArtifactValidationAndResolution()
@@ -7727,6 +7824,7 @@ int main(int argc, char** argv)
         FAST_TEST("RHI read-only texture binding table preserves error and GPU-retired identities", TestReadOnlyTextureBindingTableContract),
         FAST_TEST("Texture table publication retires exact stable-asset generations", TestTextureTablePublicationRetirement),
         FAST_TEST("Texture runtime composes catalog cache table and exact retirement", TestTextureRuntimePublicationComposition),
+        FAST_TEST("Renderer material catalog publishes immutable exact generations", TestImmutableMaterialCatalogPublication),
         FAST_TEST("RHI read-only texture upload validates the full-subresource contract", TestReadOnlyTextureUploadContract),
         FAST_TEST("RHI sampled texture-table binding validates pipeline space offsets and exact ownership", TestSampledTextureTableBindingContract),
         FAST_TEST("RHI buffer ownership lifecycle publishes only accepted exact-token pairs", TestRhiBufferOwnershipLifecycleContract),

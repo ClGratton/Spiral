@@ -132,6 +132,8 @@ T4 is split because catalog publication, native upload/cache publication, and GP
 
 Accepted parent T4 composes those boundaries in `TextureRuntimePublication`. One resolver snapshot generation selects and uploads the bundle, then maps it to a stable table handle; accepted-frame handles retain exact payload/resource generations under their real submission token. A catalog refresh freezes new resolution while a latest-use operation is pending, commits immediately if that exact use was already terminal, and synchronously replaces/removes a publication that never entered accepted GPU work. Every failure stays on the declared error resource. Both native Scene renderers own this coordinator under device-idle lifecycle, and the Linux RTX 3080 Ti marker exercises the complete catalog/cache/table/retirement chain. Matching native D3D12 execution remains pending. T5 now owns material/sampler lookup and shader-visible Scene consumption; T4 does not infer material meaning from filenames or silently bind another asset.
 
+Accepted T5A adds material values to the same copied publication generation rather than exposing Editor's mutable `MaterialLibrary` to render threads. Lookup requires matching `AssetType::Material` registry metadata and library content from that one snapshot and is transactional on every failure. All current Editor registry/material mutation boundaries publish the pair together. Sampler schema, slot-role validation, native texture-table binding, constants, and shader-visible material behavior remain T5 work.
+
 ## Fallback Rules
 
 - Optional mesh shading falls back to compute culling plus indirect indexed draws.
