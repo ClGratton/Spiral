@@ -5,6 +5,10 @@ on:
     branches: [ main ]
   workflow_dispatch:
 
+concurrency:
+  group: dependency-submission-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: write
 

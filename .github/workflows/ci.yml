@@ -5,6 +5,10 @@ on:
   pull_request:
   workflow_dispatch:
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   code-style:
     name: Code Style
@@ -64,7 +68,7 @@ jobs:
       - name: Verify engine test runner contract
         shell: pwsh
         timeout-minutes: 6
-        run: .\Scripts\TestEngineTestRunner.ps1 -Configuration Debug -Action vs2022
+        run: .\Scripts\TestEngineTestRunner.ps1 -Configuration Debug -Action vs2022 -ChildTimeoutSeconds 120
 
       - name: Run asset watch smoke
         shell: pwsh
