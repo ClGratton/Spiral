@@ -1,6 +1,7 @@
 #include "Engine/Assets/MaterialAsset.h"
 
 #include <algorithm>
+#include <array>
 #include <fstream>
 #include <iomanip>
 #include <iterator>
@@ -12,7 +13,33 @@ namespace Engine
 {
     namespace
     {
-        constexpr int kMaterialAssetFormatVersion = 1;
+        constexpr int kLegacyMaterialAssetFormatVersion = 1;
+        constexpr int kMaterialAssetFormatVersion = 2;
+
+        constexpr std::array<MaterialTextureSlot, 6> kMaterialTextureSlots {{
+            MaterialTextureSlot::BaseColor,
+            MaterialTextureSlot::Normal,
+            MaterialTextureSlot::Orm,
+            MaterialTextureSlot::Emissive,
+            MaterialTextureSlot::Opacity,
+            MaterialTextureSlot::CallistoControl
+        }};
+
+        bool TryParseMaterialTextureSlot(std::string_view value, MaterialTextureSlot& outSlot)
+        {
+            const auto slot = std::find_if(kMaterialTextureSlots.begin(), kMaterialTextureSlots.end(),
+                [value](MaterialTextureSlot candidate) { return value == ToString(candidate); });
+            if (slot == kMaterialTextureSlots.end())
+                return false;
+            outSlot = *slot;
+            return true;
+        }
+
+        size_t MaterialTextureSlotIndex(MaterialTextureSlot slot)
+        {
+            return static_cast<size_t>(std::distance(kMaterialTextureSlots.begin(),
+                std::find(kMaterialTextureSlots.begin(), kMaterialTextureSlots.end(), slot)));
+        }
 
         float ClampNonNegative(float value)
         {
@@ -74,6 +101,36 @@ namespace Engine
         return "BaseColor";
     }
 
+    const char* ToString(MaterialTextureSampler sampler)
+    {
+        switch (sampler)
+        {
+            case MaterialTextureSampler::LinearWrap: return "LinearWrap";
+            case MaterialTextureSampler::LinearClamp: return "LinearClamp";
+            case MaterialTextureSampler::PointWrap: return "PointWrap";
+            case MaterialTextureSampler::PointClamp: return "PointClamp";
+        }
+
+        return "LinearWrap";
+    }
+
+    bool TryParseMaterialTextureSampler(
+        std::string_view value, MaterialTextureSampler& outSampler)
+    {
+        const MaterialTextureSampler samplers[] = {
+            MaterialTextureSampler::LinearWrap,
+            MaterialTextureSampler::LinearClamp,
+            MaterialTextureSampler::PointWrap,
+            MaterialTextureSampler::PointClamp
+        };
+        const auto sampler = std::find_if(std::begin(samplers), std::end(samplers),
+            [value](MaterialTextureSampler candidate) { return value == ToString(candidate); });
+        if (sampler == std::end(samplers))
+            return false;
+        outSampler = *sampler;
+        return true;
+    }
+
     MaterialShadingModel ParseMaterialShadingModel(std::string_view value)
     {
         return value == "Unlit" ? MaterialShadingModel::Unlit : MaterialShadingModel::Standard;
@@ -117,6 +174,36 @@ namespace Engine
         }
 
         return Textures.BaseColor;
+    }
+
+    MaterialTextureSampler& MaterialAsset::GetSampler(MaterialTextureSlot slot)
+    {
+        switch (slot)
+        {
+            case MaterialTextureSlot::BaseColor: return Samplers.BaseColor;
+            case MaterialTextureSlot::Normal: return Samplers.Normal;
+            case MaterialTextureSlot::Orm: return Samplers.Orm;
+            case MaterialTextureSlot::Emissive: return Samplers.Emissive;
+            case MaterialTextureSlot::Opacity: return Samplers.Opacity;
+            case MaterialTextureSlot::CallistoControl: return Samplers.CallistoControl;
+        }
+
+        return Samplers.BaseColor;
+    }
+
+    const MaterialTextureSampler& MaterialAsset::GetSampler(MaterialTextureSlot slot) const
+    {
+        switch (slot)
+        {
+            case MaterialTextureSlot::BaseColor: return Samplers.BaseColor;
+            case MaterialTextureSlot::Normal: return Samplers.Normal;
+            case MaterialTextureSlot::Orm: return Samplers.Orm;
+            case MaterialTextureSlot::Emissive: return Samplers.Emissive;
+            case MaterialTextureSlot::Opacity: return Samplers.Opacity;
+            case MaterialTextureSlot::CallistoControl: return Samplers.CallistoControl;
+        }
+
+        return Samplers.BaseColor;
     }
 
     void MaterialAsset::ClampValues()
@@ -175,16 +262,10 @@ namespace Engine
         output << "RetroreflectionFalloff " << material.RetroreflectionFalloff << '\n';
         output << "SmoothTerminator " << material.SmoothTerminator << '\n';
 
-        const MaterialTextureSlot textureSlots[] = {
-            MaterialTextureSlot::BaseColor,
-            MaterialTextureSlot::Normal,
-            MaterialTextureSlot::Orm,
-            MaterialTextureSlot::Emissive,
-            MaterialTextureSlot::Opacity,
-            MaterialTextureSlot::CallistoControl
-        };
-        for (MaterialTextureSlot slot : textureSlots)
+        for (MaterialTextureSlot slot : kMaterialTextureSlots)
             output << "Texture " << ToString(slot) << ' ' << material.GetTexture(slot) << '\n';
+        for (MaterialTextureSlot slot : kMaterialTextureSlots)
+            output << "Sampler " << ToString(slot) << ' ' << ToString(material.GetSampler(slot)) << '\n';
 
         return static_cast<bool>(output);
     }
@@ -197,10 +278,13 @@ namespace Engine
 
         std::string magic;
         int version = 0;
-        if (!(input >> magic >> version) || magic != "SpiralMaterial" || version != kMaterialAssetFormatVersion)
+        if (!(input >> magic >> version) || magic != "SpiralMaterial"
+            || (version != kLegacyMaterialAssetFormatVersion
+                && version != kMaterialAssetFormatVersion))
             return false;
 
         MaterialAsset loaded;
+        std::array<bool, kMaterialTextureSlots.size()> samplerSeen {};
         std::string line;
         std::getline(input, line);
         while (std::getline(input, line))
@@ -308,22 +392,29 @@ namespace Engine
                 if (!(stream >> slotName >> handle))
                     return false;
 
-                const MaterialTextureSlot textureSlots[] = {
-                    MaterialTextureSlot::BaseColor,
-                    MaterialTextureSlot::Normal,
-                    MaterialTextureSlot::Orm,
-                    MaterialTextureSlot::Emissive,
-                    MaterialTextureSlot::Opacity,
-                    MaterialTextureSlot::CallistoControl
-                };
-                const auto slot = std::find_if(std::begin(textureSlots), std::end(textureSlots), [&slotName](MaterialTextureSlot candidate)
-                {
-                    return slotName == ToString(candidate);
-                });
-                if (slot == std::end(textureSlots))
+                MaterialTextureSlot slot;
+                if (!TryParseMaterialTextureSlot(slotName, slot))
                     return false;
 
-                loaded.GetTexture(*slot) = handle;
+                loaded.GetTexture(slot) = handle;
+            }
+            else if (key == "Sampler")
+            {
+                if (version != kMaterialAssetFormatVersion)
+                    return false;
+                std::string slotName;
+                std::string samplerName;
+                MaterialTextureSlot slot;
+                MaterialTextureSampler sampler;
+                if (!(stream >> slotName >> samplerName)
+                    || !TryParseMaterialTextureSlot(slotName, slot)
+                    || !TryParseMaterialTextureSampler(samplerName, sampler))
+                    return false;
+                const size_t slotIndex = MaterialTextureSlotIndex(slot);
+                if (slotIndex >= samplerSeen.size() || samplerSeen[slotIndex])
+                    return false;
+                samplerSeen[slotIndex] = true;
+                loaded.GetSampler(slot) = sampler;
             }
             else
             {
@@ -331,6 +422,9 @@ namespace Engine
             }
         }
 
+        if (version == kMaterialAssetFormatVersion
+            && !std::all_of(samplerSeen.begin(), samplerSeen.end(), [](bool seen) { return seen; }))
+            return false;
         loaded.ClampValues();
         outMaterial = std::move(loaded);
         return true;

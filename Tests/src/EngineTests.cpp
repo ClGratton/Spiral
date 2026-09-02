@@ -2339,6 +2339,101 @@ namespace
                 "material catalog replacement publishes the complete new generation and explicit clear rejects transactionally");
     }
 
+    bool TestMaterialSamplerSchemaMigration()
+    {
+        using namespace Engine;
+
+        const std::filesystem::path schemaTwoPath
+            = std::filesystem::temp_directory_path() / "spiral-material-sampler-v2.spiralmat";
+        const std::filesystem::path legacyPath
+            = std::filesystem::temp_directory_path() / "spiral-material-sampler-v1.spiralmat";
+        const std::filesystem::path malformedPath
+            = std::filesystem::temp_directory_path() / "spiral-material-sampler-malformed.spiralmat";
+        std::error_code filesystemError;
+        std::filesystem::remove(schemaTwoPath, filesystemError);
+        std::filesystem::remove(legacyPath, filesystemError);
+        std::filesystem::remove(malformedPath, filesystemError);
+
+        MaterialAsset material;
+        material.Name = "Sampler Schema";
+        material.Samplers.BaseColor = MaterialTextureSampler::LinearClamp;
+        material.Samplers.Normal = MaterialTextureSampler::PointWrap;
+        material.Samplers.Orm = MaterialTextureSampler::PointClamp;
+        material.Samplers.Emissive = MaterialTextureSampler::LinearWrap;
+        material.Samplers.Opacity = MaterialTextureSampler::PointClamp;
+        material.Samplers.CallistoControl = MaterialTextureSampler::LinearClamp;
+        MaterialAsset loaded;
+        const bool schemaTwoRoundTrip = material.SaveToFile(schemaTwoPath)
+            && MaterialAsset::LoadFromFile(schemaTwoPath, loaded)
+            && loaded.Name == material.Name
+            && loaded.Samplers.BaseColor == MaterialTextureSampler::LinearClamp
+            && loaded.Samplers.Normal == MaterialTextureSampler::PointWrap
+            && loaded.Samplers.Orm == MaterialTextureSampler::PointClamp
+            && loaded.Samplers.Emissive == MaterialTextureSampler::LinearWrap
+            && loaded.Samplers.Opacity == MaterialTextureSampler::PointClamp
+            && loaded.Samplers.CallistoControl == MaterialTextureSampler::LinearClamp;
+        std::ifstream schemaTwoInput(schemaTwoPath);
+        const std::string schemaTwoText(
+            (std::istreambuf_iterator<char>(schemaTwoInput)), std::istreambuf_iterator<char>());
+        const bool schemaTwoDeclared = schemaTwoText.starts_with("SpiralMaterial 2\n")
+            && schemaTwoText.find("Sampler BaseColor LinearClamp") != std::string::npos
+            && schemaTwoText.find("Sampler Normal PointWrap") != std::string::npos;
+
+        {
+            std::ofstream legacy(legacyPath, std::ios::trunc);
+            legacy << "SpiralMaterial 1\nName \"Legacy Samplers\"\nTexture BaseColor 0\n";
+        }
+        MaterialAsset legacyLoaded;
+        const bool legacyMigrated = MaterialAsset::LoadFromFile(legacyPath, legacyLoaded)
+            && legacyLoaded.Name == "Legacy Samplers"
+            && legacyLoaded.Samplers.BaseColor == MaterialTextureSampler::LinearWrap
+            && legacyLoaded.Samplers.Normal == MaterialTextureSampler::LinearWrap
+            && legacyLoaded.Samplers.Orm == MaterialTextureSampler::LinearWrap
+            && legacyLoaded.Samplers.Emissive == MaterialTextureSampler::LinearWrap
+            && legacyLoaded.Samplers.Opacity == MaterialTextureSampler::LinearWrap
+            && legacyLoaded.Samplers.CallistoControl == MaterialTextureSampler::LinearWrap;
+
+        const std::array<std::string, 4> malformedSchemas {{
+            "SpiralMaterial 2\nSampler BaseColor LinearWrap\nSampler Normal PointWrap\n"
+                "Sampler Orm PointClamp\nSampler Emissive LinearWrap\nSampler Opacity PointClamp\n",
+            "SpiralMaterial 2\nSampler BaseColor LinearWrap\nSampler BaseColor PointClamp\n"
+                "Sampler Normal PointWrap\nSampler Orm PointClamp\nSampler Emissive LinearWrap\n"
+                "Sampler Opacity PointClamp\nSampler CallistoControl LinearClamp\n",
+            "SpiralMaterial 2\nSampler BaseColor LinearWrap\nSampler Normal PointWrap\n"
+                "Sampler Orm PointClamp\nSampler Emissive LinearWrap\nSampler Opacity PointClamp\n"
+                "Sampler CallistoControl LinearClamp\nSampler ClearCoat LinearWrap\n",
+            "SpiralMaterial 2\nSampler BaseColor LinearWrap\nSampler Normal PointWrap\n"
+                "Sampler Orm PointClamp\nSampler Emissive LinearWrap\nSampler Opacity PointClamp\n"
+                "Sampler CallistoControl TrilinearMirror\n"
+        }};
+        bool malformedRejected = true;
+        for (const std::string& malformedSchema : malformedSchemas)
+        {
+            std::ofstream malformed(malformedPath, std::ios::trunc);
+            malformed << malformedSchema;
+            malformed.close();
+            MaterialAsset preserved = material;
+            malformedRejected = malformedRejected
+                && !MaterialAsset::LoadFromFile(malformedPath, preserved)
+                && preserved.Name == material.Name
+                && preserved.Samplers.BaseColor == material.Samplers.BaseColor;
+        }
+        MaterialTextureSampler parsed = MaterialTextureSampler::PointWrap;
+        malformedRejected = malformedRejected
+            && !TryParseMaterialTextureSampler("TrilinearMirror", parsed)
+            && parsed == MaterialTextureSampler::PointWrap;
+
+        std::filesystem::remove(schemaTwoPath, filesystemError);
+        std::filesystem::remove(legacyPath, filesystemError);
+        std::filesystem::remove(malformedPath, filesystemError);
+        return Expect(schemaTwoRoundTrip && schemaTwoDeclared,
+                "material schema 2 round-trips one explicit backend-neutral sampler per texture slot")
+            && Expect(legacyMigrated,
+                "material schema 1 migrates every sampler to the former effective LinearWrap behavior")
+            && Expect(malformedRejected,
+                "missing duplicate unknown-slot and unknown-mode sampler declarations reject transactionally");
+    }
+
     bool TestMeshArtifactValidationAndResolution()
     {
         using namespace Engine;
@@ -7825,6 +7920,7 @@ int main(int argc, char** argv)
         FAST_TEST("Texture table publication retires exact stable-asset generations", TestTextureTablePublicationRetirement),
         FAST_TEST("Texture runtime composes catalog cache table and exact retirement", TestTextureRuntimePublicationComposition),
         FAST_TEST("Renderer material catalog publishes immutable exact generations", TestImmutableMaterialCatalogPublication),
+        INTEGRATION_TEST("Material sampler declarations migrate and validate transactionally", TestMaterialSamplerSchemaMigration),
         FAST_TEST("RHI read-only texture upload validates the full-subresource contract", TestReadOnlyTextureUploadContract),
         FAST_TEST("RHI sampled texture-table binding validates pipeline space offsets and exact ownership", TestSampledTextureTableBindingContract),
         FAST_TEST("RHI buffer ownership lifecycle publishes only accepted exact-token pairs", TestRhiBufferOwnershipLifecycleContract),

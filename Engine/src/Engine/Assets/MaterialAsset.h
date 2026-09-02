@@ -33,9 +33,22 @@ namespace Engine
         CallistoControl
     };
 
+    // Asset-level sampling intent. The Renderer maps this to the selected RHI;
+    // anisotropy and broader LOD policy remain Phase 4 concerns.
+    enum class MaterialTextureSampler
+    {
+        LinearWrap,
+        LinearClamp,
+        PointWrap,
+        PointClamp
+    };
+
     const char* ToString(MaterialShadingModel model);
     const char* ToString(MaterialAlphaMode mode);
     const char* ToString(MaterialTextureSlot slot);
+    const char* ToString(MaterialTextureSampler sampler);
+    bool TryParseMaterialTextureSampler(
+        std::string_view value, MaterialTextureSampler& outSampler);
     MaterialShadingModel ParseMaterialShadingModel(std::string_view value);
     MaterialAlphaMode ParseMaterialAlphaMode(std::string_view value);
 
@@ -47,6 +60,16 @@ namespace Engine
         AssetHandle Emissive = kInvalidAssetHandle;
         AssetHandle Opacity = kInvalidAssetHandle;
         AssetHandle CallistoControl = kInvalidAssetHandle;
+    };
+
+    struct MaterialTextureSamplerSet
+    {
+        MaterialTextureSampler BaseColor = MaterialTextureSampler::LinearWrap;
+        MaterialTextureSampler Normal = MaterialTextureSampler::LinearWrap;
+        MaterialTextureSampler Orm = MaterialTextureSampler::LinearWrap;
+        MaterialTextureSampler Emissive = MaterialTextureSampler::LinearWrap;
+        MaterialTextureSampler Opacity = MaterialTextureSampler::LinearWrap;
+        MaterialTextureSampler CallistoControl = MaterialTextureSampler::LinearWrap;
     };
 
     struct MaterialAsset
@@ -72,9 +95,12 @@ namespace Engine
         float SmoothTerminator = 0.0f;
 
         MaterialTextureSet Textures;
+        MaterialTextureSamplerSet Samplers;
 
         AssetHandle& GetTexture(MaterialTextureSlot slot);
         const AssetHandle& GetTexture(MaterialTextureSlot slot) const;
+        MaterialTextureSampler& GetSampler(MaterialTextureSlot slot);
+        const MaterialTextureSampler& GetSampler(MaterialTextureSlot slot) const;
         void ClampValues();
 
         bool SaveToFile(const std::filesystem::path& path) const;

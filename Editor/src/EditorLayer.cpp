@@ -1455,8 +1455,32 @@ bool EditorLayer::DrawMaterialAssetControls(Engine::AssetHandle handle)
         Engine::MaterialTextureSlot::CallistoControl
     };
     for (Engine::MaterialTextureSlot slot : textureSlots)
+    {
         materialChanged |= DrawAssetHandleControl(
             Engine::ToString(slot), material->GetTexture(slot), m_AssetRegistry, Engine::AssetType::Texture);
+        const Engine::MaterialTextureSampler samplers[] = {
+            Engine::MaterialTextureSampler::LinearWrap,
+            Engine::MaterialTextureSampler::LinearClamp,
+            Engine::MaterialTextureSampler::PointWrap,
+            Engine::MaterialTextureSampler::PointClamp
+        };
+        const std::string samplerLabel = std::string(Engine::ToString(slot)) + " Sampling";
+        if (ImGui::BeginCombo(samplerLabel.c_str(), Engine::ToString(material->GetSampler(slot))))
+        {
+            for (Engine::MaterialTextureSampler candidate : samplers)
+            {
+                const bool selected = material->GetSampler(slot) == candidate;
+                if (ImGui::Selectable(Engine::ToString(candidate), selected))
+                {
+                    material->GetSampler(slot) = candidate;
+                    materialChanged = true;
+                }
+                if (selected)
+                    ImGui::SetItemDefaultFocus();
+            }
+            ImGui::EndCombo();
+        }
+    }
 
     ImGui::Separator();
     ImGui::TextUnformatted("Callisto Controls");
@@ -2820,6 +2844,7 @@ void EditorLayer::RunMaterialAssetSmoke()
     material.AlphaCutoff = 0.42f;
     material.Textures.BaseColor = textureHandle;
     material.Textures.Opacity = textureHandle;
+    material.Samplers.BaseColor = Engine::MaterialTextureSampler::PointClamp;
     if (!m_MaterialLibrary.Set(materialHandle, material) || !SaveMaterialAsset(materialHandle))
         throw std::runtime_error("Material asset smoke could not save the material asset");
 
@@ -2834,7 +2859,9 @@ void EditorLayer::RunMaterialAssetSmoke()
         && loaded->TwoSided
         && std::abs(loaded->Roughness - material.Roughness) < 0.0001f
         && loaded->Textures.BaseColor == textureHandle
-        && loaded->Textures.Opacity == textureHandle;
+        && loaded->Textures.Opacity == textureHandle
+        && loaded->Samplers.BaseColor == Engine::MaterialTextureSampler::PointClamp
+        && loaded->Samplers.Opacity == Engine::MaterialTextureSampler::LinearWrap;
     if (!m_MaterialAssetSmokeCompleted)
         throw std::runtime_error("Material asset smoke reload validation failed");
 
