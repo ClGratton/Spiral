@@ -45,9 +45,11 @@ private:
     void ArmViewportCursorCapture();
     void EndViewportCursorCapture();
     void ClearViewportNavigationInput();
+    bool TryAcquireViewportNavigationFocus();
     bool IsShiftNavigationModifierDown() const;
     void BeginFusionOrbitPivot();
     void ResetFusionNavigationPivotFromScene();
+    bool RetargetFusionNavigationPivotToSelectedEntity();
     void SetFusionNavigationPivot(const Engine::Math::DVec3& pivot);
     bool SaveEditorSettings();
     void LoadEditorSettings();
@@ -178,6 +180,8 @@ private:
     bool m_ViewportDiscontinuousRelocationPending = true;
     bool m_ViewportHovered = false;
     bool m_ViewportFocused = false;
+    bool m_ViewportNavigationFocusAvailable = false;
+    bool m_ViewportFocusRequested = false;
     bool m_ViewportNavigationInputEnabled = false;
     bool m_WindowFocused = true;
     bool m_CursorCaptured = false;

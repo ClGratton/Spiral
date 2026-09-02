@@ -549,7 +549,7 @@ void EditorLayer::OnAttach()
     if (Engine::Renderer::GetActiveBackend() == Engine::RendererBackend::NVRHID3D12)
         m_ConsoleLines.emplace_back("Native D3D12 prototype mesh pass active");
     else if (Engine::Renderer::GetActiveBackend() == Engine::RendererBackend::NVRHIVulkan)
-        m_ConsoleLines.emplace_back("Native Vulkan editor presentation active; scene viewport rendering is pending");
+        m_ConsoleLines.emplace_back("Native Vulkan editor presentation and Scene viewport rendering active");
     else if (!buildInfo.HasNVRHID3D12)
         m_ConsoleLines.emplace_back("Native D3D12 viewport unavailable in this executable; run the VS2022 build path on Windows");
     else
@@ -723,7 +723,7 @@ void EditorLayer::OnEvent(Engine::Event& event)
         const bool capturesNavigation = m_ViewportNavigationPreset == ViewportNavigationPreset::Unreal
             ? (button == 0 || button == 1 || button == 2)
             : button == 2;
-        if (m_ViewportNavigationInputEnabled && capturesNavigation)
+        if (capturesNavigation && TryAcquireViewportNavigationFocus())
         {
             if (m_ViewportNavigationPreset == ViewportNavigationPreset::Fusion && IsShiftNavigationModifierDown())
                 BeginFusionOrbitPivot();
@@ -756,7 +756,8 @@ void EditorLayer::OnEvent(Engine::Event& event)
     }
     else if (event.GetEventType() == Engine::EventType::MouseScrolled)
     {
-        m_MouseWheelDelta += static_cast<const Engine::MouseScrolledEvent&>(event).GetYOffset();
+        if (TryAcquireViewportNavigationFocus())
+            m_MouseWheelDelta += static_cast<const Engine::MouseScrolledEvent&>(event).GetYOffset();
     }
 
     if (m_EventTraceEnabled)
@@ -1163,7 +1164,10 @@ void EditorLayer::DrawSceneHierarchyPanel()
             ImGui::PushID(static_cast<int>(entity.EntityHandle.Id));
             const bool selected = entity.EntityHandle == m_SelectedEntity;
             if (ImGui::Selectable(entity.Name.c_str(), selected))
+            {
                 m_SelectedEntity = entity.EntityHandle;
+                RetargetFusionNavigationPivotToSelectedEntity();
+            }
             if (ImGui::BeginPopupContextItem("EntityContext"))
             {
                 if (ImGui::MenuItem("Create Empty"))
@@ -1237,6 +1241,8 @@ void EditorLayer::DrawInspectorPanel()
         transformChanged |= DrawVec3Control("Scale", selectedEntity->Transform.Scale, 0.05f, 0.01f, 100.0f);
     if (transformChanged && selectedEntity->EntityHandle == m_ActiveScene.GetMainCameraEntity())
         SyncEditorCameraStateFromMainCamera(true);
+    else if (transformChanged)
+        RetargetFusionNavigationPivotToSelectedEntity();
     historyStateChanged |= transformChanged;
     ImGui::PopID();
 
@@ -1574,6 +1580,23 @@ void EditorLayer::ClearViewportNavigationInput()
     m_MouseDeltaY = 0.0f;
     m_MouseWheelDelta = 0.0f;
     m_HasMousePosition = false;
+    m_ViewportNavigationFocusAvailable = false;
+    m_ViewportFocusRequested = false;
+}
+
+bool EditorLayer::TryAcquireViewportNavigationFocus()
+{
+    if (m_ViewportNavigationInputEnabled)
+        return true;
+    if (!m_ViewportNavigationFocusAvailable)
+        return false;
+
+    // GLFW events arrive before the next ImGui frame. Latch a qualifying
+    // hovered-viewport press/scroll so Update can consume it immediately;
+    // DrawViewportPanel gives the viewport actual ImGui focus later this frame.
+    m_ViewportFocusRequested = true;
+    m_ViewportNavigationInputEnabled = true;
+    return true;
 }
 
 bool EditorLayer::IsShiftNavigationModifierDown() const
@@ -1651,6 +1674,20 @@ void EditorLayer::ResetFusionNavigationPivotFromScene()
         m_CameraPosition[1] + forward.Y * fallbackDistance,
         m_CameraPosition[2] + forward.Z * fallbackDistance
     });
+}
+
+bool EditorLayer::RetargetFusionNavigationPivotToSelectedEntity()
+{
+    if (!m_ActiveScene.IsEntityValid(m_SelectedEntity)
+        || m_SelectedEntity == m_ActiveScene.GetMainCameraEntity())
+        return false;
+
+    Engine::Math::DVec3 selectedPosition;
+    if (!m_ActiveScene.TryGetEntityApproximateWorldPosition(m_SelectedEntity, selectedPosition))
+        return false;
+
+    SetFusionNavigationPivot(selectedPosition);
+    return true;
 }
 
 bool EditorLayer::SaveEditorSettings()
@@ -2003,13 +2040,19 @@ void EditorLayer::DrawViewportPanel()
         ImGui::InvisibleButton("ViewportCanvas", size);
 
     m_ViewportHovered = ImGui::IsItemHovered();
-    if (ImGui::IsItemClicked())
+    if (m_ViewportFocusRequested || ImGui::IsItemClicked(ImGuiMouseButton_Left)
+        || ImGui::IsItemClicked(ImGuiMouseButton_Right) || ImGui::IsItemClicked(ImGuiMouseButton_Middle))
+    {
         ImGui::SetWindowFocus();
+        m_ViewportFocusRequested = false;
+    }
     m_ViewportFocused = ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
     const ImGuiIO& io = ImGui::GetIO();
+    m_ViewportNavigationFocusAvailable = m_WindowFocused && m_ViewportHovered
+        && !io.WantTextInput && !ImGui::IsAnyItemActive();
     m_ViewportNavigationInputEnabled = m_WindowFocused
         && !io.WantTextInput
-        && (m_CursorCaptured || (m_ViewportHovered && m_ViewportFocused && !ImGui::IsAnyItemActive()));
+        && (m_CursorCaptured || (m_ViewportNavigationFocusAvailable && m_ViewportFocused));
 
     const ImVec2 min = ImGui::GetItemRectMin();
     const ImVec2 max = ImGui::GetItemRectMax();
@@ -2030,7 +2073,7 @@ void EditorLayer::DrawViewportPanel()
 
     const char* title = hasNativeViewportTexture ? "Renderer target" : "Renderer preview";
     const std::string subtitle = hasNativeViewportTexture
-        ? std::string("Active backend: ") + Engine::Renderer::GetActiveBackendName() + "; native D3D12 prototype mesh pass"
+        ? std::string("Active backend: ") + Engine::Renderer::GetActiveBackendName() + "; native Scene mesh pass"
         : std::string("Active backend: ") + Engine::Renderer::GetActiveBackendName() + "; native viewport unavailable";
     drawList->AddText(ImVec2(min.x + 18.0f, min.y + 18.0f), IM_COL32(230, 235, 240, 255), title);
     drawList->AddText(ImVec2(min.x + 18.0f, min.y + 40.0f), IM_COL32(150, 160, 170, 255), subtitle.c_str());
@@ -3119,6 +3162,67 @@ void EditorLayer::RunViewportNavigationSmoke()
     m_EditorCamera.SetRotationDegrees({ m_CameraRotation[0], m_CameraRotation[1], m_CameraRotation[2] });
     ApplyEditorCameraStateToScene();
 
+    m_SelectedEntity = m_PrototypeMeshEntity;
+    Engine::Math::DVec3 selectedEntityPosition;
+    const bool hasSelectedEntityPosition = m_ActiveScene.TryGetEntityApproximateWorldPosition(
+        m_SelectedEntity, selectedEntityPosition);
+    const Engine::Math::DVec3 cameraBeforeSelectionRetarget = m_EditorCamera.GetPosition();
+    SetFusionNavigationPivot({ initialPivot.X + 0.75, initialPivot.Y, initialPivot.Z });
+    const bool selectionPivotRetargeted = RetargetFusionNavigationPivotToSelectedEntity()
+        && hasSelectedEntityPosition && sameVector(m_FusionNavigationPivot, selectedEntityPosition)
+        && sameVector(m_EditorCamera.GetPosition(), cameraBeforeSelectionRetarget);
+    SetFusionNavigationPivot(initialPivot);
+
+    const Engine::Math::DVec3 focusAcquireStart = m_EditorCamera.GetPosition();
+    const Engine::Math::Vec3 focusAcquireStartRotation = m_EditorCamera.GetRotationDegrees();
+    m_WindowFocused = true;
+    m_ViewportHovered = true;
+    m_ViewportFocused = false;
+    m_ViewportNavigationFocusAvailable = true;
+    m_ViewportNavigationInputEnabled = false;
+    m_ViewportFocusRequested = false;
+    Engine::MouseButtonPressedEvent unfocusedFusionMiddlePress(2);
+    OnEvent(unfocusedFusionMiddlePress);
+    const bool fusionMiddlePressAcquiredFocus = m_ViewportFocusRequested
+        && m_ViewportNavigationInputEnabled && m_CursorCapturePending && m_MiddleMouseDown;
+    UpdateViewportNavigation(Engine::Timestep(1.0f));
+    Engine::MouseMovedEvent acquiredFocusMotion(311.0f, 227.0f);
+    OnEvent(acquiredFocusMotion);
+    UpdateViewportNavigation(Engine::Timestep(1.0f));
+    const bool fusionFirstMiddleDragMoved = cameraChanged(focusAcquireStart, focusAcquireStartRotation);
+    Engine::MouseButtonReleasedEvent unfocusedFusionMiddleRelease(2);
+    OnEvent(unfocusedFusionMiddleRelease);
+    const bool fusionMiddleFocusAcquire = fusionMiddlePressAcquiredFocus && fusionFirstMiddleDragMoved
+        && !m_CursorCaptured && !m_CursorCapturePending;
+
+    m_CameraPosition = { focusAcquireStart.X, focusAcquireStart.Y, focusAcquireStart.Z };
+    m_CameraRotation = { focusAcquireStartRotation.X, focusAcquireStartRotation.Y, focusAcquireStartRotation.Z };
+    SetFusionNavigationPivot(initialPivot);
+    m_EditorCamera.SetPosition(focusAcquireStart);
+    m_EditorCamera.SetRotationDegrees(focusAcquireStartRotation);
+    ApplyEditorCameraStateToScene();
+    m_ViewportFocused = false;
+    m_ViewportNavigationFocusAvailable = true;
+    m_ViewportNavigationInputEnabled = false;
+    m_ViewportFocusRequested = false;
+    Engine::MouseScrolledEvent unfocusedFusionScroll(0.0f, 1.0f);
+    OnEvent(unfocusedFusionScroll);
+    const bool fusionScrollAcquiredFocus = m_ViewportFocusRequested && m_ViewportNavigationInputEnabled;
+    UpdateViewportNavigation(Engine::Timestep(1.0f));
+    const bool fusionFirstScrollZoomed = cameraChanged(focusAcquireStart, focusAcquireStartRotation);
+    const bool fusionScrollFocusAcquire = fusionScrollAcquiredFocus && fusionFirstScrollZoomed;
+
+    m_CameraPosition = { focusAcquireStart.X, focusAcquireStart.Y, focusAcquireStart.Z };
+    m_CameraRotation = { focusAcquireStartRotation.X, focusAcquireStartRotation.Y, focusAcquireStartRotation.Z };
+    SetFusionNavigationPivot(initialPivot);
+    m_EditorCamera.SetPosition(focusAcquireStart);
+    m_EditorCamera.SetRotationDegrees(focusAcquireStartRotation);
+    ApplyEditorCameraStateToScene();
+    m_ViewportFocused = true;
+    m_ViewportNavigationFocusAvailable = true;
+    m_ViewportNavigationInputEnabled = true;
+    m_ViewportFocusRequested = false;
+
     const Engine::Math::DVec3 fusionBefore = m_EditorCamera.GetPosition();
     const Engine::Math::Vec3 fusionBeforeRotation = m_EditorCamera.GetRotationDegrees();
     m_LeftMouseDown = true;
@@ -3369,14 +3473,15 @@ void EditorLayer::RunViewportNavigationSmoke()
     const bool focusLossReleased = !m_CursorCaptured && !m_RightMouseDown
         && !m_KeyDown[static_cast<size_t>('W')] && m_MouseDeltaX == 0.0f && m_MouseDeltaY == 0.0f;
     m_ViewportNavigationPreset = previousPreset;
-    if (!fusionLeftNoOp || !fusionRightNoOp || !staleCaptureMotionIgnored || !quickReleaseBeforeCaptureArm
+    if (!selectionPivotRetargeted || !fusionMiddleFocusAcquire || !fusionScrollFocusAcquire
+        || !fusionLeftNoOp || !fusionRightNoOp || !staleCaptureMotionIgnored || !quickReleaseBeforeCaptureArm
         || !pendingCaptureFocusLossReleased || !transitionCaptureMotionIgnored || !normalCaptureDrag
         || !fusionCameraPlanePan || !fusionCursorZoom || !fusionOrbitContinuous || !fusionWheelWhileMiddleHeld)
         throw std::runtime_error("Viewport navigation Fusion preset smoke failed");
     if (!unrealLeftDragMoved || !sceneMatches || !unrealFlyMoved || !focusDiscontinuous || !focusLossReleased)
         throw std::runtime_error("Viewport navigation smoke failed");
 
-    Engine::Log::Info("ViewportNavigationSmokeV5 deferredCapture=pass fusionPlanePan=pass cursorZoom=pass orbitContinuity=pass wheelHeld=pass stablePivot=pass unreal=pass dvec3=pass sceneAuthority=pass focusDiscontinuity=pass focusLossRelease=pass result=pass");
+    Engine::Log::Info("ViewportNavigationSmokeV7 selectionPivot=pass focusAcquire=pass deferredCapture=pass fusionPlanePan=pass cursorZoom=pass orbitContinuity=pass wheelHeld=pass stablePivot=pass unreal=pass dvec3=pass sceneAuthority=pass focusDiscontinuity=pass focusLossRelease=pass result=pass");
     m_ConsoleLines.emplace_back("Viewport navigation smoke passed");
 }
 
