@@ -32,6 +32,10 @@ namespace Engine
         RHI::TextureBindingHandle Publish(AssetHandle asset,
             const Ref<const TextureGpuResourceBundle>& bundle,
             RHI::TextureSampler sampler, std::string& outError);
+        bool ReplaceUnaccepted(AssetHandle asset,
+            const Ref<const TextureGpuResourceBundle>& replacement,
+            RHI::TextureSampler sampler, std::string& outError);
+        bool RemoveUnaccepted(AssetHandle asset, std::string& outError);
 
         // Calls must follow submission-acceptance order. Pending assets are
         // frozen so later frames cannot extend the operation's last-use token.

@@ -160,6 +160,54 @@ namespace Engine
         return handle;
     }
 
+    bool TextureTablePublication::ReplaceUnaccepted(AssetHandle asset,
+        const Ref<const TextureGpuResourceBundle>& replacement,
+        RHI::TextureSampler sampler, std::string& outError)
+    {
+        Entry* entry = FindEntry(asset);
+        if (!entry || entry->Pending || entry->LastAcceptedUse.IsValid())
+        {
+            outError = !entry ? "unaccepted texture replacement targets an unpublished asset"
+                : entry->Pending ? "texture asset already has a pending table operation"
+                : "texture replacement requires exact GPU retirement after accepted use";
+            return false;
+        }
+        if (!IsPublishable(asset, replacement, outError))
+            return false;
+        if (!m_Table->ReplaceUnsubmitted(entry->Handle, replacement->Texture, sampler))
+        {
+            outError = "texture table rejected an unaccepted replacement";
+            return false;
+        }
+        entry->Bundle = replacement;
+        entry->Sampler = sampler;
+        outError.clear();
+        return true;
+    }
+
+    bool TextureTablePublication::RemoveUnaccepted(AssetHandle asset, std::string& outError)
+    {
+        const auto found = std::find_if(m_Entries.begin(), m_Entries.end(), [asset](const Entry& entry)
+        {
+            return entry.Asset == asset;
+        });
+        if (found == m_Entries.end() || found->Pending || found->LastAcceptedUse.IsValid())
+        {
+            outError = found == m_Entries.end() ? "unaccepted texture removal targets an unpublished asset"
+                : found->Pending ? "texture asset already has a pending table operation"
+                : "texture removal requires exact GPU retirement after accepted use";
+            return false;
+        }
+        if (!m_Table->RemoveUnsubmitted(found->Handle))
+        {
+            outError = "texture table rejected an unaccepted removal";
+            return false;
+        }
+        m_Entries.erase(found);
+        outError.clear();
+        return true;
+    }
+
     bool TextureTablePublication::RetainAcceptedFrame(const RHI::CompletionToken& token,
         const std::vector<RHI::TextureBindingHandle>& handles, std::string& outError)
     {

@@ -61,6 +61,11 @@ namespace Engine::RHI
         // identity; native descriptor ownership remains backend-private.
         bool IsOwnedBy(const Device& device) const { return &m_Device == &device; }
         TextureBindingHandle Allocate(const Ref<Texture>& texture, TextureSampler sampler);
+        // The owning publication coordinator may use these only before the
+        // current handle has appeared in an accepted GPU submission.
+        bool ReplaceUnsubmitted(TextureBindingHandle handle,
+            const Ref<Texture>& replacement, TextureSampler sampler);
+        bool RemoveUnsubmitted(TextureBindingHandle handle);
         bool QueueUpdate(TextureBindingHandle handle, const Ref<Texture>& replacement, TextureSampler sampler, const CompletionToken& retireToken);
         bool QueueRemoval(TextureBindingHandle handle, const CompletionToken& retireToken);
         // Applies only operations owned by this exact token after the exact device

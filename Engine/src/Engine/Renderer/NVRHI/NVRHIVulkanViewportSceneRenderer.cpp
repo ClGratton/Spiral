@@ -8,6 +8,7 @@
 #include "Engine/Renderer/SceneRasterPreparation.h"
 #include "Engine/Renderer/ShaderLibrary.h"
 #include "Engine/Renderer/SlangShaderCompiler.h"
+#include "Engine/Renderer/TextureRuntimePublication.h"
 #include "Engine/RenderGraph/RenderGraph.h"
 
 #if defined(GE_HAS_NVRHI_VULKAN)
@@ -22,6 +23,7 @@ namespace Engine
     namespace
     {
         constexpr u32 kConstantBufferSize = 256;
+        constexpr u32 kSceneTextureTableCapacity = RHI::kMaximumReadOnlyTextureTableCapacity;
 
         struct Constants { float ViewProjection[16]; };
 
@@ -105,7 +107,10 @@ namespace Engine
             m_VertexShader = m_Device->CreateShader(vs); m_PixelShader = m_Device->CreateShader(ps);
             RHI::PipelineDescription pipeline; pipeline.DebugName = "Vulkan Scene Viewport Pipeline"; pipeline.VertexShader = m_VertexShader.get(); pipeline.PixelShader = m_PixelShader.get(); pipeline.VertexInputs = {{ "POSITION", 0, RHI::Format::R32G32B32Float, 0, offsetof(MeshArtifactVertex, Position) }, { "COLOR", 0, RHI::Format::R32G32B32Float, 0, offsetof(MeshArtifactVertex, Color) }, { "TEXCOORD", 0, RHI::Format::R32G32Float, 0, offsetof(MeshArtifactVertex, UV) }}; pipeline.ConstantBufferBindings = {{ 0, 0, RHI::ShaderStage::AllGraphics }}; pipeline.ColorFormat = RHI::Format::R8G8B8A8Unorm; pipeline.DepthFormat = RHI::Format::D32Float; pipeline.DepthTestEnable = true; pipeline.DepthWriteEnable = true; pipeline.RasterCullMode = RHI::CullMode::None;
             m_Pipeline = m_VertexShader && m_PixelShader ? m_Device->CreatePipeline(pipeline) : nullptr;
-            return m_Pipeline != nullptr;
+            m_TextureRuntime = m_Pipeline ? TextureRuntimePublication::Create(*m_Device,
+                TextureTargetProfile::DesktopBC, kSceneTextureTableCapacity - 1,
+                kSceneTextureTableCapacity) : nullptr;
+            return m_Pipeline != nullptr && m_TextureRuntime != nullptr;
         }
 
         bool EnsureOutputs(u32 width, u32 height)
@@ -229,8 +234,21 @@ namespace Engine
         }
 
         bool ReadbackColor(RHI::TextureReadback& readback) const { return m_Device && m_Color && m_Device->ReadbackTexture(*m_Color, readback); }
-        void Shutdown() { if (m_Device) m_Device->WaitIdle(); m_SubmittedGraphFrames.ReleaseAfterDeviceIdle(); m_MeshResourceCache.Clear(); m_Color.reset(); m_Depth.reset(); m_Pipeline.reset(); m_PixelShader.reset(); m_VertexShader.reset(); m_Device = nullptr; }
-        RHI::Device* m_Device = nullptr; MeshGpuResourceCache m_MeshResourceCache { 32 }; Scope<RHI::Shader> m_VertexShader, m_PixelShader; Scope<RHI::Pipeline> m_Pipeline; Scope<RHI::Texture> m_Color, m_Depth; SubmittedRenderGraphFrameOwner m_SubmittedGraphFrames; u32 m_Width = 0, m_Height = 0; u64 m_OutputGeneration = 0;
+        void Shutdown()
+        {
+            if (m_Device) m_Device->WaitIdle();
+            if (m_TextureRuntime) m_TextureRuntime->ReleaseAfterDeviceIdle();
+            m_TextureRuntime.reset();
+            m_SubmittedGraphFrames.ReleaseAfterDeviceIdle();
+            m_MeshResourceCache.Clear();
+            m_Color.reset(); m_Depth.reset(); m_Pipeline.reset();
+            m_PixelShader.reset(); m_VertexShader.reset(); m_Device = nullptr;
+        }
+        RHI::Device* m_Device = nullptr; MeshGpuResourceCache m_MeshResourceCache { 32 };
+        Scope<TextureRuntimePublication> m_TextureRuntime;
+        Scope<RHI::Shader> m_VertexShader, m_PixelShader; Scope<RHI::Pipeline> m_Pipeline;
+        Scope<RHI::Texture> m_Color, m_Depth; SubmittedRenderGraphFrameOwner m_SubmittedGraphFrames;
+        u32 m_Width = 0, m_Height = 0; u64 m_OutputGeneration = 0;
     };
 
     NVRHIVulkanViewportSceneRenderer::NVRHIVulkanViewportSceneRenderer() = default;

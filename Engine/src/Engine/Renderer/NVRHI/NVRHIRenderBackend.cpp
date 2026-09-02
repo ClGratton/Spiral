@@ -3,6 +3,8 @@
 #include "Engine/Renderer/ShaderLibrary.h"
 #include "Engine/Renderer/SlangShaderCompiler.h"
 #include "Engine/Renderer/TextureGpuResourceCache.h"
+#include "Engine/Renderer/TextureRuntimePublication.h"
+#include "Engine/Renderer/Renderer.h"
 
 #include "Engine/Core/Log.h"
 #include "Engine/Core/Application.h"
@@ -15,6 +17,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <filesystem>
 
 namespace Engine
 {
@@ -1343,7 +1346,134 @@ namespace Engine
             ", cacheCleared=", cache.GetEntryCount() == 0 ? "pass" : "fail",
             ", retained=", retainedAfterClear ? "pass" : "fail",
             ", result=", cachePassed ? "pass" : "fail");
-        return mipUploadPassed && cachePassed;
+
+        AssetRegistry runtimeRegistry;
+        const std::string runtimeSource = AssetRegistry::NormalizeSourcePath(
+            "Engine/Generated/TextureRuntimePublicationSmoke.ktx2");
+        const AssetHandle runtimeAsset = runtimeRegistry.RegisterAsset(
+            AssetType::Texture, runtimeSource, "Texture Runtime Publication Smoke");
+        TextureArtifact runtimePreferred = makeArtifact(runtimeAsset,
+            TextureTargetProfile::DesktopBC, TextureCookedFormat::Bc5Unorm,
+            RHI::Format::BC5Unorm, 101);
+        runtimePreferred.SourcePath = runtimeSource;
+        TextureArtifact runtimeFallback = makeArtifact(runtimeAsset,
+            TextureTargetProfile::RGBAFallback, TextureCookedFormat::R8G8B8A8Unorm,
+            RHI::Format::R8G8B8A8Unorm, 151);
+        runtimeFallback.SourcePath = runtimeSource;
+        const std::filesystem::path runtimePreferredPath = GetCookedTextureArtifactPath(
+            runtimeAsset, TextureTargetProfile::DesktopBC);
+        const std::filesystem::path runtimeFallbackPath = GetCookedTextureArtifactPath(
+            runtimeAsset, TextureTargetProfile::RGBAFallback);
+        std::error_code filesystemError;
+        std::filesystem::remove(runtimePreferredPath, filesystemError);
+        std::filesystem::remove(runtimeFallbackPath, filesystemError);
+
+        std::string runtimeError;
+        const bool artifactsStored = runtimeAsset != kInvalidAssetHandle
+            && StoreTextureArtifact(runtimePreferredPath, runtimePreferred, runtimeError)
+            && StoreTextureArtifact(runtimeFallbackPath, runtimeFallback, runtimeError);
+        if (artifactsStored)
+            Renderer::PublishArtifactResolvers(runtimeRegistry);
+        Scope<TextureRuntimePublication> runtime = artifactsStored
+            ? TextureRuntimePublication::Create(device, TextureTargetProfile::DesktopBC, 3, 3)
+            : nullptr;
+        const RHI::TextureBindingHandle errorHandle = runtime
+            ? runtime->GetErrorHandle() : RHI::TextureBindingHandle {};
+        const auto isError = [errorHandle](RHI::TextureBindingHandle handle)
+        {
+            return handle.Index == errorHandle.Index && handle.Generation == errorHandle.Generation;
+        };
+        const RHI::TextureBindingHandle initialHandle = runtime
+            ? runtime->Resolve(runtimeAsset, RHI::TextureSampler::LinearWrap, runtimeError)
+            : RHI::TextureBindingHandle {};
+        const RHI::Texture* initialTexture = runtime && runtime->GetBindingTable()
+            ? runtime->GetBindingTable()->Resolve(initialHandle).TextureResource.get() : nullptr;
+
+        Scope<RHI::CommandList> firstUseList = runtime
+            ? device.CreateCommandList(RHI::QueueType::Graphics, "TextureRuntimePublicationSmokeV1 First Use")
+            : nullptr;
+        const bool firstClosed = firstUseList && firstUseList->Begin() && firstUseList->End();
+        const RHI::CompletionToken firstUse = firstClosed
+            ? device.Submit(*firstUseList) : RHI::CompletionToken {};
+        const bool initialPublished = runtime && !isError(initialHandle) && initialTexture
+            && firstUse.IsValid() && runtime->RetainAcceptedFrame(
+                firstUse, { errorHandle, initialHandle, initialHandle }, runtimeError);
+
+        TextureArtifact runtimeChanged = runtimePreferred;
+        if (runtimeChanged.Payload.size() > 17)
+            runtimeChanged.Payload[17] ^= 0x5au;
+        const bool replacementStored = initialPublished
+            && StoreTextureArtifact(runtimePreferredPath, runtimeChanged, runtimeError);
+        if (replacementStored)
+            Renderer::PublishArtifactResolvers(runtimeRegistry);
+        const RHI::TextureBindingHandle pendingReplacement = replacementStored
+            ? runtime->Resolve(runtimeAsset, RHI::TextureSampler::LinearWrap, runtimeError)
+            : RHI::TextureBindingHandle {};
+        const bool replacementQueued = replacementStored && isError(pendingReplacement)
+            && runtime->GetPendingOperationCount() == 1
+            && runtime->GetBindingTable()->Resolve(initialHandle).TextureResource.get() == initialTexture;
+        const bool firstComplete = firstUse.IsValid() && device.WaitForCompletion(firstUse, 5000);
+        const bool replacementRetired = replacementQueued && firstComplete
+            && runtime->Retire(firstUse, runtimeError);
+        const RHI::TextureBindingHandle replacementHandle = replacementRetired
+            ? runtime->Resolve(runtimeAsset, RHI::TextureSampler::LinearWrap, runtimeError)
+            : RHI::TextureBindingHandle {};
+        const RHI::Texture* replacementTexture = runtime && runtime->GetBindingTable()
+            ? runtime->GetBindingTable()->Resolve(replacementHandle).TextureResource.get() : nullptr;
+        const bool replacementPublished = replacementRetired && !isError(replacementHandle)
+            && replacementHandle.Index == initialHandle.Index
+            && replacementHandle.Generation == initialHandle.Generation
+            && replacementTexture && replacementTexture != initialTexture;
+
+        Scope<RHI::CommandList> secondUseList = replacementPublished
+            ? device.CreateCommandList(RHI::QueueType::Graphics, "TextureRuntimePublicationSmokeV1 Second Use")
+            : nullptr;
+        const bool secondClosed = secondUseList && secondUseList->Begin() && secondUseList->End();
+        const RHI::CompletionToken secondUse = secondClosed
+            ? device.Submit(*secondUseList) : RHI::CompletionToken {};
+        const bool secondRetained = secondUse.IsValid()
+            && runtime->RetainAcceptedFrame(secondUse, { replacementHandle }, runtimeError);
+        const bool registryRemoved = secondRetained && runtimeRegistry.RemoveAsset(runtimeAsset);
+        if (registryRemoved)
+            Renderer::PublishArtifactResolvers(runtimeRegistry);
+        const RHI::TextureBindingHandle pendingRemoval = registryRemoved
+            ? runtime->Resolve(runtimeAsset, RHI::TextureSampler::LinearWrap, runtimeError)
+            : RHI::TextureBindingHandle {};
+        const bool removalQueued = registryRemoved && isError(pendingRemoval)
+            && runtime->GetPendingOperationCount() == 1;
+        const bool secondComplete = secondUse.IsValid() && device.WaitForCompletion(secondUse, 5000);
+        const bool removalRetired = removalQueued && secondComplete
+            && runtime->Retire(secondUse, runtimeError)
+            && runtime->GetPublishedAssetCount() == 0
+            && runtime->GetBindingTable()->Resolve(replacementHandle).IsError
+            && isError(runtime->Resolve(runtimeAsset, RHI::TextureSampler::LinearWrap, runtimeError));
+        const bool failureUsesError = runtime
+            && isError(runtime->Resolve(kInvalidAssetHandle,
+                RHI::TextureSampler::LinearClamp, runtimeError));
+
+        device.WaitIdle();
+        if (runtime)
+            runtime->ReleaseAfterDeviceIdle();
+        const bool idleReleased = runtime && runtime->GetBindingTable() == nullptr
+            && runtime->GetCachedResourceCount() == 0
+            && runtime->GetRetainedFrameCount() == 0;
+        Renderer::ClearArtifactResolvers();
+        std::filesystem::remove(runtimePreferredPath, filesystemError);
+        std::filesystem::remove(runtimeFallbackPath, filesystemError);
+
+        const bool runtimePassed = artifactsStored && initialPublished
+            && replacementQueued && replacementPublished && removalQueued
+            && removalRetired && failureUsesError && idleReleased;
+        Log::Info("TextureRuntimePublicationSmokeV1 backend=", backendName,
+            ", catalog=", artifactsStored ? "pass" : "fail",
+            ", upload=", initialPublished ? "pass" : "fail",
+            ", table=", initialHandle.IsValid() && !isError(initialHandle) ? "pass" : "fail",
+            ", replacement=exact-token-", replacementPublished ? "pass" : "fail",
+            ", removal=exact-token-", removalRetired ? "pass" : "fail",
+            ", failure=", failureUsesError ? "error-resource" : "invalid",
+            ", idleRelease=", idleReleased ? "pass" : "fail",
+            ", result=", runtimePassed ? "pass" : "fail");
+        return mipUploadPassed && cachePassed && runtimePassed;
     }
 
     bool NVRHIRenderBackend::RunRHISampledTextureTableSmoke(RHI::Device& device, std::string_view backendName)

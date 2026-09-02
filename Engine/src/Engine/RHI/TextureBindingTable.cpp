@@ -75,6 +75,34 @@ namespace Engine::RHI
         return {};
     }
 
+    bool TextureBindingTable::ReplaceUnsubmitted(TextureBindingHandle handle,
+        const Ref<Texture>& replacement, TextureSampler sampler)
+    {
+        if (!IsCurrent(handle) || !IsReadOnlyOwnedTexture(replacement) || !IsValidSampler(sampler))
+            return false;
+        Slot& slot = m_Slots[handle.Index];
+        if (!slot.Pending.empty())
+            return false;
+        slot.TextureResource = replacement;
+        slot.Sampler = sampler;
+        return true;
+    }
+
+    bool TextureBindingTable::RemoveUnsubmitted(TextureBindingHandle handle)
+    {
+        if (!IsCurrent(handle))
+            return false;
+        Slot& slot = m_Slots[handle.Index];
+        if (!slot.Pending.empty())
+            return false;
+        slot.Active = false;
+        slot.TextureResource.reset();
+        ++slot.Generation;
+        if (slot.Generation == 0)
+            ++slot.Generation;
+        return true;
+    }
+
     bool TextureBindingTable::QueueUpdate(TextureBindingHandle handle, const Ref<Texture>& replacement, TextureSampler sampler, const CompletionToken& retireToken)
     {
         if (!IsCurrent(handle) || !IsReadOnlyOwnedTexture(replacement) || !IsValidSampler(sampler) || !CanRetireToken(retireToken)) return false;

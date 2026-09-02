@@ -23,6 +23,7 @@
 #include "Engine/Renderer/TextureArtifactUploadPlan.h"
 #include "Engine/Renderer/TextureGpuResourceCache.h"
 #include "Engine/Renderer/TextureTablePublication.h"
+#include "Engine/Renderer/TextureRuntimePublication.h"
 #include "Engine/Assets/MeshArtifact.h"
 #include "Engine/Assets/TextureArtifact.h"
 #include "Engine/Assets/AssetRegistry.h"
@@ -1720,6 +1721,7 @@ namespace
     class MeshGpuCacheTestDevice final : public Engine::RHI::Device
     {
     public:
+        explicit MeshGpuCacheTestDevice(Engine::u64 deviceId = 1) : m_DeviceId(deviceId) {}
         const Engine::RHI::DeviceDescription& GetDescription() const override { return m_Description; }
         const Engine::RHI::DeviceCapabilities& GetCapabilities() const override { return m_Capabilities; }
         Engine::Scope<Engine::RHI::Buffer> CreateBuffer(const Engine::RHI::BufferDescription& description) override
@@ -1776,7 +1778,13 @@ namespace
         }
         bool ReadbackTexture(Engine::RHI::Texture&, Engine::RHI::TextureReadback&) override { return false; }
         Engine::RHI::CompletionToken Submit(Engine::RHI::CommandList&) override { return {}; }
-        Engine::RHI::CompletionStatus QueryCompletion(const Engine::RHI::CompletionToken&) override { return Engine::RHI::CompletionStatus::Invalid; }
+        Engine::RHI::CompletionStatus QueryCompletion(const Engine::RHI::CompletionToken& token) override
+        {
+            if (token.DeviceId != m_DeviceId)
+                return Engine::RHI::CompletionStatus::Invalid;
+            const auto found = m_Completions.find(token.SubmissionId);
+            return found == m_Completions.end() ? Engine::RHI::CompletionStatus::Invalid : found->second;
+        }
         bool WaitForCompletion(const Engine::RHI::CompletionToken&, Engine::u32) override { return false; }
         bool SubmitAndWait(Engine::RHI::CommandList&) override { return false; }
         void WaitIdle() override {}
@@ -1784,6 +1792,12 @@ namespace
         void SetFormatCapabilities(std::vector<Engine::RHI::FormatCapability> formats)
         {
             m_Capabilities.Formats = std::move(formats);
+        }
+
+        void SetCompletion(Engine::RHI::CompletionToken token, Engine::RHI::CompletionStatus status)
+        {
+            if (token.DeviceId == m_DeviceId)
+                m_Completions[token.SubmissionId] = status;
         }
 
         bool FailCreate = false;
@@ -1797,6 +1811,8 @@ namespace
     private:
         Engine::RHI::DeviceDescription m_Description;
         Engine::RHI::DeviceCapabilities m_Capabilities;
+        Engine::u64 m_DeviceId = 0;
+        std::unordered_map<Engine::u64, Engine::RHI::CompletionStatus> m_Completions;
     };
 
     Engine::MeshArtifact MakeMeshGpuCacheArtifact()
@@ -2016,6 +2032,214 @@ namespace
             && Expect(explicitFallback, "texture GPU cache uploads only the exact-device separately cooked semantic fallback")
             && Expect(clearReleasesOnlyCacheOwnership,
                 "texture GPU cache clear releases cache ownership while a retained payload and resource bundle remains valid");
+    }
+
+    bool TestTextureRuntimePublicationComposition()
+    {
+        using namespace Engine;
+        using namespace Engine::RHI;
+
+        AssetRegistry registry;
+        const std::string source = AssetRegistry::NormalizeSourcePath(
+            "Assets/Textures/RuntimePublicationNormal.ktx2");
+        const AssetHandle asset = registry.RegisterAsset(
+            AssetType::Texture, source, "Runtime Publication Normal");
+        TextureArtifact preferred = MakeTextureGpuCacheArtifact(asset);
+        preferred.SourcePath = source;
+        TextureArtifact fallback = MakeTextureGpuCacheFallback(preferred);
+        const std::filesystem::path preferredPath = GetCookedTextureArtifactPath(
+            asset, TextureTargetProfile::DesktopBC);
+        const std::filesystem::path fallbackPath = GetCookedTextureArtifactPath(
+            asset, TextureTargetProfile::RGBAFallback);
+        std::error_code filesystemError;
+        std::filesystem::remove(preferredPath, filesystemError);
+        std::filesystem::remove(fallbackPath, filesystemError);
+
+        std::string error;
+        const bool stored = asset != kInvalidAssetHandle
+            && StoreTextureArtifact(preferredPath, preferred, error)
+            && StoreTextureArtifact(fallbackPath, fallback, error);
+        Renderer::PublishArtifactResolvers(registry);
+
+        MeshGpuCacheTestDevice device(901);
+        device.SetFormatCapabilities({
+            { Format::BC5Unorm, FormatUsage::Sampled | FormatUsage::CopyDestination, 1 },
+            { Format::R8G8B8A8Unorm, FormatUsage::Sampled | FormatUsage::CopyDestination, 1 }
+        });
+        Scope<TextureRuntimePublication> runtime = stored
+            ? TextureRuntimePublication::Create(device, TextureTargetProfile::DesktopBC, 3, 3)
+            : nullptr;
+        const TextureBindingHandle errorHandle = runtime
+            ? runtime->GetErrorHandle() : TextureBindingHandle {};
+        const auto isError = [errorHandle](TextureBindingHandle handle)
+        {
+            return handle.Index == errorHandle.Index && handle.Generation == errorHandle.Generation;
+        };
+
+        const TextureBindingHandle initial = runtime
+            ? runtime->Resolve(asset, TextureSampler::LinearWrap, error) : TextureBindingHandle {};
+        const auto initialView = runtime && runtime->GetBindingTable()
+            ? runtime->GetBindingTable()->Resolve(initial) : TextureBindingView {};
+        const CompletionToken firstUse { 901, 1 };
+        device.SetCompletion(firstUse, CompletionStatus::Incomplete);
+        const bool initialPublished = runtime && initial.IsValid() && !isError(initial)
+            && initialView.TextureResource && !initialView.IsError
+            && runtime->GetPublishedAssetCount() == 1
+            && runtime->GetCachedResourceCount() == 1
+            && runtime->RetainAcceptedFrame(firstUse,
+                { errorHandle, initial, initial }, error)
+            && runtime->GetRetainedFrameCount() == 1;
+
+        TextureArtifact changed = preferred;
+        changed.Payload[17] ^= 0x5au;
+        const bool changedStored = StoreTextureArtifact(preferredPath, changed, error);
+        Renderer::PublishArtifactResolvers(registry);
+        const TextureBindingHandle pendingReplacement = runtime
+            ? runtime->Resolve(asset, TextureSampler::LinearWrap, error) : TextureBindingHandle {};
+        const bool replacementQueued = changedStored && runtime && isError(pendingReplacement)
+            && runtime->GetPendingOperationCount() == 1
+            && runtime->GetBindingTable()->Resolve(initial).TextureResource == initialView.TextureResource;
+        device.SetCompletion(firstUse, CompletionStatus::Complete);
+        const bool replacementRetired = replacementQueued && runtime->Retire(firstUse, error);
+        const TextureBindingHandle replaced = replacementRetired
+            ? runtime->Resolve(asset, TextureSampler::LinearWrap, error) : TextureBindingHandle {};
+        const auto replacementView = runtime && runtime->GetBindingTable()
+            ? runtime->GetBindingTable()->Resolve(replaced) : TextureBindingView {};
+        const bool replacementPublished = replacementRetired && !isError(replaced)
+            && replaced.Index == initial.Index && replaced.Generation == initial.Generation
+            && replacementView.TextureResource && replacementView.TextureResource != initialView.TextureResource
+            && runtime->GetPendingOperationCount() == 0
+            && runtime->GetRetainedFrameCount() == 0;
+
+        const CompletionToken settledUse { 901, 2 };
+        device.SetCompletion(settledUse, CompletionStatus::Complete);
+        const bool settledRetired = replacementPublished
+            && runtime->RetainAcceptedFrame(settledUse, { replaced }, error)
+            && runtime->Retire(settledUse, error);
+        TextureArtifact changedAfterRetirement = changed;
+        changedAfterRetirement.Payload[18] ^= 0xa5u;
+        const bool changedAfterRetirementStored = settledRetired
+            && StoreTextureArtifact(preferredPath, changedAfterRetirement, error);
+        if (changedAfterRetirementStored)
+            Renderer::PublishArtifactResolvers(registry);
+        const TextureBindingHandle replacedAfterRetirement = changedAfterRetirementStored
+            ? runtime->Resolve(asset, TextureSampler::LinearWrap, error) : TextureBindingHandle {};
+        const auto replacementAfterRetirementView = runtime && runtime->GetBindingTable()
+            ? runtime->GetBindingTable()->Resolve(replacedAfterRetirement) : TextureBindingView {};
+        const bool terminalReplacementPublished = changedAfterRetirementStored
+            && !isError(replacedAfterRetirement)
+            && replacedAfterRetirement.Index == replaced.Index
+            && replacedAfterRetirement.Generation == replaced.Generation
+            && replacementAfterRetirementView.TextureResource
+            && replacementAfterRetirementView.TextureResource != replacementView.TextureResource
+            && runtime->GetPendingOperationCount() == 0
+            && runtime->GetRetainedFrameCount() == 0;
+
+        TextureArtifact changedBeforeUse = changedAfterRetirement;
+        changedBeforeUse.Payload[19] ^= 0x3cu;
+        const bool changedBeforeUseStored = terminalReplacementPublished
+            && StoreTextureArtifact(preferredPath, changedBeforeUse, error);
+        if (changedBeforeUseStored)
+            Renderer::PublishArtifactResolvers(registry);
+        const TextureBindingHandle replacedBeforeUse = changedBeforeUseStored
+            ? runtime->Resolve(asset, TextureSampler::LinearWrap, error) : TextureBindingHandle {};
+        const auto replacementBeforeUseView = runtime && runtime->GetBindingTable()
+            ? runtime->GetBindingTable()->Resolve(replacedBeforeUse) : TextureBindingView {};
+        const bool unacceptedReplacementPublished = changedBeforeUseStored
+            && !isError(replacedBeforeUse)
+            && replacedBeforeUse.Index == replacedAfterRetirement.Index
+            && replacedBeforeUse.Generation == replacedAfterRetirement.Generation
+            && replacementBeforeUseView.TextureResource
+            && replacementBeforeUseView.TextureResource != replacementAfterRetirementView.TextureResource
+            && runtime->GetPendingOperationCount() == 0;
+
+        const CompletionToken secondUse { 901, 3 };
+        device.SetCompletion(secondUse, CompletionStatus::Incomplete);
+        const bool secondRetained = unacceptedReplacementPublished
+            && runtime->RetainAcceptedFrame(secondUse, { replacedBeforeUse }, error);
+        const bool registryRemoved = registry.RemoveAsset(asset);
+        Renderer::PublishArtifactResolvers(registry);
+        const TextureBindingHandle pendingRemoval = runtime
+            ? runtime->Resolve(asset, TextureSampler::LinearWrap, error) : TextureBindingHandle {};
+        const bool removalQueued = secondRetained && registryRemoved && isError(pendingRemoval)
+            && runtime->GetPendingOperationCount() == 1;
+        device.SetCompletion(secondUse, CompletionStatus::Failed);
+        const bool removalRetired = removalQueued && runtime->Retire(secondUse, error)
+            && runtime->GetPublishedAssetCount() == 0
+            && runtime->GetPendingOperationCount() == 0
+            && runtime->GetBindingTable()->Resolve(replacedBeforeUse).IsError
+            && isError(runtime->Resolve(asset, TextureSampler::LinearWrap, error));
+
+        const std::string unusedSource = AssetRegistry::NormalizeSourcePath(
+            "Assets/Textures/RuntimePublicationUnused.ktx2");
+        const AssetHandle unusedAsset = registry.RegisterAsset(
+            AssetType::Texture, unusedSource, "Runtime Publication Unused");
+        TextureArtifact unusedPreferred = MakeTextureGpuCacheArtifact(unusedAsset);
+        unusedPreferred.SourcePath = unusedSource;
+        TextureArtifact unusedFallback = MakeTextureGpuCacheFallback(unusedPreferred);
+        const std::filesystem::path unusedPreferredPath = GetCookedTextureArtifactPath(
+            unusedAsset, TextureTargetProfile::DesktopBC);
+        const std::filesystem::path unusedFallbackPath = GetCookedTextureArtifactPath(
+            unusedAsset, TextureTargetProfile::RGBAFallback);
+        std::filesystem::remove(unusedPreferredPath, filesystemError);
+        std::filesystem::remove(unusedFallbackPath, filesystemError);
+        const bool unusedStored = unusedAsset != kInvalidAssetHandle
+            && StoreTextureArtifact(unusedPreferredPath, unusedPreferred, error)
+            && StoreTextureArtifact(unusedFallbackPath, unusedFallback, error);
+        if (unusedStored)
+            Renderer::PublishArtifactResolvers(registry);
+        const TextureBindingHandle unusedHandle = unusedStored
+            ? runtime->Resolve(unusedAsset, TextureSampler::PointClamp, error)
+            : TextureBindingHandle {};
+        const bool unusedRemovedFromCatalog = unusedHandle.IsValid() && !isError(unusedHandle)
+            && registry.RemoveAsset(unusedAsset);
+        if (unusedRemovedFromCatalog)
+            Renderer::PublishArtifactResolvers(registry);
+        const TextureBindingHandle unusedMissing = unusedRemovedFromCatalog
+            ? runtime->Resolve(unusedAsset, TextureSampler::PointClamp, error)
+            : TextureBindingHandle {};
+        const bool unacceptedRemovalPublished = unusedRemovedFromCatalog
+            && isError(unusedMissing)
+            && runtime->GetPublishedAssetCount() == 0
+            && runtime->GetBindingTable()->Resolve(unusedHandle).IsError
+            && runtime->GetPendingOperationCount() == 0;
+
+        const CompletionToken untracked { 901, 4 };
+        device.SetCompletion(untracked, CompletionStatus::Complete);
+        const bool failuresUseError = runtime
+            && isError(runtime->Resolve(kInvalidAssetHandle, TextureSampler::LinearClamp, error))
+            && runtime->RetainAcceptedFrame(untracked, { errorHandle, errorHandle }, error)
+            && !runtime->Retire(untracked, error);
+
+        device.WaitIdle();
+        if (runtime)
+            runtime->ReleaseAfterDeviceIdle();
+        const bool released = runtime && runtime->GetBindingTable() == nullptr
+            && runtime->GetPublishedAssetCount() == 0
+            && runtime->GetCachedResourceCount() == 0
+            && runtime->GetRetainedFrameCount() == 0;
+        Renderer::ClearArtifactResolvers();
+        std::filesystem::remove(preferredPath, filesystemError);
+        std::filesystem::remove(fallbackPath, filesystemError);
+        std::filesystem::remove(unusedPreferredPath, filesystemError);
+        std::filesystem::remove(unusedFallbackPath, filesystemError);
+
+        return Expect(initialPublished,
+                "texture runtime resolves the immutable catalog through exact-device cache and table publication")
+            && Expect(replacementQueued && replacementPublished,
+                "catalog generation replacement freezes to error and publishes only after exact last-use retirement")
+            && Expect(settledRetired && terminalReplacementPublished,
+                "a catalog refresh after normal frame retirement commits immediately against the remembered terminal token")
+            && Expect(unacceptedReplacementPublished,
+                "a catalog refresh before any accepted use replaces immediately without fabricating a GPU token")
+            && Expect(removalQueued && removalRetired,
+                "catalog removal freezes to error and releases the slot after Complete-or-Failed terminal retirement")
+            && Expect(unacceptedRemovalPublished,
+                "catalog removal before any accepted use releases immediately and advances the stale handle")
+            && Expect(failuresUseError,
+                "invalid and error-only runtime use never aliases another asset or fabricates a retained token")
+            && Expect(released,
+                "device-idle release clears cache table payload and accepted-frame ownership before device destruction");
     }
 
     bool TestMeshArtifactValidationAndResolution()
@@ -7502,6 +7726,7 @@ int main(int argc, char** argv)
         FAST_TEST("RHI resource-state query rejects null foreign and unknown resources", TestRhiResourceOwnershipContract),
         FAST_TEST("RHI read-only texture binding table preserves error and GPU-retired identities", TestReadOnlyTextureBindingTableContract),
         FAST_TEST("Texture table publication retires exact stable-asset generations", TestTextureTablePublicationRetirement),
+        FAST_TEST("Texture runtime composes catalog cache table and exact retirement", TestTextureRuntimePublicationComposition),
         FAST_TEST("RHI read-only texture upload validates the full-subresource contract", TestReadOnlyTextureUploadContract),
         FAST_TEST("RHI sampled texture-table binding validates pipeline space offsets and exact ownership", TestSampledTextureTableBindingContract),
         FAST_TEST("RHI buffer ownership lifecycle publishes only accepted exact-token pairs", TestRhiBufferOwnershipLifecycleContract),

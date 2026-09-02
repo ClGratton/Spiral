@@ -420,6 +420,10 @@ namespace Engine
         static bool ResolvePublishedTextureArtifactVariantSet(AssetHandle asset,
             TextureTargetProfile preferredTarget, TextureArtifactVariantSet& outVariants,
             std::string& outError);
+        static bool ResolvePublishedTextureArtifactVariantSet(AssetHandle asset,
+            TextureTargetProfile preferredTarget, TextureArtifactVariantSet& outVariants,
+            u64& outCatalogGeneration, std::string& outError);
+        static u64 GetPublishedArtifactResolverGeneration();
         // Explicitly clears the immutable catalog. Renderer shutdown invokes
         // this before backend/device destruction.
         static void ClearArtifactResolvers();

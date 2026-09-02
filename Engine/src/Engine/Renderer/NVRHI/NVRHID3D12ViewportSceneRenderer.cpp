@@ -12,6 +12,7 @@
 #include "Engine/Renderer/NVRHI/D3D12ViewportShaderReloadCoordinator.h"
 #include "Engine/Renderer/ShaderLibrary.h"
 #include "Engine/Renderer/SlangShaderCompiler.h"
+#include "Engine/Renderer/TextureRuntimePublication.h"
 
 #if defined(GE_HAS_NVRHI_D3D12)
     #include <cstddef>
@@ -27,6 +28,7 @@ namespace Engine
     namespace
     {
         constexpr u32 kViewportConstantBufferSize = 256;
+        constexpr u32 kSceneTextureTableCapacity = RHI::kMaximumReadOnlyTextureTableCapacity;
         constexpr std::string_view kViewportShaderPath = "Engine/Shaders/EditorViewport.hlsl";
 
         std::string_view ViewportShaderPath()
@@ -155,7 +157,10 @@ namespace Engine
 
             if (!RequestInitialPipeline())
                 return false;
-            return true;
+            m_TextureRuntime = TextureRuntimePublication::Create(*m_RHIDevice,
+                TextureTargetProfile::DesktopBC, kSceneTextureTableCapacity - 1,
+                kSceneTextureTableCapacity);
+            return m_TextureRuntime != nullptr;
         }
 
         void Shutdown()
@@ -163,6 +168,9 @@ namespace Engine
             m_ReloadCoordinator.Invalidate();
             if (m_RHIDevice)
                 m_RHIDevice->WaitIdle();
+            if (m_TextureRuntime)
+                m_TextureRuntime->ReleaseAfterDeviceIdle();
+            m_TextureRuntime.reset();
             m_SubmittedGraphFrames.ReleaseAfterDeviceIdle();
             m_MeshResourceCache.Clear();
             m_FrameConstantBuffers.clear();
@@ -759,6 +767,7 @@ namespace Engine
 
         RHI::Device* m_RHIDevice = nullptr;
         MeshGpuResourceCache m_MeshResourceCache { 32 };
+        Scope<TextureRuntimePublication> m_TextureRuntime;
         Ref<RHI::Pipeline> m_Pipeline;
         Ref<RHI::Shader> m_VertexShader;
         Ref<RHI::Shader> m_PixelShader;
