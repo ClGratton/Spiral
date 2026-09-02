@@ -29,6 +29,7 @@ namespace Engine
     class AssetRegistry;
     class FramePacingBenchmarkCapture;
     struct MeshArtifact;
+    struct TextureArtifact;
     struct FramePacingBenchmarkSnapshot;
     struct ClearColor
     {
@@ -408,8 +409,15 @@ namespace Engine
         static void RecordGpuCompletionObservation(u64 completedApplicationFrameIndex);
         static void PublishSceneRenderSnapshot(SceneRenderSnapshot snapshot);
         static std::shared_ptr<const SceneRenderSnapshot> GetSceneRenderSnapshot();
+        static void PublishArtifactResolvers(const AssetRegistry& registry);
+        // Compatibility entry point for existing mesh-only tests. Publication
+        // is now one atomic mesh+texture catalog generation.
         static void PublishMeshArtifactResolver(const AssetRegistry& registry);
         static bool ResolvePublishedMeshArtifact(AssetHandle asset, MeshArtifact& outArtifact, std::string& outError);
+        static bool ResolvePublishedTextureArtifact(AssetHandle asset, TextureArtifact& outArtifact, std::string& outError);
+        // Explicitly clears the immutable catalog. Renderer shutdown invokes
+        // this before backend/device destruction.
+        static void ClearArtifactResolvers();
         // CPU-only preparation is safe on a FrameTaskGraph worker: it consumes only
         // the immutable scene snapshot and publishes one immutable raster frame.
         static bool PrepareCurrentSceneRasterFrame();
@@ -417,8 +425,6 @@ namespace Engine
         static void PublishSceneRasterFrame(SceneRasterFrame frame);
         static std::shared_ptr<const SceneRasterFrame> GetLastSceneRasterFrame();
 
-    private:
-        static void ClearMeshArtifactResolver();
     };
 
     inline const char* ToString(RendererTimingStatus status)

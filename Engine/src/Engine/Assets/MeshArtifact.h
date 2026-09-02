@@ -39,12 +39,13 @@ namespace Engine
         std::vector<u32> Indices;
     };
 
-    // Immutable renderer-consumable view of the asset catalog. It owns a
-    // registry copy so mutable editor state is never read during render work.
+    // Immutable renderer-consumable view of the asset catalog. It retains an
+    // immutable registry snapshot so mutable editor state is never read during render work.
     class MeshArtifactResolver
     {
     public:
         explicit MeshArtifactResolver(const AssetRegistry& registry);
+        explicit MeshArtifactResolver(std::shared_ptr<const AssetRegistry> registry);
 
         bool Resolve(AssetHandle asset, MeshArtifact& outArtifact, std::string& outError) const;
 

@@ -418,6 +418,11 @@ namespace Engine
     {
     }
 
+    MeshArtifactResolver::MeshArtifactResolver(std::shared_ptr<const AssetRegistry> registry)
+        : m_Registry(std::move(registry))
+    {
+    }
+
     bool MeshArtifactResolver::Resolve(AssetHandle asset, MeshArtifact& outArtifact, std::string& outError) const
     {
         if (!m_Registry)

@@ -4,6 +4,7 @@
 #include "Engine/Core/Base.h"
 
 #include <filesystem>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -64,6 +65,20 @@ namespace Engine
         TextureColorSpace ColorSpace = TextureColorSpace::Srgb;
         std::vector<u8> Bytes;
         TextureMipPolicy MipPolicy = TextureMipPolicy::PreserveAuthored;
+    };
+
+    // Immutable renderer-consumable view of the texture asset catalog. It retains
+    // an immutable registry snapshot so render work never reads mutable Editor state.
+    class TextureArtifactResolver
+    {
+    public:
+        explicit TextureArtifactResolver(const AssetRegistry& registry);
+        explicit TextureArtifactResolver(std::shared_ptr<const AssetRegistry> registry);
+
+        bool Resolve(AssetHandle asset, TextureArtifact& outArtifact, std::string& outError) const;
+
+    private:
+        std::shared_ptr<const AssetRegistry> m_Registry;
     };
 
     std::filesystem::path GetCookedTextureArtifactPath(AssetHandle asset);

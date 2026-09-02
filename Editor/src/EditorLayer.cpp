@@ -533,7 +533,7 @@ void EditorLayer::OnAttach()
         m_AssetRegistry.RegisterAsset(Engine::AssetType::Mesh, m_AssetWatchSmokePath, "Asset Watch Smoke");
     }
     m_AssetWatcher.SyncRegistry(m_AssetRegistry);
-    Engine::Renderer::PublishMeshArtifactResolver(m_AssetRegistry);
+    Engine::Renderer::PublishArtifactResolvers(m_AssetRegistry);
     m_ConsoleLines.emplace_back("File watching active: " + std::to_string(m_AssetWatcher.GetTrackedCount()) + " asset source(s)");
     if (m_CaptureViewportRequested)
         m_ConsoleLines.emplace_back(std::string("Viewport capture requested: ") + m_CaptureViewportPath);
@@ -2954,7 +2954,7 @@ bool EditorLayer::ImportGltfAsset(const std::filesystem::path& sourcePath)
     }
 
     m_AssetWatcher.SyncRegistry(m_AssetRegistry);
-    Engine::Renderer::PublishMeshArtifactResolver(m_AssetRegistry);
+    Engine::Renderer::PublishArtifactResolvers(m_AssetRegistry);
     m_ConsoleLines.emplace_back(
         "glTF imported: " + m_LastGltfImport.SourcePath + " ("
         + std::to_string(m_LastGltfImport.Meshes.size()) + " mesh(es))");
@@ -3572,7 +3572,7 @@ bool EditorLayer::LoadProject()
     PublishFramePacingPolicy();
     PublishPresentationPolicy();
     m_AssetRegistry = std::move(loadedRegistry);
-    Engine::Renderer::PublishMeshArtifactResolver(m_AssetRegistry);
+    Engine::Renderer::PublishArtifactResolvers(m_AssetRegistry);
     m_MaterialLibrary = std::move(loadedMaterials);
     m_ActiveScene = std::move(loadedScene);
     m_PrototypeMeshEntity = m_ActiveScene.FindEntityByName("Prototype Mesh");
@@ -3609,7 +3609,7 @@ void EditorLayer::RestoreHistoryState(const HistoryState& state)
 {
     m_ActiveScene = state.Scene;
     m_AssetRegistry = state.AssetRegistry;
-    Engine::Renderer::PublishMeshArtifactResolver(m_AssetRegistry);
+    Engine::Renderer::PublishArtifactResolvers(m_AssetRegistry);
     m_MaterialLibrary = state.MaterialLibrary;
     m_SelectedEntity = state.SelectedEntity;
     m_CameraPosition = state.CameraPosition;

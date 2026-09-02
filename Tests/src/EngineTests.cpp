@@ -1967,6 +1967,21 @@ namespace
         const bool resolvedFallback = cookedFallback && ResolveTextureArtifact(registry, cooked.Asset, resolved, error)
             && resolved.Payload == cooked.Payload && resolved.Mips[1].ByteOffset == 16 && resolved.Mips[1].ByteSize == 4;
 
+        AssetRegistry publishedRegistry = registry;
+        Renderer::PublishArtifactResolvers(publishedRegistry);
+        TextureArtifact publishedResolved;
+        const bool publishedTextureResolved = Renderer::ResolvePublishedTextureArtifact(
+            cooked.Asset, publishedResolved, error) && publishedResolved.Payload == cooked.Payload;
+        publishedRegistry.RemoveAsset(cooked.Asset);
+        TextureArtifact immutableResolved;
+        const bool immutableCatalogRetained = Renderer::ResolvePublishedTextureArtifact(
+            cooked.Asset, immutableResolved, error) && immutableResolved.Payload == cooked.Payload;
+        Renderer::PublishArtifactResolvers(publishedRegistry);
+        const TextureArtifact retainedAfterReplacement = immutableResolved;
+        const bool missingCatalogEntryRejected = !Renderer::ResolvePublishedTextureArtifact(
+            cooked.Asset, immutableResolved, error) && immutableResolved.Payload == retainedAfterReplacement.Payload;
+        Renderer::PublishArtifactResolvers(registry);
+
         const TextureArtifact preserved = resolved;
         NormalizedTextureSource normal = source;
         normal.SourcePath = "Assets/Textures/Normal.raw";
@@ -2001,16 +2016,31 @@ namespace
         const bool provenanceRejected = StoreTextureArtifact(path, mismatched, error)
             && !ResolveTextureArtifact(registry, cooked.Asset, resolved, error)
             && resolved.Payload == preserved.Payload;
+        Renderer::PublishArtifactResolvers(registry);
+        const TextureArtifact retainedProvenance = resolved;
+        const bool publishedProvenanceRejected = !Renderer::ResolvePublishedTextureArtifact(cooked.Asset, resolved, error)
+            && resolved.Asset == retainedProvenance.Asset && resolved.Payload == retainedProvenance.Payload;
         const AssetHandle wrongType = registry.RegisterAsset(AssetType::Mesh, "Assets/Textures/Checker.raw", "Wrong Type");
         const bool wrongTypeRejected = wrongType != kInvalidAssetHandle && !ResolveTextureArtifact(registry, wrongType, resolved, error)
             && resolved.Asset == cooked.Asset;
+        Renderer::PublishArtifactResolvers(registry);
+        const TextureArtifact retainedWrongType = resolved;
+        const bool publishedWrongTypeRejected = !Renderer::ResolvePublishedTextureArtifact(wrongType, resolved, error)
+            && resolved.Asset == retainedWrongType.Asset && resolved.Payload == retainedWrongType.Payload;
+        Renderer::ClearArtifactResolvers();
+        const TextureArtifact retainedAfterClear = resolved;
+        const bool lifecycleClearRejectsResolution = !Renderer::ResolvePublishedTextureArtifact(cooked.Asset, resolved, error)
+            && resolved.Asset == retainedAfterClear.Asset && resolved.Payload == retainedAfterClear.Payload;
         std::error_code filesystemError;
         std::filesystem::remove(path, filesystemError);
         return Expect(cookedFallback && resolvedFallback,
                 "texture artifact fallback cooking publishes and resolves exact mip payloads")
+            && Expect(publishedTextureResolved && immutableCatalogRetained && missingCatalogEntryRejected
+                    && publishedWrongTypeRejected && lifecycleClearRejectsResolution,
+                "one immutable published catalog resolves textures and rejects replacement-missing wrong-type or post-clear handles transactionally")
             && Expect(roleColorRejected && invalidEnumRejected && compressedProfilesRejected,
                 "texture artifact cooking rejects invalid semantics and unavailable target profiles transactionally")
-            && Expect(corruptionRejected && restored && trailingRejected && provenanceRejected && wrongTypeRejected,
+            && Expect(corruptionRejected && restored && trailingRejected && provenanceRejected && publishedProvenanceRejected && wrongTypeRejected,
                 "texture artifact loading and resolution reject corruption trailing bytes and provenance mismatches");
     }
 

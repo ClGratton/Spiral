@@ -463,6 +463,26 @@ namespace Engine
         outArtifact = std::move(candidate); outError.clear(); return true;
     }
 
+    TextureArtifactResolver::TextureArtifactResolver(const AssetRegistry& registry)
+        : m_Registry(std::make_shared<const AssetRegistry>(registry))
+    {
+    }
+
+    TextureArtifactResolver::TextureArtifactResolver(std::shared_ptr<const AssetRegistry> registry)
+        : m_Registry(std::move(registry))
+    {
+    }
+
+    bool TextureArtifactResolver::Resolve(AssetHandle asset, TextureArtifact& outArtifact, std::string& outError) const
+    {
+        if (!m_Registry)
+        {
+            outError = "texture artifact resolver has no published asset registry";
+            return false;
+        }
+        return ResolveTextureArtifact(*m_Registry, asset, outArtifact, outError);
+    }
+
     bool TextureImporter::ApplyNormalizedRgba8MipPolicy(const NormalizedTextureSource& source,
         NormalizedTextureSource& outSource, u32& outGeneratedMipCount, std::string& outError)
     {
