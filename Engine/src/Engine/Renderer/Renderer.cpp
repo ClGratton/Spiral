@@ -524,10 +524,13 @@ namespace Engine
 
     void Renderer::BeginFrame(u64 applicationFrameIndex, const FramePacingWaitResult& preFramePacing)
     {
-        if (!s_Initialized || !s_Backend)
+        if (!s_Initialized)
             return;
 
         BeginTimingFrame(applicationFrameIndex, preFramePacing);
+        if (!s_Backend)
+            return;
+
         const Clock::time_point passStart = Clock::now();
         s_Backend->BeginFrame(s_ClearColor);
         AddPassTiming("Renderer BeginFrame", Clock::now() - passStart);
@@ -536,8 +539,14 @@ namespace Engine
 
     void Renderer::EndFrame()
     {
-        if (!s_Initialized || !s_Backend)
+        if (!s_Initialized)
             return;
+
+        if (!s_Backend)
+        {
+            RefreshTimingFrameTotal();
+            return;
+        }
 
         const Clock::time_point passStart = Clock::now();
         s_Backend->EndFrame();
