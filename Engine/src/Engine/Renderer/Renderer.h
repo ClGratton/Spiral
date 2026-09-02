@@ -131,6 +131,16 @@ namespace Engine
 
     struct RendererFrameWaitTiming
     {
+        RendererFrameWaitTiming() = default;
+        RendererFrameWaitTiming(RendererFrameWaitKind kind, bool applied, double milliseconds,
+            SmoothFrametimeCandidate candidate = SmoothFrametimeCandidate::InterFrame,
+            bool deadlineMissed = false, double requestedDeadlineMilliseconds = 0.0,
+            double actualReleaseMilliseconds = 0.0,
+            Platform::DeadlineWaitTelemetry deadlineWaitTelemetry = {})
+            : Kind(kind), Applied(applied), Milliseconds(milliseconds), Candidate(candidate),
+              DeadlineMissed(deadlineMissed), RequestedDeadlineMilliseconds(requestedDeadlineMilliseconds),
+              ActualReleaseMilliseconds(actualReleaseMilliseconds), DeadlineWaitTelemetry(deadlineWaitTelemetry) {}
+
         RendererFrameWaitKind Kind = RendererFrameWaitKind::IntentionalPacing;
         bool Applied = false;
         double Milliseconds = 0.0;

@@ -84,6 +84,9 @@ namespace Engine::RHI
                 case Format::R8Unorm: return DXGI_FORMAT_R8_UNORM;
                 case Format::R8G8B8A8Unorm: return DXGI_FORMAT_R8G8B8A8_UNORM;
                 case Format::R8G8B8A8UnormSrgb: return DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
+                case Format::BC5Unorm: return DXGI_FORMAT_BC5_UNORM;
+                case Format::BC7Unorm: return DXGI_FORMAT_BC7_UNORM;
+                case Format::BC7UnormSrgb: return DXGI_FORMAT_BC7_UNORM_SRGB;
                 case Format::R11G11B10Float: return DXGI_FORMAT_R11G11B10_FLOAT;
                 case Format::R16G16B16A16Float: return DXGI_FORMAT_R16G16B16A16_FLOAT;
                 case Format::R32G32Float: return DXGI_FORMAT_R32G32_FLOAT;
@@ -92,6 +95,8 @@ namespace Engine::RHI
                 case Format::R32Uint: return DXGI_FORMAT_R32_UINT;
                 case Format::D24UnormS8Uint: return DXGI_FORMAT_D24_UNORM_S8_UINT;
                 case Format::D32Float: return DXGI_FORMAT_D32_FLOAT;
+                case Format::ASTC4x4Unorm:
+                case Format::ASTC4x4UnormSrgb:
                 case Format::Unknown:
                 default: return DXGI_FORMAT_UNKNOWN;
             }

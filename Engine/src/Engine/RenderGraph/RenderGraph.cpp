@@ -1034,23 +1034,6 @@ namespace Engine
 
     u64 RenderGraph::EstimateLogicalBytes(const RHI::TextureDescription& description)
     {
-        u64 bytesPerTexel = 0;
-        switch (description.TextureFormat)
-        {
-            case RHI::Format::R8Unorm: bytesPerTexel = 1; break;
-            case RHI::Format::R8G8B8A8Unorm:
-            case RHI::Format::R8G8B8A8UnormSrgb:
-            case RHI::Format::R11G11B10Float:
-            case RHI::Format::R32Uint:
-            case RHI::Format::D24UnormS8Uint:
-            case RHI::Format::D32Float: bytesPerTexel = 4; break;
-            case RHI::Format::R32G32Float:
-            case RHI::Format::R16G16B16A16Float:
-                bytesPerTexel = 8; break;
-            case RHI::Format::R32G32B32Float: bytesPerTexel = 12; break;
-            case RHI::Format::R32G32B32A32Float: bytesPerTexel = 16; break;
-            case RHI::Format::Unknown: return 0;
-        }
         const auto multiply = [](u64 left, u64 right, u64& product)
         {
             if (!left || !right) { product = 0; return false; }
@@ -1063,8 +1046,9 @@ namespace Engine
         u64 width = description.Extent.Width, height = description.Extent.Height;
         for (u32 mip = 0; mip < description.MipLevels; ++mip)
         {
-            u64 level = 0, texels = 0;
-            if (!multiply(width, height, texels) || !multiply(texels, bytesPerTexel, level)
+            u64 rowPitch = 0, level = 0;
+            if (!RHI::CalculateTextureSubresourceStorage(description.TextureFormat,
+                    { static_cast<u32>(width), static_cast<u32>(height) }, rowPitch, level)
                 || total > std::numeric_limits<u64>::max() - level) return 0;
             total += level;
             width = std::max<u64>(1, width / 2);

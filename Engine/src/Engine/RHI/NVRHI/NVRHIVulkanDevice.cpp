@@ -45,6 +45,9 @@ namespace Engine::RHI
                 case Format::R8Unorm: return nvrhi::Format::R8_UNORM;
                 case Format::R8G8B8A8Unorm: return nvrhi::Format::RGBA8_UNORM;
                 case Format::R8G8B8A8UnormSrgb: return nvrhi::Format::SRGBA8_UNORM;
+                case Format::BC5Unorm: return nvrhi::Format::BC5_UNORM;
+                case Format::BC7Unorm: return nvrhi::Format::BC7_UNORM;
+                case Format::BC7UnormSrgb: return nvrhi::Format::BC7_UNORM_SRGB;
                 case Format::D32Float: return nvrhi::Format::D32;
                 default: return nvrhi::Format::UNKNOWN;
             }
@@ -284,8 +287,9 @@ namespace Engine::RHI
                 std::function<bool(const Texture*, QueueType)> canUseTexture,
                 Device* ownerDevice)
                 : m_QueueType(queueType), m_Name(std::move(name)), m_List(std::move(list)), m_Device(device),
+                m_OwnerDevice(ownerDevice),
                 m_QueryCompletion(std::move(queryCompletion)), m_TimestampRetirements(timestampRetirements),
-                m_OwnershipTracker(ownershipTracker), m_TextureOwnershipTracker(textureOwnershipTracker), m_ResolveQueue(std::move(resolveQueue)), m_QueueFamily(std::move(queueFamily)), m_CanUseBuffer(std::move(canUseBuffer)), m_CanUseTexture(std::move(canUseTexture)), m_OwnerDevice(ownerDevice) {}
+                m_OwnershipTracker(ownershipTracker), m_TextureOwnershipTracker(textureOwnershipTracker), m_ResolveQueue(std::move(resolveQueue)), m_QueueFamily(std::move(queueFamily)), m_CanUseBuffer(std::move(canUseBuffer)), m_CanUseTexture(std::move(canUseTexture)) {}
             QueueType GetQueueType() const override { return m_QueueType; }
             bool Begin() override
             {
@@ -682,14 +686,15 @@ namespace Engine::RHI
                 }
                 const VkCommandBuffer commandBuffer = NativeCommandBuffer(); if (!commandBuffer) return false;
                 const NativeState before = ConvertNativeState(operation.Before), after = ConvertNativeState(operation.After);
-                VkBufferMemoryBarrier2 barrier { VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2 };
+                VkBufferMemoryBarrier2 barrier {};
+                barrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
                 barrier.srcStageMask = operation.Type == BufferOwnershipOperationType::Release ? before.Stage : VK_PIPELINE_STAGE_2_NONE;
                 barrier.srcAccessMask = operation.Type == BufferOwnershipOperationType::Release ? before.Access : 0;
                 barrier.dstStageMask = operation.Type == BufferOwnershipOperationType::Acquire ? after.Stage : VK_PIPELINE_STAGE_2_NONE;
                 barrier.dstAccessMask = operation.Type == BufferOwnershipOperationType::Acquire ? after.Access : 0;
                 barrier.srcQueueFamilyIndex = m_QueueFamily(operation.Source); barrier.dstQueueFamilyIndex = m_QueueFamily(operation.Destination);
                 barrier.buffer = reinterpret_cast<VkBuffer>(buffer->Native()->getNativeObject(nvrhi::ObjectTypes::VK_Buffer).integer); barrier.offset = 0; barrier.size = VK_WHOLE_SIZE;
-                VkDependencyInfo dependency { VK_STRUCTURE_TYPE_DEPENDENCY_INFO }; dependency.bufferMemoryBarrierCount = 1; dependency.pBufferMemoryBarriers = &barrier; VULKAN_HPP_DEFAULT_DISPATCHER.vkCmdPipelineBarrier2(commandBuffer, &dependency);
+                VkDependencyInfo dependency {}; dependency.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO; dependency.bufferMemoryBarrierCount = 1; dependency.pBufferMemoryBarriers = &barrier; VULKAN_HPP_DEFAULT_DISPATCHER.vkCmdPipelineBarrier2(commandBuffer, &dependency);
                 // The native release changes the queue-family-visible state, but
                 // the portable wrapper remains hidden/pending until acquire
                 // publication. Reseed NVRHI without prematurely publishing it.
@@ -708,13 +713,14 @@ namespace Engine::RHI
                 }
                 const VkCommandBuffer commandBuffer = NativeCommandBuffer(); if (!commandBuffer) return false;
                 const NativeState before = ConvertNativeState(operation.Before), after = ConvertNativeState(operation.After);
-                VkImageMemoryBarrier2 barrier { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2 };
+                VkImageMemoryBarrier2 barrier {};
+                barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
                 barrier.srcStageMask = operation.Type == TextureOwnershipOperationType::Release ? before.Stage : VK_PIPELINE_STAGE_2_NONE; barrier.srcAccessMask = operation.Type == TextureOwnershipOperationType::Release ? before.Access : 0;
                 barrier.dstStageMask = operation.Type == TextureOwnershipOperationType::Acquire ? after.Stage : VK_PIPELINE_STAGE_2_NONE; barrier.dstAccessMask = operation.Type == TextureOwnershipOperationType::Acquire ? after.Access : 0;
                 barrier.oldLayout = before.Layout; barrier.newLayout = after.Layout; barrier.srcQueueFamilyIndex = m_QueueFamily(operation.Source); barrier.dstQueueFamilyIndex = m_QueueFamily(operation.Destination);
                 barrier.image = reinterpret_cast<VkImage>(texture->Native()->getNativeObject(nvrhi::ObjectTypes::VK_Image).integer); barrier.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
                 if (texture->GetDescription().TextureFormat == Format::D32Float) barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
-                VkDependencyInfo dependency { VK_STRUCTURE_TYPE_DEPENDENCY_INFO }; dependency.imageMemoryBarrierCount = 1; dependency.pImageMemoryBarriers = &barrier; VULKAN_HPP_DEFAULT_DISPATCHER.vkCmdPipelineBarrier2(commandBuffer, &dependency);
+                VkDependencyInfo dependency {}; dependency.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO; dependency.imageMemoryBarrierCount = 1; dependency.pImageMemoryBarriers = &barrier; VULKAN_HPP_DEFAULT_DISPATCHER.vkCmdPipelineBarrier2(commandBuffer, &dependency);
                 m_List->beginTrackingTextureState(texture->Native(), nvrhi::AllSubresources, ConvertState(operation.After));
                 if (stageState && operation.Type == TextureOwnershipOperationType::Acquire) StageTextureState(*texture, operation.After);
                 return true;
@@ -1015,7 +1021,8 @@ namespace Engine::RHI
                 state->Count = description.Count;
                 state->ValidBits = m_GraphicsTimestampValidBits;
                 state->PeriodNanoseconds = m_TimestampPeriodNanoseconds;
-                VkQueryPoolCreateInfo createInfo { VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO };
+                VkQueryPoolCreateInfo createInfo {};
+                createInfo.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO;
                 createInfo.queryType = VK_QUERY_TYPE_TIMESTAMP;
                 createInfo.queryCount = description.Count;
                 const VkResult result = VULKAN_HPP_DEFAULT_DISPATCHER.vkCreateQueryPool(
@@ -1129,7 +1136,7 @@ namespace Engine::RHI
                 if (nativeSubmissionId == 0)
                     return {};
                 const CompletionToken token { m_CompletionDeviceId, m_NextCompletionSubmissionId++ };
-                m_CompletionEntries.emplace(token.SubmissionId, CompletionEntry { executionQueue, nativeSubmissionId });
+                m_CompletionEntries.emplace(token.SubmissionId, CompletionEntry { executionQueue, nativeSubmissionId, {} });
                 if (!list->MarkSubmitted(token))
                     return {};
                 auto completion = m_CompletionEntries.find(token.SubmissionId);

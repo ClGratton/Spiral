@@ -27,6 +27,11 @@ namespace Engine::RHI
         R8Unorm,
         R8G8B8A8Unorm,
         R8G8B8A8UnormSrgb,
+        BC5Unorm,
+        BC7Unorm,
+        BC7UnormSrgb,
+        ASTC4x4Unorm,
+        ASTC4x4UnormSrgb,
         R11G11B10Float,
         R16G16B16A16Float,
         R32G32Float,
@@ -94,6 +99,11 @@ namespace Engine::RHI
             case Format::R8Unorm: return "R8_UNORM";
             case Format::R8G8B8A8Unorm: return "RGBA8_UNORM";
             case Format::R8G8B8A8UnormSrgb: return "RGBA8_UNORM_SRGB";
+            case Format::BC5Unorm: return "BC5_UNORM";
+            case Format::BC7Unorm: return "BC7_UNORM";
+            case Format::BC7UnormSrgb: return "BC7_UNORM_SRGB";
+            case Format::ASTC4x4Unorm: return "ASTC_4X4_UNORM";
+            case Format::ASTC4x4UnormSrgb: return "ASTC_4X4_UNORM_SRGB";
             case Format::R11G11B10Float: return "R11G11B10_FLOAT";
             case Format::R16G16B16A16Float: return "RGBA16_FLOAT";
             case Format::R32G32Float: return "RG32_FLOAT";

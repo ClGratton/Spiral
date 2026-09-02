@@ -8,6 +8,58 @@
 
 namespace Engine::RHI
 {
+    struct TextureFormatBlockLayout
+    {
+        u32 Width = 0;
+        u32 Height = 0;
+        u32 Bytes = 0;
+    };
+
+    inline bool GetTextureFormatBlockLayout(Format format, TextureFormatBlockLayout& outLayout)
+    {
+        TextureFormatBlockLayout layout;
+        switch (format)
+        {
+            case Format::R8Unorm: layout = { 1, 1, 1 }; break;
+            case Format::R8G8B8A8Unorm:
+            case Format::R8G8B8A8UnormSrgb:
+            case Format::R11G11B10Float:
+            case Format::R32Uint:
+            case Format::D24UnormS8Uint:
+            case Format::D32Float: layout = { 1, 1, 4 }; break;
+            case Format::R32G32Float:
+            case Format::R16G16B16A16Float: layout = { 1, 1, 8 }; break;
+            case Format::R32G32B32Float: layout = { 1, 1, 12 }; break;
+            case Format::R32G32B32A32Float: layout = { 1, 1, 16 }; break;
+            case Format::BC5Unorm:
+            case Format::BC7Unorm:
+            case Format::BC7UnormSrgb:
+            case Format::ASTC4x4Unorm:
+            case Format::ASTC4x4UnormSrgb: layout = { 4, 4, 16 }; break;
+            case Format::Unknown: return false;
+        }
+        outLayout = layout;
+        return true;
+    }
+
+    inline bool CalculateTextureSubresourceStorage(Format format, Extent2D extent,
+        u64& outRowPitchBytes, u64& outByteCount)
+    {
+        TextureFormatBlockLayout layout;
+        if (extent.Width == 0 || extent.Height == 0 || !GetTextureFormatBlockLayout(format, layout))
+            return false;
+        const u64 blockColumns = (static_cast<u64>(extent.Width) + layout.Width - 1) / layout.Width;
+        const u64 blockRows = (static_cast<u64>(extent.Height) + layout.Height - 1) / layout.Height;
+        if (blockColumns > std::numeric_limits<u64>::max() / layout.Bytes)
+            return false;
+        const u64 rowPitch = blockColumns * layout.Bytes;
+        if (blockRows > std::numeric_limits<u64>::max() / rowPitch)
+            return false;
+        outRowPitchBytes = rowPitch;
+        outByteCount = rowPitch * blockRows;
+        return true;
+    }
+
     enum class TextureUsage : u32
     {
         None = 0,

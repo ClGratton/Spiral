@@ -20,6 +20,7 @@
 #include "Engine/Renderer/SlangShaderCompiler.h"
 #include "Engine/Renderer/SceneRasterPreparation.h"
 #include "Engine/Renderer/MeshGpuResourceCache.h"
+#include "Engine/Renderer/TextureArtifactUploadPlan.h"
 #include "Engine/Assets/MeshArtifact.h"
 #include "Engine/Assets/TextureArtifact.h"
 #include "Engine/Assets/AssetRegistry.h"
@@ -2074,11 +2075,65 @@ namespace
         std::filesystem::remove(GetCookedTextureArtifactPath(colorAsset), filesystemError);
         std::filesystem::remove(GetCookedTextureArtifactPath(registry.FindAssetByPath(AssetType::Texture, normal.SourcePath)), filesystemError);
         std::filesystem::remove(legacyPath, filesystemError);
-        return Expect(colorBc && fallback, "ETC1S KTX2 cooks deterministic BC7 sRGB and RGBA fallback artifacts")
+        return Expect(colorBc && fallback && colorPublished, "ETC1S KTX2 cooks, publishes, and resolves deterministic BC7 sRGB and RGBA fallback artifacts")
             && Expect(normalTargets, "UASTC normal KTX2 cooks linear BC5 and ASTC artifacts")
             && Expect(failedReplacementPreservesFile, "KTX2 failed replacement preserves the published artifact file")
             && Expect(invalidTargetRejected && invalidFormatRejected, "texture invalid target and format enums reject without publication")
             && Expect(schemaOneCompatible, "schema-1 RGBA fallback artifact resolves with conservative alpha metadata");
+    }
+
+    bool TestTextureArtifactUploadPlan()
+    {
+        using namespace Engine;
+        TextureArtifact artifact;
+        artifact.Asset = 9123;
+        artifact.SourcePath = "Textures/Normal.ktx2";
+        artifact.Role = TextureRole::Normal;
+        artifact.ColorSpace = TextureColorSpace::Linear;
+        artifact.TargetProfile = TextureTargetProfile::DesktopBC;
+        artifact.CookedFormat = TextureCookedFormat::Bc5Unorm;
+        artifact.Mips = { { 8, 8, 0, 64 }, { 4, 4, 64, 16 }, { 2, 2, 80, 16 }, { 1, 1, 96, 16 } };
+        artifact.Payload.resize(112, 0x5a);
+
+        TextureArtifactUploadPlan plan;
+        std::string error;
+        const bool built = BuildTextureArtifactUploadPlan(artifact, plan, error);
+        const bool identity = built && plan.Asset == artifact.Asset && plan.SourcePath == artifact.SourcePath
+            && plan.Role == TextureRole::Normal && plan.ColorSpace == TextureColorSpace::Linear
+            && plan.TargetProfile == TextureTargetProfile::DesktopBC && plan.Payload
+            && *plan.Payload == artifact.Payload;
+        const bool description = built && plan.Texture.TextureFormat == RHI::Format::BC5Unorm
+            && plan.Texture.Extent.Width == 8 && plan.Texture.Extent.Height == 8 && plan.Texture.MipLevels == 4
+            && plan.Texture.ArrayLayers == 1 && plan.Texture.SampleCount == 1
+            && plan.Texture.InitialState == RHI::ResourceState::CopyDest;
+        const bool subresources = built && plan.Subresources.size() == 4
+            && plan.Subresources[0].MipLevel == 0 && plan.Subresources[0].RowPitchBytes == 32
+            && plan.Subresources[0].ByteSize == 64 && plan.Subresources[1].ByteOffset == 64
+            && plan.Subresources[1].RowPitchBytes == 16 && plan.Subresources[3].ByteOffset == 96
+            && plan.Subresources[3].RowPitchBytes == 16 && plan.Subresources[3].ByteSize == 16;
+
+        TextureArtifact astc = artifact;
+        astc.Role = TextureRole::BaseColor;
+        astc.ColorSpace = TextureColorSpace::Srgb;
+        astc.TargetProfile = TextureTargetProfile::Astc;
+        astc.CookedFormat = TextureCookedFormat::Astc4x4Srgb;
+        astc.HasAlpha = true;
+        TextureArtifactUploadPlan astcPlan;
+        const bool astcMapped = BuildTextureArtifactUploadPlan(astc, astcPlan, error)
+            && astcPlan.Texture.TextureFormat == RHI::Format::ASTC4x4UnormSrgb && astcPlan.HasAlpha;
+
+        TextureArtifactUploadPlan preserved = plan;
+        artifact.Mips[2].ByteSize = 15;
+        const bool transactional = !BuildTextureArtifactUploadPlan(artifact, plan, error)
+            && plan.Asset == preserved.Asset && plan.Subresources.size() == preserved.Subresources.size()
+            && plan.Payload == preserved.Payload;
+
+        u64 rowPitch = 0, byteCount = 0;
+        const bool blockLayout = RHI::CalculateTextureSubresourceStorage(RHI::Format::BC7Unorm, { 7, 5 }, rowPitch, byteCount)
+            && rowPitch == 32 && byteCount == 64;
+        return Expect(identity && description, "texture upload plan preserves artifact identity, semantics, payload, and RHI description")
+            && Expect(subresources && astcMapped, "texture upload plan maps exact compressed format and block-aware mip ranges")
+            && Expect(transactional && blockLayout, "texture upload plan rejects malformed artifacts transactionally and exposes stable block storage");
     }
 
     bool TestSceneVersionFourCanonicalPersistence()
@@ -5584,7 +5639,7 @@ float4 main(VertexInput input) : SV_Position
         const auto first = graph.AddTexture(rg32);
         const auto second = graph.AddTexture(rgb32);
         BufferDescription unusedDescription = MakeExecutionBuffer("unused-transient");
-        const auto unused = graph.AddBuffer(unusedDescription);
+        graph.AddBuffer(unusedDescription);
         const auto firstPass = graph.AddPass("logical-rg32-pass");
         const auto secondPass = graph.AddPass("logical-rgb32-pass");
         graph.AddWrite(firstPass, first, ResourceState::CopyDest);
@@ -5593,8 +5648,26 @@ float4 main(VertexInput input) : SV_Position
         graph.SetPassCallback(secondPass, [](RenderGraph::ExecutionContext& context) { return context.GetTexture({ 1 }) != nullptr; });
         RenderGraphTestDevice device(8503);
         const RenderGraph::ExecuteResult result = graph.Execute(device, graph.Compile());
+        TextureDescription compressed = rg32;
+        compressed.DebugName = "logical-bc7";
+        compressed.Extent = { 7, 5 };
+        compressed.TextureFormat = Format::BC7Unorm;
+        compressed.MipLevels = 3;
+        RenderGraph compressedGraph;
+        const auto compressedTexture = compressedGraph.AddTexture(compressed);
+        const auto compressedPass = compressedGraph.AddPass("logical-bc7-pass");
+        compressedGraph.AddWrite(compressedPass, compressedTexture, ResourceState::CopyDest);
+        compressedGraph.SetPassCallback(compressedPass, [compressedTexture](RenderGraph::ExecutionContext& context)
+        {
+            return context.GetTexture(compressedTexture) != nullptr;
+        });
+        RenderGraphTestDevice compressedDevice(8504);
+        const RenderGraph::ExecuteResult compressedResult = compressedGraph.Execute(compressedDevice, compressedGraph.Compile());
         return Expect(result.Success && result.TransientResourceCount == 2 && result.EstimatedTransientAllocatedBytes == 204 && result.EstimatedTransientPooledBytes == 204,
-            "unused transient declarations contribute no allocation or token failure while texture estimates sum mip extents and use correct R32G32/R32G32B32 byte sizes");
+            "unused transient declarations contribute no allocation or token failure while uncompressed texture estimates sum exact mip storage")
+            && Expect(compressedResult.Success && compressedResult.TransientResourceCount == 1
+                    && compressedResult.EstimatedTransientAllocatedBytes == 96 && compressedResult.EstimatedTransientPooledBytes == 96,
+                "compressed transient texture estimates use block-aware storage for every mip");
     }
 
     bool TestRenderGraphExecutorCrossQueueOwnershipAndFallback()
@@ -6679,6 +6752,7 @@ int main(int argc, char** argv)
         INTEGRATION_TEST("Cooked mesh artifacts validate and resolve transactionally", TestMeshArtifactValidationAndResolution),
         INTEGRATION_TEST("Texture artifacts cook the deterministic RGBA fallback transactionally", TestTextureArtifactFallbackCooking),
         INTEGRATION_TEST("KTX2 Basis textures cook deterministic compressed targets transactionally", TestKtx2BasisCooking),
+        FAST_TEST("Texture artifacts map to explicit block-aware RHI upload plans", TestTextureArtifactUploadPlan),
         FAST_TEST("Mesh GPU resource cache preserves exact immutable generations", TestMeshGpuResourceCache),
         INTEGRATION_TEST("Scene version 4 canonical persistence", TestSceneVersionFourCanonicalPersistence),
         INTEGRATION_TEST("Scene loads legacy absolute transforms", TestSceneLoadsLegacyAbsoluteTransforms),

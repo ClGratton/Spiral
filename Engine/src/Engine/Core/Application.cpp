@@ -104,6 +104,7 @@ namespace Engine
             return error ? std::filesystem::path() : absolute.lexically_normal();
         }
 
+#if defined(GE_PLATFORM_WINDOWS)
         std::string ReadTextFile(const std::filesystem::path& path)
         {
             std::ifstream input(path, std::ios::binary);
@@ -128,6 +129,7 @@ namespace Engine
             }
             return escaped;
         }
+#endif
 
         bool WriteOpticalMarkerArtifact(const Application& application, const OpticalResponseMarker& marker,
             const RendererInputSample& input, std::string_view triggerId, bool syntheticTrigger, std::string& error)
@@ -137,6 +139,10 @@ namespace Engine
             const std::filesystem::path path = AbsoluteNormalizedPath(std::filesystem::path(output));
             if (path.empty() || std::filesystem::exists(path)) { error = "optical marker output is unresolved or already exists"; return false; }
 #if !defined(GE_PLATFORM_WINDOWS)
+            (void)marker;
+            (void)input;
+            (void)triggerId;
+            (void)syntheticTrigger;
             error = "optical marker artifact requires Windows process/QPC identity"; return false;
 #else
             LARGE_INTEGER frequency {}, tick {}; std::array<char, 32768> executable {};
@@ -156,6 +162,7 @@ namespace Engine
 #endif
         }
 
+#if defined(GE_PLATFORM_WINDOWS)
         u32 AttachmentTimeoutMilliseconds(const ApplicationCommandLineArgs& args)
         {
             const std::string_view value = args.GetOptionValue("--frame-pacing-benchmark-attachment-timeout-ms");
@@ -168,6 +175,7 @@ namespace Engine
                 throw std::runtime_error("frame pacing attachment timeout must be in the inclusive 100-60000 ms range");
             return static_cast<u32>(parsed);
         }
+#endif
 
         std::optional<FramePacingBenchmarkIdentity> WaitForFramePacingAttachment(const Application& application)
         {

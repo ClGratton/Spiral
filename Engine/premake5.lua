@@ -178,3 +178,13 @@ project "Engine"
         optimize "on"
 
     apply_spiral_sanitizers(false)
+
+    -- The admitted sanitizer oracle covers project-owned Engine code. KTX is
+    -- pinned third-party source compiled into this static library, so keep it
+    -- outside instrumentation just like the separate GLFW/ImGui/NVRHI vendor
+    -- projects while retaining sanitizer linkage for Engine consumers.
+    if _OPTIONS["sanitize"] == "address-undefined" then
+        filter { "toolset:clang", "files:../Vendor/KTX-Software/**" }
+            buildoptions { "-fno-sanitize=address,undefined" }
+        filter {}
+    end

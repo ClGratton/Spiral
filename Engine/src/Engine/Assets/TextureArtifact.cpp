@@ -3,6 +3,7 @@
 #include "Engine/Assets/AssetRegistry.h"
 
 #include <ktx.h>
+#include <ktxint.h>
 
 #include <atomic>
 #include <cstdio>
@@ -291,7 +292,12 @@ namespace Engine
         candidate.ColorSpace = source.ColorSpace;
         candidate.TargetProfile = target;
         ktx_transcode_fmt_e ktxFormat = KTX_TTF_NOSELECTION;
-        if (candidate.SourcePath.empty() || source.Bytes.empty() || !SelectFormat(source.Role, source.ColorSpace, target, candidate.CookedFormat, ktxFormat))
+        // Pinned libktx v4.4.2 transfers its memory-stream allocation to the
+        // texture only after the complete KTX2 header has been read. Reject a
+        // shorter buffer before entry so the library's early-read failure path
+        // cannot strand that private stream allocation.
+        if (candidate.SourcePath.empty() || source.Bytes.size() < KTX2_HEADER_SIZE
+            || !SelectFormat(source.Role, source.ColorSpace, target, candidate.CookedFormat, ktxFormat))
         {
             outError = "KTX2 import source, role, color space, or target profile is invalid";
             return false;
