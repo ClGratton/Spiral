@@ -375,6 +375,20 @@ namespace Engine
         return std::filesystem::path("output") / "imports" / "textures" / (std::to_string(asset) + ".spiraltexture");
     }
 
+    std::filesystem::path GetCookedTextureArtifactPath(AssetHandle asset, TextureTargetProfile target)
+    {
+        const char* suffix = nullptr;
+        switch (target)
+        {
+            case TextureTargetProfile::DesktopBC: suffix = "desktop-bc"; break;
+            case TextureTargetProfile::Astc: suffix = "astc"; break;
+            case TextureTargetProfile::RGBAFallback: suffix = "rgba-fallback"; break;
+        }
+        if (!suffix || asset == kInvalidAssetHandle) return {};
+        return std::filesystem::path("output") / "imports" / "textures"
+            / (std::to_string(asset) + "." + suffix + ".spiraltexture");
+    }
+
     bool ValidateTextureArtifact(const TextureArtifact& artifact, std::string& outError)
     {
         if (artifact.Asset == kInvalidAssetHandle || artifact.SourcePath.empty()) { outError = "texture artifact has invalid provenance"; return false; }
@@ -453,14 +467,168 @@ namespace Engine
         outArtifact = std::move(candidate); outError.clear(); return true;
     }
 
-    bool ResolveTextureArtifact(const AssetRegistry& registry, AssetHandle asset, TextureArtifact& outArtifact, std::string& outError)
+    namespace
     {
-        const AssetMetadata* metadata = registry.GetAsset(asset);
-        if (!metadata || metadata->Type != AssetType::Texture) { outError = "texture asset handle is missing or has the wrong type"; return false; }
+        enum class TextureTargetLoadResult { Missing, Success, Failure };
+
+        bool HasArtifactProvenance(const TextureArtifact& artifact, const AssetMetadata& metadata)
+        {
+            return artifact.Asset == metadata.Handle && artifact.SourcePath == metadata.SourcePath;
+        }
+
+        TextureTargetLoadResult LoadTextureTarget(const AssetMetadata& metadata,
+            TextureTargetProfile target, TextureArtifact& outArtifact, std::string& outError)
+        {
+            const std::filesystem::path variantPath = GetCookedTextureArtifactPath(metadata.Handle, target);
+            if (variantPath.empty())
+            {
+                outError = "requested texture artifact target profile is invalid";
+                return TextureTargetLoadResult::Failure;
+            }
+            std::error_code filesystemError;
+            const bool variantExists = std::filesystem::exists(variantPath, filesystemError);
+            if (filesystemError)
+            {
+                outError = "could not inspect cooked texture artifact variant";
+                return TextureTargetLoadResult::Failure;
+            }
+            TextureArtifact candidate;
+            if (variantExists)
+            {
+                if (!LoadTextureArtifact(variantPath, candidate, outError))
+                    return TextureTargetLoadResult::Failure;
+                if (candidate.TargetProfile != target || !HasArtifactProvenance(candidate, metadata))
+                {
+                    outError = "cooked texture artifact variant target or provenance does not match the registry";
+                    return TextureTargetLoadResult::Failure;
+                }
+                outArtifact = std::move(candidate);
+                outError.clear();
+                return TextureTargetLoadResult::Success;
+            }
+
+            const std::filesystem::path legacyPath = GetCookedTextureArtifactPath(metadata.Handle);
+            const bool legacyExists = std::filesystem::exists(legacyPath, filesystemError);
+            if (filesystemError)
+            {
+                outError = "could not inspect legacy cooked texture artifact";
+                return TextureTargetLoadResult::Failure;
+            }
+            if (!legacyExists)
+                return TextureTargetLoadResult::Missing;
+            if (!LoadTextureArtifact(legacyPath, candidate, outError))
+                return TextureTargetLoadResult::Failure;
+            if (!HasArtifactProvenance(candidate, metadata))
+            {
+                outError = "legacy cooked texture artifact provenance does not match the registry";
+                return TextureTargetLoadResult::Failure;
+            }
+            if (candidate.TargetProfile != target)
+                return TextureTargetLoadResult::Missing;
+            outArtifact = std::move(candidate);
+            outError.clear();
+            return TextureTargetLoadResult::Success;
+        }
+
+        bool HasMatchingFallbackSemantics(const TextureArtifact& preferred, const TextureArtifact& fallback)
+        {
+            return fallback.TargetProfile == TextureTargetProfile::RGBAFallback
+                && fallback.Asset == preferred.Asset && fallback.SourcePath == preferred.SourcePath
+                && fallback.Role == preferred.Role && fallback.ColorSpace == preferred.ColorSpace
+                && fallback.HasAlpha == preferred.HasAlpha && !fallback.Mips.empty() && !preferred.Mips.empty()
+                && fallback.Mips.front().Width == preferred.Mips.front().Width
+                && fallback.Mips.front().Height == preferred.Mips.front().Height
+                && fallback.Mips.size() == preferred.Mips.size();
+        }
+
+        const AssetMetadata* GetTextureMetadata(const AssetRegistry& registry, AssetHandle asset, std::string& outError)
+        {
+            const AssetMetadata* metadata = registry.GetAsset(asset);
+            if (!metadata || metadata->Type != AssetType::Texture)
+            {
+                outError = "texture asset handle is missing or has the wrong type";
+                return nullptr;
+            }
+            return metadata;
+        }
+    }
+
+    bool ResolveTextureArtifact(const AssetRegistry& registry, AssetHandle asset,
+        TextureTargetProfile target, TextureArtifact& outArtifact, std::string& outError)
+    {
+        const AssetMetadata* metadata = GetTextureMetadata(registry, asset, outError);
+        if (!metadata) return false;
         TextureArtifact candidate;
-        if (!LoadTextureArtifact(GetCookedTextureArtifactPath(asset), candidate, outError)) return false;
-        if (candidate.Asset != asset || candidate.SourcePath != metadata->SourcePath) { outError = "cooked texture artifact provenance does not match the registry"; return false; }
+        const TextureTargetLoadResult result = LoadTextureTarget(*metadata, target, candidate, outError);
+        if (result != TextureTargetLoadResult::Success)
+        {
+            if (result == TextureTargetLoadResult::Missing)
+                outError = std::string("cooked texture artifact target is missing: ") + ToString(target);
+            return false;
+        }
         outArtifact = std::move(candidate); outError.clear(); return true;
+    }
+
+    bool ResolveTextureArtifact(const AssetRegistry& registry, AssetHandle asset,
+        TextureArtifact& outArtifact, std::string& outError)
+    {
+        const AssetMetadata* metadata = GetTextureMetadata(registry, asset, outError);
+        if (!metadata) return false;
+        constexpr TextureTargetProfile order[] = {
+            TextureTargetProfile::RGBAFallback,
+            TextureTargetProfile::DesktopBC,
+            TextureTargetProfile::Astc
+        };
+        for (TextureTargetProfile target : order)
+        {
+            TextureArtifact candidate;
+            const TextureTargetLoadResult result = LoadTextureTarget(*metadata, target, candidate, outError);
+            if (result == TextureTargetLoadResult::Failure) return false;
+            if (result == TextureTargetLoadResult::Success)
+            {
+                outArtifact = std::move(candidate);
+                outError.clear();
+                return true;
+            }
+        }
+        outError = "no cooked texture artifact target is available";
+        return false;
+    }
+
+    bool ResolveTextureArtifactVariantSet(const AssetRegistry& registry, AssetHandle asset,
+        TextureTargetProfile preferredTarget, TextureArtifactVariantSet& outVariants, std::string& outError)
+    {
+        const AssetMetadata* metadata = GetTextureMetadata(registry, asset, outError);
+        if (!metadata) return false;
+        TextureArtifactVariantSet candidate;
+        const TextureTargetLoadResult preferredResult = LoadTextureTarget(
+            *metadata, preferredTarget, candidate.Preferred, outError);
+        if (preferredResult != TextureTargetLoadResult::Success)
+        {
+            if (preferredResult == TextureTargetLoadResult::Missing)
+                outError = std::string("preferred cooked texture artifact target is missing: ") + ToString(preferredTarget);
+            return false;
+        }
+        if (preferredTarget != TextureTargetProfile::RGBAFallback)
+        {
+            TextureArtifact fallback;
+            const TextureTargetLoadResult fallbackResult = LoadTextureTarget(
+                *metadata, TextureTargetProfile::RGBAFallback, fallback, outError);
+            if (fallbackResult == TextureTargetLoadResult::Failure)
+                return false;
+            if (fallbackResult == TextureTargetLoadResult::Success)
+            {
+                if (!HasMatchingFallbackSemantics(candidate.Preferred, fallback))
+                {
+                    outError = "separately cooked RGBA fallback does not match preferred texture semantics";
+                    return false;
+                }
+                candidate.RgbaFallback = std::move(fallback);
+            }
+        }
+        outVariants = std::move(candidate);
+        outError.clear();
+        return true;
     }
 
     TextureArtifactResolver::TextureArtifactResolver(const AssetRegistry& registry)
@@ -481,6 +649,29 @@ namespace Engine
             return false;
         }
         return ResolveTextureArtifact(*m_Registry, asset, outArtifact, outError);
+    }
+
+    bool TextureArtifactResolver::Resolve(AssetHandle asset, TextureTargetProfile target,
+        TextureArtifact& outArtifact, std::string& outError) const
+    {
+        if (!m_Registry)
+        {
+            outError = "texture artifact resolver has no published asset registry";
+            return false;
+        }
+        return ResolveTextureArtifact(*m_Registry, asset, target, outArtifact, outError);
+    }
+
+    bool TextureArtifactResolver::ResolveVariantSet(AssetHandle asset,
+        TextureTargetProfile preferredTarget, TextureArtifactVariantSet& outVariants,
+        std::string& outError) const
+    {
+        if (!m_Registry)
+        {
+            outError = "texture artifact resolver has no published asset registry";
+            return false;
+        }
+        return ResolveTextureArtifactVariantSet(*m_Registry, asset, preferredTarget, outVariants, outError);
     }
 
     bool TextureImporter::ApplyNormalizedRgba8MipPolicy(const NormalizedTextureSource& source,
@@ -540,7 +731,12 @@ namespace Engine
         }
         const bool existed = registry.FindAssetByPath(AssetType::Texture, candidate.SourcePath) != kInvalidAssetHandle;
         candidate.Asset = registry.RegisterAsset(AssetType::Texture, candidate.SourcePath);
-        if (candidate.Asset == kInvalidAssetHandle || !StoreTextureArtifact(GetCookedTextureArtifactPath(candidate.Asset), candidate, outError)) { if (!existed && candidate.Asset != kInvalidAssetHandle) registry.RemoveAsset(candidate.Asset); return false; }
+        if (candidate.Asset == kInvalidAssetHandle || !StoreTextureArtifact(
+            GetCookedTextureArtifactPath(candidate.Asset, candidate.TargetProfile), candidate, outError))
+        {
+            if (!existed && candidate.Asset != kInvalidAssetHandle) registry.RemoveAsset(candidate.Asset);
+            return false;
+        }
         outArtifact = std::move(candidate); outError.clear(); return true;
     }
 
@@ -612,7 +808,8 @@ namespace Engine
         destroy();
         const bool existed = registry.FindAssetByPath(AssetType::Texture, candidate.SourcePath) != kInvalidAssetHandle;
         candidate.Asset = registry.RegisterAsset(AssetType::Texture, candidate.SourcePath);
-        if (candidate.Asset == kInvalidAssetHandle || !StoreTextureArtifact(GetCookedTextureArtifactPath(candidate.Asset), candidate, outError))
+        if (candidate.Asset == kInvalidAssetHandle || !StoreTextureArtifact(
+            GetCookedTextureArtifactPath(candidate.Asset, candidate.TargetProfile), candidate, outError))
         {
             if (!existed && candidate.Asset != kInvalidAssetHandle) registry.RemoveAsset(candidate.Asset);
             return false;

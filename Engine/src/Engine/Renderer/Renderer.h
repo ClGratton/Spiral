@@ -28,8 +28,10 @@ namespace Engine
 {
     class AssetRegistry;
     class FramePacingBenchmarkCapture;
+    enum class TextureTargetProfile;
     struct MeshArtifact;
     struct TextureArtifact;
+    struct TextureArtifactVariantSet;
     struct FramePacingBenchmarkSnapshot;
     struct ClearColor
     {
@@ -415,6 +417,9 @@ namespace Engine
         static void PublishMeshArtifactResolver(const AssetRegistry& registry);
         static bool ResolvePublishedMeshArtifact(AssetHandle asset, MeshArtifact& outArtifact, std::string& outError);
         static bool ResolvePublishedTextureArtifact(AssetHandle asset, TextureArtifact& outArtifact, std::string& outError);
+        static bool ResolvePublishedTextureArtifactVariantSet(AssetHandle asset,
+            TextureTargetProfile preferredTarget, TextureArtifactVariantSet& outVariants,
+            std::string& outError);
         // Explicitly clears the immutable catalog. Renderer shutdown invokes
         // this before backend/device destruction.
         static void ClearArtifactResolvers();

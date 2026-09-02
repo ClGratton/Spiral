@@ -5,6 +5,7 @@
 
 #include <filesystem>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -44,6 +45,12 @@ namespace Engine
         std::vector<u8> Payload;
     };
 
+    struct TextureArtifactVariantSet
+    {
+        TextureArtifact Preferred;
+        std::optional<TextureArtifact> RgbaFallback;
+    };
+
     // This is the decoder-to-importer boundary, not a source-image decoder.
     struct NormalizedTextureSource
     {
@@ -76,16 +83,25 @@ namespace Engine
         explicit TextureArtifactResolver(std::shared_ptr<const AssetRegistry> registry);
 
         bool Resolve(AssetHandle asset, TextureArtifact& outArtifact, std::string& outError) const;
+        bool Resolve(AssetHandle asset, TextureTargetProfile target,
+            TextureArtifact& outArtifact, std::string& outError) const;
+        bool ResolveVariantSet(AssetHandle asset, TextureTargetProfile preferredTarget,
+            TextureArtifactVariantSet& outVariants, std::string& outError) const;
 
     private:
         std::shared_ptr<const AssetRegistry> m_Registry;
     };
 
     std::filesystem::path GetCookedTextureArtifactPath(AssetHandle asset);
+    std::filesystem::path GetCookedTextureArtifactPath(AssetHandle asset, TextureTargetProfile target);
     bool ValidateTextureArtifact(const TextureArtifact& artifact, std::string& outError);
     bool StoreTextureArtifact(const std::filesystem::path& path, const TextureArtifact& artifact, std::string& outError);
     bool LoadTextureArtifact(const std::filesystem::path& path, TextureArtifact& outArtifact, std::string& outError);
     bool ResolveTextureArtifact(const AssetRegistry& registry, AssetHandle asset, TextureArtifact& outArtifact, std::string& outError);
+    bool ResolveTextureArtifact(const AssetRegistry& registry, AssetHandle asset, TextureTargetProfile target,
+        TextureArtifact& outArtifact, std::string& outError);
+    bool ResolveTextureArtifactVariantSet(const AssetRegistry& registry, AssetHandle asset,
+        TextureTargetProfile preferredTarget, TextureArtifactVariantSet& outVariants, std::string& outError);
 
     class TextureImporter
     {

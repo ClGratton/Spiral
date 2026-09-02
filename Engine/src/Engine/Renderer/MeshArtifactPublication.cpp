@@ -83,6 +83,20 @@ namespace Engine
         return resolvers->Texture.Resolve(asset, outArtifact, outError);
     }
 
+    bool Renderer::ResolvePublishedTextureArtifactVariantSet(AssetHandle asset,
+        TextureTargetProfile preferredTarget, TextureArtifactVariantSet& outVariants,
+        std::string& outError)
+    {
+        const std::shared_ptr<const ArtifactResolverCatalog> resolvers = LoadResolvers();
+        if (!resolvers)
+        {
+            outError = "renderer has no published texture artifact resolver";
+            return false;
+        }
+
+        return resolvers->Texture.ResolveVariantSet(asset, preferredTarget, outVariants, outError);
+    }
+
     void Renderer::ClearArtifactResolvers()
     {
         StoreResolvers({});

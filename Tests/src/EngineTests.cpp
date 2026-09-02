@@ -2201,7 +2201,8 @@ namespace
             && !TextureImporter::CookNormalizedRgba8(source, registry, TextureTargetProfile::Astc, resolved, error)
             && resolved.Payload == preserved.Payload;
 
-        const std::filesystem::path path = GetCookedTextureArtifactPath(cooked.Asset);
+        const std::filesystem::path path = GetCookedTextureArtifactPath(
+            cooked.Asset, TextureTargetProfile::RGBAFallback);
         {
             std::ofstream corrupt(path, std::ios::binary | std::ios::trunc);
             corrupt << "SpiralTextureArtifact 1\nSource \"bad\"\n";
@@ -2369,6 +2370,13 @@ namespace
         TextureArtifact publishedColor;
         const AssetHandle colorAsset = registry.FindAssetByPath(AssetType::Texture, color.SourcePath);
         const bool colorPublished = fallback && ResolveTextureArtifact(registry, colorAsset, publishedColor, error);
+        TextureArtifactVariantSet colorVariants;
+        const bool colorVariantsCoResident = colorPublished
+            && ResolveTextureArtifactVariantSet(
+                registry, colorAsset, TextureTargetProfile::DesktopBC, colorVariants, error)
+            && colorVariants.Preferred.CookedFormat == TextureCookedFormat::Bc7Srgb
+            && colorVariants.RgbaFallback.has_value()
+            && colorVariants.RgbaFallback->CookedFormat == TextureCookedFormat::R8G8B8A8Srgb;
         Ktx2BasisTextureSource compressedCompletion = color;
         compressedCompletion.MipPolicy = TextureMipPolicy::CompleteMissing;
         const TextureArtifact beforeUnsupportedCompletion = cooked;
@@ -2393,7 +2401,8 @@ namespace
             && registry.GetAssets().size() == before && cooked.Payload == preserved.Payload;
         TextureArtifact invalidFormat = publishedColor;
         invalidFormat.CookedFormat = static_cast<TextureCookedFormat>(255);
-        const bool invalidFormatRejected = !StoreTextureArtifact(GetCookedTextureArtifactPath(colorAsset), invalidFormat, error)
+        const bool invalidFormatRejected = !StoreTextureArtifact(
+            GetCookedTextureArtifactPath(colorAsset, TextureTargetProfile::RGBAFallback), invalidFormat, error)
             && ResolveTextureArtifact(registry, colorAsset, replacementResolved, error) && replacementResolved.Payload == publishedColor.Payload;
         const AssetHandle legacyAsset = registry.RegisterAsset(AssetType::Texture, "Tests/Fixtures/LegacySchema1.raw");
         const std::filesystem::path legacyPath = GetCookedTextureArtifactPath(legacyAsset);
@@ -2408,15 +2417,169 @@ namespace
         const bool schemaOneCompatible = ResolveTextureArtifact(registry, legacyAsset, legacyResolved, error)
             && legacyResolved.HasAlpha && legacyResolved.Payload.size() == 4;
         std::error_code filesystemError;
-        std::filesystem::remove(GetCookedTextureArtifactPath(colorAsset), filesystemError);
-        std::filesystem::remove(GetCookedTextureArtifactPath(registry.FindAssetByPath(AssetType::Texture, normal.SourcePath)), filesystemError);
+        std::filesystem::remove(GetCookedTextureArtifactPath(
+            colorAsset, TextureTargetProfile::DesktopBC), filesystemError);
+        std::filesystem::remove(GetCookedTextureArtifactPath(
+            colorAsset, TextureTargetProfile::RGBAFallback), filesystemError);
+        const AssetHandle normalAsset = registry.FindAssetByPath(AssetType::Texture, normal.SourcePath);
+        std::filesystem::remove(GetCookedTextureArtifactPath(
+            normalAsset, TextureTargetProfile::DesktopBC), filesystemError);
+        std::filesystem::remove(GetCookedTextureArtifactPath(
+            normalAsset, TextureTargetProfile::Astc), filesystemError);
         std::filesystem::remove(legacyPath, filesystemError);
-        return Expect(colorBc && fallback && colorPublished, "ETC1S KTX2 cooks, publishes, and resolves deterministic BC7 sRGB and RGBA fallback artifacts")
+        return Expect(colorBc && fallback && colorPublished && colorVariantsCoResident,
+                "ETC1S KTX2 retains and resolves co-resident deterministic BC7 sRGB and RGBA fallback artifacts")
             && Expect(normalTargets, "UASTC normal KTX2 cooks linear BC5 and ASTC artifacts")
             && Expect(compressedCompletionRejected, "incomplete compressed mip completion fails visibly and preserves the caller artifact")
             && Expect(failedReplacementPreservesFile, "KTX2 failed replacement preserves the published artifact file")
             && Expect(invalidTargetRejected && invalidFormatRejected, "texture invalid target and format enums reject without publication")
             && Expect(schemaOneCompatible, "schema-1 RGBA fallback artifact resolves with conservative alpha metadata");
+    }
+
+    bool TestTextureArtifactVariantSetResolution()
+    {
+        using namespace Engine;
+        AssetRegistry registry;
+        std::string error;
+        std::error_code filesystemError;
+
+        const auto removeAllPaths = [&filesystemError](AssetHandle asset)
+        {
+            std::filesystem::remove(GetCookedTextureArtifactPath(asset), filesystemError);
+            std::filesystem::remove(GetCookedTextureArtifactPath(
+                asset, TextureTargetProfile::DesktopBC), filesystemError);
+            std::filesystem::remove(GetCookedTextureArtifactPath(
+                asset, TextureTargetProfile::Astc), filesystemError);
+            std::filesystem::remove(GetCookedTextureArtifactPath(
+                asset, TextureTargetProfile::RGBAFallback), filesystemError);
+        };
+        const auto sameVariantSet = [](const TextureArtifactVariantSet& left,
+            const TextureArtifactVariantSet& right)
+        {
+            if (left.Preferred.Asset != right.Preferred.Asset
+                || left.Preferred.TargetProfile != right.Preferred.TargetProfile
+                || left.Preferred.Payload != right.Preferred.Payload
+                || left.RgbaFallback.has_value() != right.RgbaFallback.has_value())
+                return false;
+            return !left.RgbaFallback
+                || (left.RgbaFallback->Asset == right.RgbaFallback->Asset
+                    && left.RgbaFallback->TargetProfile == right.RgbaFallback->TargetProfile
+                    && left.RgbaFallback->Payload == right.RgbaFallback->Payload);
+        };
+        const auto makePreferred = [&registry](AssetHandle asset)
+        {
+            TextureArtifact artifact = MakeTextureGpuCacheArtifact(asset);
+            const AssetMetadata* metadata = registry.GetAsset(asset);
+            if (metadata) artifact.SourcePath = metadata->SourcePath;
+            return artifact;
+        };
+
+        const AssetHandle asset = registry.RegisterAsset(
+            AssetType::Texture, "Tests/Variants/Normal.ktx2", "Variant normal");
+        removeAllPaths(asset);
+        const TextureArtifact preferred = makePreferred(asset);
+        const TextureArtifact fallback = MakeTextureGpuCacheFallback(preferred);
+        const std::filesystem::path preferredPath = GetCookedTextureArtifactPath(
+            asset, TextureTargetProfile::DesktopBC);
+        const std::filesystem::path fallbackPath = GetCookedTextureArtifactPath(
+            asset, TextureTargetProfile::RGBAFallback);
+        const bool pathsAreTargetSpecific = asset != kInvalidAssetHandle
+            && preferredPath != fallbackPath && preferredPath != GetCookedTextureArtifactPath(asset)
+            && fallbackPath != GetCookedTextureArtifactPath(asset);
+        const bool stored = StoreTextureArtifact(preferredPath, preferred, error)
+            && StoreTextureArtifact(fallbackPath, fallback, error);
+        TextureArtifactVariantSet variants;
+        const bool coResident = stored && ResolveTextureArtifactVariantSet(
+            registry, asset, TextureTargetProfile::DesktopBC, variants, error)
+            && variants.Preferred.Payload == preferred.Payload
+            && variants.RgbaFallback.has_value()
+            && variants.RgbaFallback->Payload == fallback.Payload;
+
+        Renderer::PublishArtifactResolvers(registry);
+        TextureArtifactVariantSet published;
+        const bool publishedResolved = Renderer::ResolvePublishedTextureArtifactVariantSet(
+            asset, TextureTargetProfile::DesktopBC, published, error)
+            && sameVariantSet(published, variants);
+        registry.RemoveAsset(asset);
+        TextureArtifactVariantSet retainedPublished;
+        const bool immutableCatalogRetained = Renderer::ResolvePublishedTextureArtifactVariantSet(
+            asset, TextureTargetProfile::DesktopBC, retainedPublished, error)
+            && sameVariantSet(retainedPublished, variants);
+
+        const AssetHandle noFallbackAsset = registry.RegisterAsset(
+            AssetType::Texture, "Tests/Variants/NoFallback.ktx2", "No fallback");
+        removeAllPaths(noFallbackAsset);
+        const TextureArtifact noFallbackPreferred = makePreferred(noFallbackAsset);
+        TextureArtifactVariantSet noFallbackVariants = variants;
+        const bool missingFallbackVisible = StoreTextureArtifact(GetCookedTextureArtifactPath(
+                noFallbackAsset, TextureTargetProfile::DesktopBC), noFallbackPreferred, error)
+            && ResolveTextureArtifactVariantSet(registry, noFallbackAsset,
+                TextureTargetProfile::DesktopBC, noFallbackVariants, error)
+            && noFallbackVariants.Preferred.Asset == noFallbackAsset
+            && !noFallbackVariants.RgbaFallback.has_value();
+
+        AssetRegistry failureRegistry;
+        const AssetHandle failureAsset = failureRegistry.RegisterAsset(
+            AssetType::Texture, "Tests/Variants/Failure.ktx2", "Failure variant");
+        removeAllPaths(failureAsset);
+        TextureArtifact failurePreferred = MakeTextureGpuCacheArtifact(failureAsset);
+        failurePreferred.SourcePath = failureRegistry.GetAsset(failureAsset)->SourcePath;
+        TextureArtifact failureFallback = MakeTextureGpuCacheFallback(failurePreferred);
+        const std::filesystem::path failurePreferredPath = GetCookedTextureArtifactPath(
+            failureAsset, TextureTargetProfile::DesktopBC);
+        const std::filesystem::path failureFallbackPath = GetCookedTextureArtifactPath(
+            failureAsset, TextureTargetProfile::RGBAFallback);
+        const bool failureStored = StoreTextureArtifact(failurePreferredPath, failurePreferred, error)
+            && StoreTextureArtifact(failureFallbackPath, failureFallback, error);
+        TextureArtifactVariantSet failureSentinel = variants;
+        {
+            std::ofstream corruptFile(failureFallbackPath, std::ios::binary | std::ios::app);
+            corruptFile.put('!');
+        }
+        const bool corruptFallbackRejected = failureStored
+            && !ResolveTextureArtifactVariantSet(failureRegistry, failureAsset,
+                TextureTargetProfile::DesktopBC, failureSentinel, error)
+            && sameVariantSet(failureSentinel, variants);
+        TextureArtifact mismatchedFallback = failureFallback;
+        mismatchedFallback.Role = TextureRole::Orm;
+        const bool mismatchStored = StoreTextureArtifact(
+            failureFallbackPath, mismatchedFallback, error);
+        const bool mismatchedFallbackRejected = mismatchStored
+            && !ResolveTextureArtifactVariantSet(failureRegistry, failureAsset,
+                TextureTargetProfile::DesktopBC, failureSentinel, error)
+            && sameVariantSet(failureSentinel, variants);
+
+        const AssetHandle legacyAsset = failureRegistry.RegisterAsset(
+            AssetType::Texture, "Tests/Variants/Legacy.raw", "Legacy target");
+        removeAllPaths(legacyAsset);
+        TextureArtifact legacy = MakeTextureGpuCacheFallback(MakeTextureGpuCacheArtifact(legacyAsset));
+        legacy.SourcePath = failureRegistry.GetAsset(legacyAsset)->SourcePath;
+        TextureArtifact legacyResolved;
+        const bool legacyOwnTargetResolves = StoreTextureArtifact(
+                GetCookedTextureArtifactPath(legacyAsset), legacy, error)
+            && ResolveTextureArtifact(failureRegistry, legacyAsset,
+                TextureTargetProfile::RGBAFallback, legacyResolved, error)
+            && legacyResolved.Payload == legacy.Payload;
+        const TextureArtifact legacySentinel = legacyResolved;
+        const bool legacyCannotSubstitute = !ResolveTextureArtifact(failureRegistry, legacyAsset,
+                TextureTargetProfile::DesktopBC, legacyResolved, error)
+            && legacyResolved.Payload == legacySentinel.Payload;
+
+        Renderer::ClearArtifactResolvers();
+        removeAllPaths(asset);
+        removeAllPaths(noFallbackAsset);
+        removeAllPaths(failureAsset);
+        removeAllPaths(legacyAsset);
+        return Expect(pathsAreTargetSpecific && coResident,
+                "texture targets retain distinct deterministic files and resolve as one matching variant set")
+            && Expect(publishedResolved && immutableCatalogRetained,
+                "renderer variant resolution uses one immutable published catalog generation")
+            && Expect(missingFallbackVisible,
+                "an absent optional RGBA fallback is visible without rejecting the preferred target")
+            && Expect(corruptFallbackRejected && mismatchedFallbackRejected,
+                "present corrupt or semantically mismatched fallbacks preserve caller output")
+            && Expect(legacyOwnTargetResolves && legacyCannotSubstitute,
+                "legacy unsuffixed artifacts satisfy only their recorded target profile");
     }
 
     bool TestTextureArtifactUploadPlan()
@@ -7358,6 +7521,7 @@ int main(int argc, char** argv)
         INTEGRATION_TEST("Cooked mesh artifacts validate and resolve transactionally", TestMeshArtifactValidationAndResolution),
         INTEGRATION_TEST("Texture artifacts cook the deterministic RGBA fallback transactionally", TestTextureArtifactFallbackCooking),
         INTEGRATION_TEST("KTX2 Basis textures cook deterministic compressed targets transactionally", TestKtx2BasisCooking),
+        INTEGRATION_TEST("Texture artifact variants coexist and resolve transactionally", TestTextureArtifactVariantSetResolution),
         FAST_TEST("Texture mip completion preserves authority and role filters", TestTextureMipCompletionPolicy),
         FAST_TEST("Texture artifacts select exact-device immutable mip upload plans", TestTextureArtifactUploadPlan),
         FAST_TEST("Mesh GPU resource cache preserves exact immutable generations", TestMeshGpuResourceCache),
