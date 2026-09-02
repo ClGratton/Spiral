@@ -21,6 +21,7 @@
 #include "Engine/Renderer/SceneRasterPreparation.h"
 #include "Engine/Renderer/MeshGpuResourceCache.h"
 #include "Engine/Renderer/TextureArtifactUploadPlan.h"
+#include "Engine/Renderer/TextureGpuResourceCache.h"
 #include "Engine/Assets/MeshArtifact.h"
 #include "Engine/Assets/TextureArtifact.h"
 #include "Engine/Assets/AssetRegistry.h"
@@ -1696,6 +1697,25 @@ namespace
         Engine::RHI::BufferDescription m_Description;
     };
 
+    class MeshGpuCacheTestTexture final : public Engine::RHI::Texture
+    {
+    public:
+        MeshGpuCacheTestTexture(Engine::RHI::TextureDescription description, const Engine::RHI::Device* owner)
+            : Owner(owner), State(description.InitialState), m_Description(std::move(description))
+        {
+        }
+
+        const Engine::RHI::TextureDescription& GetDescription() const override { return m_Description; }
+
+        const Engine::RHI::Device* Owner = nullptr;
+        Engine::RHI::ResourceState State = Engine::RHI::ResourceState::Unknown;
+        std::vector<Engine::RHI::TextureSubresourceUpload> Subresources;
+        std::vector<Engine::u8> Bytes;
+
+    private:
+        Engine::RHI::TextureDescription m_Description;
+    };
+
     class MeshGpuCacheTestDevice final : public Engine::RHI::Device
     {
     public:
@@ -1706,11 +1726,27 @@ namespace
             CreatedDescriptions.push_back(description);
             return FailCreate || description.SizeBytes == 0 ? nullptr : Engine::CreateScope<MeshGpuCacheTestBuffer>(description);
         }
-        Engine::Scope<Engine::RHI::Texture> CreateTexture(const Engine::RHI::TextureDescription&) override { return nullptr; }
+        Engine::Scope<Engine::RHI::Texture> CreateTexture(const Engine::RHI::TextureDescription& description) override
+        {
+            CreatedTextureDescriptions.push_back(description);
+            return FailCreate || description.Extent.Width == 0 || description.Extent.Height == 0
+                ? nullptr : Engine::CreateScope<MeshGpuCacheTestTexture>(description, this);
+        }
         bool OwnsResource(const Engine::RHI::Buffer* resource) const override { return dynamic_cast<const MeshGpuCacheTestBuffer*>(resource) != nullptr; }
-        bool OwnsResource(const Engine::RHI::Texture*) const override { return false; }
+        bool OwnsResource(const Engine::RHI::Texture* resource) const override
+        {
+            const auto* texture = dynamic_cast<const MeshGpuCacheTestTexture*>(resource);
+            return texture && texture->Owner == this;
+        }
         bool QueryResourceState(const Engine::RHI::Buffer*, Engine::RHI::ResourceState&) const override { return false; }
-        bool QueryResourceState(const Engine::RHI::Texture*, Engine::RHI::ResourceState&) const override { return false; }
+        bool QueryResourceState(const Engine::RHI::Texture* resource, Engine::RHI::ResourceState& state) const override
+        {
+            const auto* texture = dynamic_cast<const MeshGpuCacheTestTexture*>(resource);
+            if (!texture || texture->Owner != this)
+                return false;
+            state = texture->State;
+            return true;
+        }
         Engine::Scope<Engine::RHI::Shader> CreateShader(const Engine::RHI::ShaderDescription&) override { return nullptr; }
         Engine::Scope<Engine::RHI::Pipeline> CreatePipeline(const Engine::RHI::PipelineDescription&) override { return nullptr; }
         Engine::Scope<Engine::RHI::QueryPool> CreateQueryPool(const Engine::RHI::QueryPoolDescription&) override { return nullptr; }
@@ -1722,6 +1758,19 @@ namespace
             if (FailUpload || !buffer || !source || size != buffer->GetDescription().SizeBytes) return false;
             const auto* bytes = static_cast<const Engine::u8*>(source);
             buffer->Bytes.assign(bytes, bytes + size);
+            return true;
+        }
+        bool UploadTexture(Engine::RHI::Texture& destination, const Engine::RHI::TextureUploadBatch& upload) override
+        {
+            ++TextureUploadCount;
+            auto* texture = dynamic_cast<MeshGpuCacheTestTexture*>(&destination);
+            if (FailTextureUpload || !texture || texture->Owner != this
+                || !Engine::RHI::IsReadOnlyTextureUploadCompatible(texture->GetDescription(), upload))
+                return false;
+            texture->Subresources = upload.Subresources;
+            texture->Bytes = *upload.Bytes;
+            texture->State = PublishWrongTextureState
+                ? Engine::RHI::ResourceState::CopyDest : Engine::RHI::ResourceState::ShaderResource;
             return true;
         }
         bool ReadbackTexture(Engine::RHI::Texture&, Engine::RHI::TextureReadback&) override { return false; }
@@ -1738,8 +1787,12 @@ namespace
 
         bool FailCreate = false;
         bool FailUpload = false;
+        bool FailTextureUpload = false;
+        bool PublishWrongTextureState = false;
         int UploadCount = 0;
+        int TextureUploadCount = 0;
         std::vector<Engine::RHI::BufferDescription> CreatedDescriptions;
+        std::vector<Engine::RHI::TextureDescription> CreatedTextureDescriptions;
     private:
         Engine::RHI::DeviceDescription m_Description;
         Engine::RHI::DeviceCapabilities m_Capabilities;
@@ -1814,6 +1867,154 @@ namespace
             && Expect(failureAtomic, "mesh GPU cache leaves accepted entries unchanged after upload failure")
             && Expect(clearReleasesOnlyCacheOwnership,
                 "mesh GPU cache clear releases cache ownership while a retained bundle remains valid for GPU retirement");
+    }
+
+    Engine::TextureArtifact MakeTextureGpuCacheArtifact(Engine::AssetHandle asset = 81)
+    {
+        Engine::TextureArtifact artifact;
+        artifact.Asset = asset;
+        artifact.SourcePath = "Assets/Textures/../Normal.ktx2";
+        artifact.Role = Engine::TextureRole::Normal;
+        artifact.ColorSpace = Engine::TextureColorSpace::Linear;
+        artifact.TargetProfile = Engine::TextureTargetProfile::DesktopBC;
+        artifact.CookedFormat = Engine::TextureCookedFormat::Bc5Unorm;
+        artifact.Mips = {
+            { 8, 8, 0, 64 },
+            { 4, 4, 64, 16 },
+            { 2, 2, 80, 16 },
+            { 1, 1, 96, 16 }
+        };
+        artifact.Payload.resize(112);
+        for (size_t index = 0; index < artifact.Payload.size(); ++index)
+            artifact.Payload[index] = static_cast<Engine::u8>((index * 17u + 5u) & 0xffu);
+        return artifact;
+    }
+
+    Engine::TextureArtifact MakeTextureGpuCacheFallback(const Engine::TextureArtifact& preferred)
+    {
+        Engine::TextureArtifact fallback = preferred;
+        fallback.TargetProfile = Engine::TextureTargetProfile::RGBAFallback;
+        fallback.CookedFormat = Engine::TextureCookedFormat::R8G8B8A8Unorm;
+        fallback.Mips = {
+            { 8, 8, 0, 256 },
+            { 4, 4, 256, 64 },
+            { 2, 2, 320, 16 },
+            { 1, 1, 336, 4 }
+        };
+        fallback.Payload.assign(340, 0x7c);
+        return fallback;
+    }
+
+    bool TestTextureGpuResourceCache()
+    {
+        using namespace Engine;
+        TextureGpuResourceCache cache(2);
+        MeshGpuCacheTestDevice firstDevice, secondDevice;
+        firstDevice.SetFormatCapabilities({
+            { RHI::Format::BC5Unorm, RHI::FormatUsage::Sampled | RHI::FormatUsage::CopyDestination, 1 },
+            { RHI::Format::R8G8B8A8Unorm, RHI::FormatUsage::Sampled | RHI::FormatUsage::CopyDestination, 1 }
+        });
+        secondDevice.SetFormatCapabilities(firstDevice.GetCapabilities().Formats);
+
+        TextureArtifact preferred = MakeTextureGpuCacheArtifact();
+        TextureArtifact fallback = MakeTextureGpuCacheFallback(preferred);
+        Ref<const TextureGpuResourceBundle> first, reused, changed, secondDeviceBundle, survivor;
+        std::string error;
+        const bool created = cache.Acquire(firstDevice, preferred, &fallback, first, error);
+        const auto* texture = first ? dynamic_cast<const MeshGpuCacheTestTexture*>(first->Texture.get()) : nullptr;
+        const bool exactUpload = created && texture && first->Generation == 1
+            && !first->UsedExplicitRgbaFallback && first->Diagnostic.find("preferred") != std::string::npos
+            && first->UploadPlan.Asset == preferred.Asset && first->UploadPlan.Payload
+            && *first->UploadPlan.Payload == preferred.Payload
+            && texture->State == RHI::ResourceState::ShaderResource
+            && texture->GetDescription().TextureFormat == RHI::Format::BC5Unorm
+            && texture->GetDescription().MipLevels == 4 && texture->Subresources.size() == 4
+            && texture->Subresources[3].ByteOffset == 96 && texture->Bytes == preferred.Payload
+            && firstDevice.CreatedTextureDescriptions.size() == 1 && firstDevice.TextureUploadCount == 1;
+
+        TextureArtifact normalizedProvenance = preferred;
+        normalizedProvenance.SourcePath = "Assets/Normal.ktx2";
+        const bool exactReuse = cache.Acquire(firstDevice, normalizedProvenance, &fallback, reused, error)
+            && reused == first && firstDevice.TextureUploadCount == 1;
+
+        TextureArtifact modified = preferred;
+        modified.Payload[17] ^= 0x5au;
+        const bool replacement = cache.Acquire(firstDevice, modified, &fallback, changed, error)
+            && changed != first && changed->Generation > first->Generation;
+        const bool wrongDeviceSeparate = cache.Acquire(secondDevice, preferred, &fallback, secondDeviceBundle, error)
+            && secondDeviceBundle != first && secondDeviceBundle->Generation > changed->Generation;
+
+        survivor = first;
+        TextureArtifact third = modified;
+        third.Asset = 82;
+        TextureArtifact thirdFallback = MakeTextureGpuCacheFallback(third);
+        const bool bounded = cache.Acquire(firstDevice, third, &thirdFallback, changed, error)
+            && cache.GetEntryCount() == 2 && survivor->Texture && survivor->UploadPlan.Payload;
+        const int uploadsBeforeEvictionProbe = secondDevice.TextureUploadCount;
+        const bool retainedMostRecent = cache.Acquire(secondDevice, preferred, &fallback, reused, error)
+            && reused == secondDeviceBundle && secondDevice.TextureUploadCount == uploadsBeforeEvictionProbe;
+        const int uploadsBeforeRecreate = firstDevice.TextureUploadCount;
+        const bool evictedLeastRecent = cache.Acquire(firstDevice, preferred, &fallback, reused, error)
+            && reused != survivor && firstDevice.TextureUploadCount == uploadsBeforeRecreate + 1;
+
+        const size_t beforeFailure = cache.GetEntryCount();
+        const Ref<const TextureGpuResourceBundle> beforeFailedAcquire = changed;
+        TextureArtifact failed = third;
+        failed.Asset = 83;
+        TextureArtifact failedFallback = MakeTextureGpuCacheFallback(failed);
+        firstDevice.FailTextureUpload = true;
+        const bool uploadFailureAtomic = !cache.Acquire(firstDevice, failed, &failedFallback, changed, error)
+            && cache.GetEntryCount() == beforeFailure && changed == beforeFailedAcquire;
+        firstDevice.FailTextureUpload = false;
+        firstDevice.PublishWrongTextureState = true;
+        failed.Asset = 84;
+        failedFallback = MakeTextureGpuCacheFallback(failed);
+        const bool stateFailureAtomic = !cache.Acquire(firstDevice, failed, &failedFallback, changed, error)
+            && cache.GetEntryCount() == beforeFailure && changed == beforeFailedAcquire
+            && error.find("ShaderResource") != std::string::npos;
+        firstDevice.PublishWrongTextureState = false;
+        firstDevice.FailCreate = true;
+        failed.Asset = 85;
+        failedFallback = MakeTextureGpuCacheFallback(failed);
+        const bool createFailureAtomic = !cache.Acquire(firstDevice, failed, &failedFallback, changed, error)
+            && cache.GetEntryCount() == beforeFailure && changed == beforeFailedAcquire
+            && error.find("exact-device texture") != std::string::npos;
+        firstDevice.FailCreate = false;
+
+        TextureGpuResourceCache fallbackCache(1);
+        MeshGpuCacheTestDevice fallbackDevice;
+        fallbackDevice.SetFormatCapabilities({ { RHI::Format::R8G8B8A8Unorm,
+            RHI::FormatUsage::Sampled | RHI::FormatUsage::CopyDestination, 1 } });
+        Ref<const TextureGpuResourceBundle> fallbackBundle;
+        const bool explicitFallback = fallbackCache.Acquire(fallbackDevice, preferred, &fallback, fallbackBundle, error)
+            && fallbackBundle->UsedExplicitRgbaFallback
+            && fallbackBundle->UploadPlan.TargetProfile == TextureTargetProfile::RGBAFallback
+            && fallbackBundle->UploadPlan.Payload && *fallbackBundle->UploadPlan.Payload == fallback.Payload
+            && fallbackBundle->Diagnostic.find("separately cooked") != std::string::npos;
+        const Ref<const TextureGpuResourceBundle> beforeMissingFallback = fallbackBundle;
+        TextureArtifact another = preferred;
+        another.Asset = 91;
+        const bool missingFallbackAtomic = !fallbackCache.Acquire(fallbackDevice, another, nullptr, fallbackBundle, error)
+            && fallbackBundle == beforeMissingFallback && fallbackCache.GetEntryCount() == 1;
+
+        TextureGpuResourceCache zeroCapacity(0);
+        Ref<const TextureGpuResourceBundle> zeroOutput = first;
+        const bool zeroRejected = !zeroCapacity.Acquire(firstDevice, preferred, &fallback, zeroOutput, error)
+            && zeroOutput == first;
+        cache.Clear();
+        const bool clearReleasesOnlyCacheOwnership = cache.GetEntryCount() == 0
+            && survivor->Texture && survivor->UploadPlan.Payload && *survivor->UploadPlan.Payload == preferred.Payload;
+
+        return Expect(exactUpload, "texture GPU cache publishes exact selected payload and resource only after ShaderResource")
+            && Expect(exactReuse && replacement, "texture GPU cache reuses only a collision-free selected artifact identity")
+            && Expect(wrongDeviceSeparate, "texture GPU cache separates exact RHI device instances")
+            && Expect(bounded && retainedMostRecent && evictedLeastRecent,
+                "texture GPU cache evicts the deterministic least-recent entry while external Ref bundles survive")
+            && Expect(createFailureAtomic && uploadFailureAtomic && stateFailureAtomic && missingFallbackAtomic && zeroRejected,
+                "texture GPU cache preserves caller and accepted generations on selection creation upload and state failure")
+            && Expect(explicitFallback, "texture GPU cache uploads only the exact-device separately cooked semantic fallback")
+            && Expect(clearReleasesOnlyCacheOwnership,
+                "texture GPU cache clear releases cache ownership while a retained payload and resource bundle remains valid");
     }
 
     bool TestMeshArtifactValidationAndResolution()
@@ -6988,6 +7189,7 @@ int main(int argc, char** argv)
         FAST_TEST("Texture mip completion preserves authority and role filters", TestTextureMipCompletionPolicy),
         FAST_TEST("Texture artifacts select exact-device immutable mip upload plans", TestTextureArtifactUploadPlan),
         FAST_TEST("Mesh GPU resource cache preserves exact immutable generations", TestMeshGpuResourceCache),
+        FAST_TEST("Texture GPU resource cache publishes exact immutable generations", TestTextureGpuResourceCache),
         INTEGRATION_TEST("Scene version 4 canonical persistence", TestSceneVersionFourCanonicalPersistence),
         INTEGRATION_TEST("Scene loads legacy absolute transforms", TestSceneLoadsLegacyAbsoluteTransforms),
         INTEGRATION_TEST("Scene rejects invalid version 4 world state", TestSceneRejectsInvalidVersionFourWorldState),

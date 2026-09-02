@@ -2,6 +2,7 @@
 
 #include "Engine/Renderer/ShaderLibrary.h"
 #include "Engine/Renderer/SlangShaderCompiler.h"
+#include "Engine/Renderer/TextureGpuResourceCache.h"
 
 #include "Engine/Core/Log.h"
 #include "Engine/Core/Application.h"
@@ -1260,13 +1261,89 @@ namespace Engine
         const bool bc5MipChain = runMipChain(RHI::Format::BC5Unorm);
         const bool bc7MipChain = runMipChain(RHI::Format::BC7Unorm);
         const bool bc7SrgbMipChain = runMipChain(RHI::Format::BC7UnormSrgb);
-        const bool passed = singleMipPassed && bc5MipChain && bc7MipChain && bc7SrgbMipChain;
+        const bool mipUploadPassed = singleMipPassed && bc5MipChain && bc7MipChain && bc7SrgbMipChain;
         Log::Info("RHITextureUploadSmokeV2 backend=", backendName,
             ", mips=4, bc5Bytes=", bc5MipChain ? "pass" : "fail",
             ", bc7Bytes=", bc7MipChain ? "pass" : "fail",
             ", bc7SrgbBytes=", bc7SrgbMipChain ? "pass" : "fail",
-            ", finalState=ShaderResource, result=", passed ? "pass" : "fail");
-        return passed;
+            ", finalState=ShaderResource, result=", mipUploadPassed ? "pass" : "fail");
+
+        const auto makeArtifact = [](AssetHandle asset, TextureTargetProfile profile,
+            TextureCookedFormat cookedFormat, RHI::Format format, u8 seed)
+        {
+            TextureArtifact artifact;
+            artifact.Asset = asset;
+            artifact.SourcePath = "Engine/Generated/TextureGpuResourceCacheSmoke.ktx2";
+            artifact.Role = TextureRole::Normal;
+            artifact.ColorSpace = TextureColorSpace::Linear;
+            artifact.TargetProfile = profile;
+            artifact.CookedFormat = cookedFormat;
+            RHI::Extent2D extent { 8, 8 };
+            u64 offset = 0;
+            for (u32 mip = 0; mip < 4; ++mip)
+            {
+                u64 rowPitch = 0, byteSize = 0;
+                if (!RHI::CalculateTextureSubresourceStorage(format, extent, rowPitch, byteSize))
+                    return TextureArtifact {};
+                artifact.Mips.push_back({ extent.Width, extent.Height, offset, byteSize });
+                artifact.Payload.resize(static_cast<size_t>(offset + byteSize));
+                for (u64 byte = 0; byte < byteSize; ++byte)
+                    artifact.Payload[static_cast<size_t>(offset + byte)] = static_cast<u8>(seed + mip * 29u + byte % 181u);
+                offset += byteSize;
+                extent.Width = extent.Width > 1 ? extent.Width / 2 : 1;
+                extent.Height = extent.Height > 1 ? extent.Height / 2 : 1;
+            }
+            return artifact;
+        };
+
+        TextureArtifact preferred = makeArtifact(501, TextureTargetProfile::DesktopBC,
+            TextureCookedFormat::Bc5Unorm, RHI::Format::BC5Unorm, 11);
+        TextureGpuResourceCache cache(3);
+        Ref<const TextureGpuResourceBundle> first, reused, replacement, fallbackBundle;
+        std::string cacheError;
+        RHI::ResourceState preferredState = RHI::ResourceState::Unknown;
+        const bool preferredPublished = cache.Acquire(device, preferred, nullptr, first, cacheError)
+            && first && !first->UsedExplicitRgbaFallback && first->Generation == 1
+            && first->UploadPlan.Payload && *first->UploadPlan.Payload == preferred.Payload
+            && device.OwnsResource(first->Texture.get())
+            && device.QueryResourceState(first->Texture.get(), preferredState)
+            && preferredState == RHI::ResourceState::ShaderResource;
+        const bool exactReuse = preferredPublished
+            && cache.Acquire(device, preferred, nullptr, reused, cacheError) && reused == first;
+        TextureArtifact changed = preferred;
+        if (!changed.Payload.empty()) changed.Payload[17] ^= 0x5au;
+        const bool replaced = exactReuse && cache.Acquire(device, changed, nullptr, replacement, cacheError)
+            && replacement && replacement != first && replacement->Generation > first->Generation;
+
+        TextureArtifact unsupported = makeArtifact(502, TextureTargetProfile::Astc,
+            TextureCookedFormat::Astc4x4Unorm, RHI::Format::ASTC4x4Unorm, 47);
+        TextureArtifact rgbaFallback = makeArtifact(502, TextureTargetProfile::RGBAFallback,
+            TextureCookedFormat::R8G8B8A8Unorm, RHI::Format::R8G8B8A8Unorm, 83);
+        RHI::ResourceState fallbackState = RHI::ResourceState::Unknown;
+        const bool fallbackPublished = replaced
+            && cache.Acquire(device, unsupported, &rgbaFallback, fallbackBundle, cacheError)
+            && fallbackBundle && fallbackBundle->UsedExplicitRgbaFallback
+            && fallbackBundle->UploadPlan.TargetProfile == TextureTargetProfile::RGBAFallback
+            && fallbackBundle->UploadPlan.Payload && *fallbackBundle->UploadPlan.Payload == rgbaFallback.Payload
+            && device.OwnsResource(fallbackBundle->Texture.get())
+            && device.QueryResourceState(fallbackBundle->Texture.get(), fallbackState)
+            && fallbackState == RHI::ResourceState::ShaderResource;
+        cache.Clear();
+        const bool retainedAfterClear = cache.GetEntryCount() == 0 && first && replacement && fallbackBundle
+            && first->Texture && replacement->Texture && fallbackBundle->Texture
+            && first->UploadPlan.Payload && replacement->UploadPlan.Payload && fallbackBundle->UploadPlan.Payload;
+        const bool cachePassed = preferredPublished && exactReuse && replaced && fallbackPublished && retainedAfterClear;
+        Log::Info("TextureGpuResourceCacheSmokeV1 backend=", backendName,
+            ", preferred=", preferredPublished ? "pass" : "fail",
+            ", reuse=", exactReuse ? "exact" : "fail",
+            ", replacement=", replaced ? "pass" : "fail",
+            ", fallback=", fallbackPublished ? "RGBA8" : "fail",
+            ", shaderResource=", preferredState == RHI::ResourceState::ShaderResource
+                && fallbackState == RHI::ResourceState::ShaderResource ? "pass" : "fail",
+            ", cacheCleared=", cache.GetEntryCount() == 0 ? "pass" : "fail",
+            ", retained=", retainedAfterClear ? "pass" : "fail",
+            ", result=", cachePassed ? "pass" : "fail");
+        return mipUploadPassed && cachePassed;
     }
 
     bool NVRHIRenderBackend::RunRHISampledTextureTableSmoke(RHI::Device& device, std::string_view backendName)
