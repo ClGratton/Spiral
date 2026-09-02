@@ -156,7 +156,20 @@ namespace Engine::RHI
             (void)upload;
             return false;
         }
+        // Initializes the complete immutable mip chain transactionally. The
+        // backend owns native staging and publishes ShaderResource only after
+        // the exact Graphics submission has completed.
+        virtual bool UploadTexture(Texture& destination, const TextureUploadBatch& upload)
+        {
+            (void)destination;
+            (void)upload;
+            return false;
+        }
         virtual bool ReadbackTexture(Texture& source, TextureReadback& destination) = 0;
+        virtual bool ReadbackTexture(Texture& source, u32 mipLevel, TextureReadback& destination)
+        {
+            return mipLevel == 0 && ReadbackTexture(source, destination);
+        }
         // Returns after the queue accepts closed work. The opaque token is
         // subsequently owned by this Device for query/wait/reuse decisions.
         virtual CompletionToken Submit(CommandList& commandList) = 0;

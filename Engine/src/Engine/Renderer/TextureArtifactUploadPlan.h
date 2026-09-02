@@ -1,7 +1,7 @@
 #pragma once
 
 #include "Engine/Assets/TextureArtifact.h"
-#include "Engine/RHI/Texture.h"
+#include "Engine/RHI/Device.h"
 
 #include <string>
 #include <vector>
@@ -35,4 +35,23 @@ namespace Engine
 
     bool BuildTextureArtifactUploadPlan(const TextureArtifact& artifact,
         TextureArtifactUploadPlan& outPlan, std::string& outError);
+
+    struct TextureArtifactUploadSelection
+    {
+        TextureArtifactUploadPlan Plan;
+        bool UsedExplicitRgbaFallback = false;
+        std::string Diagnostic;
+    };
+
+    bool BuildTextureUploadBatch(const TextureArtifactUploadPlan& plan,
+        RHI::TextureUploadBatch& outUpload, std::string& outError);
+
+    // `rgbaFallback` must be a separately cooked plan for the same semantic
+    // texture. The selected device's retained format table is the sole support
+    // authority; absence is unsupported rather than assumed support.
+    bool SelectTextureArtifactUploadPlan(const RHI::Device& device,
+        const TextureArtifactUploadPlan& preferred,
+        const TextureArtifactUploadPlan* rgbaFallback,
+        TextureArtifactUploadSelection& outSelection,
+        std::string& outError);
 }

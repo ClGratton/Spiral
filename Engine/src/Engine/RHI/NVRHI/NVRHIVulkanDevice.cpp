@@ -869,7 +869,7 @@ namespace Engine::RHI
             }
             Scope<Texture> CreateTexture(const TextureDescription& description) override
             {
-                if (!m_Device || !description.Extent.Width || !description.Extent.Height || description.MipLevels != 1 || description.ArrayLayers != 1 || description.SampleCount != 1) return nullptr;
+                if (!m_Device || !description.Extent.Width || !description.Extent.Height || description.MipLevels == 0 || description.ArrayLayers != 1 || description.SampleCount != 1) return nullptr;
                 nvrhi::Format format = ConvertFormat(description.TextureFormat); if (format == nvrhi::Format::UNKNOWN) return nullptr;
                 nvrhi::ResourceStates initialState = ConvertState(description.InitialState);
                 // Vulkan has no useful image layout for generic Common. Pick the
@@ -883,7 +883,7 @@ namespace Engine::RHI
                             : HasTextureUsage(description.Usage, TextureUsage::CopyDest)
                                 ? nvrhi::ResourceStates::CopyDest
                                 : nvrhi::ResourceStates::CopySource;
-                nvrhi::TextureDesc d; d.setWidth(description.Extent.Width).setHeight(description.Extent.Height).setMipLevels(1).setArraySize(1).setSampleCount(1).setFormat(format).setDebugName(description.DebugName).enableAutomaticStateTracking(initialState);
+                nvrhi::TextureDesc d; d.setWidth(description.Extent.Width).setHeight(description.Extent.Height).setMipLevels(description.MipLevels).setArraySize(1).setSampleCount(1).setFormat(format).setDebugName(description.DebugName).enableAutomaticStateTracking(initialState);
                 d.setIsRenderTarget(HasTextureUsage(description.Usage, TextureUsage::RenderTarget) || HasTextureUsage(description.Usage, TextureUsage::DepthStencil)).setIsUAV(HasTextureUsage(description.Usage, TextureUsage::UnorderedAccess)); d.isShaderResource = HasTextureUsage(description.Usage, TextureUsage::ShaderResource);
                 nvrhi::TextureHandle native = m_Device->createTexture(d);
                 if (!native) return nullptr;
@@ -1062,6 +1062,17 @@ namespace Engine::RHI
             }
             bool UploadTexture(Texture& destination, const TextureUpload& upload) override
             {
+                if (!IsReadOnlyTextureUploadCompatible(destination.GetDescription(), upload))
+                    return false;
+                TextureUploadBatch batch;
+                batch.TextureFormat = upload.TextureFormat;
+                batch.Subresources.push_back({ 0, 0, upload.Extent, 0, upload.RowPitchBytes,
+                    static_cast<u64>(upload.RowPitchBytes) * upload.Extent.Height });
+                batch.Bytes = upload.Bytes;
+                return UploadTexture(destination, batch);
+            }
+            bool UploadTexture(Texture& destination, const TextureUploadBatch& upload) override
+            {
                 auto* texture = dynamic_cast<VulkanTexture*>(&destination);
                 if (!texture || !OwnsResource(&destination) || !CanUseTextureOnQueue(&destination, QueueType::Graphics)
                     || !IsReadOnlyTextureUploadCompatible(destination.GetDescription(), upload)
@@ -1072,21 +1083,42 @@ namespace Engine::RHI
                     return false;
                 auto* nativeList = static_cast<VulkanCommandList*>(list.get());
                 nativeList->Native()->beginTrackingTextureState(texture->Native(), nvrhi::AllSubresources, ConvertState(ResourceState::CopyDest));
-                nativeList->Native()->writeTexture(texture->Native(), 0, 0, upload.Bytes->data(), upload.RowPitchBytes,
-                    static_cast<size_t>(upload.RowPitchBytes) * destination.GetDescription().Extent.Height);
+                for (const TextureSubresourceUpload& subresource : upload.Subresources)
+                {
+                    nativeList->Native()->writeTexture(texture->Native(), subresource.ArrayLayer, subresource.MipLevel,
+                        upload.Bytes->data() + static_cast<size_t>(subresource.ByteOffset),
+                        static_cast<size_t>(subresource.RowPitchBytes), static_cast<size_t>(subresource.ByteSize));
+                }
                 return nativeList->TransitionTexture(destination, ResourceState::ShaderResource)
                     && list->End() && SubmitAndWait(*list);
             }
             bool ReadbackTexture(Texture& source, TextureReadback& out) override
             {
+                return ReadbackTexture(source, 0, out);
+            }
+            bool ReadbackTexture(Texture& source, u32 mipLevel, TextureReadback& out) override
+            {
                 auto* texture = dynamic_cast<VulkanTexture*>(&source); const auto& d = source.GetDescription(); QueueType owner = QueueType::Graphics;
-                if (!texture || !OwnsResource(&source) || !m_TextureOwnership.QueryOwner(&source, owner) || !CanUseTextureOnQueue(&source, owner) || d.TextureFormat != Format::R8G8B8A8Unorm || !HasTextureUsage(d.Usage, TextureUsage::CopySource)) return false;
+                TextureFormatBlockLayout layout;
+                if (!texture || !OwnsResource(&source) || !m_TextureOwnership.QueryOwner(&source, owner) || !CanUseTextureOnQueue(&source, owner)
+                    || mipLevel >= d.MipLevels || !GetTextureFormatBlockLayout(d.TextureFormat, layout)
+                    || d.TextureFormat == Format::D24UnormS8Uint || d.TextureFormat == Format::D32Float
+                    || !HasTextureUsage(d.Usage, TextureUsage::CopySource)) return false;
+                Extent2D extent = d.Extent;
+                for (u32 index = 0; index < mipLevel; ++index)
+                { extent.Width = extent.Width > 1 ? extent.Width / 2 : 1; extent.Height = extent.Height > 1 ? extent.Height / 2 : 1; }
+                u64 tightRowPitch = 0, tightByteSize = 0;
+                if (!CalculateTextureSubresourceStorage(d.TextureFormat, extent, tightRowPitch, tightByteSize)
+                    || tightRowPitch > std::numeric_limits<u32>::max() || tightByteSize > std::numeric_limits<size_t>::max()) return false;
+                const size_t blockRows = static_cast<size_t>((static_cast<u64>(extent.Height) + layout.Height - 1) / layout.Height);
+                nvrhi::TextureSlice slice;
+                slice.setMipLevel(mipLevel);
                 nvrhi::StagingTextureHandle staging = m_Device->createStagingTexture(texture->Native()->getDesc(), nvrhi::CpuAccessMode::Read); if (!staging) return false;
                 Scope<CommandList> list = CreateCommandList(owner, "Vulkan RHI Texture Readback"); if (!list || !list->Begin()) return false;
                 auto* nativeList = static_cast<VulkanCommandList*>(list.get()); nativeList->Native()->beginTrackingTextureState(texture->Native(), nvrhi::AllSubresources, ConvertState(texture->GetCurrentState()));
-                nativeList->Native()->copyTexture(staging, nvrhi::TextureSlice(), texture->Native(), nvrhi::TextureSlice()); if (!list->End() || !SubmitAndWait(*list)) return false;
+                nativeList->Native()->copyTexture(staging, slice, texture->Native(), slice); if (!list->End() || !SubmitAndWait(*list)) return false;
                 size_t rowPitch = 0;
-                void* mapped = m_Device->mapStagingTexture(staging, nvrhi::TextureSlice(), nvrhi::CpuAccessMode::Read, &rowPitch);
+                void* mapped = m_Device->mapStagingTexture(staging, slice, nvrhi::CpuAccessMode::Read, &rowPitch);
                 if (!mapped)
                     return false;
                 struct ScopedStagingTextureUnmap final
@@ -1095,15 +1127,17 @@ namespace Engine::RHI
                     nvrhi::IStagingTexture* Texture;
                     ~ScopedStagingTextureUnmap() { Device->unmapStagingTexture(Texture); }
                 } unmap { m_Device, staging };
-                if (!rowPitch || rowPitch > std::numeric_limits<u32>::max() || rowPitch > std::numeric_limits<size_t>::max() / d.Extent.Height)
+                if (rowPitch < tightRowPitch || rowPitch > std::numeric_limits<size_t>::max() / blockRows)
                     return false;
-                const size_t dataSize = rowPitch * static_cast<size_t>(d.Extent.Height);
                 TextureReadback readback;
-                readback.Extent = d.Extent;
+                readback.Extent = extent;
                 readback.TextureFormat = d.TextureFormat;
-                readback.RowPitchBytes = static_cast<u32>(rowPitch);
-                readback.Data.resize(dataSize);
-                std::memcpy(readback.Data.data(), mapped, dataSize);
+                readback.RowPitchBytes = static_cast<u32>(tightRowPitch);
+                readback.Data.resize(static_cast<size_t>(tightByteSize));
+                const auto* sourceBytes = static_cast<const u8*>(mapped);
+                for (size_t row = 0; row < blockRows; ++row)
+                    std::memcpy(readback.Data.data() + row * static_cast<size_t>(tightRowPitch),
+                        sourceBytes + row * rowPitch, static_cast<size_t>(tightRowPitch));
                 out = std::move(readback);
                 return true;
             }

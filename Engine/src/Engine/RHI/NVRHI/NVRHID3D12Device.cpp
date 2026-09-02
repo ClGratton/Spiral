@@ -2002,6 +2002,18 @@ namespace Engine::RHI
 
             bool UploadTexture(Texture& destination, const TextureUpload& upload) override
             {
+                if (!IsReadOnlyTextureUploadCompatible(destination.GetDescription(), upload))
+                    return false;
+                TextureUploadBatch batch;
+                batch.TextureFormat = upload.TextureFormat;
+                batch.Subresources.push_back({ 0, 0, upload.Extent, 0, upload.RowPitchBytes,
+                    static_cast<u64>(upload.RowPitchBytes) * upload.Extent.Height });
+                batch.Bytes = upload.Bytes;
+                return UploadTexture(destination, batch);
+            }
+
+            bool UploadTexture(Texture& destination, const TextureUploadBatch& upload) override
+            {
                 auto* texture = dynamic_cast<NVRHID3D12Texture*>(&destination);
                 if (!texture || !OwnsResource(&destination) || !m_TextureOwnership.CanUse(&destination)
                     || !IsReadOnlyTextureUploadCompatible(destination.GetDescription(), upload)
@@ -2009,14 +2021,26 @@ namespace Engine::RHI
                     return false;
 
                 D3D12_RESOURCE_DESC nativeDescription = texture->GetResource()->GetDesc();
-                D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint {};
-                UINT rows = 0;
-                UINT64 rowBytes = 0;
+                const UINT subresourceCount = static_cast<UINT>(upload.Subresources.size());
+                std::vector<D3D12_PLACED_SUBRESOURCE_FOOTPRINT> footprints(subresourceCount);
+                std::vector<UINT> rows(subresourceCount);
+                std::vector<UINT64> rowBytes(subresourceCount);
                 UINT64 requiredBytes = 0;
-                m_Device->GetCopyableFootprints(&nativeDescription, 0, 1, 0, &footprint, &rows, &rowBytes, &requiredBytes);
-                if (rows != destination.GetDescription().Extent.Height || rowBytes != static_cast<UINT64>(destination.GetDescription().Extent.Width) * 4u
-                    || requiredBytes == 0)
+                m_Device->GetCopyableFootprints(&nativeDescription, 0, subresourceCount, 0,
+                    footprints.data(), rows.data(), rowBytes.data(), &requiredBytes);
+                if (requiredBytes == 0)
                     return false;
+
+                for (UINT index = 0; index < subresourceCount; ++index)
+                {
+                    TextureFormatBlockLayout layout;
+                    const TextureSubresourceUpload& subresource = upload.Subresources[index];
+                    if (!GetTextureFormatBlockLayout(upload.TextureFormat, layout))
+                        return false;
+                    const u64 blockRows = (static_cast<u64>(subresource.Extent.Height) + layout.Height - 1) / layout.Height;
+                    if (rows[index] != blockRows || rowBytes[index] > subresource.RowPitchBytes)
+                        return false;
+                }
 
                 BufferDescription stagingDescription;
                 stagingDescription.DebugName = destination.GetDescription().DebugName + " Texture Upload Staging";
@@ -2028,12 +2052,17 @@ namespace Engine::RHI
                 void* mapped = nativeStaging ? nativeStaging->Map() : nullptr;
                 if (!mapped)
                     return false;
-                const u8* source = upload.Bytes->data();
-                for (u32 row = 0; row < destination.GetDescription().Extent.Height; ++row)
+                for (UINT index = 0; index < subresourceCount; ++index)
                 {
-                    std::memcpy(static_cast<u8*>(mapped) + footprint.Offset + static_cast<size_t>(row) * footprint.Footprint.RowPitch,
-                        source + static_cast<size_t>(row) * upload.RowPitchBytes,
-                        static_cast<size_t>(rowBytes));
+                    const TextureSubresourceUpload& subresource = upload.Subresources[index];
+                    const u8* source = upload.Bytes->data() + static_cast<size_t>(subresource.ByteOffset);
+                    for (UINT row = 0; row < rows[index]; ++row)
+                    {
+                        std::memcpy(static_cast<u8*>(mapped) + footprints[index].Offset
+                                + static_cast<size_t>(row) * footprints[index].Footprint.RowPitch,
+                            source + static_cast<size_t>(row) * static_cast<size_t>(subresource.RowPitchBytes),
+                            static_cast<size_t>(rowBytes[index]));
+                    }
                 }
                 nativeStaging->Unmap();
 
@@ -2044,68 +2073,79 @@ namespace Engine::RHI
                 auto* nativeList = commandList ? dynamic_cast<NVRHID3D12CommandList*>(commandList.get()) : nullptr;
                 if (!nativeList || !nativeList->Begin())
                     return false;
-                D3D12_TEXTURE_COPY_LOCATION sourceLocation {};
-                sourceLocation.pResource = nativeStaging->GetResource();
-                sourceLocation.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
-                sourceLocation.PlacedFootprint = footprint;
-                D3D12_TEXTURE_COPY_LOCATION destinationLocation {};
-                destinationLocation.pResource = texture->GetResource();
-                destinationLocation.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
-                destinationLocation.SubresourceIndex = 0;
-                nativeList->GetNativeGraphicsCommandList()->CopyTextureRegion(&destinationLocation, 0, 0, 0, &sourceLocation, nullptr);
+                for (UINT index = 0; index < subresourceCount; ++index)
+                {
+                    D3D12_TEXTURE_COPY_LOCATION sourceLocation {};
+                    sourceLocation.pResource = nativeStaging->GetResource();
+                    sourceLocation.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+                    sourceLocation.PlacedFootprint = footprints[index];
+                    D3D12_TEXTURE_COPY_LOCATION destinationLocation {};
+                    destinationLocation.pResource = texture->GetResource();
+                    destinationLocation.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+                    destinationLocation.SubresourceIndex = index;
+                    nativeList->GetNativeGraphicsCommandList()->CopyTextureRegion(
+                        &destinationLocation, 0, 0, 0, &sourceLocation, nullptr);
+                }
                 return nativeList->TransitionTexture(destination, ResourceState::ShaderResource)
                     && nativeList->End() && SubmitAndWait(*nativeList);
             }
 
             bool ReadbackTexture(Texture& source, TextureReadback& destination) override
             {
-                // Readback is deliberately restricted to the portable offscreen
-                // contract. The caller must have finalized the source state before
-                // this method records its own copy; this prevents a hidden native
-                // transition from changing graph-owned state behind RHI.
+                return ReadbackTexture(source, 0, destination);
+            }
+
+            bool ReadbackTexture(Texture& source, u32 mipLevel, TextureReadback& destination) override
+            {
+                // The caller must have finalized the whole-resource source state
+                // before this method records one mip copy; this prevents a hidden
+                // native transition from changing graph-owned state behind RHI.
                 auto* texture = dynamic_cast<NVRHID3D12Texture*>(&source);
                 const TextureDescription& description = source.GetDescription();
+                TextureFormatBlockLayout layout;
                 if (!texture || !OwnsResource(&source)
                     || !m_TextureOwnership.CanUse(&source)
-                    || description.TextureFormat != Format::R8G8B8A8Unorm
+                    || mipLevel >= description.MipLevels
+                    || !GetTextureFormatBlockLayout(description.TextureFormat, layout)
+                    || description.TextureFormat == Format::D24UnormS8Uint || description.TextureFormat == Format::D32Float
                     || !HasTextureUsage(description.Usage, TextureUsage::CopySource)
                     || HasTextureUsage(description.Usage, TextureUsage::DepthStencil)
                     || description.Extent.Width == 0 || description.Extent.Height == 0
-                    || description.MipLevels != 1 || description.ArrayLayers != 1 || description.SampleCount != 1
+                    || description.ArrayLayers != 1 || description.SampleCount != 1
                     || texture->GetCurrentState() != D3D12_RESOURCE_STATE_COPY_SOURCE
                     || !texture->GetResource())
                     return false;
 
                 const D3D12_RESOURCE_DESC sourceDescription = texture->GetResource()->GetDesc();
                 if (sourceDescription.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D
-                    || sourceDescription.Format != DXGI_FORMAT_R8G8B8A8_UNORM
-                    || sourceDescription.MipLevels != 1 || sourceDescription.DepthOrArraySize != 1
+                    || sourceDescription.Format != ConvertFormat(description.TextureFormat)
+                    || sourceDescription.MipLevels != description.MipLevels || sourceDescription.DepthOrArraySize != 1
                     || sourceDescription.SampleDesc.Count != 1 || sourceDescription.Width != description.Extent.Width
                     || sourceDescription.Height != description.Extent.Height)
                     return false;
 
-                constexpr u64 bytesPerPixel = 4;
-                if (description.Extent.Width > std::numeric_limits<u64>::max() / bytesPerPixel)
+                Extent2D extent = description.Extent;
+                for (u32 index = 0; index < mipLevel; ++index)
+                { extent.Width = extent.Width > 1 ? extent.Width / 2 : 1; extent.Height = extent.Height > 1 ? extent.Height / 2 : 1; }
+                u64 tightRowPitch = 0, tightDataSize = 0;
+                if (!CalculateTextureSubresourceStorage(description.TextureFormat, extent, tightRowPitch, tightDataSize)
+                    || tightRowPitch > std::numeric_limits<u32>::max())
                     return false;
-                const u64 tightRowPitch = static_cast<u64>(description.Extent.Width) * bytesPerPixel;
-                if (tightRowPitch == 0 || tightRowPitch > std::numeric_limits<u32>::max()
-                    || description.Extent.Height > std::numeric_limits<u64>::max() / tightRowPitch)
-                    return false;
-                const u64 tightDataSize = tightRowPitch * static_cast<u64>(description.Extent.Height);
+                const u64 blockRows = (static_cast<u64>(extent.Height) + layout.Height - 1) / layout.Height;
 
                 D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint {};
                 UINT rowCount = 0;
                 UINT64 rowSize = 0;
                 UINT64 readbackSize = 0;
-                m_Device->GetCopyableFootprints(&sourceDescription, 0, 1, 0, &footprint, &rowCount, &rowSize, &readbackSize);
-                if (rowCount != description.Extent.Height || rowSize != tightRowPitch
+                m_Device->GetCopyableFootprints(&sourceDescription, mipLevel, 1, 0, &footprint, &rowCount, &rowSize, &readbackSize);
+                if (rowCount != blockRows || rowSize != tightRowPitch
                     || footprint.Footprint.RowPitch < tightRowPitch || readbackSize == 0
                     || footprint.Offset > std::numeric_limits<u64>::max() - tightRowPitch
-                    || description.Extent.Height - 1 > (std::numeric_limits<u64>::max() - footprint.Offset - tightRowPitch)
+                    || blockRows - 1 > (std::numeric_limits<u64>::max() - footprint.Offset - tightRowPitch)
                         / footprint.Footprint.RowPitch)
                     return false;
                 const u64 requiredReadbackBytes = footprint.Offset
-                    + static_cast<u64>(description.Extent.Height - 1) * footprint.Footprint.RowPitch + tightRowPitch;
+                    + (blockRows - 1) * footprint.Footprint.RowPitch + tightRowPitch;
                 if (requiredReadbackBytes > readbackSize)
                     return false;
 
@@ -2131,7 +2171,7 @@ namespace Engine::RHI
                 D3D12_TEXTURE_COPY_LOCATION sourceLocation {};
                 sourceLocation.pResource = texture->GetResource();
                 sourceLocation.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
-                sourceLocation.SubresourceIndex = 0;
+                sourceLocation.SubresourceIndex = mipLevel;
                 nativeCommandList->GetNativeGraphicsCommandList()->CopyTextureRegion(&destinationLocation, 0, 0, 0, &sourceLocation, nullptr);
 
                 if (!commandList->End())
@@ -2150,15 +2190,15 @@ namespace Engine::RHI
                 } unmap { readbackBuffer.get() };
 
                 if (tightDataSize > std::numeric_limits<size_t>::max()
-                    || footprint.Footprint.RowPitch > std::numeric_limits<size_t>::max() / description.Extent.Height)
+                    || footprint.Footprint.RowPitch > std::numeric_limits<size_t>::max() / blockRows)
                     return false;
                 TextureReadback readback;
-                readback.Extent = description.Extent;
+                readback.Extent = extent;
                 readback.TextureFormat = description.TextureFormat;
                 readback.RowPitchBytes = static_cast<u32>(tightRowPitch);
                 readback.Data.resize(static_cast<size_t>(tightDataSize));
                 const auto* sourceBytes = static_cast<const u8*>(mapped);
-                for (u32 row = 0; row < description.Extent.Height; ++row)
+                for (u64 row = 0; row < blockRows; ++row)
                     std::memcpy(readback.Data.data() + static_cast<size_t>(row) * readback.RowPitchBytes,
                         sourceBytes + static_cast<size_t>(row) * footprint.Footprint.RowPitch,
                         readback.RowPitchBytes);
@@ -2788,6 +2828,14 @@ namespace Engine::RHI
                     0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence)));
                 candidate.Formats.push_back(QueryFormatCapability(
                     probeDevice.Get(), Format::R8G8B8A8Unorm, DXGI_FORMAT_R8G8B8A8_UNORM));
+                candidate.Formats.push_back(QueryFormatCapability(
+                    probeDevice.Get(), Format::R8G8B8A8UnormSrgb, DXGI_FORMAT_R8G8B8A8_UNORM_SRGB));
+                candidate.Formats.push_back(QueryFormatCapability(
+                    probeDevice.Get(), Format::BC5Unorm, DXGI_FORMAT_BC5_UNORM));
+                candidate.Formats.push_back(QueryFormatCapability(
+                    probeDevice.Get(), Format::BC7Unorm, DXGI_FORMAT_BC7_UNORM));
+                candidate.Formats.push_back(QueryFormatCapability(
+                    probeDevice.Get(), Format::BC7UnormSrgb, DXGI_FORMAT_BC7_UNORM_SRGB));
                 candidate.Formats.push_back(QueryFormatCapability(
                     probeDevice.Get(), Format::D32Float, DXGI_FORMAT_D32_FLOAT));
             }

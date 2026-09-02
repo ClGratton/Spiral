@@ -103,6 +103,7 @@ REQUIRED_MARKERS=(
     "ProductionRenderGraphRetirementV1 backend=Vulkan"
     "RenderGraphTimestampScopesV1 backend=Vulkan"
     "RendererGpuTimingV1 backend=NVRHI Vulkan"
+    "RHITextureUploadSmokeV2 backend=Vulkan, mips=4, bc5Bytes=pass, bc7Bytes=pass, bc7SrgbBytes=pass, finalState=ShaderResource, result=pass"
     "RenderGraphExecutionSmokeV1 backend=Vulkan, barriers=3, callbacks=ordered-pass, undeclared=rejected, submission=pass, topology="
     "RenderGraphTransientAllocationSmokeV1 backend=Vulkan, mode=NonAliasedGpuRetiredPool, lifetime=compatible-sequential-pass, estimatedLogicalAllocatedBytes=64, estimatedLogicalPooledBytes=64, retirement=exact-token-pass, reuse=retired-pass, result=pass"
 )

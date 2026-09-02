@@ -1731,6 +1731,11 @@ namespace
         bool SubmitAndWait(Engine::RHI::CommandList&) override { return false; }
         void WaitIdle() override {}
 
+        void SetFormatCapabilities(std::vector<Engine::RHI::FormatCapability> formats)
+        {
+            m_Capabilities.Formats = std::move(formats);
+        }
+
         bool FailCreate = false;
         bool FailUpload = false;
         int UploadCount = 0;
@@ -2122,6 +2127,58 @@ namespace
         const bool astcMapped = BuildTextureArtifactUploadPlan(astc, astcPlan, error)
             && astcPlan.Texture.TextureFormat == RHI::Format::ASTC4x4UnormSrgb && astcPlan.HasAlpha;
 
+        RHI::TextureUploadBatch batch;
+        const bool batchBuilt = BuildTextureUploadBatch(plan, batch, error)
+            && RHI::IsReadOnlyTextureUploadCompatible(plan.Texture, batch)
+            && batch.Subresources.size() == plan.Subresources.size()
+            && batch.Subresources[2].ByteOffset == 80 && batch.Bytes == plan.Payload;
+
+        TextureArtifact fallbackArtifact = artifact;
+        fallbackArtifact.TargetProfile = TextureTargetProfile::RGBAFallback;
+        fallbackArtifact.CookedFormat = TextureCookedFormat::R8G8B8A8Unorm;
+        fallbackArtifact.Mips = { { 8, 8, 0, 256 }, { 4, 4, 256, 64 }, { 2, 2, 320, 16 }, { 1, 1, 336, 4 } };
+        fallbackArtifact.Payload.assign(340, 0x7c);
+        TextureArtifactUploadPlan fallbackPlan;
+        const bool fallbackBuilt = BuildTextureArtifactUploadPlan(fallbackArtifact, fallbackPlan, error);
+
+        MeshGpuCacheTestDevice device;
+        device.SetFormatCapabilities({ { RHI::Format::R8G8B8A8Unorm,
+            RHI::FormatUsage::Sampled | RHI::FormatUsage::CopyDestination, 1 } });
+        TextureArtifactUploadSelection selection;
+        const bool selectedFallback = fallbackBuilt
+            && SelectTextureArtifactUploadPlan(device, plan, &fallbackPlan, selection, error)
+            && selection.UsedExplicitRgbaFallback
+            && selection.Plan.TargetProfile == TextureTargetProfile::RGBAFallback
+            && selection.Plan.Payload == fallbackPlan.Payload
+            && selection.Diagnostic.find("separately cooked") != std::string::npos;
+
+        device.SetFormatCapabilities({
+            { RHI::Format::BC5Unorm, RHI::FormatUsage::Sampled | RHI::FormatUsage::CopyDestination, 1 },
+            { RHI::Format::R8G8B8A8Unorm, RHI::FormatUsage::Sampled | RHI::FormatUsage::CopyDestination, 1 }
+        });
+        const bool selectedPreferred = SelectTextureArtifactUploadPlan(device, plan, &fallbackPlan, selection, error)
+            && !selection.UsedExplicitRgbaFallback && selection.Plan.Payload == plan.Payload;
+
+        const TextureArtifactUploadSelection preservedSelection = selection;
+        TextureArtifactUploadPlan mismatchedFallback = fallbackPlan;
+        mismatchedFallback.SourcePath = "Textures/AnotherNormal.ktx2";
+        device.SetFormatCapabilities({ { RHI::Format::R8G8B8A8Unorm,
+            RHI::FormatUsage::Sampled | RHI::FormatUsage::CopyDestination, 1 } });
+        const bool mismatchTransactional = !SelectTextureArtifactUploadPlan(
+            device, plan, &mismatchedFallback, selection, error)
+            && selection.Plan.Payload == preservedSelection.Plan.Payload
+            && error.find("no matching explicit RGBA fallback") != std::string::npos;
+
+        RHI::TextureUploadBatch preservedBatch = batch;
+        TextureArtifactUploadPlan malformedBatchPlan = plan;
+        malformedBatchPlan.Subresources[1].ByteOffset += 1;
+        const bool batchTransactional = !BuildTextureUploadBatch(malformedBatchPlan, batch, error)
+            && batch.Bytes == preservedBatch.Bytes && batch.Subresources.size() == preservedBatch.Subresources.size();
+        TextureArtifactUploadPlan relabeledPlan = plan;
+        relabeledPlan.Texture.TextureFormat = RHI::Format::BC7Unorm;
+        const bool relabelRejected = !BuildTextureUploadBatch(relabeledPlan, batch, error)
+            && error.find("preserved target semantics") != std::string::npos;
+
         TextureArtifactUploadPlan preserved = plan;
         artifact.Mips[2].ByteSize = 15;
         const bool transactional = !BuildTextureArtifactUploadPlan(artifact, plan, error)
@@ -2133,7 +2190,10 @@ namespace
             && rowPitch == 32 && byteCount == 64;
         return Expect(identity && description, "texture upload plan preserves artifact identity, semantics, payload, and RHI description")
             && Expect(subresources && astcMapped, "texture upload plan maps exact compressed format and block-aware mip ranges")
-            && Expect(transactional && blockLayout, "texture upload plan rejects malformed artifacts transactionally and exposes stable block storage");
+            && Expect(transactional && blockLayout && batchBuilt && batchTransactional && relabelRejected,
+                "texture upload plan rejects malformed artifacts and mip batches transactionally")
+            && Expect(selectedFallback && selectedPreferred && mismatchTransactional,
+                "exact-device format selection uses only a separately cooked semantic RGBA fallback");
     }
 
     bool TestSceneVersionFourCanonicalPersistence()
@@ -6236,11 +6296,41 @@ float4 main(VertexInput input) : SV_Position
         writable.Usage = static_cast<TextureUsage>(static_cast<Engine::u32>(writable.Usage) | static_cast<Engine::u32>(TextureUsage::RenderTarget));
         TextureDescription wrongInitial = description;
         wrongInitial.InitialState = ResourceState::ShaderResource;
+        TextureDescription compressed = description;
+        compressed.Extent = { 8, 8 };
+        compressed.TextureFormat = Format::BC7Unorm;
+        compressed.MipLevels = 4;
+        TextureUploadBatch mipBatch;
+        mipBatch.TextureFormat = compressed.TextureFormat;
+        mipBatch.Bytes = Engine::CreateRef<std::vector<Engine::u8>>(112, 0x35);
+        mipBatch.Subresources = {
+            { 0, 0, { 8, 8 }, 0, 32, 64 },
+            { 1, 0, { 4, 4 }, 64, 16, 16 },
+            { 2, 0, { 2, 2 }, 80, 16, 16 },
+            { 3, 0, { 1, 1 }, 96, 16, 16 }
+        };
+        TextureUploadBatch wrongMipOffset = mipBatch;
+        wrongMipOffset.Subresources[2].ByteOffset = 81;
+        TextureUploadBatch wrongMipExtent = mipBatch;
+        wrongMipExtent.Subresources[1].Extent.Width = 3;
+        TextureUploadBatch missingMip = mipBatch;
+        missingMip.Subresources.pop_back();
+        TextureDescription excessiveMipDescription = compressed;
+        excessiveMipDescription.MipLevels = 5;
+        TextureUploadBatch excessiveMips = mipBatch;
+        excessiveMips.Subresources.push_back({ 4, 0, { 1, 1 }, 112, 16, 16 });
+        excessiveMips.Bytes = Engine::CreateRef<std::vector<Engine::u8>>(128, 0x35);
         return Expect(IsReadOnlyTextureUploadCompatible(description, upload), "a full RGBA8 upload accepts exact extent and padded rows")
             && Expect(!IsReadOnlyTextureUploadCompatible(description, wrongFormat), "a texture upload rejects a mismatched format")
             && Expect(!IsReadOnlyTextureUploadCompatible(description, truncated), "a texture upload rejects a truncated row payload")
             && Expect(!IsReadOnlyTextureUploadCompatible(writable, upload), "a texture upload rejects writable destinations")
-            && Expect(!IsReadOnlyTextureUploadCompatible(wrongInitial, upload), "a texture upload requires CopyDest publication state");
+            && Expect(!IsReadOnlyTextureUploadCompatible(wrongInitial, upload), "a texture upload requires CopyDest publication state")
+            && Expect(IsReadOnlyTextureUploadCompatible(compressed, mipBatch), "a complete ordered BC mip chain is compatible")
+            && Expect(!IsReadOnlyTextureUploadCompatible(compressed, wrongMipOffset)
+                    && !IsReadOnlyTextureUploadCompatible(compressed, wrongMipExtent)
+                    && !IsReadOnlyTextureUploadCompatible(compressed, missingMip)
+                    && !IsReadOnlyTextureUploadCompatible(excessiveMipDescription, excessiveMips),
+                "mip batches reject gaps, incorrect extents, incomplete chains, and levels beyond 1x1");
     }
 
     bool TestSampledTextureTableBindingContract()
@@ -6573,7 +6663,7 @@ float4 main(VertexInput input) : SV_Position
         TextureOwnershipTestTexture texture, foreign;
         TextureDescription unsupportedDescription = texture.GetDescription();
         unsupportedDescription.MipLevels = 2;
-        TextureOwnershipTestTexture unsupported(unsupportedDescription);
+        TextureOwnershipTestTexture multiMip(unsupportedDescription);
         TextureDescription unsupportedLayerDescription = texture.GetDescription();
         unsupportedLayerDescription.ArrayLayers = 2;
         TextureOwnershipTestTexture unsupportedLayer(unsupportedLayerDescription);
@@ -6589,8 +6679,15 @@ float4 main(VertexInput input) : SV_Position
         const CompletionToken releaseToken { 73, 1 };
         TextureOwnershipAcquire acquire; static_cast<TextureOwnershipRelease&>(acquire) = release; acquire.ReleaseToken = releaseToken;
         QueueType owner = QueueType::Copy; ResourceState state = ResourceState::Unknown;
-        const bool rejected = !tracker.Register(unsupported, QueueType::Graphics, ResourceState::CopyDest)
-            && !tracker.Register(unsupportedLayer, QueueType::Graphics, ResourceState::CopyDest)
+        const bool multiMipTracked = tracker.Register(multiMip, QueueType::Graphics, ResourceState::CopyDest)
+            && tracker.QueryOwner(&multiMip, owner) && owner == QueueType::Graphics
+            && tracker.QueryState(&multiMip, state) && state == ResourceState::CopyDest
+            && tracker.PublishOrdinaryState(multiMip, ResourceState::CopySource)
+            && tracker.QueryState(&multiMip, state) && state == ResourceState::CopySource
+            && !tracker.RecordRelease({ &multiMip, QueueType::Graphics, QueueType::Copy,
+                    ResourceState::CopySource, ResourceState::CopyDest },
+                QueueType::Graphics, QueueType::Graphics, QueueType::Copy, op);
+        const bool rejected = !tracker.Register(unsupportedLayer, QueueType::Graphics, ResourceState::CopyDest)
             && !tracker.Register(unsupportedSample, QueueType::Graphics, ResourceState::CopyDest)
             && !tracker.Register(foreign, QueueType::Graphics, ResourceState::Unknown)
             && tracker.Register(common, QueueType::Graphics, ResourceState::Common)
@@ -6627,7 +6724,7 @@ float4 main(VertexInput input) : SV_Position
             && tracker.Recover(texture, { 73, 2 }, CompletionStatus::Complete)
             && tracker.QueryOwner(&texture, owner) && owner == QueueType::Copy
             && tracker.QueryState(&texture, state) && state == ResourceState::CopyDest;
-        const bool passed = rejected && released && acquired && recoverySetup;
+        const bool passed = multiMipTracked && rejected && released && acquired && recoverySetup;
         return passed;
     }
 
@@ -6752,7 +6849,7 @@ int main(int argc, char** argv)
         INTEGRATION_TEST("Cooked mesh artifacts validate and resolve transactionally", TestMeshArtifactValidationAndResolution),
         INTEGRATION_TEST("Texture artifacts cook the deterministic RGBA fallback transactionally", TestTextureArtifactFallbackCooking),
         INTEGRATION_TEST("KTX2 Basis textures cook deterministic compressed targets transactionally", TestKtx2BasisCooking),
-        FAST_TEST("Texture artifacts map to explicit block-aware RHI upload plans", TestTextureArtifactUploadPlan),
+        FAST_TEST("Texture artifacts select exact-device immutable mip upload plans", TestTextureArtifactUploadPlan),
         FAST_TEST("Mesh GPU resource cache preserves exact immutable generations", TestMeshGpuResourceCache),
         INTEGRATION_TEST("Scene version 4 canonical persistence", TestSceneVersionFourCanonicalPersistence),
         INTEGRATION_TEST("Scene loads legacy absolute transforms", TestSceneLoadsLegacyAbsoluteTransforms),

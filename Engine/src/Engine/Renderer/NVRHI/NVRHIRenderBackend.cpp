@@ -1170,12 +1170,102 @@ namespace Engine
                 for (u32 channel = 0; channel < 4; ++channel)
                     if (readback.Data[static_cast<size_t>(y) * readback.RowPitchBytes + x * 4u + channel] != (*bytes)[static_cast<size_t>(y) * 16u + x * 4u + channel])
                         bytesMatch = false;
-        const bool passed = uploaded && transitioned && read && bytesMatch;
+        const bool singleMipPassed = uploaded && transitioned && read && bytesMatch;
         Log::Info("RHITextureUploadSmokeV1 backend=", backendName,
             ", shaderResource=", uploaded ? "pass" : "fail",
             ", readback=", read ? "pass" : "fail",
             ", bytes=", bytesMatch ? "pass" : "fail",
-            ", result=", passed ? "pass" : "fail");
+            ", result=", singleMipPassed ? "pass" : "fail");
+
+        const auto runMipChain = [&](RHI::Format format)
+        {
+            const auto fail = [&](std::string_view stage)
+            {
+                Log::Error("RHITextureUploadSmokeV2 backend=", backendName,
+                    ", format=", RHI::ToString(format), ", failedStage=", stage);
+                return false;
+            };
+            const RHI::FormatUsage requiredUsages = RHI::FormatUsage::Sampled
+                | RHI::FormatUsage::CopySource | RHI::FormatUsage::CopyDestination;
+            const bool supported = std::any_of(device.GetCapabilities().Formats.begin(), device.GetCapabilities().Formats.end(),
+                [&](const RHI::FormatCapability& capability)
+                {
+                    return capability.Value == format && RHI::HasAllFormatUsages(capability.Usages, requiredUsages);
+                });
+            if (!supported)
+                return fail("capability");
+
+            RHI::TextureDescription mipDescription;
+            mipDescription.DebugName = std::string("RHITextureUploadSmokeV2 ") + RHI::ToString(format);
+            mipDescription.Extent = { 8, 8 };
+            mipDescription.TextureFormat = format;
+            mipDescription.Usage = static_cast<RHI::TextureUsage>(static_cast<u32>(RHI::TextureUsage::CopyDest)
+                | static_cast<u32>(RHI::TextureUsage::CopySource) | static_cast<u32>(RHI::TextureUsage::ShaderResource));
+            mipDescription.InitialState = RHI::ResourceState::CopyDest;
+            mipDescription.MipLevels = 4;
+
+            RHI::TextureUploadBatch mipUpload;
+            mipUpload.TextureFormat = format;
+            const Ref<std::vector<u8>> mipBytes = CreateRef<std::vector<u8>>();
+            RHI::Extent2D mipExtent = mipDescription.Extent;
+            u64 byteOffset = 0;
+            for (u32 mipLevel = 0; mipLevel < mipDescription.MipLevels; ++mipLevel)
+            {
+                u64 rowPitch = 0, byteSize = 0;
+                if (!RHI::CalculateTextureSubresourceStorage(format, mipExtent, rowPitch, byteSize)
+                    || byteSize > std::numeric_limits<size_t>::max()
+                    || byteOffset > std::numeric_limits<size_t>::max() - byteSize)
+                    return fail("batch-layout");
+                mipBytes->resize(static_cast<size_t>(byteOffset + byteSize));
+                for (u64 byte = 0; byte < byteSize; ++byte)
+                    (*mipBytes)[static_cast<size_t>(byteOffset + byte)] = static_cast<u8>(
+                        17u + mipLevel * 37u + static_cast<u32>(byte % 193u));
+                mipUpload.Subresources.push_back({ mipLevel, 0, mipExtent, byteOffset, rowPitch, byteSize });
+                byteOffset += byteSize;
+                mipExtent.Width = mipExtent.Width > 1 ? mipExtent.Width / 2 : 1;
+                mipExtent.Height = mipExtent.Height > 1 ? mipExtent.Height / 2 : 1;
+            }
+            mipUpload.Bytes = mipBytes;
+
+            Scope<RHI::Texture> mipTexture = device.CreateTexture(mipDescription);
+            RHI::ResourceState mipState = RHI::ResourceState::Unknown;
+            const bool mipUploaded = mipTexture && device.UploadTexture(*mipTexture, mipUpload)
+                && device.QueryResourceState(mipTexture.get(), mipState) && mipState == RHI::ResourceState::ShaderResource;
+            if (!mipUploaded)
+                return fail(mipTexture ? "upload-or-state" : "create");
+            Scope<RHI::CommandList> mipReadbackList = mipUploaded
+                ? device.CreateCommandList(RHI::QueueType::Graphics, "RHITextureUploadSmokeV2 Readback") : nullptr;
+            const bool mipTransitioned = mipReadbackList && mipReadbackList->Begin()
+                && mipReadbackList->TransitionTexture(*mipTexture, RHI::ResourceState::CopySource)
+                && mipReadbackList->End() && device.SubmitAndWait(*mipReadbackList);
+            if (!mipTransitioned)
+                return fail("copy-source-transition");
+
+            for (const RHI::TextureSubresourceUpload& subresource : mipUpload.Subresources)
+            {
+                RHI::TextureReadback mipReadback;
+                if (!device.ReadbackTexture(*mipTexture, subresource.MipLevel, mipReadback)
+                    || mipReadback.Extent.Width != subresource.Extent.Width
+                    || mipReadback.Extent.Height != subresource.Extent.Height
+                    || mipReadback.TextureFormat != format
+                    || mipReadback.RowPitchBytes != subresource.RowPitchBytes
+                    || mipReadback.Data.size() != static_cast<size_t>(subresource.ByteSize)
+                    || !std::equal(mipReadback.Data.begin(), mipReadback.Data.end(),
+                        mipBytes->begin() + static_cast<std::ptrdiff_t>(subresource.ByteOffset)))
+                    return fail(std::string("readback-mip-") + std::to_string(subresource.MipLevel));
+            }
+            return true;
+        };
+
+        const bool bc5MipChain = runMipChain(RHI::Format::BC5Unorm);
+        const bool bc7MipChain = runMipChain(RHI::Format::BC7Unorm);
+        const bool bc7SrgbMipChain = runMipChain(RHI::Format::BC7UnormSrgb);
+        const bool passed = singleMipPassed && bc5MipChain && bc7MipChain && bc7SrgbMipChain;
+        Log::Info("RHITextureUploadSmokeV2 backend=", backendName,
+            ", mips=4, bc5Bytes=", bc5MipChain ? "pass" : "fail",
+            ", bc7Bytes=", bc7MipChain ? "pass" : "fail",
+            ", bc7SrgbBytes=", bc7SrgbMipChain ? "pass" : "fail",
+            ", finalState=ShaderResource, result=", passed ? "pass" : "fail");
         return passed;
     }
 

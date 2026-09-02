@@ -60,6 +60,20 @@ namespace Engine::RHI
         return true;
     }
 
+    inline u32 CalculateMaximumTextureMipLevels(Extent2D extent)
+    {
+        if (extent.Width == 0 || extent.Height == 0)
+            return 0;
+        u32 levels = 1;
+        while (extent.Width > 1 || extent.Height > 1)
+        {
+            extent.Width = extent.Width > 1 ? extent.Width / 2 : 1;
+            extent.Height = extent.Height > 1 ? extent.Height / 2 : 1;
+            ++levels;
+        }
+        return levels;
+    }
+
     enum class TextureUsage : u32
     {
         None = 0,
@@ -105,6 +119,26 @@ namespace Engine::RHI
         Ref<const std::vector<u8>> Bytes;
     };
 
+    struct TextureSubresourceUpload
+    {
+        u32 MipLevel = 0;
+        u32 ArrayLayer = 0;
+        Extent2D Extent;
+        u64 ByteOffset = 0;
+        u64 RowPitchBytes = 0;
+        u64 ByteSize = 0;
+    };
+
+    // One immutable payload containing every declared subresource in ascending
+    // mip order. Native row alignment remains backend-private; these ranges use
+    // the cooked artifact's tightly packed block layout.
+    struct TextureUploadBatch
+    {
+        Format TextureFormat = Format::Unknown;
+        std::vector<TextureSubresourceUpload> Subresources;
+        Ref<const std::vector<u8>> Bytes;
+    };
+
     inline bool IsReadOnlyTextureUploadCompatible(const TextureDescription& description, const TextureUpload& upload)
     {
         const auto hasUsage = [usage = description.Usage](TextureUsage flag)
@@ -129,6 +163,64 @@ namespace Engine::RHI
         return upload.RowPitchBytes >= minimumRowPitch
             && requiredBytes <= std::numeric_limits<size_t>::max()
             && upload.Bytes->size() == static_cast<size_t>(requiredBytes);
+    }
+
+    inline bool IsReadOnlyTextureUploadCompatible(const TextureDescription& description, const TextureUploadBatch& upload)
+    {
+        const auto hasUsage = [usage = description.Usage](TextureUsage flag)
+        {
+            return (static_cast<u32>(usage) & static_cast<u32>(flag)) != 0;
+        };
+        if (description.Extent.Width == 0 || description.Extent.Height == 0
+            || description.MipLevels == 0 || description.MipLevels > CalculateMaximumTextureMipLevels(description.Extent)
+            || description.ArrayLayers != 1 || description.SampleCount != 1
+            || description.TextureFormat != upload.TextureFormat || !upload.Bytes
+            || upload.Subresources.size() != description.MipLevels
+            || !hasUsage(TextureUsage::CopyDest) || !hasUsage(TextureUsage::ShaderResource)
+            || hasUsage(TextureUsage::RenderTarget) || hasUsage(TextureUsage::DepthStencil)
+            || hasUsage(TextureUsage::UnorderedAccess) || description.InitialState != ResourceState::CopyDest)
+            return false;
+
+        switch (description.TextureFormat)
+        {
+            case Format::R8G8B8A8Unorm:
+            case Format::R8G8B8A8UnormSrgb:
+            case Format::BC5Unorm:
+            case Format::BC7Unorm:
+            case Format::BC7UnormSrgb:
+            case Format::ASTC4x4Unorm:
+            case Format::ASTC4x4UnormSrgb: break;
+            default: return false;
+        }
+
+        Extent2D expectedExtent = description.Extent;
+        u64 expectedOffset = 0;
+        for (u32 mipLevel = 0; mipLevel < description.MipLevels; ++mipLevel)
+        {
+            const TextureSubresourceUpload& subresource = upload.Subresources[mipLevel];
+            u64 tightRowPitch = 0;
+            u64 tightByteSize = 0;
+            TextureFormatBlockLayout layout;
+            if (subresource.MipLevel != mipLevel || subresource.ArrayLayer != 0
+                || subresource.Extent.Width != expectedExtent.Width || subresource.Extent.Height != expectedExtent.Height
+                || subresource.ByteOffset != expectedOffset
+                || !GetTextureFormatBlockLayout(description.TextureFormat, layout)
+                || !CalculateTextureSubresourceStorage(description.TextureFormat, expectedExtent, tightRowPitch, tightByteSize)
+                || subresource.RowPitchBytes < tightRowPitch)
+                return false;
+
+            const u64 blockRows = (static_cast<u64>(expectedExtent.Height) + layout.Height - 1) / layout.Height;
+            if (blockRows > std::numeric_limits<u64>::max() / subresource.RowPitchBytes
+                || subresource.ByteSize != subresource.RowPitchBytes * blockRows
+                || subresource.ByteSize < tightByteSize
+                || expectedOffset > std::numeric_limits<u64>::max() - subresource.ByteSize)
+                return false;
+            expectedOffset += subresource.ByteSize;
+            expectedExtent.Width = expectedExtent.Width > 1 ? expectedExtent.Width / 2 : 1;
+            expectedExtent.Height = expectedExtent.Height > 1 ? expectedExtent.Height / 2 : 1;
+        }
+        return expectedOffset <= std::numeric_limits<size_t>::max()
+            && upload.Bytes->size() == static_cast<size_t>(expectedOffset);
     }
 
     class Texture

@@ -21,6 +21,57 @@ namespace Engine
             }
             return false;
         }
+
+        bool DeviceSupportsUploadFormat(const RHI::Device& device, RHI::Format format)
+        {
+            const RHI::FormatUsage required = RHI::FormatUsage::Sampled | RHI::FormatUsage::CopyDestination;
+            for (const RHI::FormatCapability& capability : device.GetCapabilities().Formats)
+            {
+                if (capability.Value == format && RHI::HasAllFormatUsages(capability.Usages, required))
+                    return true;
+            }
+            return false;
+        }
+
+        bool HasMatchingSemantics(const TextureArtifactUploadPlan& preferred,
+            const TextureArtifactUploadPlan& fallback)
+        {
+            return fallback.TargetProfile == TextureTargetProfile::RGBAFallback
+                && (fallback.Texture.TextureFormat == RHI::Format::R8G8B8A8Unorm
+                    || fallback.Texture.TextureFormat == RHI::Format::R8G8B8A8UnormSrgb)
+                && fallback.Asset == preferred.Asset
+                && fallback.SourcePath == preferred.SourcePath
+                && fallback.Role == preferred.Role
+                && fallback.ColorSpace == preferred.ColorSpace
+                && fallback.HasAlpha == preferred.HasAlpha
+                && fallback.Texture.Extent.Width == preferred.Texture.Extent.Width
+                && fallback.Texture.Extent.Height == preferred.Texture.Extent.Height
+                && fallback.Texture.MipLevels == preferred.Texture.MipLevels;
+        }
+
+        bool HasConsistentPlanFormat(const TextureArtifactUploadPlan& plan)
+        {
+            if (plan.Asset == kInvalidAssetHandle || plan.SourcePath.empty())
+                return false;
+            const bool semanticColorSpace = plan.Role == TextureRole::BaseColor || plan.Role == TextureRole::Emissive
+                ? plan.ColorSpace == TextureColorSpace::Srgb
+                : (plan.Role == TextureRole::Normal || plan.Role == TextureRole::Orm || plan.Role == TextureRole::Mask)
+                    && plan.ColorSpace == TextureColorSpace::Linear;
+            if (!semanticColorSpace)
+                return false;
+            if (plan.TargetProfile == TextureTargetProfile::RGBAFallback)
+                return plan.Texture.TextureFormat == (plan.ColorSpace == TextureColorSpace::Srgb
+                    ? RHI::Format::R8G8B8A8UnormSrgb : RHI::Format::R8G8B8A8Unorm);
+            if (plan.TargetProfile == TextureTargetProfile::Astc)
+                return plan.Texture.TextureFormat == (plan.ColorSpace == TextureColorSpace::Srgb
+                    ? RHI::Format::ASTC4x4UnormSrgb : RHI::Format::ASTC4x4Unorm);
+            if (plan.TargetProfile != TextureTargetProfile::DesktopBC)
+                return false;
+            if (plan.Role == TextureRole::Normal)
+                return plan.ColorSpace == TextureColorSpace::Linear && plan.Texture.TextureFormat == RHI::Format::BC5Unorm;
+            return plan.Texture.TextureFormat == (plan.ColorSpace == TextureColorSpace::Srgb
+                ? RHI::Format::BC7UnormSrgb : RHI::Format::BC7Unorm);
+        }
     }
 
     bool BuildTextureArtifactUploadPlan(const TextureArtifact& artifact,
@@ -76,6 +127,77 @@ namespace Engine
 
         candidate.Payload = CreateRef<std::vector<u8>>(artifact.Payload);
         outPlan = std::move(candidate);
+        outError.clear();
+        return true;
+    }
+
+    bool BuildTextureUploadBatch(const TextureArtifactUploadPlan& plan,
+        RHI::TextureUploadBatch& outUpload, std::string& outError)
+    {
+        if (!HasConsistentPlanFormat(plan))
+        {
+            outError = "texture artifact upload plan format does not match its preserved target semantics";
+            return false;
+        }
+        RHI::TextureUploadBatch candidate;
+        candidate.TextureFormat = plan.Texture.TextureFormat;
+        candidate.Bytes = plan.Payload;
+        candidate.Subresources.reserve(plan.Subresources.size());
+        for (const TextureArtifactUploadSubresource& subresource : plan.Subresources)
+        {
+            candidate.Subresources.push_back({ subresource.MipLevel, 0, subresource.Extent,
+                subresource.ByteOffset, subresource.RowPitchBytes, subresource.ByteSize });
+        }
+        if (!RHI::IsReadOnlyTextureUploadCompatible(plan.Texture, candidate))
+        {
+            outError = "texture artifact upload plan is not a complete compatible mip batch";
+            return false;
+        }
+        outUpload = std::move(candidate);
+        outError.clear();
+        return true;
+    }
+
+    bool SelectTextureArtifactUploadPlan(const RHI::Device& device,
+        const TextureArtifactUploadPlan& preferred,
+        const TextureArtifactUploadPlan* rgbaFallback,
+        TextureArtifactUploadSelection& outSelection,
+        std::string& outError)
+    {
+        RHI::TextureUploadBatch preferredUpload;
+        if (!BuildTextureUploadBatch(preferred, preferredUpload, outError))
+            return false;
+
+        TextureArtifactUploadSelection candidate;
+        if (DeviceSupportsUploadFormat(device, preferred.Texture.TextureFormat))
+        {
+            candidate.Plan = preferred;
+            candidate.Diagnostic = std::string("selected exact-device preferred format ")
+                + RHI::ToString(preferred.Texture.TextureFormat);
+        }
+        else
+        {
+            RHI::TextureUploadBatch fallbackUpload;
+            if (!rgbaFallback || !HasMatchingSemantics(preferred, *rgbaFallback)
+                || !BuildTextureUploadBatch(*rgbaFallback, fallbackUpload, outError))
+            {
+                outError = std::string("exact device does not support ") + RHI::ToString(preferred.Texture.TextureFormat)
+                    + " and no matching explicit RGBA fallback is available";
+                return false;
+            }
+            if (!DeviceSupportsUploadFormat(device, rgbaFallback->Texture.TextureFormat))
+            {
+                outError = std::string("exact device supports neither preferred ") + RHI::ToString(preferred.Texture.TextureFormat)
+                    + " nor explicit RGBA fallback " + RHI::ToString(rgbaFallback->Texture.TextureFormat);
+                return false;
+            }
+            candidate.Plan = *rgbaFallback;
+            candidate.UsedExplicitRgbaFallback = true;
+            candidate.Diagnostic = std::string("preferred format ") + RHI::ToString(preferred.Texture.TextureFormat)
+                + " unsupported; selected separately cooked " + RHI::ToString(rgbaFallback->Texture.TextureFormat) + " fallback";
+        }
+
+        outSelection = std::move(candidate);
         outError.clear();
         return true;
     }

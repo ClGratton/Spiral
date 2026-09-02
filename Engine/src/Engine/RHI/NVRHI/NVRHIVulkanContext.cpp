@@ -532,6 +532,14 @@ namespace Engine::RHI
                 candidate.Formats.push_back(QueryFormatCapability(
                     device, Format::R8G8B8A8Unorm, VK_FORMAT_R8G8B8A8_UNORM));
                 candidate.Formats.push_back(QueryFormatCapability(
+                    device, Format::R8G8B8A8UnormSrgb, VK_FORMAT_R8G8B8A8_SRGB));
+                candidate.Formats.push_back(QueryFormatCapability(
+                    device, Format::BC5Unorm, VK_FORMAT_BC5_UNORM_BLOCK));
+                candidate.Formats.push_back(QueryFormatCapability(
+                    device, Format::BC7Unorm, VK_FORMAT_BC7_UNORM_BLOCK));
+                candidate.Formats.push_back(QueryFormatCapability(
+                    device, Format::BC7UnormSrgb, VK_FORMAT_BC7_SRGB_BLOCK));
+                candidate.Formats.push_back(QueryFormatCapability(
                     device, Format::D32Float, VK_FORMAT_D32_SFLOAT));
 
                 u32 extensionCount = 0;

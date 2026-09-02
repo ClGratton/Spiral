@@ -56,10 +56,18 @@ The revision must be `4d6fc70eaf62ad0558e63e8d97eb9766118327a6`, the checkout mu
 The portable artifact-to-RHI boundary is exercised with:
 
 ```bash
-./bin/Debug-linux-x86_64-gmake/EngineTests/EngineTests --test "Texture artifacts map to explicit block-aware RHI upload plans"
+./bin/Debug-linux-x86_64-gmake/EngineTests/EngineTests --test "Texture artifacts select exact-device immutable mip upload plans"
 ```
 
-The test requires exact asset/source and role/color-space/target preservation, immutable payload ownership, block-aware BC5 mip offsets/row pitches, explicit ASTC mapping, transactional rejection of a malformed artifact, and shared RHI block-size calculation. `Render graph transient logical texture estimates cover mips and formats` separately requires a `7x5` BC7 three-mip chain to consume exactly 96 logical bytes. Local Linux acceptance on 2026-09-02 produced a zero-warning Debug build, both focused passes, 87/87 Integration tests, the complete RTX 3080 Ti Vulkan harness, and the clean canonical ASan/UBSan lane with 87/87 plus 512 structured-fuzz runs. The Vulkan run is regression evidence for the existing single-mip RGBA upload and sampled-table paths; this planning slice does not allocate/upload the planned native resource and makes no D3D12, ASTC-device, material, generated-mip, residency, or GPU-retirement claim.
+The test requires exact asset/source and role/color-space/target preservation, immutable payload ownership, block-aware BC5 mip offsets/row pitches, explicit ASTC mapping, transactional rejection of malformed artifacts and mip batches, and exact selected-device fallback behavior. It rejects missing format capability records, offset/extent/count errors, levels beyond the legal 1x1 bound, format relabeling, and a separately cooked RGBA fallback whose preserved semantics do not match. `Render graph transient logical texture estimates cover mips and formats` separately requires a `7x5` BC7 three-mip chain to consume exactly 96 logical bytes.
+
+`RHI read-only texture upload validates the full-subresource contract` covers the backend-neutral complete BC mip-batch shape. `RHI texture ownership tracker preserves accepted-token pending publication` proves multi-mip ordinary whole-resource state while continuing to reject multi-mip cross-queue ownership transfer. The headed backend command remains the canonical native evidence:
+
+```bash
+bash Scripts/TestVulkan.sh Debug gmake --skip-build
+```
+
+On 2026-09-02 the complete local RTX 3080 Ti Vulkan run emitted `RHITextureUploadSmokeV2 backend=Vulkan, mips=4, bc5Bytes=pass, bc7Bytes=pass, bc7SrgbBytes=pass, finalState=ShaderResource, result=pass`. The smoke uploads four mips and reads every compressed subresource back through the backend's block-aware staging path for an exact byte comparison. The canonical ASan/UBSan lane also passed 87/87 plus 512 structured-fuzz runs with leak detection active. The same native marker is required by the Windows D3D12 render script, but D3D12 acceptance remains pending hosted Windows evidence. ASTC is intentionally absent from the current native format table and therefore selects a separately cooked RGBA fallback; this makes no ASTC-native, material, generated-mip, streaming, or residency claim.
 
 ## Test Selection And Generated Failures
 
