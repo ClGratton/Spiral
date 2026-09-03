@@ -155,7 +155,8 @@ namespace Engine
             const RHI::ViewportClear& clear,
             const SceneRasterFrame& rasterFrame,
             const std::vector<ConstantBufferAllocation>* constantBuffers,
-            const std::vector<SceneMeshDraw>& draws)
+            const std::vector<SceneMeshDraw>& draws,
+            const ToneMapPassConstants& toneMapConstants)
         {
             Scope<RHI::CommandList> commands = m_RHIDevice->CreateCommandList(RHI::QueueType::Graphics, "Scene Viewport Bootstrap Reference");
             if (!commands || !commands->Begin()
@@ -183,7 +184,7 @@ namespace Engine
             commands->EndDebugMarker();
             return commands->TransitionTexture(hdrTexture, RHI::ResourceState::ShaderResource)
                 && commands->TransitionTexture(colorTexture, RHI::ResourceState::RenderTarget)
-                && m_ToneMap.Record(*commands, hdrTexture, colorTexture, width, height)
+                && m_ToneMap.Record(*commands, hdrTexture, colorTexture, width, height, toneMapConstants)
                 && commands->TransitionTexture(colorTexture, RHI::ResourceState::CopySource)
                 && commands->End() && m_RHIDevice->SubmitAndWait(*commands);
         }
@@ -447,6 +448,10 @@ namespace Engine
                 return false;
 
             recordStage("D3D12 Viewport Scene Resolve");
+            const RendererColorPipelineSettings colorSettings = Renderer::GetColorPipelineSettings();
+            Ref<ToneMapPassConstants> toneMapConstants = m_ToneMap.AcquireConstants(colorSettings);
+            if (!toneMapConstants)
+                return false;
 
             Scope<RenderGraph> graph = CreateScope<RenderGraph>();
             RHI::TextureDescription hdrColorDescription = m_HdrColor->GetDescription();
@@ -498,12 +503,12 @@ namespace Engine
             const RenderGraph::PassHandle toneMapPass = graph->AddPass("Scene Viewport Graph Tone Map", RHI::QueueType::Graphics);
             graph->AddRead(toneMapPass, hdrColor, RHI::ResourceState::ShaderResource, RHI::ShaderStage::Pixel);
             graph->AddWrite(toneMapPass, color, RHI::ResourceState::RenderTarget);
-            graph->SetPassCallback(toneMapPass, [this, width, height](RenderGraph::ExecutionContext& context)
+            graph->SetPassCallback(toneMapPass, [this, width, height, toneMapConstants](RenderGraph::ExecutionContext& context)
             {
                 RHI::Texture* graphHdr = context.GetTexture({ 0 });
                 RHI::Texture* graphColor = context.GetTexture({ 1 });
                 return graphHdr && graphColor && m_ToneMap.Record(
-                    context.GetCommandList(), *graphHdr, *graphColor, width, height);
+                    context.GetCommandList(), *graphHdr, *graphColor, width, height, *toneMapConstants);
             });
             const RenderGraph::PassHandle handoffPass = graph->AddPass("Scene Viewport Graph Output Handoff", RHI::QueueType::Graphics);
             graph->AddRead(handoffPass, color, RHI::ResourceState::ShaderResource, RHI::ShaderStage::Pixel);
@@ -540,6 +545,7 @@ namespace Engine
                 std::vector<Ref<void>> payloads;
                 if (constantBufferSet)
                     payloads.emplace_back(constantBufferSet);
+                payloads.emplace_back(toneMapConstants);
                 // The graph may be retired asynchronously. Keep the exact pipeline
                 // selected while recording alive until its accepted GPU work retires.
                 if (activePipeline)
@@ -594,7 +600,7 @@ namespace Engine
                 Scope<RHI::Texture> referenceDepth = m_RHIDevice->CreateTexture(referenceDepthDescription);
                 RHI::TextureReadback graphReadback, referenceReadback;
                 const bool referenceRendered = referenceHdr && referenceColor && referenceDepth && RecordBootstrapReference(
-                    *referenceHdr, *referenceColor, *referenceDepth, width, height, clear, rasterFrame, constantBuffers, draws);
+                    *referenceHdr, *referenceColor, *referenceDepth, width, height, clear, rasterFrame, constantBuffers, draws, *toneMapConstants);
                 const bool readBack = referenceRendered && ReadbackGraphOutput(colorTexture, graphReadback)
                     && m_RHIDevice->ReadbackTexture(*referenceColor, referenceReadback);
                 const bool equivalent = readBack && graphReadback.Extent.Width == referenceReadback.Extent.Width
@@ -603,8 +609,9 @@ namespace Engine
                     && graphReadback.Data == referenceReadback.Data;
                 Log::Info("SceneViewportRenderGraphV1 backend=D3D12 passes=4 labels=clear,raster,tone-map,output-handoff execution=pass reference=direct comparator=exact-byte-",
                     equivalent ? "pass" : "fail", " size=", width, "x", height, " bytes=", graphReadback.Data.size());
-                Log::Info("SceneColorPipelineV1 backend=D3D12 sceneLinear=RGBA16F exposureEV100=0 toneMap=Khronos-PBR-Neutral output=sRGB-encoded-RGBA8 result=",
-                    equivalent ? "pass" : "fail");
+                Log::Info("SceneColorPipelineV1 backend=D3D12 sceneLinear=RGBA16F manualExposureEV100=", colorSettings.ManualExposureEV100,
+                    " exposureScale=", ManualExposureScale(colorSettings),
+                    " toneMap=Khronos-PBR-Neutral output=sRGB-encoded-RGBA8 result=", equivalent ? "pass" : "fail");
                 if (!equivalent) return false;
             }
             Renderer::PublishSceneRasterFrame(std::move(rasterFrame));

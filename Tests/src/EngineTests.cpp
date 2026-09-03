@@ -873,6 +873,48 @@ namespace
                 "invalid Smooth Frametime override updates leave the prior runtime state unchanged");
     }
 
+    bool TestRendererColorPipelineSettingsValidateManualExposure()
+    {
+        using namespace Engine;
+
+        const RendererColorPipelineSettings defaults;
+        const bool defaultValid = IsValidRendererColorPipelineSettings(defaults)
+            && defaults.ManualExposureEV100 == 0.0
+            && ManualExposureScale(defaults) == 1.0;
+
+        const RendererColorPipelineSettings minimum { kMinimumManualExposureEV100 };
+        const RendererColorPipelineSettings maximum { kMaximumManualExposureEV100 };
+        const bool boundsAccepted = IsValidRendererColorPipelineSettings(minimum)
+            && IsValidRendererColorPipelineSettings(maximum);
+        const bool belowRejected = !IsValidRendererColorPipelineSettings(
+            { kMinimumManualExposureEV100 - 0.25 });
+        const bool aboveRejected = !IsValidRendererColorPipelineSettings(
+            { kMaximumManualExposureEV100 + 0.25 });
+        const bool nanRejected = !IsValidRendererColorPipelineSettings(
+            { std::numeric_limits<double>::quiet_NaN() });
+        const bool infinityRejected = !IsValidRendererColorPipelineSettings(
+            { std::numeric_limits<double>::infinity() });
+
+        const RendererColorPipelineSettings brighter { -2.0 };
+        const RendererColorPipelineSettings darker { 2.0 };
+        const bool signConvention = ManualExposureScale(brighter) == 4.0
+            && ManualExposureScale(darker) == 0.25;
+
+        const RendererColorPipelineSettings previous = Renderer::GetColorPipelineSettings();
+        const bool published = Renderer::SetColorPipelineSettings(brighter)
+            && Renderer::GetColorPipelineSettings() == brighter;
+        const bool invalidPublicationRejected = !Renderer::SetColorPipelineSettings({ 17.0 })
+            && !Renderer::SetColorPipelineSettings({ std::numeric_limits<double>::quiet_NaN() })
+            && Renderer::GetColorPipelineSettings() == brighter;
+        const bool restored = Renderer::SetColorPipelineSettings(previous)
+            && Renderer::GetColorPipelineSettings() == previous;
+
+        return Expect(defaultValid && boundsAccepted && belowRejected && aboveRejected
+                && nanRejected && infinityRejected && signConvention && published
+                && invalidPublicationRejected && restored,
+            "manual EV100 exposure defaults to zero, validates finite bounded stops, publishes transactionally, and preserves sign convention");
+    }
+
     class FakeFramePacingClock final : public Engine::FramePacingClock
     {
     public:
@@ -8479,6 +8521,7 @@ int main(int argc, char** argv)
         INTEGRATION_TEST("Linux fatal signals publish minimal receipts and preserve default termination", TestLinuxFatalSignalSafety),
 #endif
         FAST_TEST("Frame pacing policy resolves overrides and validates targets", TestFramePacingPolicyResolutionAndValidation),
+        FAST_TEST("Renderer color pipeline settings validate manual exposure", TestRendererColorPipelineSettingsValidateManualExposure),
         FAST_TEST("Presentation policy resolves immediate or no-replacement FIFO", TestPresentationPolicyResolverRejectsReplacementModes),
         FAST_TEST("Presentation fallback transition commits once across stable frames", TestPresentationPolicyFallbackTransitionAppliesOnce),
         FAST_TEST("Layer stack clear detaches exactly once before subsystem teardown", TestLayerStackClearDetachesExactlyOnce),

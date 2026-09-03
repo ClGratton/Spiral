@@ -105,7 +105,8 @@ namespace Engine
             const RHI::ViewportClear& clear,
             const SceneRasterFrame& frame,
             const std::vector<ConstantBufferAllocation>& constants,
-            const std::vector<SceneMeshDraw>& draws)
+            const std::vector<SceneMeshDraw>& draws,
+            const ToneMapPassConstants& toneMapConstants)
         {
             Scope<RHI::CommandList> commands = m_Device->CreateCommandList(RHI::QueueType::Graphics, "Scene Viewport Bootstrap Reference");
             if (!commands || !commands->Begin()
@@ -125,7 +126,7 @@ namespace Engine
             commands->EndDebugMarker();
             return commands->TransitionTexture(hdrTexture, RHI::ResourceState::ShaderResource)
                 && commands->TransitionTexture(colorTexture, RHI::ResourceState::RenderTarget)
-                && m_ToneMap.Record(*commands, hdrTexture, colorTexture, width, height)
+                && m_ToneMap.Record(*commands, hdrTexture, colorTexture, width, height, toneMapConstants)
                 && commands->TransitionTexture(colorTexture, RHI::ResourceState::CopySource)
                 && commands->End() && m_Device->SubmitAndWait(*commands);
         }
@@ -291,6 +292,9 @@ namespace Engine
                 for (const MeshGpuPrimitiveRange& primitive : bundle->Primitives) draws.push_back({ bundle, primitive, index });
             }
             if (draws.empty()) { Log::Error("Vulkan Scene viewport resolved a snapshot mesh with no drawable primitives"); return false; }
+            const RendererColorPipelineSettings colorSettings = Renderer::GetColorPipelineSettings();
+            Ref<ToneMapPassConstants> toneMapConstants = m_ToneMap.AcquireConstants(colorSettings);
+            if (!toneMapConstants) { Log::Error("Vulkan Scene viewport could not allocate tone-map constants"); return false; }
             RHI::ResourceState hdrColorState = RHI::ResourceState::Unknown;
             RHI::ResourceState colorState = RHI::ResourceState::Unknown;
             RHI::ResourceState depthState = RHI::ResourceState::Unknown;
@@ -323,12 +327,12 @@ namespace Engine
             const RenderGraph::PassHandle toneMapPass = graph->AddPass("Scene Viewport Graph Tone Map", RHI::QueueType::Graphics);
             graph->AddRead(toneMapPass, hdrColor, RHI::ResourceState::ShaderResource, RHI::ShaderStage::Pixel);
             graph->AddWrite(toneMapPass, color, RHI::ResourceState::RenderTarget);
-            graph->SetPassCallback(toneMapPass, [this, width, height](RenderGraph::ExecutionContext& context)
+            graph->SetPassCallback(toneMapPass, [this, width, height, toneMapConstants](RenderGraph::ExecutionContext& context)
             {
                 RHI::Texture* graphHdr = context.GetTexture({ 0 });
                 RHI::Texture* graphColor = context.GetTexture({ 1 });
                 return graphHdr && graphColor && m_ToneMap.Record(
-                    context.GetCommandList(), *graphHdr, *graphColor, width, height);
+                    context.GetCommandList(), *graphHdr, *graphColor, width, height, *toneMapConstants);
             });
             const RenderGraph::PassHandle handoffPass = graph->AddPass("Scene Viewport Graph Output Handoff", RHI::QueueType::Graphics);
             graph->AddRead(handoffPass, color, RHI::ResourceState::ShaderResource, RHI::ShaderStage::Pixel);
@@ -357,7 +361,7 @@ namespace Engine
                     { Log::Error("Vulkan Scene viewport could not retain material textures: ", textureRetentionError); m_Device->WaitIdle(); return false; }
                 }
                 std::string retentionError;
-                std::vector<Ref<void>> payloads { constantBufferSet };
+                std::vector<Ref<void>> payloads { constantBufferSet, toneMapConstants };
                 for (const SceneMeshDraw& draw : draws) payloads.emplace_back(std::const_pointer_cast<MeshGpuResourceBundle>(draw.Bundle));
                 if (!m_SubmittedGraphFrames.Retain(snapshot.FrameIndex, std::move(graph), compiled, executed,
                     std::move(payloads), &retentionError))
@@ -388,12 +392,14 @@ namespace Engine
                 Scope<RHI::Texture> referenceColor = m_Device->CreateTexture(referenceColorDescription);
                 Scope<RHI::Texture> referenceDepth = m_Device->CreateTexture(referenceDepthDescription);
                 RHI::TextureReadback graphReadback, referenceReadback;
-                const bool referenceRendered = referenceHdr && referenceColor && referenceDepth && RecordBootstrapReference(*referenceHdr, *referenceColor, *referenceDepth, width, height, clear, frame, constants, draws);
+                const bool referenceRendered = referenceHdr && referenceColor && referenceDepth && RecordBootstrapReference(*referenceHdr, *referenceColor, *referenceDepth, width, height, clear, frame, constants, draws, *toneMapConstants);
                 const bool readBack = referenceRendered && ReadbackGraphOutput(*m_Color, graphReadback) && m_Device->ReadbackTexture(*referenceColor, referenceReadback);
                 const bool equivalent = readBack && graphReadback.Extent.Width == referenceReadback.Extent.Width && graphReadback.Extent.Height == referenceReadback.Extent.Height
                     && graphReadback.RowPitchBytes == referenceReadback.RowPitchBytes && graphReadback.Data == referenceReadback.Data;
                 Log::Info("SceneViewportRenderGraphV1 backend=Vulkan passes=4 labels=clear,raster,tone-map,output-handoff execution=pass reference=direct comparator=exact-byte-", equivalent ? "pass" : "fail", " size=", width, "x", height, " bytes=", graphReadback.Data.size());
-                Log::Info("SceneColorPipelineV1 backend=Vulkan sceneLinear=RGBA16F exposureEV100=0 toneMap=Khronos-PBR-Neutral output=sRGB-encoded-RGBA8 result=", equivalent ? "pass" : "fail");
+                Log::Info("SceneColorPipelineV1 backend=Vulkan sceneLinear=RGBA16F manualExposureEV100=", colorSettings.ManualExposureEV100,
+                    " exposureScale=", ManualExposureScale(colorSettings),
+                    " toneMap=Khronos-PBR-Neutral output=sRGB-encoded-RGBA8 result=", equivalent ? "pass" : "fail");
                 if (!equivalent) return false;
             }
             Renderer::PublishSceneRasterFrame(std::move(frame));
@@ -441,6 +447,10 @@ namespace Engine
     u64 NVRHIVulkanViewportSceneRenderer::GetOutputGeneration() const { return m_Impl ? m_Impl->m_OutputGeneration : 0; }
     u32 NVRHIVulkanViewportSceneRenderer::GetOutputWidth() const { return m_Impl ? m_Impl->m_Width : 0; }
     u32 NVRHIVulkanViewportSceneRenderer::GetOutputHeight() const { return m_Impl ? m_Impl->m_Height : 0; }
+    ToneMapPassConstantCacheDiagnostics NVRHIVulkanViewportSceneRenderer::GetToneMapConstantCacheDiagnostics() const
+    {
+        return m_Impl ? m_Impl->m_ToneMap.GetConstantCacheDiagnostics() : ToneMapPassConstantCacheDiagnostics {};
+    }
     RHI::NVRHIVulkanTextureNativeHandles NVRHIVulkanViewportSceneRenderer::GetOutputNativeHandles() const
     {
         return m_Impl && m_Impl->m_Color ? RHI::GetNVRHIVulkanTextureNativeHandles(*m_Impl->m_Color) : RHI::NVRHIVulkanTextureNativeHandles {};

@@ -60,6 +60,7 @@ private:
     void DrawProjectPanel();
     void PublishFramePacingPolicy();
     void PublishPresentationPolicy();
+    void PublishColorPipelineSettings();
     void DrawNewProjectDialog();
     bool DrawMaterialAssetControls(Engine::AssetHandle handle);
     void HandleAssetWatchEvents();
@@ -70,6 +71,7 @@ private:
     void RunSceneAuthoringSmoke();
     void RunSceneRenderSnapshotSmoke();
     void RunFramePacingPolicySmoke();
+    void RunColorPipelineSettingsSmoke();
     void RunEditorSettingsSmoke();
     void RunViewportNavigationSmoke();
     void RunPresentationPolicySmoke();
@@ -137,6 +139,8 @@ private:
     bool m_SceneOriginRasterSmokeCompleted = false;
     bool m_FramePacingPolicySmokeRequested = false;
     bool m_FramePacingPolicySmokeCompleted = false;
+    bool m_ColorPipelineSettingsSmokeRequested = false;
+    bool m_ColorPipelineSettingsSmokeCompleted = false;
     bool m_EditorSettingsSmokeRequested = false;
     bool m_EditorSettingsSmokeCompleted = false;
     bool m_ViewportNavigationSmokeRequested = false;
@@ -167,6 +171,7 @@ private:
     Engine::MaterialLibrary m_MaterialLibrary;
     Engine::FramePacingPolicy m_ProjectFramePacingPolicy;
     Engine::PresentationPolicy m_ProjectPresentationPolicy = Engine::PresentationPolicy::Synchronized;
+    Engine::RendererColorPipelineSettings m_ProjectColorPipelineSettings;
     // Command-line policy is session-only; project serialization always keeps
     // the project-owned request intact.
     std::optional<Engine::PresentationPolicy> m_RuntimePresentationPolicyOverride;

@@ -29,7 +29,7 @@ namespace Engine
             {{  3.0f, -1.0f, 0.0f }, { 1.0f, 1.0f, 1.0f }, { 2.0f, 1.0f }}
         }};
         constexpr std::array<u32, 3> kFullscreenIndices { 0, 1, 2 };
-        constexpr std::array<float, 4> kToneMapConstants { 0.0f, 1.0f, 0.0f, 0.0f };
+        constexpr float kPaperWhiteScale = 1.0f;
 
         PortableShaderRequest MakeToneMapRequest(
             const ShaderSourceFile& source, RHI::ShaderStage stage, const char* entryPoint)
@@ -81,6 +81,17 @@ namespace Engine
             std::memcpy(mapped, bytes, static_cast<size_t>(byteCount));
             output->Unmap();
             return true;
+        }
+
+        std::array<float, 4> MakeToneMapConstants(
+            const RendererColorPipelineSettings& settings)
+        {
+            return {
+                static_cast<float>(settings.ManualExposureEV100),
+                kPaperWhiteScale,
+                0.0f,
+                0.0f
+            };
         }
     }
 
@@ -144,21 +155,24 @@ namespace Engine
             && InitializeBuffer(device, "Tone Map Fullscreen Vertices", RHI::BufferUsage::Vertex,
                 kFullscreenVertices.data(), sizeof(kFullscreenVertices), sizeof(FullscreenVertex), m_VertexBuffer)
             && InitializeBuffer(device, "Tone Map Fullscreen Indices", RHI::BufferUsage::Index,
-                kFullscreenIndices.data(), sizeof(kFullscreenIndices), sizeof(u32), m_IndexBuffer)
-            && InitializeBuffer(device, "Tone Map Constants", RHI::BufferUsage::Constant,
-                kToneMapConstants.data(), sizeof(kToneMapConstants), 256, m_ConstantBuffer);
+                kFullscreenIndices.data(), sizeof(kFullscreenIndices), sizeof(u32), m_IndexBuffer);
         if (!buffers)
         {
             Shutdown();
             return false;
         }
-        Log::Info("SceneColorPipelineV1 hdr=RGBA16F exposureEV100=0 toneMap=Khronos-PBR-Neutral output=sRGB-encoded-RGBA8 result=ready");
+        Log::Info("SceneColorPipelineV1 hdr=RGBA16F manualExposureEV100=0 toneMap=Khronos-PBR-Neutral output=sRGB-encoded-RGBA8 result=ready");
         return true;
     }
 
     void ToneMapPass::Shutdown()
     {
-        m_ConstantBuffer.reset();
+        // Callers own device-idle ordering before shutdown when submitted graph
+        // frames may still reference current or prior immutable constants.
+        m_CurrentConstants.reset();
+        m_ConstantGeneration = 0;
+        m_ConstantAllocationCount = 0;
+        m_ConstantReuseCount = 0;
         m_IndexBuffer.reset();
         m_VertexBuffer.reset();
         m_Pipeline.reset();
@@ -167,10 +181,52 @@ namespace Engine
         m_Device = nullptr;
     }
 
-    bool ToneMapPass::Record(RHI::CommandList& commands, RHI::Texture& hdrScene,
-        RHI::Texture& output, u32 width, u32 height) const
+    Ref<ToneMapPassConstants> ToneMapPass::AcquireConstants(
+        const RendererColorPipelineSettings& settings) const
     {
-        if (!m_Pipeline || !m_VertexBuffer || !m_IndexBuffer || !m_ConstantBuffer
+        if (!m_Device || !IsValidRendererColorPipelineSettings(settings))
+            return nullptr;
+        if (m_CurrentConstants && m_CurrentConstants->Settings == settings)
+        {
+            ++m_ConstantReuseCount;
+            return m_CurrentConstants;
+        }
+
+        const std::array<float, 4> constants = MakeToneMapConstants(settings);
+        auto result = CreateRef<ToneMapPassConstants>();
+        result->Settings = settings;
+        result->Generation = m_ConstantGeneration + 1;
+        if (!InitializeBuffer(*m_Device, "Tone Map Constants", RHI::BufferUsage::Constant,
+            constants.data(), sizeof(constants), 256, result->Buffer))
+        {
+            return nullptr;
+        }
+        m_CurrentConstants = result;
+        m_ConstantGeneration = result->Generation;
+        ++m_ConstantAllocationCount;
+        return m_CurrentConstants;
+    }
+
+    ToneMapPassConstantCacheDiagnostics ToneMapPass::GetConstantCacheDiagnostics() const
+    {
+        ToneMapPassConstantCacheDiagnostics diagnostics;
+        diagnostics.HasCurrent = m_CurrentConstants != nullptr;
+        if (m_CurrentConstants)
+        {
+            diagnostics.CurrentSettings = m_CurrentConstants->Settings;
+            diagnostics.CurrentGeneration = m_CurrentConstants->Generation;
+        }
+        diagnostics.AllocationCount = m_ConstantAllocationCount;
+        diagnostics.ReuseCount = m_ConstantReuseCount;
+        return diagnostics;
+    }
+
+    bool ToneMapPass::Record(RHI::CommandList& commands, RHI::Texture& hdrScene,
+        RHI::Texture& output, u32 width, u32 height,
+        const ToneMapPassConstants& constants) const
+    {
+        if (!m_Pipeline || !m_VertexBuffer || !m_IndexBuffer || !constants.Buffer
+            || !IsValidRendererColorPipelineSettings(constants.Settings)
             || width == 0 || height == 0 || !commands.BindViewportOutputs(output, nullptr))
             return false;
         commands.SetGraphicsPipeline(*m_Pipeline);
@@ -180,7 +236,7 @@ namespace Engine
         commands.SetScissorRect({ 0, 0, static_cast<int>(width), static_cast<int>(height) });
         commands.SetVertexBuffer(0, *m_VertexBuffer);
         commands.SetIndexBuffer(*m_IndexBuffer, RHI::IndexFormat::Uint32);
-        commands.SetGraphicsConstantBuffer(0, *m_ConstantBuffer);
+        commands.SetGraphicsConstantBuffer(0, *constants.Buffer);
         commands.DrawIndexed(3, 1, 0, 0, 0);
         return true;
     }

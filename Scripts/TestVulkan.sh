@@ -99,7 +99,9 @@ REQUIRED_MARKERS=(
     "VulkanSceneOutputCaptureV1 outputGeneration="
     "VulkanSceneOutputHandoffV1 producer=pass"
     "SceneViewportRenderGraphV1 backend=Vulkan passes=4 labels=clear,raster,tone-map,output-handoff execution=pass reference=direct comparator=exact-byte-pass"
-    "SceneColorPipelineV1 backend=Vulkan sceneLinear=RGBA16F exposureEV100=0 toneMap=Khronos-PBR-Neutral output=sRGB-encoded-RGBA8 result=pass"
+    "SceneColorPipelineV1 backend=Vulkan sceneLinear=RGBA16F manualExposureEV100=0"
+    "SceneExposureControlV1 backend=Vulkan ev100=-2,0,+2 graph=exact-byte-pass monotonic=pass constants=immutable-retained-cached"
+    "ColorPipelineSettingsSmokeV1 default=pass bounds=pass nonfinite=pass v3Migration=pass saveReopen=pass rendererPublication=pass"
     "SceneMeshGpuIntegrationV1 backend=Vulkan snapshot=pass resolver=pass cache=pass indexFormat=UInt32 baseVertex=0"
     "SceneMaterialTextureIntegrationV1 backend=Vulkan material=immutable texture=sRGB-base-color sampler=declared table=bound mips=implicit fallbacks=semantic retained=exact-raster-token result=pass"
     "ProductionRenderGraphRetirementV1 backend=Vulkan"
@@ -152,7 +154,7 @@ for ((ATTEMPT = 1; ATTEMPT <= ITERATIONS; ++ATTEMPT)); do
         my $status = $?;
         exit(128 + ($status & 127)) if $status & 127;
         exit($status >> 8);
-    ' "$CHILD_TIMEOUT_SECONDS" "$EDITOR" --vulkan-render-smoke --renderer-capability-smoke --scene-viewport-render-graph-smoke --vulkan-rhi-core-smoke --vulkan-rhi-indexed-draw-smoke --vulkan-scene-viewport-raster-smoke --rhi-buffer-transition-smoke --rhi-completion-smoke --rhi-queue-dependency-smoke --rhi-buffer-ownership-smoke --rhi-texture-ownership-smoke --rhi-resource-ownership-smoke --rhi-resource-state-smoke --rhi-texture-upload-smoke --rhi-sampled-table-smoke --render-graph-execution-smoke) 2>&1 | tee "$LOG_FILE"
+    ' "$CHILD_TIMEOUT_SECONDS" "$EDITOR" --vulkan-render-smoke --renderer-capability-smoke --color-pipeline-settings-smoke --scene-viewport-render-graph-smoke --vulkan-rhi-core-smoke --vulkan-rhi-indexed-draw-smoke --vulkan-scene-viewport-raster-smoke --rhi-buffer-transition-smoke --rhi-completion-smoke --rhi-queue-dependency-smoke --rhi-buffer-ownership-smoke --rhi-texture-ownership-smoke --rhi-resource-ownership-smoke --rhi-resource-state-smoke --rhi-texture-upload-smoke --rhi-sampled-table-smoke --render-graph-execution-smoke) 2>&1 | tee "$LOG_FILE"
     STATUS=${PIPESTATUS[0]}
     set -e
     if [[ $STATUS -ne 0 ]]; then

@@ -21,7 +21,7 @@ if (!(Test-Path $Executable)) {
     throw "Vulkan smoke executable was not found: $Executable"
 }
 
-$VulkanResult = Invoke-BoundedProcess -FilePath $Executable -Arguments @("--vulkan-render-smoke", "--frame-lifecycle-telemetry-smoke", "--renderer-capability-smoke", "--scene-raster-preparation-smoke", "--scene-viewport-render-graph-smoke", "--vulkan-rhi-core-smoke", "--vulkan-rhi-indexed-draw-smoke", "--vulkan-scene-viewport-raster-smoke", "--rhi-buffer-transition-smoke", "--rhi-completion-smoke", "--rhi-timestamp-query-smoke", "--rhi-queue-dependency-smoke", "--rhi-buffer-ownership-smoke", "--rhi-texture-ownership-smoke", "--rhi-resource-ownership-smoke", "--rhi-resource-state-smoke", "--rhi-texture-upload-smoke", "--rhi-sampled-table-smoke", "--render-graph-execution-smoke") -Label "Editor Vulkan render smoke" -TimeoutSeconds $ChildTimeoutSeconds
+$VulkanResult = Invoke-BoundedProcess -FilePath $Executable -Arguments @("--vulkan-render-smoke", "--frame-lifecycle-telemetry-smoke", "--renderer-capability-smoke", "--color-pipeline-settings-smoke", "--scene-raster-preparation-smoke", "--scene-viewport-render-graph-smoke", "--vulkan-rhi-core-smoke", "--vulkan-rhi-indexed-draw-smoke", "--vulkan-scene-viewport-raster-smoke", "--rhi-buffer-transition-smoke", "--rhi-completion-smoke", "--rhi-timestamp-query-smoke", "--rhi-queue-dependency-smoke", "--rhi-buffer-ownership-smoke", "--rhi-texture-ownership-smoke", "--rhi-resource-ownership-smoke", "--rhi-resource-state-smoke", "--rhi-texture-upload-smoke", "--rhi-sampled-table-smoke", "--render-graph-execution-smoke") -Label "Editor Vulkan render smoke" -TimeoutSeconds $ChildTimeoutSeconds
 $Output = $VulkanLog = $VulkanResult.Output
 if ($VulkanResult.TimedOut) {
     throw "Vulkan render smoke timed out after $ChildTimeoutSeconds seconds."
@@ -97,7 +97,9 @@ $RequiredMarkers = @(
     "VulkanSceneOutputHandoffV1 producer=pass"
     "SceneRasterPreparationV1 mode=parallel task=Frame.PrepareSceneRaster worker="
     "SceneViewportRenderGraphV1 backend=Vulkan passes=4 labels=clear,raster,tone-map,output-handoff execution=pass reference=direct comparator=exact-byte-pass"
-    "SceneColorPipelineV1 backend=Vulkan sceneLinear=RGBA16F exposureEV100=0 toneMap=Khronos-PBR-Neutral output=sRGB-encoded-RGBA8 result=pass"
+    "SceneColorPipelineV1 backend=Vulkan sceneLinear=RGBA16F manualExposureEV100=0"
+    "SceneExposureControlV1 backend=Vulkan ev100=-2,0,+2 graph=exact-byte-pass monotonic=pass constants=immutable-retained-cached"
+    "ColorPipelineSettingsSmokeV1 default=pass bounds=pass nonfinite=pass v3Migration=pass saveReopen=pass rendererPublication=pass"
     "SceneMeshGpuIntegrationV1 backend=Vulkan snapshot=pass resolver=pass cache=pass indexFormat=UInt32 baseVertex=0"
     "SceneMaterialTextureIntegrationV1 backend=Vulkan material=immutable texture=sRGB-base-color sampler=declared table=bound mips=implicit fallbacks=semantic retained=exact-raster-token result=pass"
     "SceneMaterialTextureShaderReadbackV1 backend=Vulkan roles=exact-pass colorSpace=sRGB-linear-pass samplers=declared-pass mip1=pass missing=semantic-defaults-pass invalid=error-resource-pass retention=exact-token-pass result=pass"

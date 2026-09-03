@@ -4,6 +4,7 @@
 #include "Engine/RHI/Device.h"
 #include "Engine/RHI/NVRHI/NVRHIVulkanDevice.h"
 #include "Engine/Renderer/Renderer.h"
+#include "Engine/Renderer/ToneMapPass.h"
 #include "Engine/Scene/SceneRenderSnapshot.h"
 
 namespace Engine
@@ -25,6 +26,7 @@ namespace Engine
         u64 GetOutputGeneration() const;
         u32 GetOutputWidth() const;
         u32 GetOutputHeight() const;
+        ToneMapPassConstantCacheDiagnostics GetToneMapConstantCacheDiagnostics() const;
         RHI::NVRHIVulkanTextureNativeHandles GetOutputNativeHandles() const;
 
     private:

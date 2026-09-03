@@ -2251,8 +2251,11 @@ float4 PSMain(PixelInput input) : SV_Target { return ReadOnlyTextures[1].SampleL
         mesh.MaterialAsset = smokeMaterial;
         mesh.Transform.Position = view.Camera.TranslationOriginPosition;
         snapshot.Meshes.push_back(mesh);
-        Renderer::PublishSceneRenderSnapshot(std::move(snapshot));
+        Renderer::PublishSceneRenderSnapshot(snapshot);
         if (!Renderer::PrepareCurrentSceneRasterFrame())
+            return false;
+        const RendererColorPipelineSettings previousColorSettings = Renderer::GetColorPipelineSettings();
+        if (!Renderer::SetColorPipelineSettings({ 0.0 }))
             return false;
         const ClearColor background { 0.04f, 0.05f, 0.06f, 1.0f };
         const bool firstRaster = m_VulkanSceneRenderer->RenderCurrentSnapshot(48, 36, background);
@@ -2272,6 +2275,55 @@ float4 PSMain(PixelInput input) : SV_Target { return ReadOnlyTextures[1].SampleL
         const bool geometryOk = foregroundPixels > 300 && foregroundPixels < 2600;
         const bool resizeOk = firstGeneration == 1 && outputGeneration == 2;
         Log::Info("VulkanSceneViewportRasterV1 snapshot=pass artifact=pass pipeline=pass raster=", resizedRaster ? "pass" : "fail", " readback=", readbackOk ? "pass" : "fail", " geometry=", geometryOk ? "pass" : "fail", " background=", backgroundOk ? "pass" : "fail", " resize=", resizeOk ? "pass" : "fail", " outputGeneration=", outputGeneration, " size=", readback.Extent.Width, "x", readback.Extent.Height, " foregroundPixels=", foregroundPixels, " rowPitch=", readback.RowPitchBytes);
-        return resizedRaster && readbackOk && geometryOk && backgroundOk && resizeOk;
+        const auto sampleBrightness = [](const RHI::TextureReadback& sample)
+        {
+            const u8* value = &sample.Data[static_cast<size_t>(2) * sample.RowPitchBytes + static_cast<size_t>(2) * 4];
+            return static_cast<u32>(value[0]) + static_cast<u32>(value[1]) + static_cast<u32>(value[2]);
+        };
+        auto renderExposure = [&](double ev100, u64 frameIndex, RHI::TextureReadback& outReadback)
+        {
+            if (!Renderer::SetColorPipelineSettings({ ev100 }))
+                return false;
+            SceneRenderSnapshot exposureSnapshot = snapshot;
+            exposureSnapshot.FrameIndex = frameIndex;
+            Renderer::PublishSceneRenderSnapshot(std::move(exposureSnapshot));
+            return Renderer::PrepareCurrentSceneRasterFrame()
+                && m_VulkanSceneRenderer->RenderCurrentSnapshot(64, 48, background)
+                && m_VulkanSceneRenderer->ReadbackColor(outReadback);
+        };
+        RHI::TextureReadback brightExposure;
+        RHI::TextureReadback neutralExposure;
+        RHI::TextureReadback darkExposure;
+        const ToneMapPassConstantCacheDiagnostics baselineConstantCache =
+            m_VulkanSceneRenderer->GetToneMapConstantCacheDiagnostics();
+        const bool exposureRenders = renderExposure(-2.0, 2, brightExposure)
+            && renderExposure(0.0, 3, neutralExposure)
+            && renderExposure(2.0, 4, darkExposure);
+        const ToneMapPassConstantCacheDiagnostics exposureConstantCache =
+            m_VulkanSceneRenderer->GetToneMapConstantCacheDiagnostics();
+        const bool exposureReadbacks = exposureRenders
+            && brightExposure.Extent.Width == 64 && brightExposure.Extent.Height == 48
+            && neutralExposure.Extent.Width == 64 && neutralExposure.Extent.Height == 48
+            && darkExposure.Extent.Width == 64 && darkExposure.Extent.Height == 48
+            && brightExposure.RowPitchBytes >= 64 * 4
+            && neutralExposure.RowPitchBytes >= 64 * 4
+            && darkExposure.RowPitchBytes >= 64 * 4;
+        const bool monotonic = exposureReadbacks
+            && sampleBrightness(brightExposure) > sampleBrightness(neutralExposure)
+            && sampleBrightness(neutralExposure) > sampleBrightness(darkExposure);
+        const bool constantCacheOk = baselineConstantCache.AllocationCount == 1
+            && baselineConstantCache.ReuseCount >= 1
+            && exposureConstantCache.AllocationCount == 4
+            && exposureConstantCache.ReuseCount >= baselineConstantCache.ReuseCount
+            && exposureConstantCache.CurrentGeneration == 4
+            && exposureConstantCache.CurrentSettings.ManualExposureEV100 == 2.0;
+        Renderer::SetColorPipelineSettings(previousColorSettings);
+        Log::Info("SceneExposureControlV1 backend=Vulkan ev100=-2,0,+2 graph=exact-byte-pass monotonic=",
+            monotonic ? "pass" : "fail", " constants=immutable-retained-cached allocations=",
+            exposureConstantCache.AllocationCount, " reuses=", exposureConstantCache.ReuseCount,
+            " generations=", exposureConstantCache.CurrentGeneration, " result=",
+            (exposureRenders && exposureReadbacks && monotonic && constantCacheOk) ? "pass" : "fail");
+        return resizedRaster && readbackOk && geometryOk && backgroundOk && resizeOk
+            && exposureRenders && exposureReadbacks && monotonic && constantCacheOk;
     }
 }

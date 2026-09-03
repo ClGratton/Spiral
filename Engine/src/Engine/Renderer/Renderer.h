@@ -2,6 +2,7 @@
 
 #include "Engine/Core/Base.h"
 #include "Engine/RenderGraph/RenderGraph.h"
+#include "Engine/Renderer/ColorPipelineSettings.h"
 #include "Engine/Renderer/FramePacingPolicy.h"
 #include "Engine/Renderer/PresentationPolicy.h"
 #include "Engine/Renderer/OpticalInputCorrelation.h"
@@ -417,6 +418,8 @@ namespace Engine
         static void SetPresentationPolicy(PresentationPolicy policy);
         static PresentationPolicy GetPresentationPolicy();
         static RendererPresentationPolicyDiagnostics GetPresentationPolicyDiagnostics();
+        static bool SetColorPipelineSettings(const RendererColorPipelineSettings& settings);
+        static RendererColorPipelineSettings GetColorPipelineSettings();
         static bool RecordInputEvent(u64 applicationFrameIndex, RendererInputEventKind kind,
             int code, bool repeated = false);
         static std::optional<RendererInputSample> RecordInputSample(u64 applicationFrameIndex);

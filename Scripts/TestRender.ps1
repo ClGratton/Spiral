@@ -42,7 +42,7 @@ foreach ($Path in @($ResolvedCapturePath) + $SceneOriginCapturePaths) {
     }
 }
 
-$RenderResult = Invoke-BoundedProcess -FilePath $Editor -Arguments @("--capture-viewport", "--smoke-test", "--frame-lifecycle-telemetry-smoke", "--renderer-capability-smoke", "--scene-origin-raster-smoke", "--scene-raster-preparation-smoke", "--scene-viewport-render-graph-smoke", "--rhi-buffer-transition-smoke", "--rhi-completion-smoke", "--rhi-timestamp-query-smoke", "--rhi-queue-dependency-smoke", "--rhi-buffer-ownership-smoke", "--rhi-texture-ownership-smoke", "--rhi-resource-ownership-smoke", "--rhi-resource-state-smoke", "--rhi-texture-readback-smoke", "--rhi-texture-upload-smoke", "--rhi-sampled-table-smoke", "--render-graph-execution-smoke") -Label "Editor render smoke" -TimeoutSeconds $ChildTimeoutSeconds
+$RenderResult = Invoke-BoundedProcess -FilePath $Editor -Arguments @("--capture-viewport", "--smoke-test", "--frame-lifecycle-telemetry-smoke", "--renderer-capability-smoke", "--color-pipeline-settings-smoke", "--scene-origin-raster-smoke", "--scene-raster-preparation-smoke", "--scene-viewport-render-graph-smoke", "--rhi-buffer-transition-smoke", "--rhi-completion-smoke", "--rhi-timestamp-query-smoke", "--rhi-queue-dependency-smoke", "--rhi-buffer-ownership-smoke", "--rhi-texture-ownership-smoke", "--rhi-resource-ownership-smoke", "--rhi-resource-state-smoke", "--rhi-texture-readback-smoke", "--rhi-texture-upload-smoke", "--rhi-sampled-table-smoke", "--render-graph-execution-smoke") -Label "Editor render smoke" -TimeoutSeconds $ChildTimeoutSeconds
 $Output = $RenderLog = $RenderResult.Output
 if ($RenderResult.TimedOut) {
     throw "Editor render smoke timed out after $ChildTimeoutSeconds seconds."
@@ -124,7 +124,8 @@ $RequiredMarkers = @(
     "SceneMaterialTextureShaderReadbackV1 backend=D3D12 roles=exact-pass colorSpace=sRGB-linear-pass samplers=declared-pass mip1=pass missing=semantic-defaults-pass invalid=error-resource-pass retention=exact-token-pass result=pass"
     "SceneRasterPreparationV1 mode=parallel task=Frame.PrepareSceneRaster worker="
     "SceneViewportRenderGraphV1 backend=D3D12 passes=4 labels=clear,raster,tone-map,output-handoff execution=pass reference=direct comparator=exact-byte-pass"
-    "SceneColorPipelineV1 backend=D3D12 sceneLinear=RGBA16F exposureEV100=0 toneMap=Khronos-PBR-Neutral output=sRGB-encoded-RGBA8 result=pass"
+    "SceneColorPipelineV1 backend=D3D12 sceneLinear=RGBA16F manualExposureEV100=0"
+    "ColorPipelineSettingsSmokeV1 default=pass bounds=pass nonfinite=pass v3Migration=pass saveReopen=pass rendererPublication=pass"
     "SceneMeshGpuIntegrationV1 backend=D3D12 snapshot=pass resolver=pass cache=pass indexFormat=UInt32 baseVertex=0"
     "SceneMaterialTextureIntegrationV1 backend=D3D12 material=immutable texture=sRGB-base-color sampler=declared table=bound mips=implicit fallbacks=semantic retained=exact-raster-token result=pass"
     "ProductionRenderGraphRetirementV1 backend=D3D12"

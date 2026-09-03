@@ -289,7 +289,7 @@ Baseline:
 - Physically based sun/sky model.
 - HDR sun and sky radiance.
 - Aerial perspective/fog.
-- Dynamic exposure pipeline.
+- Dynamic exposure pipeline. The current executable prerequisite is the renderer-owned manual project EV100 control (`scale=exp2(-EV100)`, finite `[-16,+16]`, default `0.0`); automatic metering/zones remain future work until a lighting-validation consumer requires them.
 - Weather/cloudiness as an art-directed modifier.
 
 Implementation path:

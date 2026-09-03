@@ -475,10 +475,15 @@ Rules:
 
 - Internal lighting is scene-referred linear HDR.
 - Exposure uses calibrated camera/eye-style controls plus artist zones where needed.
+- Until the calibrated/photometric exposure system exists, the executable Phase 3E control is a single manual project setting named `ManualExposureEV100`. It defaults to `0.0`, accepts only finite values in `[-16,+16]`, migrates older project manifests to `0.0`, and rejects invalid loads or publications without replacing the prior accepted value.
+- Manual EV100 uses the current shader sign convention `scale = exp2(-EV100)`, so increasing the value darkens the scene and `0.0` preserves unit scale. The current paper-white scale is fixed at `1.0`.
+- Scene viewport renderers must snapshot the accepted color-pipeline settings before building the render graph, record the graph tone-map pass and smoke-only direct-reference path with the same immutable constant bytes, and retain those constants through the exact accepted graph submission token. Repeated renders at an unchanged EV must reuse the current immutable constants; an EV change publishes a distinct immutable generation while prior values remain alive only through graph callback/local ownership and exact-token payload retention. A mutable per-pass constant buffer must not be overwritten while in-flight work may still reference it; arbitrary rings are not authority unless their lifetime is tied to accepted completion.
 - Tone mapping happens before artistic color grading/LUTs.
 - Color grading is allowed to stylize the image, but should not compensate for broken albedo, lighting units, or BRDF parameters.
 - The engine must ship material/exposure validation scenes: neutral gray, saturated colors, metals, skin, wet surfaces, emissives, daylight, indoor mixed lighting, and night.
 - Candidate tone mappers must be compared in those validation scenes before becoming defaults.
+
+The manual EV100 prerequisite is deliberately not automatic exposure, exposure zones, LUT/grading, photometric light coupling, HDR display control, tone-map selection, or a profiler/debug readout. Those remain owned by the broader Phase 3E/Phase 5 lighting and validation work that has a current consumer for each mechanism.
 
 Baseline profiles to evaluate:
 

@@ -21,7 +21,7 @@
 namespace
 {
     constexpr const char* AssetDragPayloadType = "SPIRAL_ASSET_HANDLE";
-    constexpr int ProjectFormatVersion = 3;
+    constexpr int ProjectFormatVersion = 4;
     constexpr int EditorSettingsFormatVersion = 1;
 
     struct EditorSettings
@@ -41,6 +41,7 @@ namespace
         std::string AssetRegistryPath;
         Engine::FramePacingPolicy FramePacingPolicy;
         Engine::PresentationPolicy PresentationPolicy = Engine::PresentationPolicy::Synchronized;
+        Engine::RendererColorPipelineSettings ColorPipelineSettings;
     };
 
     const char* ToEditorSettingsNavigationPreset(ViewportNavigationPreset preset)
@@ -393,6 +394,7 @@ namespace
         output << "FramePacingMode " << ToManifestFramePacingMode(manifest.FramePacingPolicy.Mode) << '\n';
         output << "FramePacingTargetFps " << manifest.FramePacingPolicy.SmoothTargetFramesPerSecond << '\n';
         output << "PresentationPolicy " << Engine::ToString(manifest.PresentationPolicy) << '\n';
+        output << "ManualExposureEV100 " << manifest.ColorPipelineSettings.ManualExposureEV100 << '\n';
         return static_cast<bool>(output);
     }
 
@@ -411,6 +413,7 @@ namespace
         bool readFramePacingMode = version == 1;
         bool readFramePacingTarget = version == 1;
         bool readPresentationPolicy = version < 3;
+        bool readManualExposure = version < 4;
         std::string key;
         while (input >> key)
         {
@@ -438,6 +441,13 @@ namespace
                     return false;
                 readPresentationPolicy = true;
             }
+            else if (version >= 4 && key == "ManualExposureEV100")
+            {
+                if (!(input >> manifest.ColorPipelineSettings.ManualExposureEV100)
+                    || !Engine::IsValidRendererColorPipelineSettings(manifest.ColorPipelineSettings))
+                    return false;
+                readManualExposure = true;
+            }
             else
                 return false;
 
@@ -445,9 +455,10 @@ namespace
                 return false;
         }
 
-        if (!readFramePacingMode || !readFramePacingTarget || !readPresentationPolicy
+        if (!readFramePacingMode || !readFramePacingTarget || !readPresentationPolicy || !readManualExposure
             || manifest.ScenePath.empty() || manifest.AssetRegistryPath.empty()
-            || !Engine::IsValidFramePacingPolicy(manifest.FramePacingPolicy))
+            || !Engine::IsValidFramePacingPolicy(manifest.FramePacingPolicy)
+            || !Engine::IsValidRendererColorPipelineSettings(manifest.ColorPipelineSettings))
             return false;
 
         outManifest = std::move(manifest);
@@ -505,6 +516,7 @@ void EditorLayer::OnAttach()
         EnsureDefaultSceneEntities();
     PublishFramePacingPolicy();
     PublishPresentationPolicy();
+    PublishColorPipelineSettings();
     SyncEditorCameraStateFromMainCamera(true);
     ResetFusionNavigationPivotFromSelectionOrScene();
     m_FramePacingNavigationTraceEnabled = args.HasFlag("--frame-pacing-benchmark");
@@ -524,6 +536,8 @@ void EditorLayer::OnAttach()
         Engine::Application::Get().GetSpecification().CommandLineArgs.HasFlag("--scene-origin-raster-smoke");
     m_FramePacingPolicySmokeRequested =
         Engine::Application::Get().GetSpecification().CommandLineArgs.HasFlag("--frame-pacing-policy-smoke");
+    m_ColorPipelineSettingsSmokeRequested =
+        Engine::Application::Get().GetSpecification().CommandLineArgs.HasFlag("--color-pipeline-settings-smoke");
     m_EditorSettingsSmokeRequested =
         Engine::Application::Get().GetSpecification().CommandLineArgs.HasFlag("--editor-settings-smoke");
     m_ViewportNavigationSmokeRequested =
@@ -615,6 +629,7 @@ void EditorLayer::OnUpdate(Engine::Timestep timestep)
     }
     PublishFramePacingPolicy();
     PublishPresentationPolicy();
+    PublishColorPipelineSettings();
     RunPresentationPolicySmoke();
 
     RunAssetWatchSmokeMutation();
@@ -623,6 +638,7 @@ void EditorLayer::OnUpdate(Engine::Timestep timestep)
     RunUndoRedoSmoke();
     RunSceneAuthoringSmoke();
     RunFramePacingPolicySmoke();
+    RunColorPipelineSettingsSmoke();
     RunEditorSettingsSmoke();
     RunViewportNavigationSmoke();
     AdvanceSceneOriginRasterSmoke();
@@ -1070,11 +1086,28 @@ void EditorLayer::DrawMainMenuBar()
                 ImGui::TextDisabled("Target must be finite and between %.0f and %.0f FPS; current saved value remains unchanged.",
                     Engine::kMinimumSmoothTargetFramesPerSecond, Engine::kMaximumSmoothTargetFramesPerSecond);
 
+            ImGui::Separator();
+            ImGui::TextUnformatted("Color pipeline");
+            double manualExposureEV100 = m_ProjectColorPipelineSettings.ManualExposureEV100;
+            if (ImGui::InputDouble("Manual EV100", &manualExposureEV100, 0.25, 1.0, "%.2f"))
+            {
+                Engine::RendererColorPipelineSettings edited = m_ProjectColorPipelineSettings;
+                edited.ManualExposureEV100 = manualExposureEV100;
+                if (Engine::IsValidRendererColorPipelineSettings(edited))
+                {
+                    m_ProjectColorPipelineSettings = edited;
+                    PublishColorPipelineSettings();
+                }
+            }
+            const Engine::RendererColorPipelineSettings previewColorPipelineSettings { manualExposureEV100 };
+            if (!Engine::IsValidRendererColorPipelineSettings(previewColorPipelineSettings))
+                ImGui::TextDisabled("Manual EV100 must be finite and between %.0f and %.0f; current saved value remains unchanged.",
+                    Engine::kMinimumManualExposureEV100, Engine::kMaximumManualExposureEV100);
+
             if (ImGui::Button("Save Project Settings"))
             {
                 if (SaveProject())
-                    m_ConsoleLines.emplace_back("Project frame-pacing policy saved: "
-                        + Engine::DescribeFramePacingPolicy(m_GameFramePacingSettings.Resolve(m_ProjectFramePacingPolicy)));
+                    m_ConsoleLines.emplace_back("Project settings saved");
             }
             PublishFramePacingPolicy();
             PublishPresentationPolicy();
@@ -2673,6 +2706,12 @@ void EditorLayer::PublishPresentationPolicy()
     Engine::Renderer::SetPresentationPolicy(m_RuntimePresentationPolicyOverride.value_or(m_ProjectPresentationPolicy));
 }
 
+void EditorLayer::PublishColorPipelineSettings()
+{
+    if (!Engine::Renderer::SetColorPipelineSettings(m_ProjectColorPipelineSettings))
+        Engine::Log::Error("Rejected invalid project color pipeline settings");
+}
+
 void EditorLayer::RunPresentationPolicySmoke()
 {
     if (!m_PresentationPolicySmokeRequested || m_PresentationPolicySmokeCompleted)
@@ -3100,7 +3139,13 @@ void EditorLayer::RunFramePacingPolicySmoke()
     const bool v2Migrated = v2Written && ReadProjectManifest(v2ManifestPath, v2Manifest)
         && v2Manifest.PresentationPolicy == Engine::PresentationPolicy::Synchronized;
 
-    const ProjectManifest beforeInvalidRead { "unchanged.spiral", "unchanged.spiralassets", {}, Engine::PresentationPolicy::Synchronized };
+    const ProjectManifest beforeInvalidRead {
+        "unchanged.spiral",
+        "unchanged.spiralassets",
+        {},
+        Engine::PresentationPolicy::Synchronized,
+        {}
+    };
     ProjectManifest invalidReadTarget = beforeInvalidRead;
     const bool invalidWritten = WriteTextFile(invalidManifestPath,
         "SpiralProject 3\nScene \"invalid.spiral\"\nAssetRegistry \"invalid.spiralassets\"\n"
@@ -3133,6 +3178,80 @@ void EditorLayer::RunFramePacingPolicySmoke()
     m_ConsoleLines.emplace_back("Frame pacing policy smoke passed: " + Engine::DescribeFramePacingPolicy(resolved));
 }
 
+void EditorLayer::RunColorPipelineSettingsSmoke()
+{
+    if (!m_ColorPipelineSettingsSmokeRequested || m_ColorPipelineSettingsSmokeCompleted || m_FrameCounter < 1)
+        return;
+
+    const std::filesystem::path smokeRoot = "output/projects/color-pipeline-settings-smoke";
+    const std::filesystem::path v3ManifestPath = smokeRoot / "v3.spiralproject";
+    const std::filesystem::path v4ManifestPath = smokeRoot / "v4.spiralproject";
+    const std::filesystem::path invalidBoundsPath = smokeRoot / "invalid-bounds.spiralproject";
+    const std::filesystem::path invalidNonfinitePath = smokeRoot / "invalid-nonfinite.spiralproject";
+
+    const bool v3Written = WriteTextFile(v3ManifestPath,
+        "SpiralProject 3\nScene \"v3.spiral\"\nAssetRegistry \"v3.spiralassets\"\n"
+        "FramePacingMode Responsive\nFramePacingTargetFps 60\nPresentationPolicy Synchronized\n");
+    ProjectManifest v3Manifest;
+    const bool v3Migrated = v3Written && ReadProjectManifest(v3ManifestPath, v3Manifest)
+        && v3Manifest.ColorPipelineSettings.ManualExposureEV100 == 0.0;
+
+    const bool v4Written = WriteTextFile(v4ManifestPath,
+        "SpiralProject 4\nScene \"v4.spiral\"\nAssetRegistry \"v4.spiralassets\"\n"
+        "FramePacingMode Responsive\nFramePacingTargetFps 60\nPresentationPolicy Synchronized\n"
+        "ManualExposureEV100 -2\n");
+    ProjectManifest v4Manifest;
+    const bool v4Loaded = v4Written && ReadProjectManifest(v4ManifestPath, v4Manifest)
+        && v4Manifest.ColorPipelineSettings.ManualExposureEV100 == -2.0;
+
+    const ProjectManifest beforeInvalidRead {
+        "unchanged.spiral",
+        "unchanged.spiralassets",
+        {},
+        Engine::PresentationPolicy::Synchronized,
+        { 1.0 }
+    };
+    ProjectManifest invalidBoundsTarget = beforeInvalidRead;
+    const bool invalidBoundsWritten = WriteTextFile(invalidBoundsPath,
+        "SpiralProject 4\nScene \"invalid.spiral\"\nAssetRegistry \"invalid.spiralassets\"\n"
+        "FramePacingMode Responsive\nFramePacingTargetFps 60\nPresentationPolicy Synchronized\n"
+        "ManualExposureEV100 17\n");
+    const bool invalidBoundsRejected = invalidBoundsWritten
+        && !ReadProjectManifest(invalidBoundsPath, invalidBoundsTarget)
+        && invalidBoundsTarget.ColorPipelineSettings.ManualExposureEV100 == 1.0;
+
+    ProjectManifest invalidNonfiniteTarget = beforeInvalidRead;
+    const bool invalidNonfiniteWritten = WriteTextFile(invalidNonfinitePath,
+        "SpiralProject 4\nScene \"invalid.spiral\"\nAssetRegistry \"invalid.spiralassets\"\n"
+        "FramePacingMode Responsive\nFramePacingTargetFps 60\nPresentationPolicy Synchronized\n"
+        "ManualExposureEV100 1e9999\n");
+    const bool invalidNonfiniteRejected = invalidNonfiniteWritten
+        && !ReadProjectManifest(invalidNonfinitePath, invalidNonfiniteTarget)
+        && invalidNonfiniteTarget.ColorPipelineSettings.ManualExposureEV100 == 1.0;
+
+    const Engine::RendererColorPipelineSettings previousSettings = m_ProjectColorPipelineSettings;
+    m_ProjectColorPipelineSettings = { 2.0 };
+    PublishColorPipelineSettings();
+    const bool rendererPublished = Engine::Renderer::GetColorPipelineSettings().ManualExposureEV100 == 2.0;
+    const bool savedAndReloaded = SaveProject() && LoadProject()
+        && m_ProjectColorPipelineSettings.ManualExposureEV100 == 2.0
+        && Engine::Renderer::GetColorPipelineSettings().ManualExposureEV100 == 2.0;
+    m_ProjectColorPipelineSettings = previousSettings;
+    PublishColorPipelineSettings();
+    const bool restoredAndSaved = SaveProject();
+
+    m_ColorPipelineSettingsSmokeCompleted = true;
+    if (!v3Migrated || !v4Loaded || !invalidBoundsRejected || !invalidNonfiniteRejected
+        || !rendererPublished || !savedAndReloaded || !restoredAndSaved)
+    {
+        throw std::runtime_error("Color pipeline settings smoke failed");
+    }
+
+    Engine::Log::Info("ColorPipelineSettingsSmokeV1 default=pass bounds=pass nonfinite=pass v3Migration=pass saveReopen=pass rendererPublication=pass manualExposureEV100=",
+        Engine::Renderer::GetColorPipelineSettings().ManualExposureEV100, " result=pass");
+    m_ConsoleLines.emplace_back("Color pipeline settings smoke passed");
+}
+
 void EditorLayer::RunEditorSettingsSmoke()
 {
     if (!m_EditorSettingsSmokeRequested || m_EditorSettingsSmokeCompleted || m_FrameCounter < 1)
@@ -3161,7 +3280,13 @@ void EditorLayer::RunEditorSettingsSmoke()
     const bool invalidRejected = invalidWritten && !ReadEditorSettings(invalidPath, unchangedOnInvalidRead)
         && unchangedOnInvalidRead.ViewportNavigation == ViewportNavigationPreset::Unreal;
 
-    const ProjectManifest manifest { "separation.spiral", "separation.spiralassets", {}, Engine::PresentationPolicy::Synchronized };
+    const ProjectManifest manifest {
+        "separation.spiral",
+        "separation.spiralassets",
+        {},
+        Engine::PresentationPolicy::Synchronized,
+        {}
+    };
     const bool manifestSeparated = WriteProjectManifest(manifestPath, manifest);
     std::ifstream manifestInput(manifestPath);
     std::stringstream manifestContents;
@@ -3564,11 +3689,23 @@ bool EditorLayer::SaveProject()
         m_ConsoleLines.emplace_back("Project save rejected invalid frame-pacing policy");
         return false;
     }
+    if (!Engine::IsValidRendererColorPipelineSettings(m_ProjectColorPipelineSettings))
+    {
+        Engine::Log::Error("Project save rejected invalid color pipeline settings");
+        m_ConsoleLines.emplace_back("Project save rejected invalid color pipeline settings");
+        return false;
+    }
 
     if (!SaveActiveScene())
         return false;
 
-    const ProjectManifest manifest { m_ScenePath, m_AssetRegistryPath, m_ProjectFramePacingPolicy, m_ProjectPresentationPolicy };
+    const ProjectManifest manifest {
+        m_ScenePath,
+        m_AssetRegistryPath,
+        m_ProjectFramePacingPolicy,
+        m_ProjectPresentationPolicy,
+        m_ProjectColorPipelineSettings
+    };
     if (!WriteProjectManifest(m_ProjectPath, manifest))
     {
         Engine::Log::Error("Project save failed: ", m_ProjectPath);
@@ -3609,6 +3746,9 @@ bool EditorLayer::CreateNewProject(std::string name, const std::filesystem::path
     const std::string previousScenePath = m_ScenePath;
     const std::string previousAssetRegistryPath = m_AssetRegistryPath;
     const Engine::FramePacingPolicy previousFramePacingPolicy = m_ProjectFramePacingPolicy;
+    const Engine::RendererColorPipelineSettings previousColorPipelineSettings = m_ProjectColorPipelineSettings;
+    const Engine::RendererColorPipelineSettings previousPublishedColorPipelineSettings =
+        Engine::Renderer::GetColorPipelineSettings();
     const std::vector<HistoryEntry> previousUndoHistory = m_UndoHistory;
     const std::vector<HistoryEntry> previousRedoHistory = m_RedoHistory;
 
@@ -3616,6 +3756,7 @@ bool EditorLayer::CreateNewProject(std::string name, const std::filesystem::path
     m_ScenePath = (projectRoot / "Scenes" / "Main.spiral").string();
     m_AssetRegistryPath = (projectRoot / "Assets" / "assets.spiralassets").string();
     m_ProjectFramePacingPolicy = {};
+    m_ProjectColorPipelineSettings = {};
     m_AssetRegistry = {};
     m_MaterialLibrary = {};
     m_ActiveScene = Engine::Scene(std::move(name));
@@ -3637,6 +3778,22 @@ bool EditorLayer::CreateNewProject(std::string name, const std::filesystem::path
         m_ScenePath = previousScenePath;
         m_AssetRegistryPath = previousAssetRegistryPath;
         m_ProjectFramePacingPolicy = previousFramePacingPolicy;
+        m_ProjectColorPipelineSettings = previousColorPipelineSettings;
+        Engine::Renderer::SetColorPipelineSettings(previousPublishedColorPipelineSettings);
+        RestoreHistoryState(previousState);
+        m_UndoHistory = previousUndoHistory;
+        m_RedoHistory = previousRedoHistory;
+        return false;
+    }
+
+    if (!Engine::Renderer::SetColorPipelineSettings(m_ProjectColorPipelineSettings))
+    {
+        m_ProjectPath = previousProjectPath;
+        m_ScenePath = previousScenePath;
+        m_AssetRegistryPath = previousAssetRegistryPath;
+        m_ProjectFramePacingPolicy = previousFramePacingPolicy;
+        m_ProjectColorPipelineSettings = previousColorPipelineSettings;
+        Engine::Renderer::SetColorPipelineSettings(previousPublishedColorPipelineSettings);
         RestoreHistoryState(previousState);
         m_UndoHistory = previousUndoHistory;
         m_RedoHistory = previousRedoHistory;
@@ -3781,8 +3938,10 @@ bool EditorLayer::LoadProject()
     m_AssetRegistryPath = std::move(manifest.AssetRegistryPath);
     m_ProjectFramePacingPolicy = manifest.FramePacingPolicy;
     m_ProjectPresentationPolicy = manifest.PresentationPolicy;
+    m_ProjectColorPipelineSettings = manifest.ColorPipelineSettings;
     PublishFramePacingPolicy();
     PublishPresentationPolicy();
+    PublishColorPipelineSettings();
     m_AssetRegistry = std::move(loadedRegistry);
     m_MaterialLibrary = std::move(loadedMaterials);
     Engine::Renderer::PublishArtifactResolvers(m_AssetRegistry, m_MaterialLibrary);
