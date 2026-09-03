@@ -795,13 +795,28 @@ void EditorLayer::ConfigureSceneOriginRasterSmoke()
     if (defaultMeshAsset == Engine::kInvalidAssetHandle)
         throw std::runtime_error("Scene origin raster smoke requires the published default scene mesh artifact");
 
+    Engine::AssetHandle defaultMaterialAsset = Engine::kInvalidAssetHandle;
+    const Engine::Entity prototypeMeshEntity = m_ActiveScene.FindEntityByName("Prototype Mesh");
+    if (const Engine::MeshRendererComponent* prototypeMesh =
+            m_ActiveScene.TryGetMeshRendererComponent(prototypeMeshEntity))
+    {
+        defaultMaterialAsset = prototypeMesh->MaterialAsset;
+    }
+    const Engine::AssetMetadata* defaultMaterialMetadata = m_AssetRegistry.GetAsset(defaultMaterialAsset);
+    if (!defaultMaterialMetadata
+        || defaultMaterialMetadata->Type != Engine::AssetType::Material
+        || !m_MaterialLibrary.Get(defaultMaterialAsset))
+    {
+        throw std::runtime_error("Scene origin raster smoke requires the loaded prototype material asset");
+    }
+
     constexpr double base = 1000000000000.0;
     constexpr double sectorBoundaryOffset = 2048.0;
     m_ActiveScene = Engine::Scene("Scene Origin Raster Smoke");
     m_SceneOriginRasterMeshEntity = m_ActiveScene.CreateEntity("Scene Origin Raster Mesh");
     Engine::MeshRendererComponent meshRenderer;
     meshRenderer.MeshAsset = defaultMeshAsset;
-    meshRenderer.MaterialAsset = 84;
+    meshRenderer.MaterialAsset = defaultMaterialAsset;
     m_ActiveScene.AddMeshRendererComponent(m_SceneOriginRasterMeshEntity, meshRenderer);
     m_ActiveScene.SetEntityWorldPosition(m_SceneOriginRasterMeshEntity, { base + sectorBoundaryOffset - 0.5, 0.0, 0.0 });
     m_ActiveScene.SetEntityWorldPosition(m_ActiveScene.GetMainCameraEntity(), { base + sectorBoundaryOffset - 0.5, 0.0, -3.35 });
