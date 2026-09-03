@@ -325,6 +325,10 @@ namespace Engine
 
     Application::~Application()
     {
+        // Layers may need the live window, renderer, and Application singleton
+        // while releasing cursor capture and native UI resources.
+        m_LayerStack.Clear();
+        m_ImGuiLayer = nullptr;
         Renderer::Shutdown();
         s_Instance = nullptr;
     }

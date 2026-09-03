@@ -141,6 +141,8 @@ private:
     bool m_EditorSettingsSmokeCompleted = false;
     bool m_ViewportNavigationSmokeRequested = false;
     bool m_ViewportNavigationSmokeCompleted = false;
+    bool m_FramePacingNavigationTraceEnabled = false;
+    Engine::u64 m_ViewportNavigationMutationFrames = 0;
     bool m_EventTraceEnabled = false;
     bool m_PresentationPolicySmokeRequested = false;
     bool m_PresentationPolicySmokeCompleted = false;
@@ -210,6 +212,8 @@ private:
     std::shared_ptr<const Engine::SceneRenderSnapshot> m_FirstSceneRenderSnapshot;
     std::array<double, 3> m_CameraPosition = { 0.0, 0.0, -3.35 };
     std::array<float, 3> m_CameraRotation = { 0.0f, 0.0f, 0.0f };
+    std::array<double, 3> m_FramePacingInitialCameraPosition {};
+    std::array<float, 3> m_FramePacingInitialCameraRotation {};
     float m_CameraFovDegrees = 60.0f;
     float m_CameraNearClip = 0.1f;
     float m_CameraFarClip = 100.0f;

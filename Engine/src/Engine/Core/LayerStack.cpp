@@ -6,8 +6,15 @@ namespace Engine
 {
     LayerStack::~LayerStack()
     {
+        Clear();
+    }
+
+    void LayerStack::Clear()
+    {
         for (auto& layer : m_Layers)
             layer->OnDetach();
+        m_Layers.clear();
+        m_LayerInsertIndex = 0;
     }
 
     Layer* LayerStack::PushLayer(Scope<Layer> layer)

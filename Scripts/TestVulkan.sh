@@ -107,6 +107,7 @@ REQUIRED_MARKERS=(
     "RHITextureUploadSmokeV2 backend=Vulkan, mips=4, bc5Bytes=pass, bc7Bytes=pass, bc7SrgbBytes=pass, finalState=ShaderResource, result=pass"
     "TextureGpuResourceCacheSmokeV1 backend=Vulkan, preferred=pass, reuse=exact, replacement=pass, fallback=RGBA8, shaderResource=pass, cacheCleared=pass, retained=pass, result=pass"
     "TextureRuntimePublicationSmokeV1 backend=Vulkan, catalog=pass, upload=pass, table=pass, replacement=exact-token-pass, removal=exact-token-pass, failure=error-resource, idleRelease=pass, result=pass"
+    "SceneMaterialTextureShaderReadbackV1 backend=Vulkan roles=exact-pass colorSpace=sRGB-linear-pass samplers=declared-pass mip1=pass missing=semantic-defaults-pass invalid=error-resource-pass retention=exact-token-pass result=pass"
     "RenderGraphExecutionSmokeV1 backend=Vulkan, barriers=3, callbacks=ordered-pass, undeclared=rejected, submission=pass, topology="
     "RenderGraphTransientAllocationSmokeV1 backend=Vulkan, mode=NonAliasedGpuRetiredPool, lifetime=compatible-sequential-pass, estimatedLogicalAllocatedBytes=64, estimatedLogicalPooledBytes=64, retirement=exact-token-pass, reuse=retired-pass, result=pass"
 )

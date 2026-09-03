@@ -507,6 +507,9 @@ void EditorLayer::OnAttach()
     PublishPresentationPolicy();
     SyncEditorCameraStateFromMainCamera(true);
     ResetFusionNavigationPivotFromSelectionOrScene();
+    m_FramePacingNavigationTraceEnabled = args.HasFlag("--frame-pacing-benchmark");
+    m_FramePacingInitialCameraPosition = m_CameraPosition;
+    m_FramePacingInitialCameraRotation = m_CameraRotation;
     m_CaptureViewportRequested = Engine::Application::Get().GetSpecification().CommandLineArgs.HasFlag("--capture-viewport");
     m_SaveSceneSmokeRequested = Engine::Application::Get().GetSpecification().CommandLineArgs.HasFlag("--save-scene-smoke");
     m_AssetWatchSmokeRequested = Engine::Application::Get().GetSpecification().CommandLineArgs.HasFlag("--asset-watch-smoke");
@@ -559,6 +562,23 @@ void EditorLayer::OnAttach()
 
 void EditorLayer::OnDetach()
 {
+    if (m_FramePacingNavigationTraceEnabled)
+    {
+        const double deltaX = m_CameraPosition[0] - m_FramePacingInitialCameraPosition[0];
+        const double deltaY = m_CameraPosition[1] - m_FramePacingInitialCameraPosition[1];
+        const double deltaZ = m_CameraPosition[2] - m_FramePacingInitialCameraPosition[2];
+        const double pitchDelta = static_cast<double>(m_CameraRotation[0] - m_FramePacingInitialCameraRotation[0]);
+        const double yawDelta = static_cast<double>(m_CameraRotation[1] - m_FramePacingInitialCameraRotation[1]);
+        const double rollDelta = static_cast<double>(m_CameraRotation[2] - m_FramePacingInitialCameraRotation[2]);
+        const double translationDistance = std::sqrt(deltaX * deltaX + deltaY * deltaY + deltaZ * deltaZ);
+        const double rotationDelta = std::sqrt(pitchDelta * pitchDelta + yawDelta * yawDelta + rollDelta * rollDelta);
+        Engine::Log::Info("ViewportNavigationCaptureV1 preset=", ToEditorSettingsNavigationPreset(m_ViewportNavigationPreset),
+            " mutationFrames=", m_ViewportNavigationMutationFrames,
+            " initialPosition=", m_FramePacingInitialCameraPosition[0], ",", m_FramePacingInitialCameraPosition[1], ",", m_FramePacingInitialCameraPosition[2],
+            " finalPosition=", m_CameraPosition[0], ",", m_CameraPosition[1], ",", m_CameraPosition[2],
+            " translationDistance=", translationDistance, " rotationDeltaDegrees=", rotationDelta,
+            " result=", m_ViewportNavigationMutationFrames > 0 && (translationDistance > 0.000001 || rotationDelta > 0.000001) ? "changed" : "unchanged");
+    }
     EndViewportCursorCapture();
     ClearViewportNavigationInput();
     Engine::Log::Info("Editor layer detached");
@@ -1999,6 +2019,8 @@ void EditorLayer::UpdateViewportNavigation(Engine::Timestep timestep)
 
     if (!changed)
         return;
+
+    ++m_ViewportNavigationMutationFrames;
 
     m_EditorCamera.SetPosition({ m_CameraPosition[0], m_CameraPosition[1], m_CameraPosition[2] });
     m_EditorCamera.SetRotationDegrees({ m_CameraRotation[0], m_CameraRotation[1], m_CameraRotation[2] });

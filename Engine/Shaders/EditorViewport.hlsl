@@ -10,8 +10,12 @@ cbuffer ViewportConstants : register(b0)
     uint4 TextureState;
 };
 
-Texture2D ReadOnlyTextures[4096] : register(t0, space1);
-SamplerState ReadOnlySamplers[4096] : register(s0, space1);
+#ifndef GE_READ_ONLY_TEXTURE_CAPACITY
+#define GE_READ_ONLY_TEXTURE_CAPACITY 4096
+#endif
+
+Texture2D ReadOnlyTextures[GE_READ_ONLY_TEXTURE_CAPACITY] : register(t0, space1);
+SamplerState ReadOnlySamplers[GE_READ_ONLY_TEXTURE_CAPACITY] : register(s0, space1);
 
 struct VSInput
 {
@@ -99,4 +103,44 @@ float4 PSMain(VSOutput input) : SV_Target0
     float portableBindingProbe = 1.0f + abs(ViewProjection[0][0]) * 0.0000001f;
     return float4(saturate(shaded) * portableBindingProbe,
         TextureState.z == 2u ? alpha : 1.0f);
+}
+
+// Native cross-backend acceptance entry point. Each eight-pixel cell exposes
+// one material texture semantic without the display shading used by PSMain.
+// The production constants and sampled-table layout remain identical.
+float4 PSMaterialProbe(VSOutput input) : SV_Target0
+{
+    const uint cell = min((uint)(input.Position.x / 8.0f), 7u);
+    const uint declared = TextureState.x;
+    if (cell == 0u)
+        return (declared & (1u << 0u)) != 0u
+            ? ReadOnlyTextures[TextureIndices0.x].SampleLevel(ReadOnlySamplers[TextureIndices0.x], float2(0.25f, 0.25f), 0.0f)
+            : float4(1.0f, 1.0f, 1.0f, 1.0f);
+    if (cell == 1u)
+        return (declared & (1u << 0u)) != 0u
+            ? ReadOnlyTextures[TextureIndices0.x].SampleLevel(ReadOnlySamplers[TextureIndices0.x], float2(0.25f, 0.25f), 1.0f)
+            : float4(1.0f, 1.0f, 1.0f, 1.0f);
+    if (cell == 2u)
+        return (declared & (1u << 1u)) != 0u
+            ? ReadOnlyTextures[TextureIndices0.y].SampleLevel(ReadOnlySamplers[TextureIndices0.y], float2(0.25f, 0.25f), 0.0f)
+            : float4(0.5f, 0.5f, 1.0f, 1.0f);
+    if (cell == 3u)
+        return (declared & (1u << 2u)) != 0u
+            ? ReadOnlyTextures[TextureIndices0.z].SampleLevel(ReadOnlySamplers[TextureIndices0.z], float2(0.25f, 0.25f), 0.0f)
+            : float4(1.0f, 1.0f, 1.0f, 1.0f);
+    if (cell == 4u)
+        return (declared & (1u << 3u)) != 0u
+            ? ReadOnlyTextures[TextureIndices0.w].SampleLevel(ReadOnlySamplers[TextureIndices0.w], float2(0.25f, 0.25f), 0.0f)
+            : float4(0.0f, 0.0f, 0.0f, 1.0f);
+    if (cell == 5u)
+        return (declared & (1u << 4u)) != 0u
+            ? ReadOnlyTextures[TextureIndices1.x].SampleLevel(ReadOnlySamplers[TextureIndices1.x], float2(1.25f, 0.25f), 0.0f)
+            : float4(1.0f, 1.0f, 1.0f, 1.0f);
+    if (cell == 6u)
+        return (declared & (1u << 5u)) != 0u
+            ? ReadOnlyTextures[TextureIndices1.y].SampleLevel(ReadOnlySamplers[TextureIndices1.y], float2(1.25f, 0.25f), 0.0f)
+            : float4(1.0f, 1.0f, 1.0f, 1.0f);
+    return TextureState.y == 0u
+        ? float4(0.0f, 1.0f, 0.0f, 1.0f)
+        : float4(1.0f, 0.0f, 0.0f, 1.0f);
 }

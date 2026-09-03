@@ -99,6 +99,7 @@ $RequiredMarkers = @(
     "SceneViewportRenderGraphV1 backend=Vulkan passes=3 labels=clear,raster,output-handoff execution=pass reference=direct comparator=exact-byte-pass"
     "SceneMeshGpuIntegrationV1 backend=Vulkan snapshot=pass resolver=pass cache=pass indexFormat=UInt32 baseVertex=0"
     "SceneMaterialTextureIntegrationV1 backend=Vulkan material=immutable texture=sRGB-base-color sampler=declared table=bound mips=implicit fallbacks=semantic retained=exact-raster-token result=pass"
+    "SceneMaterialTextureShaderReadbackV1 backend=Vulkan roles=exact-pass colorSpace=sRGB-linear-pass samplers=declared-pass mip1=pass missing=semantic-defaults-pass invalid=error-resource-pass retention=exact-token-pass result=pass"
     "ProductionRenderGraphRetirementV1 backend=Vulkan"
     "RenderGraphTimestampScopesV1 backend=Vulkan"
     "RendererGpuTimingV1 backend=NVRHI Vulkan"

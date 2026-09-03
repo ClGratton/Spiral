@@ -137,7 +137,9 @@ namespace Engine
             {
                 Log::Error("Vulkan RHI texture-upload smoke failed"); m_VulkanContext->Shutdown(); m_VulkanContext.reset(); return false;
             }
-            if (args.HasFlag("--rhi-sampled-table-smoke") && !RunRHISampledTextureTableSmoke(*m_VulkanContext->GetRHIDevice(), "Vulkan"))
+            if (args.HasFlag("--rhi-sampled-table-smoke")
+                && (!RunRHISampledTextureTableSmoke(*m_VulkanContext->GetRHIDevice(), "Vulkan")
+                    || !RunRHIMaterialTextureShaderSmoke(*m_VulkanContext->GetRHIDevice(), "Vulkan")))
             { Log::Error("Vulkan RHI sampled-table smoke failed"); m_VulkanContext->Shutdown(); m_VulkanContext.reset(); return false; }
             if (args.HasFlag("--render-graph-execution-smoke") && !RunRenderGraphExecutionSmoke(*m_VulkanContext->GetRHIDevice(), "Vulkan"))
             {
@@ -232,7 +234,9 @@ namespace Engine
             {
                 Log::Error("D3D12 RHI texture-upload smoke failed"); m_Device.reset(); return false;
             }
-            if (args.HasFlag("--rhi-sampled-table-smoke") && !RunRHISampledTextureTableSmoke(*m_Device, "D3D12"))
+            if (args.HasFlag("--rhi-sampled-table-smoke")
+                && (!RunRHISampledTextureTableSmoke(*m_Device, "D3D12")
+                    || !RunRHIMaterialTextureShaderSmoke(*m_Device, "D3D12")))
             { Log::Error("D3D12 RHI sampled-table smoke failed"); m_Device.reset(); return false; }
             if (args.HasFlag("--render-graph-execution-smoke") && !RunRenderGraphExecutionSmoke(*m_Device, "D3D12"))
             {
@@ -1605,6 +1609,361 @@ float4 PSMain(PixelInput input) : SV_Target { return ReadOnlyTextures[1].SampleL
         const bool sampled = read && readback.Data.size() >= center + 4 && std::abs(static_cast<int>(readback.Data[center]) - 51) <= 2 && std::abs(static_cast<int>(readback.Data[center + 1]) - 102) <= 2 && std::abs(static_cast<int>(readback.Data[center + 2]) - 204) <= 2 && readback.Data[center + 3] == 255;
         Log::Info("RHIReadOnlySampledTableSmokeV1 backend=", backendName, ", package=", packages ? "pass" : "fail", ", pipeline=", pipeline ? "pass" : "fail", ", capacity=", tableCapacity, ", bind=", bound ? "pass" : "fail", ", submit=", submitted ? "pass" : "fail", ", readback=", read ? "pass" : "fail", ", sampledPixel=", sampled ? "pass" : "fail", ", actual=", static_cast<u32>(actual[0]), ",", static_cast<u32>(actual[1]), ",", static_cast<u32>(actual[2]), ",", static_cast<u32>(actual[3]), ", result=", sampled ? "pass" : "fail", ", validation=", validationError);
         return sampled;
+    }
+
+    bool NVRHIRenderBackend::RunRHIMaterialTextureShaderSmoke(
+        RHI::Device& device, std::string_view backendName)
+    {
+        constexpr u32 width = 64, height = 12, bandHeight = 4, tableCapacity = 8;
+        const bool vulkan = device.GetCapabilities().ActiveBackend == RHI::Backend::NVRHIVulkan;
+        struct Vertex { float Position[3]; float Color[3]; float UV[2]; };
+        struct Constants
+        {
+            float ViewProjection[16];
+            float BaseColorAndAlphaCutoff[4];
+            float EmissiveAndStrength[4];
+            float SurfaceFactors[4];
+            float CallistoFactors[4];
+            u32 TextureIndices0[4];
+            u32 TextureIndices1[4];
+            u32 TextureState[4];
+        };
+        static_assert(sizeof(Constants) == 176);
+        const std::array<Vertex, 3> vertices {{
+            {{ -1.0f, -1.0f, 0.5f }, {}, {}},
+            {{ -1.0f, 3.0f, 0.5f }, {}, {}},
+            {{ 3.0f, -1.0f, 0.5f }, {}, {}}
+        }};
+        const std::array<u16, 3> indices {{ 0, 1, 2 }};
+
+        ShaderSourceFile source = ShaderLibrary::LoadSource(
+            "Engine/Shaders/EditorViewport.hlsl", "Material texture shader readback");
+        auto makeRequest = [&source](RHI::ShaderStage stage, const char* entry)
+        {
+            PortableShaderRequest request;
+            request.SourceName = source.ResolvedPath.string();
+            request.Source = source.Source;
+            request.EntryPoint = entry;
+            request.Stage = stage;
+            request.Defines = { "GE_READ_ONLY_TEXTURE_CAPACITY=8" };
+#ifdef _WIN32
+            request.Targets = { PortableShaderTarget::Dxil, PortableShaderTarget::Spirv };
+            request.DownstreamCompilerPackageHash = GE_DXC_PACKAGE_SHA256;
+#else
+            request.Targets = { PortableShaderTarget::Spirv };
+#endif
+            request.CompilerIdentity = "Slang";
+            request.CompilerVersion = "2026.13.1";
+            request.CompilerPackageHash = GE_SLANG_PACKAGE_SHA256;
+            request.ExpectedLayout = {
+                { "ViewportConstants", 'b', 0, 0, stage, "ConstantBuffer", "struct{ViewProjection:float32x4x4:row-major@0,BaseColorAndAlphaCutoff:float32x4@64,EmissiveAndStrength:float32x4@80,SurfaceFactors:float32x4@96,CallistoFactors:float32x4@112,TextureIndices0:uint32x4@128,TextureIndices1:uint32x4@144,TextureState:uint32x4@160}", 1, 176, 0, 0 },
+                { "ReadOnlySamplers", 's', 0, 1, stage, "SamplerState", "sampler", tableCapacity, 0, 0, 0 },
+                { "ReadOnlyTextures", 't', 0, 1, stage, "Texture2D", "float32x4", tableCapacity, 0, 1, 4 }
+            };
+            if (stage == RHI::ShaderStage::Vertex)
+            {
+                request.ExpectedVertexInputs = {
+                    { "Position", "POSITION", 0, 0, "float32x3", 12, 1, 3 },
+                    { "Color", "COLOR", 0, 1, "float32x3", 12, 1, 3 },
+                    { "UV", "TEXCOORD", 0, 2, "float32x2", 8, 1, 2 }
+                };
+            }
+            return request;
+        };
+        const PortableShaderRequest vertexRequest = makeRequest(RHI::ShaderStage::Vertex, "VSMain");
+        const PortableShaderRequest pixelRequest = makeRequest(RHI::ShaderStage::Pixel, "PSMaterialProbe");
+        SlangShaderCompiler compiler(std::filesystem::path("output") / "cache" / "shaders");
+        const PortableShaderPackage vertexPackage = source.Status == ShaderSourceStatus::Loaded
+            ? compiler.Compile(vertexRequest) : PortableShaderPackage {};
+        const PortableShaderPackage pixelPackage = source.Status == ShaderSourceStatus::Loaded
+            ? compiler.Compile(pixelRequest) : PortableShaderPackage {};
+        for (const PortableShaderDiagnostic& diagnostic : vertexPackage.Diagnostics)
+            Log::Error("SceneMaterialTextureShaderReadbackV1 vertex diagnostic: ", diagnostic.Target, ": ", diagnostic.Message);
+        for (const PortableShaderDiagnostic& diagnostic : pixelPackage.Diagnostics)
+            Log::Error("SceneMaterialTextureShaderReadbackV1 pixel diagnostic: ", diagnostic.Target, ": ", diagnostic.Message);
+        std::string validationError;
+        const bool packages = PortableShaderContract::ValidatePackage(
+                vertexRequest, vertexPackage, validationError)
+            && PortableShaderContract::ValidatePackage(
+                pixelRequest, pixelPackage, validationError);
+
+        RHI::ShaderDescription vs;
+        vs.DebugName = "SceneMaterialTextureShaderReadbackV1 VS";
+        vs.SourceName = vertexRequest.SourceName;
+        vs.EntryPoint = vulkan ? "main" : "VSMain";
+        vs.Stage = RHI::ShaderStage::Vertex;
+        vs.BinaryFormat = vulkan ? RHI::ShaderBinaryFormat::Spirv : RHI::ShaderBinaryFormat::Dxil;
+        vs.Binary = vulkan ? vertexPackage.Spirv : vertexPackage.Dxil;
+        vs.Reflection = vertexPackage.Reflection;
+        RHI::ShaderDescription ps;
+        ps.DebugName = "SceneMaterialTextureShaderReadbackV1 PS";
+        ps.SourceName = pixelRequest.SourceName;
+        ps.EntryPoint = vulkan ? "main" : "PSMaterialProbe";
+        ps.Stage = RHI::ShaderStage::Pixel;
+        ps.BinaryFormat = vulkan ? RHI::ShaderBinaryFormat::Spirv : RHI::ShaderBinaryFormat::Dxil;
+        ps.Binary = vulkan ? pixelPackage.Spirv : pixelPackage.Dxil;
+        ps.Reflection = pixelPackage.Reflection;
+        Scope<RHI::Shader> vertexShader = packages ? device.CreateShader(vs) : nullptr;
+        Scope<RHI::Shader> pixelShader = packages ? device.CreateShader(ps) : nullptr;
+        RHI::PipelineDescription pipelineDescription;
+        pipelineDescription.DebugName = "SceneMaterialTextureShaderReadbackV1 Pipeline";
+        pipelineDescription.VertexShader = vertexShader.get();
+        pipelineDescription.PixelShader = pixelShader.get();
+        pipelineDescription.VertexInputs = {
+            { "POSITION", 0, RHI::Format::R32G32B32Float, 0, offsetof(Vertex, Position) },
+            { "COLOR", 0, RHI::Format::R32G32B32Float, 0, offsetof(Vertex, Color) },
+            { "TEXCOORD", 0, RHI::Format::R32G32Float, 0, offsetof(Vertex, UV) }
+        };
+        pipelineDescription.ConstantBufferBindings = {{ 0, 0, RHI::ShaderStage::AllGraphics }};
+        pipelineDescription.SampledTextureTable = RHI::SampledTextureTableBinding { tableCapacity };
+        pipelineDescription.ColorFormat = RHI::Format::R8G8B8A8Unorm;
+        pipelineDescription.DepthFormat = RHI::Format::D32Float;
+        pipelineDescription.DepthTestEnable = false;
+        pipelineDescription.DepthWriteEnable = false;
+        pipelineDescription.RasterCullMode = RHI::CullMode::None;
+        Scope<RHI::Pipeline> pipeline = vertexShader && pixelShader
+            ? device.CreatePipeline(pipelineDescription) : nullptr;
+
+        AssetRegistry registry;
+        MaterialLibrary materials;
+        std::vector<std::filesystem::path> artifactPaths;
+        std::string artifactError;
+        bool artifactsStored = true;
+        const auto addTexture = [&](std::string_view sourcePath, TextureRole role,
+                                    TextureColorSpace colorSpace, RHI::Extent2D extent,
+                                    std::vector<u8> mip0, std::vector<u8> mip1 = {})
+        {
+            const std::string normalized = AssetRegistry::NormalizeSourcePath(sourcePath);
+            const AssetHandle handle = registry.RegisterAsset(
+                AssetType::Texture, normalized, std::filesystem::path(normalized).stem().string());
+            TextureArtifact artifact;
+            artifact.Asset = handle;
+            artifact.SourcePath = normalized;
+            artifact.Role = role;
+            artifact.ColorSpace = colorSpace;
+            artifact.TargetProfile = TextureTargetProfile::RGBAFallback;
+            artifact.CookedFormat = colorSpace == TextureColorSpace::Srgb
+                ? TextureCookedFormat::R8G8B8A8Srgb : TextureCookedFormat::R8G8B8A8Unorm;
+            artifact.Mips.push_back({ extent.Width, extent.Height, 0, mip0.size() });
+            artifact.Payload = std::move(mip0);
+            if (!mip1.empty())
+            {
+                artifact.Mips.push_back({ 1, 1, artifact.Payload.size(), mip1.size() });
+                artifact.Payload.insert(artifact.Payload.end(), mip1.begin(), mip1.end());
+            }
+            const std::filesystem::path path = GetCookedTextureArtifactPath(
+                handle, TextureTargetProfile::RGBAFallback);
+            artifactPaths.push_back(path);
+            artifactsStored = artifactsStored && handle != kInvalidAssetHandle
+                && StoreTextureArtifact(path, artifact, artifactError);
+            return handle;
+        };
+        const AssetHandle base = addTexture(
+            "Engine/Generated/MaterialShaderProbeBase.rgba8", TextureRole::BaseColor,
+            TextureColorSpace::Srgb, { 2, 2 },
+            { 188, 0, 0, 255, 188, 0, 0, 255, 188, 0, 0, 255, 188, 0, 0, 255 },
+            { 0, 188, 0, 255 });
+        const AssetHandle normal = addTexture(
+            "Engine/Generated/MaterialShaderProbeNormal.rgba8", TextureRole::Normal,
+            TextureColorSpace::Linear, { 1, 1 }, { 64, 128, 192, 255 });
+        const AssetHandle orm = addTexture(
+            "Engine/Generated/MaterialShaderProbeOrm.rgba8", TextureRole::Orm,
+            TextureColorSpace::Linear, { 1, 1 }, { 32, 96, 224, 255 });
+        const AssetHandle emissive = addTexture(
+            "Engine/Generated/MaterialShaderProbeEmissive.rgba8", TextureRole::Emissive,
+            TextureColorSpace::Srgb, { 1, 1 }, { 0, 0, 188, 255 });
+        const AssetHandle mask = addTexture(
+            "Engine/Generated/MaterialShaderProbeMask.rgba8", TextureRole::Mask,
+            TextureColorSpace::Linear, { 2, 2 },
+            { 48, 160, 240, 255, 200, 80, 120, 255,
+              48, 160, 240, 255, 200, 80, 120, 255 });
+
+        MaterialAsset completeMaterial;
+        completeMaterial.Name = "Complete Shader Probe";
+        completeMaterial.Textures = { base, normal, orm, emissive, mask, mask };
+        completeMaterial.Samplers.BaseColor = MaterialTextureSampler::LinearWrap;
+        completeMaterial.Samplers.Normal = MaterialTextureSampler::LinearClamp;
+        completeMaterial.Samplers.Orm = MaterialTextureSampler::PointWrap;
+        completeMaterial.Samplers.Emissive = MaterialTextureSampler::PointClamp;
+        completeMaterial.Samplers.Opacity = MaterialTextureSampler::LinearWrap;
+        completeMaterial.Samplers.CallistoControl = MaterialTextureSampler::PointClamp;
+        MaterialAsset emptyMaterial;
+        emptyMaterial.Name = "Empty Shader Probe";
+        MaterialAsset mismatchMaterial;
+        mismatchMaterial.Name = "Mismatch Shader Probe";
+        mismatchMaterial.Textures.BaseColor = normal;
+        const AssetHandle completeMaterialAsset = registry.RegisterAsset(
+            AssetType::Material, "Engine/Generated/CompleteShaderProbe.spiralmat", completeMaterial.Name);
+        const AssetHandle emptyMaterialAsset = registry.RegisterAsset(
+            AssetType::Material, "Engine/Generated/EmptyShaderProbe.spiralmat", emptyMaterial.Name);
+        const AssetHandle mismatchMaterialAsset = registry.RegisterAsset(
+            AssetType::Material, "Engine/Generated/MismatchShaderProbe.spiralmat", mismatchMaterial.Name);
+        const bool materialsStored = materials.Set(completeMaterialAsset, completeMaterial)
+            && materials.Set(emptyMaterialAsset, emptyMaterial)
+            && materials.Set(mismatchMaterialAsset, mismatchMaterial);
+        if (artifactsStored && materialsStored)
+            Renderer::PublishArtifactResolvers(registry, materials);
+        Scope<TextureRuntimePublication> runtime = artifactsStored && materialsStored && pipeline
+            ? TextureRuntimePublication::Create(
+                device, TextureTargetProfile::RGBAFallback, 5, tableCapacity)
+            : nullptr;
+        MaterialTextureBindingSet completeBindings, emptyBindings, mismatchBindings;
+        std::string bindingError;
+        const bool bindingsResolved = runtime
+            && runtime->ResolveMaterialTextures(completeMaterialAsset, completeBindings, bindingError)
+            && completeBindings.DeclaredMask == 0x3fu && completeBindings.ErrorMask == 0u
+            && runtime->ResolveMaterialTextures(emptyMaterialAsset, emptyBindings, bindingError)
+            && emptyBindings.DeclaredMask == 0u && emptyBindings.ErrorMask == 0u
+            && runtime->ResolveMaterialTextures(mismatchMaterialAsset, mismatchBindings, bindingError)
+            && mismatchBindings.DeclaredMask == 1u && mismatchBindings.ErrorMask == 1u;
+
+        const auto makeConstants = [](const MaterialTextureBindingSet& bindings)
+        {
+            Constants constants {};
+            constants.ViewProjection[0] = constants.ViewProjection[5]
+                = constants.ViewProjection[10] = constants.ViewProjection[15] = 1.0f;
+            constants.TextureIndices0[0] = bindings.Handles[0].Index;
+            constants.TextureIndices0[1] = bindings.Handles[1].Index;
+            constants.TextureIndices0[2] = bindings.Handles[2].Index;
+            constants.TextureIndices0[3] = bindings.Handles[3].Index;
+            constants.TextureIndices1[0] = bindings.Handles[4].Index;
+            constants.TextureIndices1[1] = bindings.Handles[5].Index;
+            constants.TextureState[0] = bindings.DeclaredMask;
+            constants.TextureState[1] = bindings.ErrorMask;
+            return constants;
+        };
+        const std::array<Constants, 3> constants {{
+            makeConstants(completeBindings), makeConstants(emptyBindings), makeConstants(mismatchBindings)
+        }};
+        const auto createBuffer = [&device](const char* name, u64 size, u32 stride, RHI::BufferUsage usage)
+        {
+            RHI::BufferDescription description;
+            description.DebugName = name;
+            description.SizeBytes = size;
+            description.StrideBytes = stride;
+            description.Usage = static_cast<RHI::BufferUsage>(
+                static_cast<u32>(usage) | static_cast<u32>(RHI::BufferUsage::CopyDest));
+            return device.CreateBuffer(description);
+        };
+        Scope<RHI::Buffer> vertexBuffer = packages
+            ? createBuffer("SceneMaterialTextureShaderReadbackV1 Vertices",
+                sizeof(vertices), sizeof(Vertex), RHI::BufferUsage::Vertex) : nullptr;
+        Scope<RHI::Buffer> indexBuffer = packages
+            ? createBuffer("SceneMaterialTextureShaderReadbackV1 Indices",
+                sizeof(indices), sizeof(u16), RHI::BufferUsage::Index) : nullptr;
+        std::array<Scope<RHI::Buffer>, 3> constantBuffers;
+        bool buffersUploaded = bindingsResolved && vertexBuffer && indexBuffer
+            && device.UploadBuffer(*vertexBuffer, vertices.data(), sizeof(vertices))
+            && device.UploadBuffer(*indexBuffer, indices.data(), sizeof(indices));
+        for (u32 row = 0; row < constantBuffers.size(); ++row)
+        {
+            constantBuffers[row] = buffersUploaded
+                ? createBuffer("SceneMaterialTextureShaderReadbackV1 Constants",
+                    sizeof(Constants), 0, RHI::BufferUsage::Constant) : nullptr;
+            buffersUploaded = buffersUploaded && constantBuffers[row]
+                && device.UploadBuffer(*constantBuffers[row], &constants[row], sizeof(Constants));
+        }
+
+        RHI::TextureDescription colorDescription;
+        colorDescription.DebugName = "SceneMaterialTextureShaderReadbackV1 Color";
+        colorDescription.Extent = { width, height };
+        colorDescription.TextureFormat = RHI::Format::R8G8B8A8Unorm;
+        colorDescription.Usage = static_cast<RHI::TextureUsage>(
+            static_cast<u32>(RHI::TextureUsage::RenderTarget)
+            | static_cast<u32>(RHI::TextureUsage::CopySource));
+        RHI::TextureDescription depthDescription = colorDescription;
+        depthDescription.DebugName = "SceneMaterialTextureShaderReadbackV1 Depth";
+        depthDescription.TextureFormat = RHI::Format::D32Float;
+        depthDescription.Usage = RHI::TextureUsage::DepthStencil;
+        Scope<RHI::Texture> color = buffersUploaded ? device.CreateTexture(colorDescription) : nullptr;
+        Scope<RHI::Texture> depth = buffersUploaded ? device.CreateTexture(depthDescription) : nullptr;
+        Scope<RHI::CommandList> list = color && depth && pipeline && runtime
+            ? device.CreateCommandList(RHI::QueueType::Graphics,
+                "SceneMaterialTextureShaderReadbackV1") : nullptr;
+        RHI::ViewportClear clear;
+        const bool recording = list && list->Begin()
+            && list->BindViewportOutputs(*color, depth.get())
+            && list->TransitionTexture(*color, RHI::ResourceState::RenderTarget)
+            && list->TransitionTexture(*depth, RHI::ResourceState::DepthWrite)
+            && list->ClearViewportOutputs(clear)
+            && list->TransitionTexture(*color, RHI::ResourceState::RenderTarget)
+            && list->TransitionTexture(*depth, RHI::ResourceState::DepthWrite);
+        bool tableBound = false;
+        if (recording)
+        {
+            list->SetGraphicsPipeline(*pipeline);
+            list->SetViewport({ 0.0f, 0.0f, static_cast<float>(width),
+                static_cast<float>(height), 0.0f, 1.0f });
+            list->SetVertexBuffer(0, *vertexBuffer);
+            list->SetIndexBuffer(*indexBuffer, RHI::IndexFormat::Uint16);
+            tableBound = runtime->GetBindingTable()
+                && list->BindGraphicsSampledTextureTable(*runtime->GetBindingTable());
+            for (u32 row = 0; tableBound && row < constantBuffers.size(); ++row)
+            {
+                list->SetGraphicsConstantBuffer(0, *constantBuffers[row]);
+                list->SetScissorRect({ 0, static_cast<int>(row * bandHeight),
+                    static_cast<int>(width), static_cast<int>((row + 1) * bandHeight) });
+                list->DrawIndexed(3, 1, 0, 0, 0);
+            }
+        }
+        const bool closed = recording && tableBound
+            && list->TransitionTexture(*color, RHI::ResourceState::CopySource)
+            && list->End();
+        const RHI::CompletionToken token = closed
+            ? device.Submit(*list) : RHI::CompletionToken {};
+        std::vector<RHI::TextureBindingHandle> usedHandles(
+            completeBindings.Handles.begin(), completeBindings.Handles.end());
+        usedHandles.insert(usedHandles.end(),
+            mismatchBindings.Handles.begin(), mismatchBindings.Handles.end());
+        const bool retained = token.IsValid()
+            && runtime->RetainAcceptedFrame(token, usedHandles, bindingError);
+        const bool completed = token.IsValid() && device.WaitForCompletion(token, 5000);
+        const bool retired = retained && completed && runtime->Retire(token, bindingError);
+        RHI::TextureReadback readback;
+        const bool read = completed && device.ReadbackTexture(*color, readback);
+        const auto pixelMatches = [&readback](u32 x, u32 y, const std::array<u8, 4>& expected)
+        {
+            if (readback.Data.size() < static_cast<size_t>(readback.RowPitchBytes) * readback.Extent.Height)
+                return false;
+            for (u32 channel = 0; channel < expected.size(); ++channel)
+                if (std::abs(static_cast<int>(readback.Data[y * readback.RowPitchBytes + x * 4 + channel])
+                        - static_cast<int>(expected[channel])) > 4)
+                    return false;
+            return true;
+        };
+        const std::array<std::array<std::array<u8, 4>, 8>, 3> expected {{
+            {{{{128,0,0,255}},{{0,128,0,255}},{{64,128,192,255}},{{32,96,224,255}},{{0,0,128,255}},{{48,160,240,255}},{{200,80,120,255}},{{0,255,0,255}}}},
+            {{{{255,255,255,255}},{{255,255,255,255}},{{128,128,255,255}},{{255,255,255,255}},{{0,0,0,255}},{{255,255,255,255}},{{255,255,255,255}},{{0,255,0,255}}}},
+            {{{{255,0,255,255}},{{255,0,255,255}},{{128,128,255,255}},{{255,255,255,255}},{{0,0,0,255}},{{255,255,255,255}},{{255,255,255,255}},{{255,0,0,255}}}}
+        }};
+        bool rowsMatch = read;
+        for (u32 row = 0; rowsMatch && row < expected.size(); ++row)
+            for (u32 cell = 0; rowsMatch && cell < expected[row].size(); ++cell)
+                rowsMatch = pixelMatches(cell * 8 + 4, row * bandHeight + 2, expected[row][cell]);
+
+        const bool passed = packages && pipeline && artifactsStored && materialsStored
+            && bindingsResolved && buffersUploaded && tableBound && token.IsValid()
+            && retained && completed && retired && read && rowsMatch;
+        Log::Info("SceneMaterialTextureShaderReadbackV1 backend=", backendName,
+            " roles=", rowsMatch ? "exact-pass" : "fail",
+            " colorSpace=", rowsMatch ? "sRGB-linear-pass" : "fail",
+            " samplers=", rowsMatch ? "declared-pass" : "fail",
+            " mip1=", rowsMatch ? "pass" : "fail",
+            " missing=", rowsMatch ? "semantic-defaults-pass" : "fail",
+            " invalid=", rowsMatch ? "error-resource-pass" : "fail",
+            " retention=", retained && retired ? "exact-token-pass" : "fail",
+            " result=", passed ? "pass" : "fail",
+            " validation=", validationError,
+            " artifactError=", artifactError,
+            " bindingError=", bindingError);
+        device.WaitIdle();
+        if (runtime)
+            runtime->ReleaseAfterDeviceIdle();
+        Renderer::ClearArtifactResolvers();
+        std::error_code filesystemError;
+        for (const std::filesystem::path& path : artifactPaths)
+            std::filesystem::remove(path, filesystemError);
+        return passed;
     }
 
     bool NVRHIRenderBackend::RunRenderGraphExecutionSmoke(RHI::Device& device, std::string_view backendName)

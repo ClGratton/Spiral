@@ -1,4 +1,5 @@
 #include "Engine/Core/Log.h"
+#include "Engine/Core/LayerStack.h"
 #include "Engine/Jobs/FrameTaskGraph.h"
 #include "Engine/Jobs/JobSystem.h"
 #include "Engine/Math/WorldGrid.h"
@@ -8115,6 +8116,35 @@ bool TestPresentationPolicyFallbackTransitionAppliesOnce()
         "presentation transition records requested fallback once and generations only real requests");
 }
 
+class DetachCountingLayer final : public Engine::Layer
+{
+public:
+    explicit DetachCountingLayer(int& detachCount)
+        : Engine::Layer("DetachCountingLayer"), m_DetachCount(detachCount)
+    {
+    }
+
+    void OnDetach() override { ++m_DetachCount; }
+
+private:
+    int& m_DetachCount;
+};
+
+bool TestLayerStackClearDetachesExactlyOnce()
+{
+    int detachCount = 0;
+    {
+        Engine::LayerStack layers;
+        layers.PushLayer(Engine::CreateScope<DetachCountingLayer>(detachCount));
+        layers.PushOverlay(Engine::CreateScope<DetachCountingLayer>(detachCount));
+        layers.Clear();
+        layers.Clear();
+        if (!Expect(detachCount == 2, "explicit layer-stack clear detaches every layer exactly once"))
+            return false;
+    }
+    return Expect(detachCount == 2, "an explicitly cleared layer stack stays detached during destruction");
+}
+
 int main(int argc, char** argv)
 {
 #define FAST_TEST(name, function) TestCase { name, function, TestTier::Fast }
@@ -8126,6 +8156,7 @@ int main(int argc, char** argv)
         FAST_TEST("Frame pacing policy resolves overrides and validates targets", TestFramePacingPolicyResolutionAndValidation),
         FAST_TEST("Presentation policy resolves immediate or no-replacement FIFO", TestPresentationPolicyResolverRejectsReplacementModes),
         FAST_TEST("Presentation fallback transition commits once across stable frames", TestPresentationPolicyFallbackTransitionAppliesOnce),
+        FAST_TEST("Layer stack clear detaches exactly once before subsystem teardown", TestLayerStackClearDetachesExactlyOnce),
         FAST_TEST("Monotonic deadline waiter retries early wakes and exposes fallback cleanup", TestMonotonicDeadlineWaiterDeterministicFailureAndTailPaths),
         FAST_TEST("Smooth Frametime pacer preserves deadlines overruns and mode switches", TestSmoothFrametimePacerDeadlinesAndModeSwitch),
         FAST_TEST("Frame lifecycle telemetry orders phases and retains unavailable feedback", TestFrameLifecycleTelemetryOrderAndUnavailableStates),
