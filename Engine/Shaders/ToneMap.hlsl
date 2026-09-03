@@ -1,6 +1,6 @@
 cbuffer ToneMapConstants : register(b0)
 {
-    // x = exposure in EV100 stops, y = paper-white scale,
+    // x = resolved exposure in EV100 stops, y = paper-white scale,
     // z = post-tone-map saturation, w = post-tone-map contrast.
     float4 ExposureAndOutput;
 };

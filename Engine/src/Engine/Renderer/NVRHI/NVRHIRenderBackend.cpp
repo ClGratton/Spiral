@@ -2322,9 +2322,14 @@ float4 PSMain(PixelInput input) : SV_Target { return ReadOnlyTextures[1].SampleL
                 : 1.055f * std::pow(value, 1.0f / 2.4f) - 0.055f;
             return static_cast<u8>(std::clamp(static_cast<int>(std::lround(encoded * 255.0f)), 0, 255));
         };
-        const auto expectedPostToneMapPixel = [&](ClearColor input, const RendererColorPipelineSettings& settings)
+        const auto independentCameraEV100 = [](double apertureFNumber, double shutterSeconds, double iso)
         {
-            const float exposure = static_cast<float>(ManualExposureScale(settings));
+            const double exposureValue = (apertureFNumber * apertureFNumber) / shutterSeconds * (100.0 / iso);
+            return std::log(exposureValue) / std::log(2.0);
+        };
+        const auto expectedPostToneMapPixelAtEV = [&](ClearColor input, double ev100, double saturation, double contrast)
+        {
+            const float exposure = static_cast<float>(std::pow(2.0, -ev100));
             std::array<float, 3> color {
                 std::max(input.R * exposure, 0.0f),
                 std::max(input.G * exposure, 0.0f),
@@ -2333,8 +2338,13 @@ float4 PSMain(PixelInput input) : SV_Target { return ReadOnlyTextures[1].SampleL
             color = neutralToneMap(color);
             for (float& channel : color)
                 channel = std::clamp(channel, 0.0f, 1.0f);
-            color = gradeDisplayLinear(color, settings.PostToneMapSaturation, settings.PostToneMapContrast);
+            color = gradeDisplayLinear(color, saturation, contrast);
             return std::array<u8, 4> { linearToSrgbByte(color[0]), linearToSrgbByte(color[1]), linearToSrgbByte(color[2]), 255 };
+        };
+        const auto expectedPostToneMapPixel = [&](ClearColor input, const RendererColorPipelineSettings& settings)
+        {
+            return expectedPostToneMapPixelAtEV(input, EffectiveExposureEV100(settings),
+                settings.PostToneMapSaturation, settings.PostToneMapContrast);
         };
         const auto expectedPreToneMapPixel = [&](ClearColor input, const RendererColorPipelineSettings& settings)
         {
@@ -2413,19 +2423,99 @@ float4 PSMain(PixelInput input) : SV_Target { return ReadOnlyTextures[1].SampleL
             && exposureConstantCache.ReuseCount >= baselineConstantCache.ReuseCount
             && exposureConstantCache.CurrentGeneration == 4
             && exposureConstantCache.CurrentSettings.ManualExposureEV100 == 2.0;
+        RendererColorPipelineSettings calibratedSettings { 0.0 };
+        calibratedSettings.ExposureMode = RendererExposureMode::CameraCalibration;
+        calibratedSettings.CameraApertureFNumber = 2.0;
+        calibratedSettings.CameraShutterSeconds = 0.25;
+        calibratedSettings.CameraISO = 200.0;
+        RendererColorPipelineSettings calibratedSameEVSettings = calibratedSettings;
+        calibratedSameEVSettings.CameraApertureFNumber = 4.0;
+        calibratedSameEVSettings.CameraShutterSeconds = 1.0;
+        calibratedSameEVSettings.CameraISO = 200.0;
+        const double calibratedEV100 = independentCameraEV100(
+            calibratedSettings.CameraApertureFNumber,
+            calibratedSettings.CameraShutterSeconds,
+            calibratedSettings.CameraISO);
+        const double calibratedSameEV100 = independentCameraEV100(
+            calibratedSameEVSettings.CameraApertureFNumber,
+            calibratedSameEVSettings.CameraShutterSeconds,
+            calibratedSameEVSettings.CameraISO);
+        RHI::TextureReadback calibratedReadback;
+        const bool calibratedSet = Renderer::SetColorPipelineSettings(calibratedSettings);
+        SceneRenderSnapshot calibratedSnapshot = snapshot;
+        calibratedSnapshot.FrameIndex = 5;
+        Renderer::PublishSceneRenderSnapshot(std::move(calibratedSnapshot));
+        const bool calibratedRendered = calibratedSet
+            && Renderer::PrepareCurrentSceneRasterFrame()
+            && m_VulkanSceneRenderer->RenderCurrentSnapshot(64, 48, background)
+            && m_VulkanSceneRenderer->ReadbackColor(calibratedReadback);
+        const ToneMapPassConstantCacheDiagnostics calibratedConstantCache =
+            m_VulkanSceneRenderer->GetToneMapConstantCacheDiagnostics();
+        const bool calibratedPixelOk = calibratedRendered
+            && backgroundPixelMatches(calibratedReadback, expectedPostToneMapPixelAtEV(
+                background, calibratedEV100, calibratedSettings.PostToneMapSaturation,
+                calibratedSettings.PostToneMapContrast), 4);
+        RHI::TextureReadback calibratedRepeatReadback;
+        const bool calibratedRepeatSet = Renderer::SetColorPipelineSettings(calibratedSettings);
+        SceneRenderSnapshot calibratedRepeatSnapshot = snapshot;
+        calibratedRepeatSnapshot.FrameIndex = 6;
+        Renderer::PublishSceneRenderSnapshot(std::move(calibratedRepeatSnapshot));
+        const bool calibratedRepeatRendered = calibratedRepeatSet
+            && Renderer::PrepareCurrentSceneRasterFrame()
+            && m_VulkanSceneRenderer->RenderCurrentSnapshot(64, 48, background)
+            && m_VulkanSceneRenderer->ReadbackColor(calibratedRepeatReadback);
+        const ToneMapPassConstantCacheDiagnostics calibratedRepeatConstantCache =
+            m_VulkanSceneRenderer->GetToneMapConstantCacheDiagnostics();
+        RHI::TextureReadback calibratedSameEVReadback;
+        const bool calibratedSameEVSet = Renderer::SetColorPipelineSettings(calibratedSameEVSettings);
+        SceneRenderSnapshot calibratedSameEVSnapshot = snapshot;
+        calibratedSameEVSnapshot.FrameIndex = 7;
+        Renderer::PublishSceneRenderSnapshot(std::move(calibratedSameEVSnapshot));
+        const bool calibratedSameEVRendered = calibratedSameEVSet
+            && Renderer::PrepareCurrentSceneRasterFrame()
+            && m_VulkanSceneRenderer->RenderCurrentSnapshot(64, 48, background)
+            && m_VulkanSceneRenderer->ReadbackColor(calibratedSameEVReadback);
+        const ToneMapPassConstantCacheDiagnostics calibratedSameEVConstantCache =
+            m_VulkanSceneRenderer->GetToneMapConstantCacheDiagnostics();
+        const bool calibratedConstantsOk = calibratedConstantCache.AllocationCount == 5
+            && calibratedConstantCache.ReuseCount >= exposureConstantCache.ReuseCount
+            && calibratedConstantCache.CurrentGeneration == 5
+            && calibratedConstantCache.CurrentSettings == calibratedSettings
+            && std::abs(EffectiveExposureEV100(calibratedConstantCache.CurrentSettings) - calibratedEV100) < 0.0001
+            && std::abs(calibratedEV100 - 3.0) < 0.0001;
+        const bool calibratedCacheIdentityOk = calibratedRepeatRendered && calibratedSameEVRendered
+            && calibratedRepeatConstantCache.AllocationCount == 5
+            && calibratedRepeatConstantCache.ReuseCount > calibratedConstantCache.ReuseCount
+            && calibratedRepeatConstantCache.CurrentGeneration == 5
+            && calibratedRepeatConstantCache.CurrentSettings == calibratedSettings
+            && calibratedSameEVConstantCache.AllocationCount == 6
+            && calibratedSameEVConstantCache.CurrentGeneration == 6
+            && calibratedSameEVConstantCache.CurrentSettings == calibratedSameEVSettings
+            && std::abs(calibratedSameEV100 - calibratedEV100) < 0.0001
+            && std::abs(EffectiveExposureEV100(calibratedSameEVConstantCache.CurrentSettings)
+                - calibratedSameEV100) < 0.0001;
         Renderer::SetColorPipelineSettings(previousColorSettings);
         Log::Info("SceneExposureControlV1 backend=Vulkan ev100=-2,0,+2 graph=exact-byte-pass monotonic=",
-            monotonic ? "pass" : "fail", " constants=immutable-retained-cached allocations=",
-            exposureConstantCache.AllocationCount, " reuses=", exposureConstantCache.ReuseCount,
-            " generations=", exposureConstantCache.CurrentGeneration, " result=",
-            (exposureRenders && exposureReadbacks && monotonic && constantCacheOk) ? "pass" : "fail");
+            monotonic ? "pass" : "fail", " constants=",
+            constantCacheOk ? "immutable-retained-cached" : "fail", " allocations=",
+            calibratedSameEVConstantCache.AllocationCount, " reuses=", calibratedSameEVConstantCache.ReuseCount,
+            " generations=", calibratedSameEVConstantCache.CurrentGeneration,
+            " calibratedEV100=", calibratedEV100,
+            " calibratedISO=", calibratedSettings.CameraISO,
+            " calibrated=camera-fnumber-shutter-iso-",
+            (calibratedRendered && calibratedPixelOk && calibratedConstantsOk) ? "pass" : "fail",
+            " calibratedCache=same-ev-distinct-settings-",
+            calibratedCacheIdentityOk ? "pass" : "fail", " result=",
+            (exposureRenders && exposureReadbacks && monotonic && constantCacheOk
+                && calibratedRendered && calibratedPixelOk && calibratedConstantsOk
+                && calibratedCacheIdentityOk) ? "pass" : "fail");
 
         const RendererColorPipelineSettings gradedSettings { 0.0, 0.25, 1.5 };
         const ClearColor gradingBackground { 1.40f, 0.23f, 0.05f, 1.0f };
         RHI::TextureReadback gradedReadback;
         const bool gradingSet = Renderer::SetColorPipelineSettings(gradedSettings);
         SceneRenderSnapshot gradingSnapshot = snapshot;
-        gradingSnapshot.FrameIndex = 5;
+        gradingSnapshot.FrameIndex = 8;
         Renderer::PublishSceneRenderSnapshot(std::move(gradingSnapshot));
         const bool gradingRendered = gradingSet
             && Renderer::PrepareCurrentSceneRasterFrame()
@@ -2441,9 +2531,9 @@ float4 PSMain(PixelInput input) : SV_Target { return ReadOnlyTextures[1].SampleL
             && backgroundPixelMatches(gradedReadback, postToneMapExpected, 4);
         const bool preOrderRejected = gradingRendered
             && backgroundPixelDiffers(gradedReadback, preToneMapExpected, 12);
-        const bool gradingConstantsOk = gradingConstantCache.AllocationCount == 5
-            && gradingConstantCache.ReuseCount >= exposureConstantCache.ReuseCount
-            && gradingConstantCache.CurrentGeneration == 5
+        const bool gradingConstantsOk = gradingConstantCache.AllocationCount == 7
+            && gradingConstantCache.ReuseCount >= calibratedSameEVConstantCache.ReuseCount
+            && gradingConstantCache.CurrentGeneration == 7
             && gradingConstantCache.CurrentSettings == gradedSettings;
         Renderer::SetColorPipelineSettings(previousColorSettings);
         Log::Info("ScenePostToneMapGradingV1 backend=Vulkan identity=", identityGradeOk ? "pass" : "fail",
@@ -2457,6 +2547,7 @@ float4 PSMain(PixelInput input) : SV_Target { return ReadOnlyTextures[1].SampleL
             " preRejected=", preOrderRejected ? "pass" : "fail");
         return resizedRaster && readbackOk && geometryOk && backgroundOk && resizeOk
             && exposureRenders && exposureReadbacks && monotonic && constantCacheOk
+            && calibratedRendered && calibratedPixelOk && calibratedConstantsOk && calibratedCacheIdentityOk
             && identityGradeOk && gradingRendered && postOrderMatched && preOrderRejected && gradingConstantsOk;
     }
 }

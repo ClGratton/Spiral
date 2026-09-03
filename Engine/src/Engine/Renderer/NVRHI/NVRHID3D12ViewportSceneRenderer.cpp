@@ -610,6 +610,8 @@ namespace Engine
                 Log::Info("SceneViewportRenderGraphV1 backend=D3D12 passes=4 labels=clear,raster,tone-map,output-handoff execution=pass reference=direct comparator=exact-byte-",
                     equivalent ? "pass" : "fail", " size=", width, "x", height, " bytes=", graphReadback.Data.size());
                 Log::Info("SceneColorPipelineV1 backend=D3D12 sceneLinear=RGBA16F manualExposureEV100=", colorSettings.ManualExposureEV100,
+                    " exposureMode=", ToString(colorSettings.ExposureMode),
+                    " effectiveExposureEV100=", EffectiveExposureEV100(colorSettings),
                     " exposureScale=", ManualExposureScale(colorSettings),
                     " toneMap=Khronos-PBR-Neutral postToneMapSaturation=", colorSettings.PostToneMapSaturation,
                     " postToneMapContrast=", colorSettings.PostToneMapContrast,

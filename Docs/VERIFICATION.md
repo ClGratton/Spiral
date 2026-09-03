@@ -582,7 +582,7 @@ The Vulkan harness requires `SceneViewportRenderGraphV1 backend=Vulkan passes=4 
 After one coherent Debug build, run the focused publication/defaults oracle, the complete integration registry, and the native Vulkan harness:
 
 ```bash
-./bin/Debug-linux-x86_64-gmake/EngineTests/EngineTests --test "Renderer color pipeline settings validate manual exposure and post-tone-map grading"
+./bin/Debug-linux-x86_64-gmake/EngineTests/EngineTests --test "Renderer color pipeline settings validate manual calibrated exposure and post-tone-map grading"
 ./bin/Debug-linux-x86_64-gmake/EngineTests/EngineTests --tier integration
 bash Scripts/TestVulkan.sh Debug gmake --skip-build
 ```
@@ -591,12 +591,28 @@ The focused test covers default `0.0` manual exposure, identity `1.0` post-tone-
 
 The 2026-09-03 RTX 3080 Ti acceptance used 1,383 MiB of 12,288 MiB before launch and 1,394 MiB after cleanup, with QuickShell as the only compute app and the local Qwen service inactive. The run passed the warning-free Debug GMake build, the focused color-pipeline test, 100/100 integration tests, style/diff gates, and `Scripts/TestVulkan.sh Debug gmake --skip-build`. The harness emitted `manualExposureEV100=-2 exposureScale=4`, `manualExposureEV100=0 exposureScale=1`, `manualExposureEV100=2 exposureScale=0.25`, `SceneExposureControlV1 ... constants=immutable-retained-cached allocations=4 reuses=1 generations=4 result=pass`, the existing two-size exact graph/reference comparator, resize, ImGui handoff, presentation, and four timestamp scopes, with first published whole-graph GPU work at 0.515392 ms. The actual current `bin/Debug-linux-x86_64-gmake/Editor/Editor --renderer-vulkan` was then opened on DP-3/workspace 2 with NVRHI Vulkan active. A Wayland virtual-pointer motion/click traversed the real GLFW/ImGui top-bar menu and edited `Manual EV100`: `+2` visibly darkened the rendered cube and background, `-2` visibly brightened them, and eight `+0.25` UI steps restored the live value to `0.00` without pressing Save. The Editor stayed alive and GPU process residency remained 87 MiB while QuickShell used 530 MiB; no Qwen server was active. No D3D12, MoltenVK, calibrated/automatic exposure, grading/LUT, HDR-display, photometric-coupling, or alternate-tone-mapper claim is made by this Linux run.
 
+## Phase 3E Calibrated Project Exposure Control
+
+After one coherent Debug build, run the focused publication/defaults oracle, complete Integration registry, native Vulkan harness, and live Project Settings gate:
+
+```bash
+./bin/Debug-linux-x86_64-gmake/EngineTests/EngineTests --test "Renderer color pipeline settings validate manual calibrated exposure and post-tone-map grading"
+./bin/Debug-linux-x86_64-gmake/EngineTests/EngineTests --tier integration
+bash Scripts/TestVulkan.sh Debug gmake --skip-build
+```
+
+The focused test must prove `EV100 = log2((N * N) / t * (100 / ISO))` with at least one `ISO != 100` tuple and an independent oracle, default calibrated controls `N=1`, `t=1s`, `ISO=100` resolving to EV100 `0`, manual override compatibility, finite transactional bounds, resolved-EV rejection outside `[-16,+16]`, and complete-settings Renderer publication. The Editor smoke must additionally prove schema-4/5 migration preserves existing manual EV while defaulting new mode/optical fields, schema-6 order-independent parsing, v6 calibrated manifest load/save/reopen, max-precision boundary round-trip, and invalid exposure-mode/optical-control rejection. The Vulkan harness must emit `calibrated=camera-fnumber-shutter-iso-pass` and `calibratedCache=same-ev-distinct-settings-pass` on the same `SceneExposureControlV1` line and preserve exact graph/direct readback plus immutable constant generation/retention.
+
+The live gate is `Settings -> Project Settings -> Color pipeline`: switch `Exposure mode` to `CameraCalibration`, edit aperture/shutter/ISO to a known EV shift such as `N=2`, `t=0.25`, `ISO=200` (`EV100=3`, visibly darker), then restore defaults or manual mode without saving unless the slice intentionally updates the project file. This qualifies project-owned calibrated exposure only; it does not claim automatic metering, exposure zones, per-camera exposure, photometric light coupling, HDR display output, texture-backed LUTs, alternate tone mappers, D3D12 execution, or MoltenVK execution.
+
+The 2026-09-03 RTX 3080 Ti acceptance is retained under `output/verification/calibrated-exposure-20260903-final`. The warning-free Debug GMake build, focused independent ISO-200 formula/publication oracle, 100/100 Integration registry, style/diff gates, and complete `Scripts/TestVulkan.sh Debug gmake --skip-build` run passed. `ColorPipelineSettingsSmokeV1` reported schema-6 calibrated persistence, order-independent parsing, and boundary round-trip precision. `SceneExposureControlV1` reported EV3 at ISO 200, exact graph/direct bytes, six immutable allocations, two reuses, repeated-setting reuse at generation 5, and a distinct generation 6 for a different optical tuple resolving to the same EV. GPU preflight/cleanup was 1,357/1,394 MiB of 12,288 MiB with QuickShell as the only compute workload and no Qwen server or surviving test process. The actual rebuilt Debug Vulkan Editor was then opened on DP-3/workspace 2. Real Wayland virtual-pointer plus targeted keyboard events traversed GLFW/ImGui, switched to `CameraCalibration`, changed `N=1,t=1,ISO=100` to `N=2,t=0.25,ISO=200`, visibly darkened the cube/background at EV3, and restored `ManualEV100` plus all optical defaults without pressing Save. The live Editor remained healthy at 87 MiB GPU residency.
+
 ## Phase 3E Post-Tone-Map Grading Order
 
 After one coherent Debug build, run the same focused color-pipeline settings test, complete Integration registry, and native Vulkan harness:
 
 ```bash
-./bin/Debug-linux-x86_64-gmake/EngineTests/EngineTests --test "Renderer color pipeline settings validate manual exposure and post-tone-map grading"
+./bin/Debug-linux-x86_64-gmake/EngineTests/EngineTests --test "Renderer color pipeline settings validate manual calibrated exposure and post-tone-map grading"
 ./bin/Debug-linux-x86_64-gmake/EngineTests/EngineTests --tier integration
 bash Scripts/TestVulkan.sh Debug gmake --skip-build
 ```

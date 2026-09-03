@@ -873,7 +873,7 @@ namespace
                 "invalid Smooth Frametime override updates leave the prior runtime state unchanged");
     }
 
-    bool TestRendererColorPipelineSettingsValidateManualExposureAndPostToneMapGrade()
+    bool TestRendererColorPipelineSettingsValidateExposureAndPostToneMapGrade()
     {
         using namespace Engine;
 
@@ -882,6 +882,11 @@ namespace
             && defaults.ManualExposureEV100 == 0.0
             && defaults.PostToneMapSaturation == 1.0
             && defaults.PostToneMapContrast == 1.0
+            && defaults.ExposureMode == RendererExposureMode::ManualEV100
+            && defaults.CameraApertureFNumber == 1.0
+            && defaults.CameraShutterSeconds == 1.0
+            && defaults.CameraISO == 100.0
+            && EffectiveExposureEV100(defaults) == 0.0
             && ManualExposureScale(defaults) == 1.0;
 
         const RendererColorPipelineSettings minimum { kMinimumManualExposureEV100 };
@@ -918,13 +923,61 @@ namespace
         const bool signConvention = ManualExposureScale(brighter) == 4.0
             && ManualExposureScale(darker) == 0.25;
 
+        const auto independentCameraEV100 = [](double apertureFNumber, double shutterSeconds, double iso)
+        {
+            const double exposureValue = (apertureFNumber * apertureFNumber) / shutterSeconds * (100.0 / iso);
+            return std::log(exposureValue) / std::log(2.0);
+        };
+
+        RendererColorPipelineSettings calibrated;
+        calibrated.ExposureMode = RendererExposureMode::CameraCalibration;
+        calibrated.CameraApertureFNumber = 2.0;
+        calibrated.CameraShutterSeconds = 0.25;
+        calibrated.CameraISO = 200.0;
+        RendererColorPipelineSettings calibratedBright = calibrated;
+        calibratedBright.CameraApertureFNumber = 1.0;
+        calibratedBright.CameraShutterSeconds = 4.0;
+        calibratedBright.CameraISO = 200.0;
+        RendererColorPipelineSettings invalidAperture = calibrated;
+        invalidAperture.CameraApertureFNumber = kMinimumCameraApertureFNumber - 0.01;
+        RendererColorPipelineSettings invalidShutter = calibrated;
+        invalidShutter.CameraShutterSeconds = kMaximumCameraShutterSeconds + 1.0;
+        RendererColorPipelineSettings invalidISO = calibrated;
+        invalidISO.CameraISO = std::numeric_limits<double>::infinity();
+        RendererColorPipelineSettings invalidEffective = calibrated;
+        invalidEffective.CameraApertureFNumber = 64.0;
+        invalidEffective.CameraShutterSeconds = 1.0 / 8000.0;
+        invalidEffective.CameraISO = 1.0;
+        const double calibratedEV100 = independentCameraEV100(
+            calibrated.CameraApertureFNumber, calibrated.CameraShutterSeconds, calibrated.CameraISO);
+        const double calibratedBrightEV100 = independentCameraEV100(
+            calibratedBright.CameraApertureFNumber, calibratedBright.CameraShutterSeconds, calibratedBright.CameraISO);
+        const bool calibratedExposure =
+            IsValidRendererColorPipelineSettings(calibrated)
+            && std::abs(calibratedEV100 - 3.0) < 0.0001
+            && std::abs(CameraCalibrationExposureEV100(2.0, 0.25, 200.0) - calibratedEV100) < 0.0001
+            && std::abs(EffectiveExposureEV100(calibrated) - calibratedEV100) < 0.0001
+            && std::abs(ManualExposureScale(calibrated) - std::pow(2.0, -calibratedEV100)) < 0.0001
+            && IsValidRendererColorPipelineSettings(calibratedBright)
+            && std::abs(calibratedBrightEV100 + 3.0) < 0.0001
+            && std::abs(EffectiveExposureEV100(calibratedBright) - calibratedBrightEV100) < 0.0001
+            && !IsValidRendererColorPipelineSettings(invalidAperture)
+            && !IsValidRendererColorPipelineSettings(invalidShutter)
+            && !IsValidRendererColorPipelineSettings(invalidISO)
+            && !IsValidRendererColorPipelineSettings(invalidEffective);
+
         const RendererColorPipelineSettings previous = Renderer::GetColorPipelineSettings();
-        const RendererColorPipelineSettings graded { -1.0, 0.5, 1.5 };
+        RendererColorPipelineSettings graded { -1.0, 0.5, 1.5 };
+        graded.ExposureMode = RendererExposureMode::CameraCalibration;
+        graded.CameraApertureFNumber = 1.0;
+        graded.CameraShutterSeconds = 0.5;
+        graded.CameraISO = 100.0;
         const bool published = Renderer::SetColorPipelineSettings(graded)
             && Renderer::GetColorPipelineSettings() == graded;
         const bool invalidPublicationRejected = !Renderer::SetColorPipelineSettings({ 17.0, 1.0, 1.0 })
             && !Renderer::SetColorPipelineSettings({ 0.0, 2.5, 1.0 })
             && !Renderer::SetColorPipelineSettings({ 0.0, 1.0, std::numeric_limits<double>::quiet_NaN() })
+            && !Renderer::SetColorPipelineSettings(invalidAperture)
             && Renderer::GetColorPipelineSettings() == graded;
         const bool restored = Renderer::SetColorPipelineSettings(previous)
             && Renderer::GetColorPipelineSettings() == previous;
@@ -933,8 +986,8 @@ namespace
                 && nanRejected && infinityRejected && saturationBoundsAccepted
                 && saturationBoundsRejected && saturationNonfiniteRejected
                 && contrastBoundsAccepted && contrastBoundsRejected && contrastNonfiniteRejected
-                && signConvention && published && invalidPublicationRejected && restored,
-            "manual EV100 and post-tone-map grading default to identity, validate finite bounded controls, publish transactionally, and preserve exposure sign convention");
+                && signConvention && calibratedExposure && published && invalidPublicationRejected && restored,
+            "manual and calibrated EV100 exposure plus post-tone-map grading default to identity, validate finite bounded controls, publish transactionally, and preserve exposure sign convention");
     }
 
     class FakeFramePacingClock final : public Engine::FramePacingClock
@@ -8543,7 +8596,7 @@ int main(int argc, char** argv)
         INTEGRATION_TEST("Linux fatal signals publish minimal receipts and preserve default termination", TestLinuxFatalSignalSafety),
 #endif
         FAST_TEST("Frame pacing policy resolves overrides and validates targets", TestFramePacingPolicyResolutionAndValidation),
-        FAST_TEST("Renderer color pipeline settings validate manual exposure and post-tone-map grading", TestRendererColorPipelineSettingsValidateManualExposureAndPostToneMapGrade),
+        FAST_TEST("Renderer color pipeline settings validate manual calibrated exposure and post-tone-map grading", TestRendererColorPipelineSettingsValidateExposureAndPostToneMapGrade),
         FAST_TEST("Presentation policy resolves immediate or no-replacement FIFO", TestPresentationPolicyResolverRejectsReplacementModes),
         FAST_TEST("Presentation fallback transition commits once across stable frames", TestPresentationPolicyFallbackTransitionAppliesOnce),
         FAST_TEST("Layer stack clear detaches exactly once before subsystem teardown", TestLayerStackClearDetachesExactlyOnce),

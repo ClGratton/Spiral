@@ -87,7 +87,7 @@ namespace Engine
             const RendererColorPipelineSettings& settings)
         {
             return {
-                static_cast<float>(settings.ManualExposureEV100),
+                static_cast<float>(EffectiveExposureEV100(settings)),
                 kPaperWhiteScale,
                 static_cast<float>(settings.PostToneMapSaturation),
                 static_cast<float>(settings.PostToneMapContrast)

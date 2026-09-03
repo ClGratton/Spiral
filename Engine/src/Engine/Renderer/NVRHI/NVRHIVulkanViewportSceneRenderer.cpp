@@ -398,6 +398,8 @@ namespace Engine
                     && graphReadback.RowPitchBytes == referenceReadback.RowPitchBytes && graphReadback.Data == referenceReadback.Data;
                 Log::Info("SceneViewportRenderGraphV1 backend=Vulkan passes=4 labels=clear,raster,tone-map,output-handoff execution=pass reference=direct comparator=exact-byte-", equivalent ? "pass" : "fail", " size=", width, "x", height, " bytes=", graphReadback.Data.size());
                 Log::Info("SceneColorPipelineV1 backend=Vulkan sceneLinear=RGBA16F manualExposureEV100=", colorSettings.ManualExposureEV100,
+                    " exposureMode=", ToString(colorSettings.ExposureMode),
+                    " effectiveExposureEV100=", EffectiveExposureEV100(colorSettings),
                     " exposureScale=", ManualExposureScale(colorSettings),
                     " toneMap=Khronos-PBR-Neutral postToneMapSaturation=", colorSettings.PostToneMapSaturation,
                     " postToneMapContrast=", colorSettings.PostToneMapContrast,

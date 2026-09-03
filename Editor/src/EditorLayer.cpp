@@ -14,6 +14,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
+#include <limits>
 #include <sstream>
 #include <stdexcept>
 #include <system_error>
@@ -21,7 +22,7 @@
 namespace
 {
     constexpr const char* AssetDragPayloadType = "SPIRAL_ASSET_HANDLE";
-    constexpr int ProjectFormatVersion = 5;
+    constexpr int ProjectFormatVersion = 6;
     constexpr int EditorSettingsFormatVersion = 1;
 
     struct EditorSettings
@@ -387,6 +388,7 @@ namespace
         std::ofstream output(path, std::ios::out | std::ios::trunc);
         if (!output)
             return false;
+        output << std::setprecision(std::numeric_limits<double>::max_digits10);
 
         output << "SpiralProject " << ProjectFormatVersion << '\n';
         output << "Scene " << std::quoted(manifest.ScenePath) << '\n';
@@ -397,6 +399,10 @@ namespace
         output << "ManualExposureEV100 " << manifest.ColorPipelineSettings.ManualExposureEV100 << '\n';
         output << "PostToneMapSaturation " << manifest.ColorPipelineSettings.PostToneMapSaturation << '\n';
         output << "PostToneMapContrast " << manifest.ColorPipelineSettings.PostToneMapContrast << '\n';
+        output << "ExposureMode " << Engine::ToString(manifest.ColorPipelineSettings.ExposureMode) << '\n';
+        output << "CameraApertureFNumber " << manifest.ColorPipelineSettings.CameraApertureFNumber << '\n';
+        output << "CameraShutterSeconds " << manifest.ColorPipelineSettings.CameraShutterSeconds << '\n';
+        output << "CameraISO " << manifest.ColorPipelineSettings.CameraISO << '\n';
         return static_cast<bool>(output);
     }
 
@@ -418,6 +424,10 @@ namespace
         bool readManualExposure = version < 4;
         bool readPostToneMapSaturation = version < 5;
         bool readPostToneMapContrast = version < 5;
+        bool readExposureMode = version < 6;
+        bool readCameraAperture = version < 6;
+        bool readCameraShutter = version < 6;
+        bool readCameraISO = version < 6;
         std::string key;
         while (input >> key)
         {
@@ -447,24 +457,47 @@ namespace
             }
             else if (version >= 4 && key == "ManualExposureEV100")
             {
-                if (!(input >> manifest.ColorPipelineSettings.ManualExposureEV100)
-                    || !Engine::IsValidRendererColorPipelineSettings(manifest.ColorPipelineSettings))
+                if (!(input >> manifest.ColorPipelineSettings.ManualExposureEV100))
                     return false;
                 readManualExposure = true;
             }
             else if (version >= 5 && key == "PostToneMapSaturation")
             {
-                if (!(input >> manifest.ColorPipelineSettings.PostToneMapSaturation)
-                    || !Engine::IsValidRendererColorPipelineSettings(manifest.ColorPipelineSettings))
+                if (!(input >> manifest.ColorPipelineSettings.PostToneMapSaturation))
                     return false;
                 readPostToneMapSaturation = true;
             }
             else if (version >= 5 && key == "PostToneMapContrast")
             {
-                if (!(input >> manifest.ColorPipelineSettings.PostToneMapContrast)
-                    || !Engine::IsValidRendererColorPipelineSettings(manifest.ColorPipelineSettings))
+                if (!(input >> manifest.ColorPipelineSettings.PostToneMapContrast))
                     return false;
                 readPostToneMapContrast = true;
+            }
+            else if (version >= 6 && key == "ExposureMode")
+            {
+                std::string mode;
+                if (!(input >> mode)
+                    || !Engine::ParseRendererExposureMode(mode, manifest.ColorPipelineSettings.ExposureMode))
+                    return false;
+                readExposureMode = true;
+            }
+            else if (version >= 6 && key == "CameraApertureFNumber")
+            {
+                if (!(input >> manifest.ColorPipelineSettings.CameraApertureFNumber))
+                    return false;
+                readCameraAperture = true;
+            }
+            else if (version >= 6 && key == "CameraShutterSeconds")
+            {
+                if (!(input >> manifest.ColorPipelineSettings.CameraShutterSeconds))
+                    return false;
+                readCameraShutter = true;
+            }
+            else if (version >= 6 && key == "CameraISO")
+            {
+                if (!(input >> manifest.ColorPipelineSettings.CameraISO))
+                    return false;
+                readCameraISO = true;
             }
             else
                 return false;
@@ -475,6 +508,7 @@ namespace
 
         if (!readFramePacingMode || !readFramePacingTarget || !readPresentationPolicy || !readManualExposure
             || !readPostToneMapSaturation || !readPostToneMapContrast
+            || !readExposureMode || !readCameraAperture || !readCameraShutter || !readCameraISO
             || manifest.ScenePath.empty() || manifest.AssetRegistryPath.empty()
             || !Engine::IsValidFramePacingPolicy(manifest.FramePacingPolicy)
             || !Engine::IsValidRendererColorPipelineSettings(manifest.ColorPipelineSettings))
@@ -1107,6 +1141,31 @@ void EditorLayer::DrawMainMenuBar()
 
             ImGui::Separator();
             ImGui::TextUnformatted("Color pipeline");
+            const Engine::RendererExposureMode exposureModes[] = {
+                Engine::RendererExposureMode::ManualEV100,
+                Engine::RendererExposureMode::CameraCalibration
+            };
+            if (ImGui::BeginCombo("Exposure mode", Engine::ToString(m_ProjectColorPipelineSettings.ExposureMode)))
+            {
+                for (Engine::RendererExposureMode mode : exposureModes)
+                {
+                    const bool selected = mode == m_ProjectColorPipelineSettings.ExposureMode;
+                    if (ImGui::Selectable(Engine::ToString(mode), selected))
+                    {
+                        Engine::RendererColorPipelineSettings edited = m_ProjectColorPipelineSettings;
+                        edited.ExposureMode = mode;
+                        if (Engine::IsValidRendererColorPipelineSettings(edited))
+                        {
+                            m_ProjectColorPipelineSettings = edited;
+                            PublishColorPipelineSettings();
+                        }
+                    }
+                    if (selected)
+                        ImGui::SetItemDefaultFocus();
+                }
+                ImGui::EndCombo();
+            }
+
             double manualExposureEV100 = m_ProjectColorPipelineSettings.ManualExposureEV100;
             if (ImGui::InputDouble("Manual EV100", &manualExposureEV100, 0.25, 1.0, "%.2f"))
             {
@@ -1122,6 +1181,57 @@ void EditorLayer::DrawMainMenuBar()
             if (!Engine::IsValidRendererColorPipelineSettings(previewColorPipelineSettings))
                 ImGui::TextDisabled("Manual EV100 must be finite and between %.0f and %.0f; current saved value remains unchanged.",
                     Engine::kMinimumManualExposureEV100, Engine::kMaximumManualExposureEV100);
+
+            double apertureFNumber = m_ProjectColorPipelineSettings.CameraApertureFNumber;
+            if (ImGui::InputDouble("Aperture f-number", &apertureFNumber, 0.1, 1.0, "%.2f"))
+            {
+                Engine::RendererColorPipelineSettings edited = m_ProjectColorPipelineSettings;
+                edited.CameraApertureFNumber = apertureFNumber;
+                if (Engine::IsValidRendererColorPipelineSettings(edited))
+                {
+                    m_ProjectColorPipelineSettings = edited;
+                    PublishColorPipelineSettings();
+                }
+            }
+            Engine::RendererColorPipelineSettings previewApertureSettings = m_ProjectColorPipelineSettings;
+            previewApertureSettings.CameraApertureFNumber = apertureFNumber;
+            if (!Engine::IsValidRendererColorPipelineSettings(previewApertureSettings))
+                ImGui::TextDisabled("Aperture must be finite and between %.1f and %.0f; current saved value remains unchanged.",
+                    Engine::kMinimumCameraApertureFNumber, Engine::kMaximumCameraApertureFNumber);
+
+            double shutterSeconds = m_ProjectColorPipelineSettings.CameraShutterSeconds;
+            if (ImGui::InputDouble("Shutter seconds", &shutterSeconds, 0.001, 0.01, "%.5f"))
+            {
+                Engine::RendererColorPipelineSettings edited = m_ProjectColorPipelineSettings;
+                edited.CameraShutterSeconds = shutterSeconds;
+                if (Engine::IsValidRendererColorPipelineSettings(edited))
+                {
+                    m_ProjectColorPipelineSettings = edited;
+                    PublishColorPipelineSettings();
+                }
+            }
+            Engine::RendererColorPipelineSettings previewShutterSettings = m_ProjectColorPipelineSettings;
+            previewShutterSettings.CameraShutterSeconds = shutterSeconds;
+            if (!Engine::IsValidRendererColorPipelineSettings(previewShutterSettings))
+                ImGui::TextDisabled("Shutter must be finite and between %.5f and %.0f seconds; current saved value remains unchanged.",
+                    Engine::kMinimumCameraShutterSeconds, Engine::kMaximumCameraShutterSeconds);
+
+            double cameraISO = m_ProjectColorPipelineSettings.CameraISO;
+            if (ImGui::InputDouble("ISO", &cameraISO, 10.0, 100.0, "%.0f"))
+            {
+                Engine::RendererColorPipelineSettings edited = m_ProjectColorPipelineSettings;
+                edited.CameraISO = cameraISO;
+                if (Engine::IsValidRendererColorPipelineSettings(edited))
+                {
+                    m_ProjectColorPipelineSettings = edited;
+                    PublishColorPipelineSettings();
+                }
+            }
+            Engine::RendererColorPipelineSettings previewISOSettings = m_ProjectColorPipelineSettings;
+            previewISOSettings.CameraISO = cameraISO;
+            if (!Engine::IsValidRendererColorPipelineSettings(previewISOSettings))
+                ImGui::TextDisabled("ISO must be finite and between %.0f and %.0f; current saved value remains unchanged.",
+                    Engine::kMinimumCameraISO, Engine::kMaximumCameraISO);
 
             double postToneMapSaturation = m_ProjectColorPipelineSettings.PostToneMapSaturation;
             if (ImGui::InputDouble("Post-tone-map saturation", &postToneMapSaturation, 0.05, 0.25, "%.2f"))
@@ -3240,10 +3350,16 @@ void EditorLayer::RunColorPipelineSettingsSmoke()
     const std::filesystem::path v3ManifestPath = smokeRoot / "v3.spiralproject";
     const std::filesystem::path v4ManifestPath = smokeRoot / "v4.spiralproject";
     const std::filesystem::path v5ManifestPath = smokeRoot / "v5.spiralproject";
+    const std::filesystem::path v6ManifestPath = smokeRoot / "v6.spiralproject";
+    const std::filesystem::path orderManifestPath = smokeRoot / "v6-order-independent.spiralproject";
+    const std::filesystem::path orderRoundTripManifestPath = smokeRoot / "v6-order-roundtrip.spiralproject";
+    const std::filesystem::path boundaryManifestPath = smokeRoot / "v6-boundary-roundtrip.spiralproject";
     const std::filesystem::path invalidBoundsPath = smokeRoot / "invalid-bounds.spiralproject";
     const std::filesystem::path invalidNonfinitePath = smokeRoot / "invalid-nonfinite.spiralproject";
     const std::filesystem::path invalidSaturationPath = smokeRoot / "invalid-saturation.spiralproject";
     const std::filesystem::path invalidContrastPath = smokeRoot / "invalid-contrast.spiralproject";
+    const std::filesystem::path invalidExposureModePath = smokeRoot / "invalid-exposure-mode.spiralproject";
+    const std::filesystem::path invalidCameraExposurePath = smokeRoot / "invalid-camera-exposure.spiralproject";
 
     const bool v3Written = WriteTextFile(v3ManifestPath,
         "SpiralProject 3\nScene \"v3.spiral\"\nAssetRegistry \"v3.spiralassets\"\n"
@@ -3272,7 +3388,65 @@ void EditorLayer::RunColorPipelineSettingsSmoke()
     const bool v5Loaded = v5Written && ReadProjectManifest(v5ManifestPath, v5Manifest)
         && v5Manifest.ColorPipelineSettings.ManualExposureEV100 == -1.0
         && v5Manifest.ColorPipelineSettings.PostToneMapSaturation == 0.25
-        && v5Manifest.ColorPipelineSettings.PostToneMapContrast == 1.5;
+        && v5Manifest.ColorPipelineSettings.PostToneMapContrast == 1.5
+        && v5Manifest.ColorPipelineSettings.ExposureMode == Engine::RendererExposureMode::ManualEV100
+        && v5Manifest.ColorPipelineSettings.CameraApertureFNumber == 1.0
+        && v5Manifest.ColorPipelineSettings.CameraShutterSeconds == 1.0
+        && v5Manifest.ColorPipelineSettings.CameraISO == 100.0;
+
+    const bool v6Written = WriteTextFile(v6ManifestPath,
+        "SpiralProject 6\nScene \"v6.spiral\"\nAssetRegistry \"v6.spiralassets\"\n"
+        "FramePacingMode Responsive\nFramePacingTargetFps 60\nPresentationPolicy Synchronized\n"
+        "ManualExposureEV100 -1\nPostToneMapSaturation 0.25\nPostToneMapContrast 1.5\n"
+        "ExposureMode CameraCalibration\nCameraApertureFNumber 2\nCameraShutterSeconds 0.25\nCameraISO 200\n");
+    ProjectManifest v6Manifest;
+    const bool v6Loaded = v6Written && ReadProjectManifest(v6ManifestPath, v6Manifest)
+        && v6Manifest.ColorPipelineSettings.ManualExposureEV100 == -1.0
+        && v6Manifest.ColorPipelineSettings.PostToneMapSaturation == 0.25
+        && v6Manifest.ColorPipelineSettings.PostToneMapContrast == 1.5
+        && v6Manifest.ColorPipelineSettings.ExposureMode == Engine::RendererExposureMode::CameraCalibration
+        && v6Manifest.ColorPipelineSettings.CameraApertureFNumber == 2.0
+        && v6Manifest.ColorPipelineSettings.CameraShutterSeconds == 0.25
+        && v6Manifest.ColorPipelineSettings.CameraISO == 200.0
+        && std::abs(Engine::EffectiveExposureEV100(v6Manifest.ColorPipelineSettings) - 3.0) < 0.0001;
+
+    const bool orderWritten = WriteTextFile(orderManifestPath,
+        "SpiralProject 6\nScene \"order.spiral\"\nAssetRegistry \"order.spiralassets\"\n"
+        "FramePacingMode Responsive\nFramePacingTargetFps 60\nPresentationPolicy Synchronized\n"
+        "ManualExposureEV100 -1\nPostToneMapSaturation 0.25\nPostToneMapContrast 1.5\n"
+        "ExposureMode CameraCalibration\nCameraApertureFNumber 64\n"
+        "CameraShutterSeconds 0.000125\nCameraISO 102400\n");
+    ProjectManifest orderManifest;
+    const bool orderLoaded = orderWritten && ReadProjectManifest(orderManifestPath, orderManifest)
+        && orderManifest.ColorPipelineSettings.ExposureMode == Engine::RendererExposureMode::CameraCalibration
+        && orderManifest.ColorPipelineSettings.CameraApertureFNumber == 64.0
+        && orderManifest.ColorPipelineSettings.CameraShutterSeconds == 0.000125
+        && orderManifest.ColorPipelineSettings.CameraISO == 102400.0
+        && std::abs(Engine::EffectiveExposureEV100(orderManifest.ColorPipelineSettings)
+            - std::log2(32000.0)) < 0.0001;
+    ProjectManifest orderRoundTripManifest;
+    const bool orderRoundTrip = orderLoaded
+        && WriteProjectManifest(orderRoundTripManifestPath, orderManifest)
+        && ReadProjectManifest(orderRoundTripManifestPath, orderRoundTripManifest)
+        && orderRoundTripManifest.ColorPipelineSettings == orderManifest.ColorPipelineSettings;
+
+    ProjectManifest boundaryManifest {
+        "boundary.spiral",
+        "boundary.spiralassets",
+        { Engine::FramePacingMode::Responsive, 60.0 },
+        Engine::PresentationPolicy::Synchronized,
+        {}
+    };
+    boundaryManifest.ColorPipelineSettings.ExposureMode = Engine::RendererExposureMode::CameraCalibration;
+    boundaryManifest.ColorPipelineSettings.CameraApertureFNumber = 64.0;
+    boundaryManifest.ColorPipelineSettings.CameraShutterSeconds = 1.0 / 8000.0;
+    boundaryManifest.ColorPipelineSettings.CameraISO = 50000.0;
+    ProjectManifest boundaryRoundTripManifest;
+    const bool boundaryRoundTrip = Engine::IsValidRendererColorPipelineSettings(boundaryManifest.ColorPipelineSettings)
+        && std::abs(Engine::EffectiveExposureEV100(boundaryManifest.ColorPipelineSettings) - 16.0) < 0.0001
+        && WriteProjectManifest(boundaryManifestPath, boundaryManifest)
+        && ReadProjectManifest(boundaryManifestPath, boundaryRoundTripManifest)
+        && boundaryRoundTripManifest.ColorPipelineSettings == boundaryManifest.ColorPipelineSettings;
 
     const ProjectManifest beforeInvalidRead {
         "unchanged.spiral",
@@ -3326,26 +3500,65 @@ void EditorLayer::RunColorPipelineSettingsSmoke()
         && !ReadProjectManifest(invalidContrastPath, invalidContrastTarget)
         && invalidReadPreserved(invalidContrastTarget);
 
+    ProjectManifest invalidExposureModeTarget = beforeInvalidRead;
+    const bool invalidExposureModeWritten = WriteTextFile(invalidExposureModePath,
+        "SpiralProject 6\nScene \"invalid.spiral\"\nAssetRegistry \"invalid.spiralassets\"\n"
+        "FramePacingMode Responsive\nFramePacingTargetFps 60\nPresentationPolicy Synchronized\n"
+        "ManualExposureEV100 0\nPostToneMapSaturation 1\nPostToneMapContrast 1\n"
+        "ExposureMode AperturePriority\nCameraApertureFNumber 1\nCameraShutterSeconds 1\nCameraISO 100\n");
+    const bool invalidExposureModeRejected = invalidExposureModeWritten
+        && !ReadProjectManifest(invalidExposureModePath, invalidExposureModeTarget)
+        && invalidReadPreserved(invalidExposureModeTarget);
+
+    ProjectManifest invalidCameraExposureTarget = beforeInvalidRead;
+    const bool invalidCameraExposureWritten = WriteTextFile(invalidCameraExposurePath,
+        "SpiralProject 6\nScene \"invalid.spiral\"\nAssetRegistry \"invalid.spiralassets\"\n"
+        "FramePacingMode Responsive\nFramePacingTargetFps 60\nPresentationPolicy Synchronized\n"
+        "ManualExposureEV100 0\nPostToneMapSaturation 1\nPostToneMapContrast 1\n"
+        "ExposureMode CameraCalibration\nCameraApertureFNumber 0.5\nCameraShutterSeconds 1\nCameraISO 100\n");
+    const bool invalidCameraExposureRejected = invalidCameraExposureWritten
+        && !ReadProjectManifest(invalidCameraExposurePath, invalidCameraExposureTarget)
+        && invalidReadPreserved(invalidCameraExposureTarget);
+
     const Engine::RendererColorPipelineSettings previousSettings = m_ProjectColorPipelineSettings;
     m_ProjectColorPipelineSettings = { 2.0, 0.5, 1.25 };
+    m_ProjectColorPipelineSettings.ExposureMode = Engine::RendererExposureMode::CameraCalibration;
+    m_ProjectColorPipelineSettings.CameraApertureFNumber = 2.0;
+    m_ProjectColorPipelineSettings.CameraShutterSeconds = 0.25;
+    m_ProjectColorPipelineSettings.CameraISO = 200.0;
     PublishColorPipelineSettings();
     const bool rendererPublished = Engine::Renderer::GetColorPipelineSettings().ManualExposureEV100 == 2.0
         && Engine::Renderer::GetColorPipelineSettings().PostToneMapSaturation == 0.5
-        && Engine::Renderer::GetColorPipelineSettings().PostToneMapContrast == 1.25;
+        && Engine::Renderer::GetColorPipelineSettings().PostToneMapContrast == 1.25
+        && Engine::Renderer::GetColorPipelineSettings().ExposureMode == Engine::RendererExposureMode::CameraCalibration
+        && Engine::Renderer::GetColorPipelineSettings().CameraApertureFNumber == 2.0
+        && Engine::Renderer::GetColorPipelineSettings().CameraShutterSeconds == 0.25
+        && Engine::Renderer::GetColorPipelineSettings().CameraISO == 200.0
+        && std::abs(Engine::EffectiveExposureEV100(Engine::Renderer::GetColorPipelineSettings()) - 3.0) < 0.0001;
     const bool savedAndReloaded = SaveProject() && LoadProject()
         && m_ProjectColorPipelineSettings.ManualExposureEV100 == 2.0
         && m_ProjectColorPipelineSettings.PostToneMapSaturation == 0.5
         && m_ProjectColorPipelineSettings.PostToneMapContrast == 1.25
+        && m_ProjectColorPipelineSettings.ExposureMode == Engine::RendererExposureMode::CameraCalibration
+        && m_ProjectColorPipelineSettings.CameraApertureFNumber == 2.0
+        && m_ProjectColorPipelineSettings.CameraShutterSeconds == 0.25
+        && m_ProjectColorPipelineSettings.CameraISO == 200.0
         && Engine::Renderer::GetColorPipelineSettings().ManualExposureEV100 == 2.0
         && Engine::Renderer::GetColorPipelineSettings().PostToneMapSaturation == 0.5
-        && Engine::Renderer::GetColorPipelineSettings().PostToneMapContrast == 1.25;
+        && Engine::Renderer::GetColorPipelineSettings().PostToneMapContrast == 1.25
+        && Engine::Renderer::GetColorPipelineSettings().ExposureMode == Engine::RendererExposureMode::CameraCalibration
+        && Engine::Renderer::GetColorPipelineSettings().CameraApertureFNumber == 2.0
+        && Engine::Renderer::GetColorPipelineSettings().CameraShutterSeconds == 0.25
+        && Engine::Renderer::GetColorPipelineSettings().CameraISO == 200.0;
     m_ProjectColorPipelineSettings = previousSettings;
     PublishColorPipelineSettings();
     const bool restoredAndSaved = SaveProject();
 
     m_ColorPipelineSettingsSmokeCompleted = true;
-    if (!v3Migrated || !v4Loaded || !v5Loaded || !invalidBoundsRejected || !invalidNonfiniteRejected
+    if (!v3Migrated || !v4Loaded || !v5Loaded || !v6Loaded || !orderLoaded || !orderRoundTrip
+        || !boundaryRoundTrip || !invalidBoundsRejected || !invalidNonfiniteRejected
         || !invalidSaturationRejected || !invalidContrastRejected
+        || !invalidExposureModeRejected || !invalidCameraExposureRejected
         || !rendererPublished || !savedAndReloaded || !restoredAndSaved)
     {
         throw std::runtime_error("Color pipeline settings smoke failed");
@@ -3354,7 +3567,10 @@ void EditorLayer::RunColorPipelineSettingsSmoke()
     const Engine::RendererColorPipelineSettings published = Engine::Renderer::GetColorPipelineSettings();
     Engine::Log::Info("ColorPipelineSettingsSmokeV1 default=pass bounds=pass nonfinite=pass v3Migration=pass v4GradingMigration=pass v5SaveReopen=pass rendererPublication=pass manualExposureEV100=",
         published.ManualExposureEV100, " postToneMapSaturation=", published.PostToneMapSaturation,
-        " postToneMapContrast=", published.PostToneMapContrast, " result=pass");
+        " postToneMapContrast=", published.PostToneMapContrast,
+        " exposureMode=", Engine::ToString(published.ExposureMode),
+        " effectiveExposureEV100=", Engine::EffectiveExposureEV100(published),
+        " v6Calibration=pass orderIndependent=pass roundTripPrecision=pass result=pass");
     m_ConsoleLines.emplace_back("Color pipeline settings smoke passed");
 }
 
