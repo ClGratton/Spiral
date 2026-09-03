@@ -1569,6 +1569,7 @@ float4 PSMain(PixelInput input) : SV_Target { return ReadOnlyTextures[1].SampleL
         Scope<RHI::Shader> pixelShader = packages ? device.CreateShader(ps) : nullptr;
         RHI::PipelineDescription pipelineDescription; pipelineDescription.DebugName = "RHIReadOnlySampledTableSmokeV1 Pipeline"; pipelineDescription.VertexShader = vertexShader.get(); pipelineDescription.PixelShader = pixelShader.get();
         pipelineDescription.VertexInputs = {{ "POSITION", 0, RHI::Format::R32G32B32Float, 0, offsetof(Vertex, Position) }, { "COLOR", 0, RHI::Format::R32G32B32Float, 0, offsetof(Vertex, Color) }, { "TEXCOORD", 0, RHI::Format::R32G32Float, 0, offsetof(Vertex, UV) }};
+        pipelineDescription.VertexStrideBytes = sizeof(Vertex);
         pipelineDescription.ConstantBufferBindings = {{ 0, 0, RHI::ShaderStage::AllGraphics }}; pipelineDescription.SampledTextureTable = RHI::SampledTextureTableBinding { tableCapacity }; pipelineDescription.ColorFormat = RHI::Format::R8G8B8A8Unorm; pipelineDescription.DepthFormat = RHI::Format::D32Float; pipelineDescription.DepthTestEnable = false; pipelineDescription.DepthWriteEnable = false; pipelineDescription.RasterCullMode = RHI::CullMode::None;
         Scope<RHI::Pipeline> pipeline = vertexShader && pixelShader ? device.CreatePipeline(pipelineDescription) : nullptr;
         auto createBuffer = [&device](const char* name, u64 size, u32 stride, RHI::BufferUsage usage) { RHI::BufferDescription d; d.DebugName = name; d.SizeBytes = size; d.StrideBytes = stride; d.Usage = static_cast<RHI::BufferUsage>(static_cast<u32>(usage) | static_cast<u32>(RHI::BufferUsage::CopyDest)); return device.CreateBuffer(d); };
@@ -1715,6 +1716,7 @@ float4 PSMain(PixelInput input) : SV_Target { return ReadOnlyTextures[1].SampleL
             { "COLOR", 0, RHI::Format::R32G32B32Float, 0, offsetof(Vertex, Color) },
             { "TEXCOORD", 0, RHI::Format::R32G32Float, 0, offsetof(Vertex, UV) }
         };
+        pipelineDescription.VertexStrideBytes = sizeof(Vertex);
         pipelineDescription.ConstantBufferBindings = {{ 0, 0, RHI::ShaderStage::AllGraphics }};
         pipelineDescription.SampledTextureTable = RHI::SampledTextureTableBinding { tableCapacity };
         pipelineDescription.ColorFormat = RHI::Format::R8G8B8A8Unorm;
@@ -2098,7 +2100,8 @@ float4 PSMain(PixelInput input) : SV_Target { return ReadOnlyTextures[1].SampleL
         constexpr u32 width = 32, height = 24;
         const u32 tableCapacity = device
             ? RHI::SelectReadOnlyTextureTableCapacity(device->GetCapabilities()) : 0;
-        struct Vertex { float Position[3]; float Color[3]; float UV[2]; };
+        struct Vertex { float Position[3]; float Color[3]; float UV[2]; float Normal[3]; };
+        static_assert(sizeof(Vertex) == 44 && offsetof(Vertex, Normal) == 32);
         struct Constants
         {
             float ViewProjection[16];
@@ -2111,7 +2114,11 @@ float4 PSMain(PixelInput input) : SV_Target { return ReadOnlyTextures[1].SampleL
             u32 TextureState[4];
         };
         static_assert(sizeof(Constants) == 176);
-        const std::array<Vertex, 3> vertices {{{ { -0.7f, -0.6f, 0.5f }, { 0.9f, 0.2f, 0.1f }, { 0.0f, 1.0f } }, { { 0.7f, -0.6f, 0.5f }, { 0.9f, 0.2f, 0.1f }, { 1.0f, 1.0f } }, { { 0.0f, 0.7f, 0.5f }, { 0.9f, 0.2f, 0.1f }, { 0.5f, 0.0f } } }};
+        const std::array<Vertex, 3> vertices {{
+            {{ -0.7f, -0.6f, 0.5f }, { 0.2f, 0.4f, 0.6f }, { 0.25f, 0.75f }, { 0.8f, 0.1f, 0.3f }},
+            {{ 0.7f, -0.6f, 0.5f }, { 0.2f, 0.4f, 0.6f }, { 0.25f, 0.75f }, { 0.8f, 0.1f, 0.3f }},
+            {{ 0.0f, 0.7f, 0.5f }, { 0.2f, 0.4f, 0.6f }, { 0.25f, 0.75f }, { 0.8f, 0.1f, 0.3f }}
+        }};
         const std::array<u16, 3> indices {{ 0, 1, 2 }};
         Constants constants {};
         constants.ViewProjection[0] = constants.ViewProjection[5]
@@ -2127,6 +2134,46 @@ float4 PSMain(PixelInput input) : SV_Target { return ReadOnlyTextures[1].SampleL
         constants.CallistoFactors[2] = constants.CallistoFactors[3] = 0.75f;
         constants.TextureState[3] = 1u;
         ShaderSourceFile source = ShaderLibrary::LoadSource("Engine/Shaders/EditorViewport.hlsl", "Vulkan indexed draw smoke");
+        if (source.Status == ShaderSourceStatus::Loaded)
+        {
+            source.Source += R"(
+
+struct RHIVertexStrideInput
+{
+    float3 Position : POSITION;
+    float3 Color : COLOR;
+    float2 UV : TEXCOORD;
+    float3 Normal : NORMAL;
+};
+
+struct RHIVertexStrideOutput
+{
+    float4 Position : SV_Position;
+    float3 Color : COLOR0;
+    float2 UV : TEXCOORD0;
+    float3 Normal : NORMAL0;
+};
+
+RHIVertexStrideOutput VSVertexStrideSmoke(RHIVertexStrideInput input)
+{
+    RHIVertexStrideOutput output;
+    output.Position = mul(float4(input.Position, 1.0f), ViewProjection);
+    output.Color = input.Color;
+    output.UV = input.UV;
+    output.Normal = input.Normal;
+    return output;
+}
+
+float4 PSVertexStrideSmoke(RHIVertexStrideOutput input) : SV_Target0
+{
+    const float3 fetched = input.Normal * 0.5f + input.Color * 0.25f
+        + float3(input.UV, 1.0f) * 0.25f;
+    const float tableAlpha = ReadOnlyTextures[TextureIndices0.x]
+        .Sample(ReadOnlySamplers[TextureIndices0.x], input.UV).a;
+    return float4(saturate(fetched), tableAlpha);
+}
+)";
+        }
         auto makeRequest = [&source, tableCapacity](RHI::ShaderStage stage, const char* entry) {
             PortableShaderRequest request;
             request.SourceName = source.ResolvedPath.string(); request.Source = source.Source; request.EntryPoint = entry; request.Stage = stage;
@@ -2144,15 +2191,15 @@ float4 PSMain(PixelInput input) : SV_Target { return ReadOnlyTextures[1].SampleL
                 { "ReadOnlySamplers", 's', 0, 1, stage, "SamplerState", "sampler", tableCapacity, 0, 0, 0 },
                 { "ReadOnlyTextures", 't', 0, 1, stage, "Texture2D", "float32x4", tableCapacity, 0, 1, 4 }
             };
-            if (stage == RHI::ShaderStage::Vertex) request.ExpectedVertexInputs = {{ "Position", "POSITION", 0, 0, "float32x3", 12, 1, 3 }, { "Color", "COLOR", 0, 1, "float32x3", 12, 1, 3 }, { "UV", "TEXCOORD", 0, 2, "float32x2", 8, 1, 2 }};
+            if (stage == RHI::ShaderStage::Vertex) request.ExpectedVertexInputs = {{ "Position", "POSITION", 0, 0, "float32x3", 12, 1, 3 }, { "Color", "COLOR", 0, 1, "float32x3", 12, 1, 3 }, { "UV", "TEXCOORD", 0, 2, "float32x2", 8, 1, 2 }, { "Normal", "NORMAL", 0, 3, "float32x3", 12, 1, 3 }};
             return request;
         };
         SlangShaderCompiler compiler(std::filesystem::path("output") / "cache" / "shaders");
-        PortableShaderPackage vertexPackage = source.Status == ShaderSourceStatus::Loaded ? compiler.Compile(makeRequest(RHI::ShaderStage::Vertex, "VSMain")) : PortableShaderPackage {};
-        PortableShaderPackage pixelPackage = source.Status == ShaderSourceStatus::Loaded ? compiler.Compile(makeRequest(RHI::ShaderStage::Pixel, "PSMain")) : PortableShaderPackage {};
+        PortableShaderPackage vertexPackage = source.Status == ShaderSourceStatus::Loaded ? compiler.Compile(makeRequest(RHI::ShaderStage::Vertex, "VSVertexStrideSmoke")) : PortableShaderPackage {};
+        PortableShaderPackage pixelPackage = source.Status == ShaderSourceStatus::Loaded ? compiler.Compile(makeRequest(RHI::ShaderStage::Pixel, "PSVertexStrideSmoke")) : PortableShaderPackage {};
         std::string validationError;
-        const bool packageOk = device && PortableShaderContract::ValidatePackage(makeRequest(RHI::ShaderStage::Vertex, "VSMain"), vertexPackage, validationError)
-            && PortableShaderContract::ValidatePackage(makeRequest(RHI::ShaderStage::Pixel, "PSMain"), pixelPackage, validationError);
+        const bool packageOk = device && PortableShaderContract::ValidatePackage(makeRequest(RHI::ShaderStage::Vertex, "VSVertexStrideSmoke"), vertexPackage, validationError)
+            && PortableShaderContract::ValidatePackage(makeRequest(RHI::ShaderStage::Pixel, "PSVertexStrideSmoke"), pixelPackage, validationError);
         // Slang preserves the source entry point in reflection but emits the linked
         // SPIR-V entry point as `main`; NVRHI forwards this name to Vulkan.
         RHI::ShaderDescription vs; vs.DebugName = "VulkanRHIIndexedDrawV1 VS"; vs.SourceName = source.ResolvedPath.string(); vs.EntryPoint = "main"; vs.Stage = RHI::ShaderStage::Vertex; vs.BinaryFormat = RHI::ShaderBinaryFormat::Spirv; vs.Binary = vertexPackage.Spirv; vs.Reflection = vertexPackage.Reflection;
@@ -2160,7 +2207,8 @@ float4 PSMain(PixelInput input) : SV_Target { return ReadOnlyTextures[1].SampleL
         Scope<RHI::Shader> vertexShader = packageOk ? device->CreateShader(vs) : nullptr;
         Scope<RHI::Shader> pixelShader = packageOk ? device->CreateShader(ps) : nullptr;
         RHI::PipelineDescription pipelineDescription; pipelineDescription.DebugName = "VulkanRHIIndexedDrawV1 Pipeline"; pipelineDescription.VertexShader = vertexShader.get(); pipelineDescription.PixelShader = pixelShader.get();
-        pipelineDescription.VertexInputs = {{ "POSITION", 0, RHI::Format::R32G32B32Float, 0, offsetof(Vertex, Position) }, { "COLOR", 0, RHI::Format::R32G32B32Float, 0, offsetof(Vertex, Color) }, { "TEXCOORD", 0, RHI::Format::R32G32Float, 0, offsetof(Vertex, UV) }};
+        pipelineDescription.VertexInputs = {{ "POSITION", 0, RHI::Format::R32G32B32Float, 0, offsetof(Vertex, Position) }, { "COLOR", 0, RHI::Format::R32G32B32Float, 0, offsetof(Vertex, Color) }, { "TEXCOORD", 0, RHI::Format::R32G32Float, 0, offsetof(Vertex, UV) }, { "NORMAL", 0, RHI::Format::R32G32B32Float, 0, offsetof(Vertex, Normal) }};
+        pipelineDescription.VertexStrideBytes = sizeof(Vertex);
         pipelineDescription.ConstantBufferBindings = {{ 0, 0, RHI::ShaderStage::AllGraphics }}; pipelineDescription.SampledTextureTable = RHI::SampledTextureTableBinding { tableCapacity }; pipelineDescription.ColorFormat = RHI::Format::R8G8B8A8Unorm; pipelineDescription.DepthFormat = RHI::Format::D32Float; pipelineDescription.DepthTestEnable = false; pipelineDescription.DepthWriteEnable = false; pipelineDescription.RasterCullMode = RHI::CullMode::None;
         Scope<RHI::Pipeline> pipeline = vertexShader && pixelShader ? device->CreatePipeline(pipelineDescription) : nullptr;
         Scope<TextureRuntimePublication> textureRuntime = pipeline
@@ -2186,16 +2234,28 @@ float4 PSMain(PixelInput input) : SV_Target { return ReadOnlyTextures[1].SampleL
         const bool submitted = draw && tableBound && list->TransitionTexture(*color, RHI::ResourceState::CopySource) && list->End() && device->SubmitAndWait(*list);
         RHI::TextureReadback readback; const bool readbackOk = submitted && device->ReadbackTexture(*color, readback);
         auto pixelMatches = [&readback](u32 x, u32 y, const std::array<u8, 4>& expected) { if (readback.Data.size() < static_cast<size_t>(readback.RowPitchBytes) * readback.Extent.Height) return false; for (u32 c = 0; c < 4; ++c) if (std::abs(static_cast<int>(readback.Data[y * readback.RowPitchBytes + x * 4 + c]) - expected[c]) > 3) return false; return true; };
-        const bool interior = readbackOk && pixelMatches(16, 12, {{ 102, 26, 19, 255 }}); const bool background = readbackOk && pixelMatches(2, 2, {{ 10, 13, 15, 255 }});
+        const auto encodeUnorm = [](float value) { return static_cast<u8>(std::lround(std::clamp(value, 0.0f, 1.0f) * 255.0f)); };
+        const std::array<float, 3> expectedFetched {{
+            0.8f * 0.5f + 0.2f * 0.25f + 0.25f * 0.25f,
+            0.1f * 0.5f + 0.4f * 0.25f + 0.75f * 0.25f,
+            0.3f * 0.5f + 0.6f * 0.25f + 1.0f * 0.25f
+        }};
+        const std::array<u8, 4> expectedInterior {{ encodeUnorm(expectedFetched[0]),
+            encodeUnorm(expectedFetched[1]), encodeUnorm(expectedFetched[2]), 255 }};
+        const bool interior = readbackOk && pixelMatches(16, 12, expectedInterior); const bool background = readbackOk && pixelMatches(2, 2, {{ 10, 13, 15, 255 }});
         const std::array<u8, 4> interiorPixel = readbackOk ? std::array<u8, 4> {{ readback.Data[12 * readback.RowPitchBytes + 16 * 4], readback.Data[12 * readback.RowPitchBytes + 16 * 4 + 1], readback.Data[12 * readback.RowPitchBytes + 16 * 4 + 2], readback.Data[12 * readback.RowPitchBytes + 16 * 4 + 3] }} : std::array<u8, 4> {};
         u32 foregroundPixels = 0;
         for (u32 y = 0; readbackOk && y < readback.Extent.Height; ++y)
             for (u32 x = 0; x < readback.Extent.Width; ++x)
                 foregroundPixels += !pixelMatches(x, y, {{ 10, 13, 15, 255 }}) ? 1u : 0u;
         Log::Info("VulkanRHIIndexedDrawV1 package=", packageOk ? "pass" : "fail", " reflection=", packageOk ? "pass" : "fail", " pipeline=", pipeline ? "pass" : "fail", " constants=", uploads ? "pass" : "fail", " draw=", submitted ? "pass" : "fail", " submit=", submitted ? "pass" : "fail", " readback=", readbackOk ? "pass" : "fail", " interior=", interior ? "pass" : "fail", " background=", background ? "pass" : "fail", " table=", tableBound ? "bound" : "fail", " actualInterior=", static_cast<u32>(interiorPixel[0]), ",", static_cast<u32>(interiorPixel[1]), ",", static_cast<u32>(interiorPixel[2]), ",", static_cast<u32>(interiorPixel[3]), " foregroundPixels=", foregroundPixels, " rowPitch=", readback.RowPitchBytes, " vertexKey=", vertexPackage.Key, " pixelKey=", pixelPackage.Key, " validation=", validationError);
+        const bool vertexStridePassed = packageOk && pipeline && uploads && submitted && interior && background
+            && pipelineDescription.VertexInputs.size() == 4 && pipelineDescription.VertexStrideBytes == 44;
+        Log::Info("RHIVertexStrideV1 backend=Vulkan attributes=4 stride=44 fetch=exact result=",
+            vertexStridePassed ? "pass" : "fail");
         device->WaitIdle();
         if (textureRuntime) textureRuntime->ReleaseAfterDeviceIdle();
-        return interior && background;
+        return vertexStridePassed;
     }
 
     bool NVRHIRenderBackend::RunVulkanSceneViewportRasterSmoke()

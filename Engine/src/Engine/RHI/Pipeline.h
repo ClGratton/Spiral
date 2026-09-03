@@ -3,6 +3,7 @@
 #include "Engine/RHI/RHICommon.h"
 #include "Engine/RHI/Shader.h"
 
+#include <limits>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -159,6 +160,10 @@ namespace Engine::RHI
         Shader* VertexShader = nullptr;
         Shader* PixelShader = nullptr;
         std::vector<VertexInputAttribute> VertexInputs;
+        // The currently admitted portable layout is one interleaved per-vertex
+        // stream in slot zero. Empty-input pipelines use zero; every nonempty
+        // layout declares the exact bound-buffer stride explicitly.
+        u32 VertexStrideBytes = 0;
         std::vector<RootConstantBufferBinding> ConstantBufferBindings;
         std::optional<SampledTextureTableBinding> SampledTextureTable;
         std::optional<FixedSampledTextureBinding> FixedSampledTexture;
@@ -169,6 +174,42 @@ namespace Engine::RHI
         bool DepthTestEnable = false;
         bool DepthWriteEnable = false;
     };
+
+    inline bool TryGetVertexInputFormatWidth(Format format, u32& widthBytes)
+    {
+        switch (format)
+        {
+            case Format::R32G32Float: widthBytes = 8; return true;
+            case Format::R32G32B32Float: widthBytes = 12; return true;
+            default: return false;
+        }
+    }
+
+    inline bool IsValidVertexInputLayout(const PipelineDescription& description)
+    {
+        if (description.VertexInputs.empty())
+            return description.VertexStrideBytes == 0;
+        if (description.VertexStrideBytes == 0)
+            return false;
+
+        for (const VertexInputAttribute& input : description.VertexInputs)
+        {
+            u32 widthBytes = 0;
+            if (input.InputSlot != 0 || input.InputRate != VertexInputRate::PerVertex
+                || input.InstanceStepRate != 0 || !TryGetVertexInputFormatWidth(input.AttributeFormat, widthBytes)
+                || input.OffsetBytes > std::numeric_limits<u32>::max() - widthBytes
+                || input.OffsetBytes + widthBytes > description.VertexStrideBytes)
+                return false;
+        }
+        return true;
+    }
+
+    inline bool IsVertexBufferStrideCompatible(const PipelineDescription& description,
+        u32 inputSlot, u32 bufferStrideBytes)
+    {
+        return IsValidVertexInputLayout(description) && !description.VertexInputs.empty()
+            && inputSlot == 0 && bufferStrideBytes == description.VertexStrideBytes;
+    }
 
     inline bool IsValidSampledTextureTablePipeline(const PipelineDescription& description)
     {

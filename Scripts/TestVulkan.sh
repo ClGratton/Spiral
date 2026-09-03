@@ -96,6 +96,7 @@ REQUIRED_MARKERS=(
     "VulkanRHICoreV1"
     "lifecycle=pass, cpuMapNone=pass, markers=executed-balanced"
     "VulkanRHIIndexedDrawV1 package=pass reflection=pass pipeline=pass constants=pass draw=pass submit=pass readback=pass interior=pass background=pass"
+    "RHIVertexStrideV1 backend=Vulkan attributes=4 stride=44 fetch=exact result=pass"
     "VulkanSceneOutputCaptureV1 outputGeneration="
     "VulkanSceneOutputHandoffV1 producer=pass"
     "ScenePhotometricLightPublicationV1 backend=Vulkan directional=1 local=1 directionalUnit=lux localUnit=lm snapshot=typed grid=typed effectiveExposureEV100=0 exposureScale=1 shaderConsumption=no result=pass"

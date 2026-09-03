@@ -515,6 +515,7 @@ namespace Engine::RHI
             void SetGraphicsPipeline(Pipeline& pipeline) override
             {
                 m_Pipeline = dynamic_cast<VulkanPipeline*>(&pipeline);
+                m_Vertex = nullptr;
                 m_BindingSet = nullptr;
                 m_TableBindingState.reset();
                 m_FixedBindingSet = nullptr;
@@ -639,7 +640,13 @@ namespace Engine::RHI
             }
             void SetViewport(const Viewport& viewport) override { m_Viewport = viewport; }
             void SetScissorRect(const ScissorRect& rect) override { m_Scissor = rect; }
-            void SetVertexBuffer(u32 slot, Buffer& buffer) override { if (slot == 0) m_Vertex = CanUseBuffer(&buffer) ? dynamic_cast<VulkanBuffer*>(&buffer) : nullptr; }
+            void SetVertexBuffer(u32 slot, Buffer& buffer) override
+            {
+                m_Vertex = m_Pipeline && CanUseBuffer(&buffer)
+                        && IsVertexBufferStrideCompatible(m_Pipeline->GetDescription(),
+                            slot, buffer.GetDescription().StrideBytes)
+                    ? dynamic_cast<VulkanBuffer*>(&buffer) : nullptr;
+            }
             void SetIndexBuffer(Buffer& buffer, IndexFormat format) override { m_Index = CanUseBuffer(&buffer) ? dynamic_cast<VulkanBuffer*>(&buffer) : nullptr; m_IndexFormat = format; }
             bool CopyBuffer(Buffer& destination, u64 destinationOffset, Buffer& source, u64 sourceOffset, u64 size) override
             {
@@ -658,7 +665,9 @@ namespace Engine::RHI
             }
             void DrawIndexed(u32 indexCount, u32 instanceCount, u32 startIndex, int baseVertex, u32 startInstance) override
             {
-                if (m_State != State::Recording || !m_Pipeline || !m_Framebuffer || !m_BindingSet || !m_Vertex || !m_Index || baseVertex != 0)
+                const bool vertexBufferRequired = m_Pipeline && !m_Pipeline->GetDescription().VertexInputs.empty();
+                if (m_State != State::Recording || !m_Pipeline || !m_Framebuffer || !m_BindingSet
+                    || (vertexBufferRequired && !m_Vertex) || !m_Index || baseVertex != 0)
                 {
                     Log::Error("Vulkan indexed draw rejected: recording=", m_State == State::Recording ? "yes" : "no", ", pipeline=", m_Pipeline ? "yes" : "no", ", framebuffer=", m_Framebuffer ? "yes" : "no", ", bindings=", m_BindingSet ? "yes" : "no", ", vertex=", m_Vertex ? "yes" : "no", ", index=", m_Index ? "yes" : "no", ", baseVertex=", baseVertex);
                     return;
@@ -669,8 +678,9 @@ namespace Engine::RHI
                 viewport.addViewport(nvrhi::Viewport(m_Viewport.X, m_Viewport.X + m_Viewport.Width, m_Viewport.Y, m_Viewport.Y + m_Viewport.Height, m_Viewport.MinDepth, m_Viewport.MaxDepth)).addScissorRect(nvrhi::Rect(m_Scissor.Left, m_Scissor.Right, m_Scissor.Top, m_Scissor.Bottom));
                 nvrhi::GraphicsState state;
                 state.setPipeline(nativePipeline).setFramebuffer(m_Framebuffer).setViewport(viewport).addBindingSet(m_BindingSet)
-                    .addVertexBuffer(nvrhi::VertexBufferBinding().setBuffer(m_Vertex->Native()).setSlot(0).setOffset(0))
                     .setIndexBuffer(nvrhi::IndexBufferBinding().setBuffer(m_Index->Native()).setFormat(m_IndexFormat == IndexFormat::Uint16 ? nvrhi::Format::R16_UINT : nvrhi::Format::R32_UINT).setOffset(0));
+                if (m_Vertex)
+                    state.addVertexBuffer(nvrhi::VertexBufferBinding().setBuffer(m_Vertex->Native()).setSlot(0).setOffset(0));
                 if (m_Pipeline->GetDescription().SampledTextureTable && !m_TableBindingState) return;
                 if (m_Pipeline->GetDescription().FixedSampledTexture && !m_FixedBindingSet) return;
                 if (m_TableBindingState) state.addBindingSet(m_TableBindingState->BindingSet);
@@ -1078,13 +1088,15 @@ namespace Engine::RHI
             }
             Scope<Pipeline> CreatePipeline(const PipelineDescription& description) override
             {
+                if (!IsValidVertexInputLayout(description))
+                { Log::Error("Vulkan graphics pipeline rejected by portable vertex-layout validation"); return nullptr; }
                 if (description.SampledTextureTable && !IsValidSampledTextureTablePipeline(description))
                 { Log::Error("Vulkan sampled-table pipeline rejected by portable declaration/reflection validation"); return nullptr; }
                 if (description.FixedSampledTexture && !IsValidFixedSampledTexturePipeline(description))
                 { Log::Error("Vulkan fixed-texture pipeline rejected by portable declaration/reflection validation"); return nullptr; }
                 auto* vertex = dynamic_cast<VulkanShader*>(description.VertexShader);
                 auto* pixel = dynamic_cast<VulkanShader*>(description.PixelShader);
-                if (!m_Device || description.Type != PipelineType::Graphics || !vertex || !pixel || description.VertexInputs.size() != 3 || description.ConstantBufferBindings.size() != 1
+                if (!m_Device || description.Type != PipelineType::Graphics || !vertex || !pixel || description.ConstantBufferBindings.size() != 1
                     || description.ConstantBufferBindings[0].ShaderRegister != 0 || description.ConstantBufferBindings[0].RegisterSpace != 0)
                 { Log::Error("Vulkan sampled-table pipeline rejected by core graphics declaration validation"); return nullptr; }
                 std::vector<nvrhi::VertexAttributeDesc> attributes;
@@ -1095,9 +1107,11 @@ namespace Engine::RHI
                         ? nvrhi::Format::RGB32_FLOAT
                         : input.AttributeFormat == Format::R32G32Float ? nvrhi::Format::RG32_FLOAT : nvrhi::Format::UNKNOWN;
                     if (format == nvrhi::Format::UNKNOWN) return nullptr;
-                    attributes.emplace_back(nvrhi::VertexAttributeDesc().setName(input.SemanticName + std::to_string(input.SemanticIndex)).setFormat(format).setBufferIndex(input.InputSlot).setOffset(input.OffsetBytes).setElementStride(32));
+                    attributes.emplace_back(nvrhi::VertexAttributeDesc().setName(input.SemanticName + std::to_string(input.SemanticIndex)).setFormat(format).setBufferIndex(input.InputSlot).setOffset(input.OffsetBytes).setElementStride(description.VertexStrideBytes));
                 }
-                nvrhi::InputLayoutHandle inputLayout = m_Device->createInputLayout(attributes.data(), static_cast<u32>(attributes.size()), vertex->Native());
+                nvrhi::InputLayoutHandle inputLayout;
+                if (!attributes.empty())
+                    inputLayout = m_Device->createInputLayout(attributes.data(), static_cast<u32>(attributes.size()), vertex->Native());
                 nvrhi::VulkanBindingOffsets bindingOffsets;
                 bindingOffsets.setConstantBufferOffset(0);
                 nvrhi::BindingLayoutDesc bindingLayout;
@@ -1134,7 +1148,7 @@ namespace Engine::RHI
                         .addItem(nvrhi::BindingLayoutItem::Sampler(description.FixedSampledTexture->SamplerRegister));
                     fixedBindings = m_Device->createBindingLayout(fixedLayout);
                 }
-                if (!inputLayout || !bindings || (description.SampledTextureTable && !tableBindings)
+                if ((!attributes.empty() && !inputLayout) || !bindings || (description.SampledTextureTable && !tableBindings)
                     || (description.FixedSampledTexture && !fixedBindings))
                 {
                     Log::Error("Vulkan sampled-table native layout creation failed: input=", inputLayout ? "yes" : "no",

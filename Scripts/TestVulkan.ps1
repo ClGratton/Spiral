@@ -92,6 +92,7 @@ $RequiredMarkers = @(
     "VulkanRHICoreV1",
     "lifecycle=pass, cpuMapNone=pass, markers=executed-balanced",
     "VulkanRHIIndexedDrawV1 package=pass reflection=pass pipeline=pass constants=pass draw=pass submit=pass readback=pass interior=pass background=pass"
+    "RHIVertexStrideV1 backend=Vulkan attributes=4 stride=44 fetch=exact result=pass"
     "VulkanCompletionHistoryV1 issued="
     "VulkanSceneViewportRasterV1 snapshot=pass artifact=pass pipeline=pass raster=pass readback=pass geometry=pass background=pass resize=pass"
     "VulkanSceneOutputCaptureV1 outputGeneration="

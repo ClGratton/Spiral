@@ -836,6 +836,7 @@ namespace Engine
                 { "COLOR", 0, RHI::Format::R32G32B32Float, 0, offsetof(MeshArtifactVertex, Color) },
                 { "TEXCOORD", 0, RHI::Format::R32G32Float, 0, offsetof(MeshArtifactVertex, UV) }
             };
+            pipelineDesc.VertexStrideBytes = sizeof(MeshArtifactVertex);
             pipelineDesc.ConstantBufferBindings = {
                 { 0, 0, RHI::ShaderStage::AllGraphics }
             };

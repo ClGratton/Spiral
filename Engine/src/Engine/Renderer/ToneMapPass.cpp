@@ -144,6 +144,7 @@ namespace Engine
             { "COLOR", 0, RHI::Format::R32G32B32Float, 0, offsetof(FullscreenVertex, Color) },
             { "TEXCOORD", 0, RHI::Format::R32G32Float, 0, offsetof(FullscreenVertex, UV) }
         };
+        pipeline.VertexStrideBytes = sizeof(FullscreenVertex);
         pipeline.ConstantBufferBindings = {{ 0, 0, RHI::ShaderStage::AllGraphics }};
         pipeline.FixedSampledTexture = RHI::FixedSampledTextureBinding {};
         pipeline.RasterCullMode = RHI::CullMode::None;

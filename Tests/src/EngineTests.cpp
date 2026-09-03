@@ -7910,7 +7910,10 @@ float4 main(VertexInput input) : SV_Position
     class OwnershipTestBuffer final : public Engine::RHI::Buffer
     {
     public:
-        explicit OwnershipTestBuffer(Engine::u64 ownerId, Engine::RHI::ResourceState state = Engine::RHI::ResourceState::CopyDest) : m_OwnerId(ownerId), m_State(state) {}
+        explicit OwnershipTestBuffer(Engine::u64 ownerId,
+            Engine::RHI::ResourceState state = Engine::RHI::ResourceState::CopyDest,
+            Engine::RHI::BufferDescription description = {})
+            : m_Description(std::move(description)), m_OwnerId(ownerId), m_State(state) {}
         const Engine::RHI::BufferDescription& GetDescription() const override { return m_Description; }
         void* Map() override { return nullptr; }
         void Unmap() override {}
@@ -8030,15 +8033,20 @@ float4 main(VertexInput input) : SV_Position
     public:
         explicit SampledTextureTableTestCommandList(Engine::RHI::Device& device) : m_Device(device) {}
         Engine::RHI::QueueType GetQueueType() const override { return Engine::RHI::QueueType::Graphics; }
-        bool Begin() override { if (m_Recording) return false; m_Recording = true; m_Pipeline = nullptr; m_Table = nullptr; return true; }
-        bool End() override { if (!m_Recording) return false; m_Recording = false; return true; }
+        bool Begin() override { if (m_Recording) return false; m_Recording = true; m_Closed = false; m_Pipeline = nullptr; m_Table = nullptr; m_VertexBound = false; return true; }
+        bool End() override { if (!m_Recording) return false; m_Recording = false; m_Closed = true; return true; }
         void BeginDebugMarker(std::string_view) override {}
         void EndDebugMarker() override {}
         bool BindViewportOutputs(Engine::RHI::Texture&, Engine::RHI::Texture*) override { return false; }
         bool ClearViewportOutputs(const Engine::RHI::ViewportClear&) override { return false; }
         bool TransitionTexture(Engine::RHI::Texture&, Engine::RHI::ResourceState) override { return false; }
         bool TransitionBuffer(Engine::RHI::Buffer&, Engine::RHI::ResourceState) override { return false; }
-        void SetGraphicsPipeline(Engine::RHI::Pipeline& pipeline) override { m_Pipeline = m_Recording ? &pipeline : nullptr; m_Table = nullptr; }
+        void SetGraphicsPipeline(Engine::RHI::Pipeline& pipeline) override
+        {
+            m_Pipeline = m_Recording && Engine::RHI::IsValidVertexInputLayout(pipeline.GetDescription()) ? &pipeline : nullptr;
+            m_Table = nullptr;
+            m_VertexBound = m_Pipeline && m_Pipeline->GetDescription().VertexInputs.empty();
+        }
         void SetGraphicsConstantBuffer(Engine::u32, Engine::RHI::Buffer&) override {}
         bool BindGraphicsSampledTextureTable(Engine::RHI::TextureBindingTable& table) override
         {
@@ -8054,20 +8062,31 @@ float4 main(VertexInput input) : SV_Position
         }
         void SetViewport(const Engine::RHI::Viewport&) override {}
         void SetScissorRect(const Engine::RHI::ScissorRect&) override {}
-        void SetVertexBuffer(Engine::u32, Engine::RHI::Buffer&) override {}
+        void SetVertexBuffer(Engine::u32 slot, Engine::RHI::Buffer& buffer) override
+        {
+            m_VertexBound = m_Recording && m_Pipeline
+                && Engine::RHI::IsVertexBufferStrideCompatible(m_Pipeline->GetDescription(),
+                    slot, buffer.GetDescription().StrideBytes);
+            if (m_VertexBound) ++VertexBindingCount;
+        }
         void SetIndexBuffer(Engine::RHI::Buffer&, Engine::RHI::IndexFormat) override {}
         bool CopyBuffer(Engine::RHI::Buffer&, Engine::u64, Engine::RHI::Buffer&, Engine::u64, Engine::u64) override { return false; }
         void DrawIndexed(Engine::u32, Engine::u32, Engine::u32, int, Engine::u32) override
         {
-            if (m_Recording && m_Pipeline && (!m_Pipeline->GetDescription().SampledTextureTable || m_Table)) ++DrawCount;
+            if (m_Recording && m_Pipeline && m_VertexBound
+                && (!m_Pipeline->GetDescription().SampledTextureTable || m_Table)) ++DrawCount;
         }
         bool ResetQueryPool(Engine::RHI::QueryPool&, Engine::u32, Engine::u32) override { return false; }
         bool WriteTimestamp(Engine::RHI::QueryPool&, Engine::u32) override { return false; }
         bool ResolveQueryPool(Engine::RHI::QueryPool&, Engine::u32, Engine::u32) override { return false; }
         Engine::u32 DrawCount = 0;
+        Engine::u32 VertexBindingCount = 0;
+        bool Ready() const { return m_Closed; }
     private:
         Engine::RHI::Device& m_Device;
         bool m_Recording = false;
+        bool m_Closed = false;
+        bool m_VertexBound = false;
         Engine::RHI::Pipeline* m_Pipeline = nullptr;
         Engine::RHI::TextureBindingTable* m_Table = nullptr;
     };
@@ -8078,7 +8097,9 @@ float4 main(VertexInput input) : SV_Position
         using OwnershipTestDevice::OwnershipTestDevice;
         Engine::Scope<Engine::RHI::Pipeline> CreatePipeline(const Engine::RHI::PipelineDescription& description) override
         {
-            if (!Engine::RHI::IsValidSampledTextureTablePipeline(description)) return nullptr;
+            if (!Engine::RHI::IsValidVertexInputLayout(description)
+                || !Engine::RHI::IsValidSampledTextureTablePipeline(description)) return nullptr;
+            ++NativePipelineCreationCount;
             return Engine::CreateScope<SampledTextureTableTestPipeline>(description);
         }
         Engine::Scope<Engine::RHI::CommandList> CreateCommandList(Engine::RHI::QueueType queue, std::string_view) override
@@ -8086,6 +8107,15 @@ float4 main(VertexInput input) : SV_Position
             if (queue != Engine::RHI::QueueType::Graphics) return nullptr;
             return Engine::CreateScope<SampledTextureTableTestCommandList>(*this);
         }
+        Engine::RHI::CompletionToken Submit(Engine::RHI::CommandList& list) override
+        {
+            const auto* testList = dynamic_cast<const SampledTextureTableTestCommandList*>(&list);
+            if (!testList || !testList->Ready()) return {};
+            ++SubmissionCount;
+            return { 301, SubmissionCount };
+        }
+        Engine::u32 NativePipelineCreationCount = 0;
+        Engine::u32 SubmissionCount = 0;
     };
 
     bool TestRhiResourceOwnershipContract()
@@ -8536,6 +8566,146 @@ float4 main(VertexInput input) : SV_Position
                 "pipeline creation rejects invalid capacities and missing or mismatched reflected texture/sampler arrays")
             && Expect(bindingFlow,
                 "recording rejects absent-pipeline, foreign-table, and capacity-mismatched binds before exact declared-table consumption");
+    }
+
+    bool TestRhiSingleSlotVertexStrideContract()
+    {
+        using namespace Engine::RHI;
+
+        // Independent oracle: keep the width table and 64-bit end calculation
+        // local so this test cannot reproduce overflow through the RHI helper.
+        const auto independentlyValid = [](const PipelineDescription& description)
+        {
+            if (description.VertexInputs.empty()) return description.VertexStrideBytes == 0;
+            if (description.VertexStrideBytes == 0) return false;
+            for (const VertexInputAttribute& input : description.VertexInputs)
+            {
+                Engine::u32 width = 0;
+                if (input.AttributeFormat == Format::R32G32Float) width = 8;
+                else if (input.AttributeFormat == Format::R32G32B32Float) width = 12;
+                else return false;
+                const Engine::u64 end = static_cast<Engine::u64>(input.OffsetBytes) + width;
+                if (input.InputSlot != 0 || input.InputRate != VertexInputRate::PerVertex
+                    || input.InstanceStepRate != 0 || end > std::numeric_limits<Engine::u32>::max()
+                    || end > description.VertexStrideBytes) return false;
+            }
+            return true;
+        };
+
+        ShaderDescription vertexDescription;
+        vertexDescription.Stage = ShaderStage::Vertex;
+        ShaderDescription pixelDescription;
+        pixelDescription.Stage = ShaderStage::Pixel;
+        SampledTextureTableBinding tableDeclaration;
+        tableDeclaration.Capacity = 2;
+        pixelDescription.Reflection = {
+            { "ReadOnlyTextures", 't', 0, 1, ShaderStage::Pixel, "Texture2D", "float32x4", 2, 0, 1, 4 },
+            { "ReadOnlySamplers", 's', 0, 1, ShaderStage::Pixel, "SamplerState", "sampler", 2, 0, 0, 0 }
+        };
+        SampledTextureTableTestShader vertexShader(vertexDescription), pixelShader(pixelDescription);
+
+        PipelineDescription legacy;
+        legacy.VertexShader = &vertexShader;
+        legacy.PixelShader = &pixelShader;
+        legacy.VertexInputs = {
+            { "POSITION", 0, Format::R32G32B32Float, 0, 0 },
+            { "COLOR", 0, Format::R32G32B32Float, 0, 12 },
+            { "TEXCOORD", 0, Format::R32G32Float, 0, 24 }
+        };
+        legacy.VertexStrideBytes = 32;
+        legacy.ConstantBufferBindings = {{ 0, 0, ShaderStage::AllGraphics }};
+        legacy.SampledTextureTable = tableDeclaration;
+
+        PipelineDescription upcoming = legacy;
+        upcoming.VertexInputs.push_back({ "NORMAL", 0, Format::R32G32B32Float, 0, 32 });
+        upcoming.VertexStrideBytes = 44;
+        PipelineDescription padded = legacy;
+        padded.VertexStrideBytes = 48;
+        PipelineDescription empty = legacy;
+        empty.VertexInputs.clear();
+        empty.VertexStrideBytes = 0;
+
+        PipelineDescription zeroStride = legacy;
+        zeroStride.VertexStrideBytes = 0;
+        PipelineDescription undersized = upcoming;
+        undersized.VertexStrideBytes = 43;
+        PipelineDescription overflow = legacy;
+        overflow.VertexInputs = {{ "POSITION", 0, Format::R32G32B32Float, 0,
+            std::numeric_limits<Engine::u32>::max() - 7 }};
+        PipelineDescription unsupportedFormat = legacy;
+        unsupportedFormat.VertexInputs[0].AttributeFormat = Format::R8Unorm;
+        PipelineDescription unsupportedSlot = legacy;
+        unsupportedSlot.VertexInputs[0].InputSlot = 1;
+        PipelineDescription unsupportedRate = legacy;
+        unsupportedRate.VertexInputs[0].InputRate = VertexInputRate::PerInstance;
+        unsupportedRate.VertexInputs[0].InstanceStepRate = 1;
+        PipelineDescription nonzeroEmptyStride = empty;
+        nonzeroEmptyStride.VertexStrideBytes = 32;
+
+        const std::array<const PipelineDescription*, 11> cases {{
+            &legacy, &upcoming, &padded, &empty, &zeroStride, &undersized, &overflow,
+            &unsupportedFormat, &unsupportedSlot, &unsupportedRate, &nonzeroEmptyStride
+        }};
+        const bool oracleAgreement = std::all_of(cases.begin(), cases.end(), [&](const PipelineDescription* description)
+        {
+            return IsValidVertexInputLayout(*description) == independentlyValid(*description);
+        });
+
+        SampledTextureTableTestDevice device(301);
+        Engine::Scope<Pipeline> legacyPipeline = device.CreatePipeline(legacy);
+        Engine::Scope<Pipeline> upcomingPipeline = device.CreatePipeline(upcoming);
+        Engine::Scope<Pipeline> paddedPipeline = device.CreatePipeline(padded);
+        Engine::Scope<Pipeline> emptyPipeline = device.CreatePipeline(empty);
+        const bool invalidRejected = !device.CreatePipeline(zeroStride) && !device.CreatePipeline(undersized)
+            && !device.CreatePipeline(overflow) && !device.CreatePipeline(unsupportedFormat)
+            && !device.CreatePipeline(unsupportedSlot) && !device.CreatePipeline(unsupportedRate)
+            && !device.CreatePipeline(nonzeroEmptyStride);
+        const bool validationWasTransactional = invalidRejected
+            && device.NativePipelineCreationCount == 4 && device.SubmissionCount == 0;
+
+        TextureDescription sampled;
+        sampled.Usage = TextureUsage::ShaderResource;
+        const Engine::Ref<Texture> error = Engine::CreateRef<OwnershipTestTexture>(
+            301, ResourceState::ShaderResource, sampled);
+        Engine::Scope<TextureBindingTable> table = TextureBindingTable::Create(
+            device, { 2, error, TextureSampler::LinearClamp });
+        BufferDescription wrongVertexDescription;
+        wrongVertexDescription.StrideBytes = 44;
+        wrongVertexDescription.Usage = BufferUsage::Vertex;
+        BufferDescription matchingVertexDescription = wrongVertexDescription;
+        matchingVertexDescription.StrideBytes = 32;
+        OwnershipTestBuffer wrongVertex(301, ResourceState::ShaderResource, wrongVertexDescription);
+        OwnershipTestBuffer matchingVertex(301, ResourceState::ShaderResource, matchingVertexDescription);
+        Engine::Scope<CommandList> list = device.CreateCommandList(QueueType::Graphics, "vertex-stride-contract");
+        auto* recording = dynamic_cast<SampledTextureTableTestCommandList*>(list.get());
+        bool recordingFlow = false;
+        if (list && recording && legacyPipeline && table && list->Begin())
+        {
+            list->SetGraphicsPipeline(*legacyPipeline);
+            const bool tableBound = list->BindGraphicsSampledTextureTable(*table);
+            list->SetVertexBuffer(0, wrongVertex);
+            list->DrawIndexed(3, 1, 0, 0, 0);
+            list->SetVertexBuffer(0, matchingVertex);
+            list->DrawIndexed(3, 1, 0, 0, 0);
+            recordingFlow = tableBound && list->End();
+        }
+        const CompletionToken submission = recordingFlow ? device.Submit(*list) : CompletionToken {};
+        const bool lifecycle = recording && recording->VertexBindingCount == 1 && recording->DrawCount == 1
+            && submission.IsValid() && device.SubmissionCount == 1;
+
+        return Expect(oracleAgreement && independentlyValid(legacy) && independentlyValid(upcoming)
+                && independentlyValid(padded) && independentlyValid(empty),
+                "an independent width oracle accepts legacy 32-byte, upcoming 44-byte, padded, and empty zero-stride layouts")
+            && Expect(!independentlyValid(zeroStride) && !independentlyValid(undersized)
+                    && !independentlyValid(overflow) && !independentlyValid(unsupportedFormat)
+                    && !independentlyValid(unsupportedSlot) && !independentlyValid(unsupportedRate)
+                    && !independentlyValid(nonzeroEmptyStride),
+                "zero undersized overflow multi-slot instanced unknown-format and nonzero-empty layouts reject")
+            && Expect(legacyPipeline && upcomingPipeline && paddedPipeline && emptyPipeline
+                    && validationWasTransactional,
+                "invalid layouts fail before native pipeline creation recording or submission mutation")
+            && Expect(lifecycle,
+                "a mismatched vertex buffer stride records no binding or draw before the matching legacy stride completes one submission");
     }
 
     class BufferOwnershipTestBuffer final : public Engine::RHI::Buffer
@@ -8990,6 +9160,7 @@ int main(int argc, char** argv)
         FAST_TEST("Material texture binding resolves semantic slots samplers and fallbacks", TestMaterialTextureBindingResolution),
         INTEGRATION_TEST("Material sampler declarations migrate and validate transactionally", TestMaterialSamplerSchemaMigration),
         FAST_TEST("RHI read-only texture upload validates the full-subresource contract", TestReadOnlyTextureUploadContract),
+        FAST_TEST("RHI single-slot vertex stride validates layout and binding transactionally", TestRhiSingleSlotVertexStrideContract),
         FAST_TEST("RHI sampled texture-table binding validates pipeline space offsets and exact ownership", TestSampledTextureTableBindingContract),
         FAST_TEST("RHI buffer ownership lifecycle publishes only accepted exact-token pairs", TestRhiBufferOwnershipLifecycleContract),
         FAST_TEST("RHI buffer ownership recovery and adapter seams preserve fallback semantics", TestRhiBufferOwnershipRecoveryAndAdapterSeams),

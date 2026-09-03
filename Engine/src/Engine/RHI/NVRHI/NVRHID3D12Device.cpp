@@ -986,6 +986,7 @@ namespace Engine::RHI
                 m_OwnershipOperations.clear();
                 m_TextureOwnershipOperations.clear();
                 m_ActivePipeline = nullptr;
+                m_VertexBufferBindingValid = false;
                 m_RetainedSrvHeaps.clear();
                 m_RetainedSamplerHeaps.clear();
                 m_SrvHeap.Reset();
@@ -1335,6 +1336,7 @@ namespace Engine::RHI
                 m_CommandList->SetPipelineState(nativePipeline->GetPipelineState());
                 m_CommandList->IASetPrimitiveTopology(ConvertPrimitiveTopology(pipeline.GetDescription().Topology));
                 m_ActivePipeline = nativePipeline;
+                m_VertexBufferBindingValid = pipeline.GetDescription().VertexInputs.empty();
                 m_SrvHeap.Reset();
                 m_SamplerHeap.Reset();
                 m_BoundFixedTexture = nullptr;
@@ -1527,8 +1529,13 @@ namespace Engine::RHI
                     return;
 
                 ID3D12Resource* resource = GetD3D12Resource(buffer);
-                if (!resource)
+                if (!resource || !m_ActivePipeline
+                    || !IsVertexBufferStrideCompatible(m_ActivePipeline->GetDescription(),
+                        slot, buffer.GetDescription().StrideBytes))
+                {
+                    m_VertexBufferBindingValid = false;
                     return;
+                }
 
                 const BufferDescription& description = buffer.GetDescription();
                 D3D12_VERTEX_BUFFER_VIEW view {};
@@ -1536,6 +1543,7 @@ namespace Engine::RHI
                 view.SizeInBytes = static_cast<UINT>(description.SizeBytes);
                 view.StrideInBytes = description.StrideBytes;
                 m_CommandList->IASetVertexBuffers(slot, 1, &view);
+                m_VertexBufferBindingValid = true;
             }
 
             void SetIndexBuffer(Buffer& buffer, IndexFormat format) override
@@ -1624,6 +1632,7 @@ namespace Engine::RHI
             void DrawIndexed(u32 indexCount, u32 instanceCount, u32 startIndex, int baseVertex, u32 startInstance) override
             {
                 if (m_CommandList && m_ActivePipeline
+                    && m_VertexBufferBindingValid
                     && (!m_ActivePipeline->GetDescription().SampledTextureTable
                         || (m_TableBindingActive && m_SrvHeap && m_SamplerHeap))
                     && (!m_ActivePipeline->GetDescription().FixedSampledTexture
@@ -1785,6 +1794,7 @@ namespace Engine::RHI
             ID3D12Device* m_Device = nullptr;
             Device* m_OwnerDevice = nullptr;
             NVRHID3D12Pipeline* m_ActivePipeline = nullptr;
+            bool m_VertexBufferBindingValid = false;
             ComPtr<ID3D12DescriptorHeap> m_SrvHeap;
             ComPtr<ID3D12DescriptorHeap> m_SamplerHeap;
             std::vector<ComPtr<ID3D12DescriptorHeap>> m_RetainedSrvHeaps;
@@ -1989,6 +1999,7 @@ namespace Engine::RHI
 
             Scope<Pipeline> CreatePipeline(const PipelineDescription& description) override
             {
+                if (!IsValidVertexInputLayout(description)) return nullptr;
                 if (description.SampledTextureTable && !IsValidSampledTextureTablePipeline(description)) return nullptr;
                 if (description.FixedSampledTexture && !IsValidFixedSampledTexturePipeline(description)) return nullptr;
                 Scope<NVRHID3D12Pipeline> pipeline = CreateScope<NVRHID3D12Pipeline>(description);

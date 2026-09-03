@@ -19,9 +19,9 @@ Forbidden:
 | Module | Owns | Must not own |
 | --- | --- | --- |
 | `Core` | Application lifecycle, layers, windows, logging, assertions, arguments, utilities. | Renderer, scene, assets, scripting, editor behavior. |
-| `RHI` | Backend-neutral GPU contracts and backend adapters, including device-lifetime completion-token query/dependency authority and backend-private bounded native completion history. | Scene/material policy, editor UI, or backend-native synchronization handles in public token contracts. |
+| `RHI` | Backend-neutral GPU contracts and backend adapters, including the explicit single-slot vertex-layout/stride contract, device-lifetime completion-token query/dependency authority, and backend-private bounded native completion history. | Scene/material policy, editor UI, backend-native vertex-layout types, or backend-native synchronization handles in public contracts. |
 | `RenderGraph` | Pass/resource dependency, lifetime, state, scheduling, and transient-resource policy. | Scene traversal or backend presentation. |
-| `Renderer` | High-level render passes, presentation bridges, shaders, scene rendering, and render diagnostics. | Gameplay entity ownership or asset import. |
+| `Renderer` | High-level render passes, presentation bridges, shaders, scene rendering, render diagnostics, and exact pipeline strides derived from renderer-owned vertex structures. | Gameplay entity ownership, asset import, or backend-native layout policy. |
 | `Scene` | Entities/components, authoring facade, serialization, cameras, and backend-neutral immutable render extraction. | Editor panels or backend-native GPU objects. |
 | `Assets` | Asset identity, import, cooked metadata, dependencies, reimport, and streaming inputs. | Rendering or editor widget policy. |
 | `Jobs` | Worker scheduling and task dependencies. | Subsystem-specific business logic. |
