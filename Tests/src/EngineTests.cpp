@@ -5911,6 +5911,79 @@ float4 main(VertexInput input) : SV_Position
                 "each independently terminal Vulkan submission receives one collection request");
     }
 
+    bool TestVulkanCompletionHistoryCompactionContract()
+    {
+        using namespace Engine::RHI;
+
+        // Fast deterministic contract (no native backend): an independent status
+        // table forces later terminal observations around an incomplete prefix hole.
+        // The oracle is the explicit eight-result sequence below, not the history's
+        // storage representation. This targets accidental out-of-order erasure,
+        // loss of Failed identity, and growth by one successful node per submission.
+        constexpr Engine::u64 deviceId = 71;
+        std::unordered_map<Engine::u64, CompletionStatus> live;
+        for (Engine::u64 submissionId = 1; submissionId <= 8; ++submissionId)
+            live.emplace(submissionId, CompletionStatus::Incomplete);
+        VulkanCompletionHistory history;
+        const bool liveIdentityPreserved = history.IsIssued({ deviceId, 8 }, deviceId, live.contains(8));
+        const auto compact = [&]()
+        {
+            return history.CompactTerminalPrefix(
+                [&live](Engine::u64 submissionId)
+                {
+                    const auto found = live.find(submissionId);
+                    return found == live.end() ? CompletionStatus::Invalid : found->second;
+                },
+                [&live](Engine::u64 submissionId) { live.erase(submissionId); });
+        };
+
+        live[4] = CompletionStatus::Complete;
+        live[3] = CompletionStatus::Failed;
+        live[2] = CompletionStatus::Complete;
+        const bool outOfOrderBlocked = compact() == 0
+            && history.Snapshot(8, live.size(), 5).Compacted == 0 && live.size() == 8;
+
+        live[1] = CompletionStatus::Complete;
+        const bool firstPrefixCompacted = compact() == 4 && live.size() == 4;
+        constexpr CompletionStatus expectedPrefix[] = {
+            CompletionStatus::Complete, CompletionStatus::Complete,
+            CompletionStatus::Failed, CompletionStatus::Complete
+        };
+        bool exactFirstPrefix = true;
+        for (Engine::u64 submissionId = 1; submissionId <= 4; ++submissionId)
+            exactFirstPrefix = exactFirstPrefix
+                && history.QueryCompacted(submissionId) == expectedPrefix[submissionId - 1];
+
+        live[8] = CompletionStatus::Failed;
+        live[6] = CompletionStatus::Complete;
+        const bool secondHoleBlocked = compact() == 0 && live.size() == 4;
+        live[5] = CompletionStatus::Failed;
+        const bool secondPrefixCompacted = compact() == 2 && live.size() == 2;
+        live[7] = CompletionStatus::Complete;
+        const bool finalPrefixCompacted = compact() == 2 && live.empty();
+        const VulkanCompletionHistorySnapshot final = history.Snapshot(8, live.size(), 0);
+
+        const bool issuedIdentityPreserved = liveIdentityPreserved
+            && history.IsIssued({ deviceId, 1 }, deviceId, false)
+            && history.IsIssued({ deviceId, 8 }, deviceId, false)
+            && !history.IsIssued({ deviceId, 9 }, deviceId, false)
+            && !history.IsIssued({ deviceId + 1, 1 }, deviceId, false);
+        const bool exactFinalResults = history.QueryCompacted(5) == CompletionStatus::Failed
+            && history.QueryCompacted(6) == CompletionStatus::Complete
+            && history.QueryCompacted(7) == CompletionStatus::Complete
+            && history.QueryCompacted(8) == CompletionStatus::Failed;
+
+        return Expect(outOfOrderBlocked && secondHoleBlocked,
+                   "Vulkan completion history does not compact across an incomplete prefix hole")
+            && Expect(firstPrefixCompacted && secondPrefixCompacted && finalPrefixCompacted,
+                "Vulkan completion history compacts each newly contiguous terminal prefix")
+            && Expect(exactFirstPrefix && exactFinalResults && issuedIdentityPreserved,
+                "compacted Vulkan tokens preserve exact device-lifetime Complete and Failed results")
+            && Expect(final.Issued == 8 && final.Compacted == 8 && final.Live == 0
+                    && final.Failed == 3 && final.Incomplete == 0,
+                "successful Vulkan terminal history is scalar while failure holes remain explicit and live history is bounded");
+    }
+
     class QueryLifecycleTestCommandList final : public Engine::RHI::CommandList
     {
     public:
@@ -8903,6 +8976,7 @@ int main(int argc, char** argv)
         FAST_TEST("RHI buffer transition contract rejects incompatible states", TestRhiBufferTransitionContract),
         FAST_TEST("RHI completion token contract rejects unissued identities", TestRhiCompletionTokenContract),
         FAST_TEST("Vulkan completion collection runs once per terminal transition", TestVulkanCompletionGarbageCollectionTransition),
+        FAST_TEST("Vulkan completion history compacts terminal prefixes around failure holes", TestVulkanCompletionHistoryCompactionContract),
         FAST_TEST("RHI timestamp query lifecycle preserves generation-safe nonblocking results", TestTimestampQueryPoolLifecycleContract),
         FAST_TEST("RHI timestamp query transactions retain native state through exact-token retirement", TestTimestampQueryTransactionRetirementContract),
         FAST_TEST("RHI timestamp query retirement serializes concurrent pass reservations", TestTimestampQueryRetirementQueueConcurrentReservations),

@@ -1288,9 +1288,13 @@ namespace Engine::RHI
                 auto* list = dynamic_cast<VulkanCommandList*>(&commandList);
                 if (!m_Device || !m_CompletionDevice || !list || !list->Ready() || !list->ValidateExpectedStates())
                     return {};
+                // Retire only a contiguous terminal prefix before dependency
+                // validation. Compacted dependencies remain issued and already
+                // satisfied; live cross-queue dependencies retain native IDs.
+                CompactTerminalCompletionPrefix();
                 const SubmissionDependencyError dependencyError = ValidateSubmissionDependencies(
                     m_CompletionDeviceId, m_NextCompletionSubmissionId, dependencies,
-                    [this](const CompletionToken& dependency) { return FindCompletionEntry(dependency) != m_CompletionEntries.end(); });
+                    [this](const CompletionToken& dependency) { return IsIssuedCompletionToken(dependency); });
                 if (dependencyError != SubmissionDependencyError::None)
                     return {};
                 if (std::any_of(list->GetOwnershipOperations().begin(), list->GetOwnershipOperations().end(), [&](const auto& operation) { return !m_BufferOwnership.ValidateSubmission(operation, dependencies); }))
@@ -1331,6 +1335,10 @@ namespace Engine::RHI
             }
             CompletionStatus QueryCompletion(const CompletionToken& token) override
             {
+                if (!token.IsValid() || token.DeviceId != m_CompletionDeviceId)
+                    return CompletionStatus::Invalid;
+                if (m_CompletionHistory.IsCompacted(token.SubmissionId))
+                    return m_CompletionHistory.QueryCompacted(token.SubmissionId);
                 const auto found = FindCompletionEntry(token);
                 if (found == m_CompletionEntries.end())
                     return CompletionStatus::Invalid;
@@ -1338,37 +1346,26 @@ namespace Engine::RHI
                     return found->second.TerminalStatus;
                 if (!m_CompletionDevice)
                 {
-                    found->second.TerminalStatus = CompletionStatus::Failed;
-                    return found->second.TerminalStatus;
+                    FailTimestampQueries(found->second, token);
+                    return PublishTerminalCompletion(found->second, CompletionStatus::Failed);
                 }
                 if (m_CompletionDevice->queueGetCompletedInstance(found->second.Queue) < found->second.NativeSubmissionId)
                     return CompletionStatus::Incomplete;
                 const CompletionStatus queryStatus = FinalizeTimestampQueries(found->second, token);
-                if (queryStatus != CompletionStatus::Incomplete)
-                {
-                    const bool collectNativeGarbage = ShouldCollectVulkanNativeGarbage(
-                        found->second.TerminalStatus, queryStatus);
-                    found->second.TerminalStatus = queryStatus;
-                    if (collectNativeGarbage && m_Device)
-                    {
-                        // NVRHI retains command-buffer referenced resources until this
-                        // explicit collection point. This is nonblocking: the queue
-                        // already reported this exact submission as complete.
-                        m_Device->runGarbageCollection();
-                        if (m_NativeGarbageCollectionCount != std::numeric_limits<u64>::max())
-                        {
-                            ++m_NativeGarbageCollectionCount;
-                            if (m_NativeGarbageCollectionCount == 8)
-                                Log::Info("VulkanCompletedSubmissionCollectionV1 collections=8 result=pass");
-                        }
-                    }
-                }
-                return queryStatus;
+                return queryStatus == CompletionStatus::Incomplete
+                    ? queryStatus : PublishTerminalCompletion(found->second, queryStatus);
             }
             bool WaitForCompletion(const CompletionToken& token, u32 timeoutMilliseconds) override
             {
+                if (timeoutMilliseconds == 0)
+                    return false;
+                const CompletionStatus status = QueryCompletion(token);
+                if (status == CompletionStatus::Complete)
+                    return true;
+                if (status != CompletionStatus::Incomplete || !m_CompletionDevice)
+                    return false;
                 const auto found = FindCompletionEntry(token);
-                if (found == m_CompletionEntries.end() || timeoutMilliseconds == 0 || !m_CompletionDevice)
+                if (found == m_CompletionEntries.end())
                     return false;
                 const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMilliseconds);
                 do
@@ -1384,7 +1381,15 @@ namespace Engine::RHI
                 const CompletionToken token = Submit(commandList);
                 return token.IsValid() && WaitForCompletion(token, std::numeric_limits<u32>::max());
             }
-            void WaitIdle() override { if (m_Device) { m_Device->waitForIdle(); m_Device->runGarbageCollection(); } }
+            void WaitIdle() override
+            {
+                if (m_Device)
+                {
+                    m_Device->waitForIdle();
+                    CompactTerminalCompletionPrefix();
+                    m_Device->runGarbageCollection();
+                }
+            }
         private:
             DeviceDescription m_Description;
             DeviceCapabilities m_Capabilities;
@@ -1399,6 +1404,7 @@ namespace Engine::RHI
             double m_TimestampPeriodNanoseconds = 0.0;
             u64 m_NextCompletionSubmissionId = 1;
             u64 m_NativeGarbageCollectionCount = 0;
+            u64 m_NextCompletionHistoryDiagnostic = 8;
             struct CompletionEntry
             {
                 nvrhi::CommandQueue Queue = nvrhi::CommandQueue::Graphics;
@@ -1407,6 +1413,7 @@ namespace Engine::RHI
                 CompletionStatus TerminalStatus = CompletionStatus::Incomplete;
             };
             std::unordered_map<u64, CompletionEntry> m_CompletionEntries;
+            VulkanCompletionHistory m_CompletionHistory;
             BufferOwnershipTracker m_BufferOwnership;
             TextureOwnershipTracker m_TextureOwnership;
 
@@ -1568,6 +1575,75 @@ namespace Engine::RHI
                 const bool retired = m_TimestampRetirements.Retire(token, terminal);
                 entry.TimestampStates.clear();
                 return retired && terminal == CompletionStatus::Complete ? CompletionStatus::Complete : CompletionStatus::Failed;
+            }
+
+            void FailTimestampQueries(CompletionEntry& entry, const CompletionToken& token)
+            {
+                for (const NativeQueryState& nativeState : entry.TimestampStates)
+                    (void)m_TimestampRetirements.Complete(nativeState, token, CompletionStatus::Failed);
+                (void)m_TimestampRetirements.Retire(token, CompletionStatus::Failed);
+                entry.TimestampStates.clear();
+            }
+
+            CompletionStatus PublishTerminalCompletion(CompletionEntry& entry, CompletionStatus status)
+            {
+                const bool collectNativeGarbage = ShouldCollectVulkanNativeGarbage(entry.TerminalStatus, status);
+                entry.TerminalStatus = status;
+                if (collectNativeGarbage && m_Device)
+                {
+                    // Timestamp state is finalized before this terminal publication.
+                    // NVRHI collection is nonblocking because the exact queue
+                    // submission was already observed complete (or failed closed).
+                    m_Device->runGarbageCollection();
+                    if (m_NativeGarbageCollectionCount != std::numeric_limits<u64>::max())
+                    {
+                        ++m_NativeGarbageCollectionCount;
+                        if (m_NativeGarbageCollectionCount == 8)
+                            Log::Info("VulkanCompletedSubmissionCollectionV1 collections=8 result=pass");
+                    }
+                }
+                return entry.TerminalStatus;
+            }
+
+            bool IsIssuedCompletionToken(const CompletionToken& token) const
+            {
+                return m_CompletionHistory.IsIssued(token, m_CompletionDeviceId,
+                    FindCompletionEntry(token) != m_CompletionEntries.end());
+            }
+
+            void CompactTerminalCompletionPrefix()
+            {
+                const size_t compacted = m_CompletionHistory.CompactTerminalPrefix(
+                    [this](u64 submissionId)
+                    {
+                        return QueryCompletion({ m_CompletionDeviceId, submissionId });
+                    },
+                    [this](u64 submissionId)
+                    {
+                        m_CompletionEntries.erase(submissionId);
+                    });
+                if (compacted == 0)
+                    return;
+
+                size_t incomplete = 0;
+                for (const auto& [submissionId, entry] : m_CompletionEntries)
+                {
+                    (void)submissionId;
+                    if (entry.TerminalStatus == CompletionStatus::Incomplete)
+                        ++incomplete;
+                }
+                const VulkanCompletionHistorySnapshot snapshot = m_CompletionHistory.Snapshot(
+                    m_NextCompletionSubmissionId - 1, m_CompletionEntries.size(), incomplete);
+                if (snapshot.Compacted >= m_NextCompletionHistoryDiagnostic)
+                {
+                    Log::Info("VulkanCompletionHistoryV1 issued=", snapshot.Issued,
+                        " compacted=", snapshot.Compacted, " live=", snapshot.Live,
+                        " failed=", snapshot.Failed, " incomplete=", snapshot.Incomplete,
+                        " result=pass");
+                    while (m_NextCompletionHistoryDiagnostic <= snapshot.Compacted
+                        && m_NextCompletionHistoryDiagnostic <= std::numeric_limits<u64>::max() / 2)
+                        m_NextCompletionHistoryDiagnostic *= 2;
+                }
             }
 
             std::unordered_map<u64, CompletionEntry>::iterator FindCompletionEntry(const CompletionToken& token)

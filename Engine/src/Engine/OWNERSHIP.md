@@ -19,7 +19,7 @@ Forbidden:
 | Module | Owns | Must not own |
 | --- | --- | --- |
 | `Core` | Application lifecycle, layers, windows, logging, assertions, arguments, utilities. | Renderer, scene, assets, scripting, editor behavior. |
-| `RHI` | Backend-neutral GPU contracts and backend adapters. | Scene/material policy or editor UI. |
+| `RHI` | Backend-neutral GPU contracts and backend adapters, including device-lifetime completion-token query/dependency authority and backend-private bounded native completion history. | Scene/material policy, editor UI, or backend-native synchronization handles in public token contracts. |
 | `RenderGraph` | Pass/resource dependency, lifetime, state, scheduling, and transient-resource policy. | Scene traversal or backend presentation. |
 | `Renderer` | High-level render passes, presentation bridges, shaders, scene rendering, and render diagnostics. | Gameplay entity ownership or asset import. |
 | `Scene` | Entities/components, authoring facade, serialization, cameras, and backend-neutral immutable render extraction. | Editor panels or backend-native GPU objects. |

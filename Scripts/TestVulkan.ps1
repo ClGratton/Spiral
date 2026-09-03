@@ -92,6 +92,7 @@ $RequiredMarkers = @(
     "VulkanRHICoreV1",
     "lifecycle=pass, cpuMapNone=pass, markers=executed-balanced",
     "VulkanRHIIndexedDrawV1 package=pass reflection=pass pipeline=pass constants=pass draw=pass submit=pass readback=pass interior=pass background=pass"
+    "VulkanCompletionHistoryV1 issued="
     "VulkanSceneViewportRasterV1 snapshot=pass artifact=pass pipeline=pass raster=pass readback=pass geometry=pass background=pass resize=pass"
     "VulkanSceneOutputCaptureV1 outputGeneration="
     "VulkanSceneOutputHandoffV1 producer=pass"
@@ -128,6 +129,19 @@ foreach ($Marker in $RequiredMarkers) {
     if (!$JoinedLog.Contains($Marker)) {
         throw "Vulkan render smoke did not emit required marker: $Marker"
     }
+}
+$CompletionHistoryMatch = [regex]::Match($JoinedLog, 'VulkanCompletionHistoryV1 issued=(\d+) compacted=(\d+) live=(\d+) failed=(\d+) incomplete=(\d+) result=pass')
+if (!$CompletionHistoryMatch.Success) {
+    throw "Vulkan render smoke did not publish VulkanCompletionHistoryV1 diagnostics."
+}
+$HistoryIssued = [uint64]$CompletionHistoryMatch.Groups[1].Value
+$HistoryCompacted = [uint64]$CompletionHistoryMatch.Groups[2].Value
+$HistoryLive = [uint64]$CompletionHistoryMatch.Groups[3].Value
+$HistoryFailed = [uint64]$CompletionHistoryMatch.Groups[4].Value
+$HistoryIncomplete = [uint64]$CompletionHistoryMatch.Groups[5].Value
+if ($HistoryCompacted -lt 8 -or $HistoryIssued -ne ($HistoryCompacted + $HistoryLive) -or
+    $HistoryLive -gt 8 -or $HistoryFailed -gt $HistoryCompacted -or $HistoryIncomplete -gt $HistoryLive) {
+    throw "Vulkan completion history marker did not prove bounded internally consistent history."
 }
 $CompletionGenerationMatches = [regex]::Matches($JoinedLog, 'completionSwapchainGeneration=(\d+)')
 if ($CompletionGenerationMatches.Count -eq 0 -or

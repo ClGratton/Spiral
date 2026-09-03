@@ -113,6 +113,7 @@ REQUIRED_MARKERS=(
     "SceneMaterialTextureIntegrationV1 backend=Vulkan material=immutable texture=sRGB-base-color sampler=declared table=bound mips=implicit fallbacks=semantic retained=exact-raster-token result=pass"
     "ProductionRenderGraphRetirementV1 backend=Vulkan"
     "VulkanCompletedSubmissionCollectionV1 collections=8 result=pass"
+    "VulkanCompletionHistoryV1 issued="
     "RenderGraphTimestampScopesV1 backend=Vulkan"
     "RendererGpuTimingV1 backend=NVRHI Vulkan"
     "RHITextureUploadSmokeV2 backend=Vulkan, mips=4, bc5Bytes=pass, bc7Bytes=pass, bc7SrgbBytes=pass, finalState=ShaderResource, result=pass"
@@ -189,6 +190,21 @@ for ((ATTEMPT = 1; ATTEMPT <= ITERATIONS; ++ATTEMPT)); do
             exit 1
         fi
     done
+    HISTORY_LINE=$(grep -Em1 'VulkanCompletionHistoryV1 issued=[0-9]+ compacted=[0-9]+ live=[0-9]+ failed=[0-9]+ incomplete=[0-9]+ result=pass' "$LOG_FILE" || true)
+    if [[ "$HISTORY_LINE" =~ issued=([0-9]+)\ compacted=([0-9]+)\ live=([0-9]+)\ failed=([0-9]+)\ incomplete=([0-9]+) ]]; then
+        HISTORY_ISSUED="${BASH_REMATCH[1]}"
+        HISTORY_COMPACTED="${BASH_REMATCH[2]}"
+        HISTORY_LIVE="${BASH_REMATCH[3]}"
+        HISTORY_FAILED="${BASH_REMATCH[4]}"
+        HISTORY_INCOMPLETE="${BASH_REMATCH[5]}"
+        if (( HISTORY_COMPACTED < 8 || HISTORY_ISSUED != HISTORY_COMPACTED + HISTORY_LIVE || HISTORY_LIVE > 8 || HISTORY_FAILED > HISTORY_COMPACTED || HISTORY_INCOMPLETE > HISTORY_LIVE )); then
+            echo "Vulkan completion history marker did not prove bounded internally consistent history on attempt $ATTEMPT/$ITERATIONS." >&2
+            exit 1
+        fi
+    else
+        echo "Vulkan render smoke did not publish VulkanCompletionHistoryV1 diagnostics on attempt $ATTEMPT/$ITERATIONS." >&2
+        exit 1
+    fi
     TIMESTAMP_SCOPE_COUNT=$(grep -Ec 'RenderGraphTimestampScopesV1 backend=Vulkan frame=[0-9]+ scopes=4 raw=ready cpuWaitBetween=no result=pass' "$LOG_FILE" || true)
     if [[ "$TIMESTAMP_SCOPE_COUNT" -lt 2 ]]; then
         echo "Vulkan render smoke did not prove completion-gated raw timestamp scopes across consecutive frames on attempt $ATTEMPT/$ITERATIONS." >&2
