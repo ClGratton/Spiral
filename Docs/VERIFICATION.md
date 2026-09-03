@@ -71,6 +71,22 @@ On 2026-09-02 the complete local RTX 3080 Ti Vulkan run emitted `RHITextureUploa
 
 ## Test Selection And Generated Failures
 
+### Vulkan completed-command-list collection
+
+The deterministic transition oracle is:
+
+```bash
+./bin/Debug-linux-x86_64-gmake/EngineTests/EngineTests --test "Vulkan completion collection runs once per terminal transition"
+```
+
+It proves invalid and incomplete observations do not collect, the first `Complete` or `Failed` observation requests exactly one collection, and cached terminal observations do not repeat it. Native evidence remains bounded to the existing harness:
+
+```bash
+bash Scripts/TestVulkan.sh Debug gmake --skip-build
+```
+
+It requires the one-shot `VulkanCompletedSubmissionCollectionV1 collections=8 result=pass` aggregate marker together with two ready four-scope RenderGraph timestamp records. The marker proves eight first-terminal collection requests occurred on that device; the timestamp records independently prove two completed four-pass graph frames. Together they do not attribute any individual collection to a specific graph context. The 2026-09-03 RTX 3080 Ti acceptance also kept a guarded 21-second actual Debug Editor run between 1,098 and 1,183 MiB after a 1,077 MiB baseline, returned to 1,068 MiB after exit, and completed a debugger-owned RMB/W/A/S/D/mouse/release/F sequence plus normal close near 1.2 GiB after 25,640 frames. This bounded observation does not prove an exact driver-level reclaimed-byte quantity, a long soak, other devices, or other Vulkan implementations.
+
 Classify new tests as Fast contract, Integration/headless, Headed/platform, or Stress/fuzz/soak using [TESTING_STRATEGY.md](TESTING_STRATEGY.md). `EngineTests --tier fast` selects only deterministic in-memory contract tests under a 60-second execution budget. `EngineTests --tier integration` is the complete ordered registry, including filesystem and shader/toolchain cases, under a 300-second execution budget; it is also the compatibility default when no selector is supplied. `--list`, exact `--test`, substring `--filter`, positive `--budget-ms`, and schema-1 `--report-json` provide discovery, focused reruns, explicit overrides, per-test/total durations, and machine-readable evidence. Zero matches and invalid/conflicting selectors fail.
 
 After building, exercise the runner contract itself with:

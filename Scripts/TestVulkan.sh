@@ -103,6 +103,7 @@ REQUIRED_MARKERS=(
     "SceneMeshGpuIntegrationV1 backend=Vulkan snapshot=pass resolver=pass cache=pass indexFormat=UInt32 baseVertex=0"
     "SceneMaterialTextureIntegrationV1 backend=Vulkan material=immutable texture=sRGB-base-color sampler=declared table=bound mips=implicit fallbacks=semantic retained=exact-raster-token result=pass"
     "ProductionRenderGraphRetirementV1 backend=Vulkan"
+    "VulkanCompletedSubmissionCollectionV1 collections=8 result=pass"
     "RenderGraphTimestampScopesV1 backend=Vulkan"
     "RendererGpuTimingV1 backend=NVRHI Vulkan"
     "RHITextureUploadSmokeV2 backend=Vulkan, mips=4, bc5Bytes=pass, bc7Bytes=pass, bc7SrgbBytes=pass, finalState=ShaderResource, result=pass"

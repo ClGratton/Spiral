@@ -1,5 +1,6 @@
 #include "Engine/RHI/NVRHI/NVRHIVulkanDevice.h"
 
+#include "Engine/RHI/NVRHI/VulkanCompletionGarbageCollection.h"
 #include "Engine/RHI/NVRHI/VulkanDispatch.h"
 
 #include "Engine/Core/Log.h"
@@ -1344,7 +1345,24 @@ namespace Engine::RHI
                     return CompletionStatus::Incomplete;
                 const CompletionStatus queryStatus = FinalizeTimestampQueries(found->second, token);
                 if (queryStatus != CompletionStatus::Incomplete)
+                {
+                    const bool collectNativeGarbage = ShouldCollectVulkanNativeGarbage(
+                        found->second.TerminalStatus, queryStatus);
                     found->second.TerminalStatus = queryStatus;
+                    if (collectNativeGarbage && m_Device)
+                    {
+                        // NVRHI retains command-buffer referenced resources until this
+                        // explicit collection point. This is nonblocking: the queue
+                        // already reported this exact submission as complete.
+                        m_Device->runGarbageCollection();
+                        if (m_NativeGarbageCollectionCount != std::numeric_limits<u64>::max())
+                        {
+                            ++m_NativeGarbageCollectionCount;
+                            if (m_NativeGarbageCollectionCount == 8)
+                                Log::Info("VulkanCompletedSubmissionCollectionV1 collections=8 result=pass");
+                        }
+                    }
+                }
                 return queryStatus;
             }
             bool WaitForCompletion(const CompletionToken& token, u32 timeoutMilliseconds) override
@@ -1364,10 +1382,7 @@ namespace Engine::RHI
             bool SubmitAndWait(CommandList& commandList) override
             {
                 const CompletionToken token = Submit(commandList);
-                const bool completed = token.IsValid() && WaitForCompletion(token, std::numeric_limits<u32>::max());
-                if (m_Device)
-                    m_Device->runGarbageCollection();
-                return completed;
+                return token.IsValid() && WaitForCompletion(token, std::numeric_limits<u32>::max());
             }
             void WaitIdle() override { if (m_Device) { m_Device->waitForIdle(); m_Device->runGarbageCollection(); } }
         private:
@@ -1383,6 +1398,7 @@ namespace Engine::RHI
             u32 m_GraphicsTimestampValidBits = 0;
             double m_TimestampPeriodNanoseconds = 0.0;
             u64 m_NextCompletionSubmissionId = 1;
+            u64 m_NativeGarbageCollectionCount = 0;
             struct CompletionEntry
             {
                 nvrhi::CommandQueue Queue = nvrhi::CommandQueue::Graphics;

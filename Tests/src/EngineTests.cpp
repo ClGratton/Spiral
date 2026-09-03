@@ -10,6 +10,7 @@
 #include "Engine/RHI/TextureOwnership.h"
 #include "Engine/RHI/TextureBindingTable.h"
 #include "Engine/RHI/NVRHI/NVRHID3D12Device.h"
+#include "Engine/RHI/NVRHI/VulkanCompletionGarbageCollection.h"
 #include "Engine/RHI/NVRHI/VulkanQueueAdmission.h"
 #include "Engine/Renderer/CapabilityDiagnostics.h"
 #include "Engine/Renderer/ClusteredLightGrid.h"
@@ -5283,6 +5284,30 @@ float4 main(VertexInput input) : SV_Position
             && Expect(issued.IsValid(), "completion token preserves opaque nonzero device and submission identities");
     }
 
+    bool TestVulkanCompletionGarbageCollectionTransition()
+    {
+        using namespace Engine::RHI;
+
+        return Expect(!ShouldCollectVulkanNativeGarbage(CompletionStatus::Invalid, CompletionStatus::Invalid),
+                   "invalid Vulkan completion observations do not request native garbage collection")
+            && Expect(!ShouldCollectVulkanNativeGarbage(CompletionStatus::Incomplete, CompletionStatus::Incomplete),
+                "incomplete Vulkan completion observations do not request native garbage collection")
+            && Expect(ShouldCollectVulkanNativeGarbage(CompletionStatus::Incomplete, CompletionStatus::Complete),
+                "the first completed Vulkan submission requests native garbage collection")
+            && Expect(!ShouldCollectVulkanNativeGarbage(CompletionStatus::Complete, CompletionStatus::Complete),
+                "a cached completed Vulkan submission does not request native garbage collection twice")
+            && Expect(!ShouldCollectVulkanNativeGarbage(CompletionStatus::Complete, CompletionStatus::Failed),
+                "a terminal Vulkan submission cannot request native garbage collection on a different cached terminal status")
+            && Expect(ShouldCollectVulkanNativeGarbage(CompletionStatus::Incomplete, CompletionStatus::Failed),
+                "the first failed Vulkan completion after timestamp finalization requests native garbage collection")
+            && Expect(!ShouldCollectVulkanNativeGarbage(CompletionStatus::Failed, CompletionStatus::Failed),
+                "a cached failed Vulkan submission does not request native garbage collection twice")
+            && Expect(!ShouldCollectVulkanNativeGarbage(CompletionStatus::Invalid, CompletionStatus::Complete),
+                "an invalid Vulkan completion record cannot request native garbage collection")
+            && Expect(ShouldCollectVulkanNativeGarbage(CompletionStatus::Incomplete, CompletionStatus::Complete),
+                "each independently terminal Vulkan submission receives one collection request");
+    }
+
     class QueryLifecycleTestCommandList final : public Engine::RHI::CommandList
     {
     public:
@@ -8265,6 +8290,7 @@ int main(int argc, char** argv)
         FAST_TEST("Render graph timestamp scopes retire exact frame and pass identity", TestRenderGraphTimestampScopesRetireWithExactFrameIdentity),
         FAST_TEST("RHI buffer transition contract rejects incompatible states", TestRhiBufferTransitionContract),
         FAST_TEST("RHI completion token contract rejects unissued identities", TestRhiCompletionTokenContract),
+        FAST_TEST("Vulkan completion collection runs once per terminal transition", TestVulkanCompletionGarbageCollectionTransition),
         FAST_TEST("RHI timestamp query lifecycle preserves generation-safe nonblocking results", TestTimestampQueryPoolLifecycleContract),
         FAST_TEST("RHI timestamp query transactions retain native state through exact-token retirement", TestTimestampQueryTransactionRetirementContract),
         FAST_TEST("RHI timestamp query retirement serializes concurrent pass reservations", TestTimestampQueryRetirementQueueConcurrentReservations),
