@@ -80,7 +80,7 @@ This pass read every workspace-authored Markdown file and compared the roadmap c
 
 ### Intentional Future Design Work
 
-The following areas are roadmapped but are not yet detailed enough to implement without a later design pass: shipping package/cooker format, Player packaging and clean-machine runtime dependencies, networking/replication, script/plugin/asset trust and sandboxing, save/API migration, marketplace packages, and contribution governance. They are not current Phase 3 blockers, but future agents must not infer designs from the phase titles alone.
+The following areas are roadmapped but are not yet detailed enough to implement without a later design pass: shipping package/cooker format, Player packaging and clean-machine runtime dependencies, networking/replication, general script/plugin trust and sandboxing, save/API migration, marketplace publishing/package policy, and contribution governance. They are not current Phase 3 blockers, but future agents must not infer designs from the phase titles alone. The narrower pre-demo Fab acquisition and local-package import boundary is separately accepted in [FAB_ASSET_INTEGRATION.md](FAB_ASSET_INTEGRATION.md); it does not settle marketplace publishing or general package policy.
 
 ## 2026-07-12 Technical Roadmap Coverage Pass
 

@@ -28,5 +28,6 @@ Recommended reading order:
 20. [MISSING_RESEARCH_AUDIT_2026.md](MISSING_RESEARCH_AUDIT_2026.md)
 21. [RESEARCH_DECISIONS.md](RESEARCH_DECISIONS.md)
 22. [KTX2_BASIS_TEXTURE_IMPORT_PLAN.md](KTX2_BASIS_TEXTURE_IMPORT_PLAN.md)
+23. [FAB_ASSET_INTEGRATION.md](FAB_ASSET_INTEGRATION.md)
 
 The root `README.md` is kept short and build-focused. The complete project-wide Markdown catalog and authority rules live in [../README.md](../README.md). `PLAN.md` is the only execution-order authority; implementation/prototype orders inside architecture and research files are explanatory unless promoted into the roadmap.
