@@ -118,6 +118,15 @@ namespace Engine
         MandatoryVulkanFence
     };
 
+    enum class RendererInputEventKind
+    {
+        KeyPressed,
+        KeyReleased,
+        MouseMoved,
+        MouseButtonPressed,
+        MouseButtonReleased
+    };
+
     struct RendererFrameLifecycleEvent
     {
         RendererFrameLifecyclePhase Phase = RendererFrameLifecyclePhase::FrameStart;
@@ -132,6 +141,14 @@ namespace Engine
         u64 FrameIndex = 0;
         double MillisecondsFromFrameStart = 0.0;
         u64 QpcTick = 0;
+    };
+
+    struct RendererInputEventTiming
+    {
+        RendererInputEventKind Kind = RendererInputEventKind::KeyPressed;
+        int Code = 0;
+        bool Repeated = false;
+        double MillisecondsFromFrameStart = 0.0;
     };
 
     struct RendererFrameWaitTiming
@@ -178,6 +195,7 @@ namespace Engine
         std::optional<double> InputToSimulationMilliseconds;
         std::optional<double> InputToRenderSubmissionMilliseconds;
         std::optional<double> InputToPresentMilliseconds;
+        std::vector<RendererInputEventTiming> InputEvents;
         std::vector<RendererFrameLifecycleEvent> Lifecycle;
         std::vector<RendererFrameWaitTiming> Waits;
         bool HasGpuCompletionObservation = false;
@@ -399,6 +417,8 @@ namespace Engine
         static void SetPresentationPolicy(PresentationPolicy policy);
         static PresentationPolicy GetPresentationPolicy();
         static RendererPresentationPolicyDiagnostics GetPresentationPolicyDiagnostics();
+        static bool RecordInputEvent(u64 applicationFrameIndex, RendererInputEventKind kind,
+            int code, bool repeated = false);
         static std::optional<RendererInputSample> RecordInputSample(u64 applicationFrameIndex);
         static bool ScheduleOpticalResponseMarker(const OpticalResponseMarker& marker);
         static std::optional<OpticalResponseMarker> GetOpticalResponseMarker(u64 applicationFrameIndex);

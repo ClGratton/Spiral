@@ -1,17 +1,30 @@
 #pragma once
 
 #include "Engine/Assets/TextureArtifact.h"
+#include "Engine/Assets/MaterialAsset.h"
 #include "Engine/Core/Base.h"
 #include "Engine/RHI/TextureBindingTable.h"
 #include "Engine/Renderer/TextureGpuResourceCache.h"
 #include "Engine/Renderer/TextureTablePublication.h"
 
+#include <array>
 #include <vector>
 
 namespace Engine
 {
-    // Composes the immutable artifact catalog, exact-device upload cache, and
-    // sampled-table lifetime boundary. Material/shader consumption is T5.
+    constexpr size_t kMaterialTextureBindingCount = 6;
+
+    struct MaterialTextureBindingSet
+    {
+        MaterialAsset Material;
+        std::array<RHI::TextureBindingHandle, kMaterialTextureBindingCount> Handles {};
+        u32 DeclaredMask = 0;
+        u32 ErrorMask = 0;
+        u64 CatalogGeneration = 0;
+    };
+
+    // Composes the immutable material/artifact catalog, exact-device upload
+    // cache, sampled table, and exact GPU-retirement lifetime boundary.
     class TextureRuntimePublication final
     {
     public:
@@ -23,6 +36,11 @@ namespace Engine
         // resolves to the declared error resource and never another asset.
         RHI::TextureBindingHandle Resolve(AssetHandle asset,
             RHI::TextureSampler sampler, std::string& outError);
+        // Resolves one immutable material generation into table handles. Empty
+        // slots remain on shader semantic defaults; declared invalid slots use
+        // the error handle without sampling semantically mismatched content.
+        bool ResolveMaterialTextures(AssetHandle materialAsset,
+            MaterialTextureBindingSet& outBindings, std::string& outError);
 
         // The caller aggregates all handles read by one accepted submission.
         // Error handles and duplicates are ignored because the table owns its
@@ -31,6 +49,7 @@ namespace Engine
             const std::vector<RHI::TextureBindingHandle>& handles,
             std::string& outError);
         bool Retire(const RHI::CompletionToken& token, std::string& outError);
+        bool HasRetainedFrame(const RHI::CompletionToken& token) const;
 
         RHI::TextureBindingHandle GetErrorHandle() const;
         RHI::TextureBindingTable* GetBindingTable() const;

@@ -3,21 +3,41 @@
 #include "Engine/Renderer/Renderer.h"
 
 #include <algorithm>
+#include <charconv>
 #include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
 #include <memory>
 #include <sstream>
+#include <stdexcept>
+#include <system_error>
 
 namespace Engine
 {
+    inline constexpr size_t kDefaultFramePacingBenchmarkSampleCount = 512;
+    inline constexpr size_t kMaximumFramePacingBenchmarkSampleCount = 600'000;
+
+    inline size_t ResolveFramePacingBenchmarkSampleCount(std::string_view value)
+    {
+        if (value.empty())
+            return kDefaultFramePacingBenchmarkSampleCount;
+        size_t sampleCount = 0;
+        const std::from_chars_result parsed = std::from_chars(value.data(), value.data() + value.size(), sampleCount);
+        if (parsed.ec != std::errc() || parsed.ptr != value.data() + value.size()
+            || sampleCount < 2 || sampleCount > kMaximumFramePacingBenchmarkSampleCount)
+        {
+            throw std::invalid_argument("frame pacing benchmark sample count must be an integer in the inclusive 2-600000 range");
+        }
+        return sampleCount;
+    }
+
     // This artifact intentionally records engine observations only. Unknown
     // presentation/display/input fields stay unknown until an external runner
     // supplies measured evidence; they are never inferred from Present.
     struct FramePacingBenchmarkCondition
     {
-        static constexpr u32 SchemaVersion = 7;
+        static constexpr u32 SchemaVersion = 8;
         std::string RunId = "unavailable";
         u32 ProcessId = 0;
         std::string ExecutablePath = "unavailable";
@@ -240,6 +260,26 @@ namespace Engine
             switch (kind) { case RendererFrameWaitKind::IntentionalPacing: return "IntentionalPacing"; case RendererFrameWaitKind::MandatoryDxgiFrameLatency: return "MandatoryDxgiFrameLatency"; case RendererFrameWaitKind::MandatoryVulkanAcquire: return "MandatoryVulkanAcquire"; case RendererFrameWaitKind::MandatoryVulkanFence: return "MandatoryVulkanFence"; } return "Unknown";
         }
 
+        static const char* InputEventName(RendererInputEventKind kind)
+        {
+            switch (kind) { case RendererInputEventKind::KeyPressed: return "KeyPressed"; case RendererInputEventKind::KeyReleased: return "KeyReleased"; case RendererInputEventKind::MouseMoved: return "MouseMoved"; case RendererInputEventKind::MouseButtonPressed: return "MouseButtonPressed"; case RendererInputEventKind::MouseButtonReleased: return "MouseButtonReleased"; } return "Unknown";
+        }
+
+        static std::string InputEventsJson(const RendererFrameTiming& timing)
+        {
+            std::ostringstream out;
+            out << std::setprecision(12) << '[';
+            for (size_t index = 0; index < timing.InputEvents.size(); ++index)
+            {
+                if (index) out << ',';
+                const RendererInputEventTiming& event = timing.InputEvents[index];
+                out << "{\"kind\":\"" << InputEventName(event.Kind) << "\",\"code\":" << event.Code
+                    << ",\"repeat\":" << (event.Repeated ? "true" : "false")
+                    << ",\"ms\":" << event.MillisecondsFromFrameStart << '}';
+            }
+            return out.str() + ']';
+        }
+
         static double Overshoot(const RendererFrameWaitTiming& wait)
         {
             return std::max(0.0, wait.ActualReleaseMilliseconds - wait.RequestedDeadlineMilliseconds);
@@ -331,7 +371,7 @@ namespace Engine
         static std::string Csv(const FramePacingBenchmarkSnapshot& snapshot)
         {
             std::ostringstream out; out << std::setprecision(12);
-            out << "schema,runId,processId,executablePath,qpcFrequency,backend,adapter,adapterStableId,targetFps,effectiveTargetFps,warmupFrames,projectMode,runtimeOverride,mode,candidate,behavior,requestedPresentationPolicy,presentationCapability,presentationMode,presentationFallback,presentationGeneration,sync,vrr,tearing,frame,startToStartMs,cpuTotalMs,cpuActiveMs,intentionalWaitMs,gpuCompleteFrame,cadencePreviousFrame,limitingSource,limitingSourceFrame,inputLatencySourceFrame,inputToSimulationMs,inputToSubmitMs,inputToPresentMs,lifecycleJson,waitsJson,display,replacementDrop,inputLatency,gpuTimingStatus,gpuDurationMs,gpuHeadroom\n";
+            out << "schema,runId,processId,executablePath,qpcFrequency,backend,adapter,adapterStableId,targetFps,effectiveTargetFps,warmupFrames,projectMode,runtimeOverride,mode,candidate,behavior,requestedPresentationPolicy,presentationCapability,presentationMode,presentationFallback,presentationGeneration,sync,vrr,tearing,frame,startToStartMs,cpuTotalMs,cpuActiveMs,intentionalWaitMs,gpuCompleteFrame,cadencePreviousFrame,limitingSource,limitingSourceFrame,inputLatencySourceFrame,inputToSimulationMs,inputToSubmitMs,inputToPresentMs,inputEventsJson,lifecycleJson,waitsJson,display,replacementDrop,inputLatency,gpuTimingStatus,gpuDurationMs,gpuHeadroom\n";
             for (const RendererFrameTiming& f : snapshot.Frames)
             {
                 std::ostringstream lifecycle, waits;
@@ -359,7 +399,7 @@ namespace Engine
                     << ',' << OptionalValue(f.InputToSimulationMilliseconds)
                     << ',' << OptionalValue(f.InputToRenderSubmissionMilliseconds)
                     << ',' << OptionalValue(f.InputToPresentMilliseconds)
-                    << ',' << CsvEscape(lifecycle.str()) << ',' << CsvEscape(waits.str()) << ",unavailable,unavailable,unavailable,"
+                    << ',' << CsvEscape(InputEventsJson(f)) << ',' << CsvEscape(lifecycle.str()) << ',' << CsvEscape(waits.str()) << ",unavailable,unavailable,unavailable,"
                     << ToString(f.GpuStatus) << ',' << GpuDurationValue(f) << ',' << GpuHeadroomValue(f) << '\n';
             }
             return out.str();
@@ -376,7 +416,7 @@ namespace Engine
                 << (s.Condition.Policy.SmoothTargetFramesPerSecond ? std::to_string(*s.Condition.Policy.SmoothTargetFramesPerSecond) : "null")
                 << ",\"requestedPresentationPolicy\":\"" << Escape(s.Condition.RequestedPresentationPolicy) << "\",\"presentationCapability\":\"" << Escape(s.Condition.PresentationCapability) << "\",\"presentationMode\":\"" << Escape(s.Condition.PresentationMode) << "\",\"presentationFallback\":\"" << Escape(s.Condition.PresentationFallback) << "\",\"presentationGeneration\":" << s.Condition.PresentationGeneration << ",\"sync\":\"" << Escape(s.Condition.SyncMode) << "\",\"vrr\":\"" << Escape(s.Condition.VrrMode) << "\",\"tearing\":\"" << Escape(s.Condition.TearingMode)
                 << "\"},\n  \"summary\":{\"samples\":" << s.Summary.SampleCount << ",\"p50Ms\":" << s.Summary.StartToStartP50Milliseconds << ",\"p95Ms\":" << s.Summary.StartToStartP95Milliseconds << ",\"p99Ms\":" << s.Summary.StartToStartP99Milliseconds << ",\"cpuActiveP50Ms\":" << s.Summary.CpuActiveP50Milliseconds << ",\"cpuActiveP95Ms\":" << s.Summary.CpuActiveP95Milliseconds << ",\"cpuActiveP99Ms\":" << s.Summary.CpuActiveP99Milliseconds << ",\"intentionalWaitP50Ms\":" << s.Summary.IntentionalWaitP50Milliseconds << ",\"intentionalWaitP95Ms\":" << s.Summary.IntentionalWaitP95Milliseconds << ",\"intentionalWaitP99Ms\":" << s.Summary.IntentionalWaitP99Milliseconds << ",\"onePercentLowFps\":" << s.Summary.OnePercentLowFramesPerSecond << ",\"pointOnePercentLowFps\":" << s.Summary.PointOnePercentLowFramesPerSecond << ",\"deadlineMisses\":" << s.Summary.DeadlineMissCount << ",\"deadlineOvershootP99Ms\":" << s.Summary.DeadlineOvershootP99Milliseconds << "},\n  \"frames\":[\n";
-            for (size_t i = 0; i < s.Frames.size(); ++i) { const auto& f = s.Frames[i]; const std::string gpuDuration = GpuDurationValue(f), gpuHeadroom = GpuHeadroomValue(f); out << "    {\"frame\":" << f.FrameIndex << ",\"startToStartMs\":" << f.StartToStartMilliseconds << ",\"cpuTotalMs\":" << f.CpuMilliseconds << ",\"cpuActiveMs\":" << f.CpuActiveMilliseconds << ",\"intentionalWaitMs\":" << f.IntentionalPacingMilliseconds << ",\"cadencePreviousFrame\":" << (f.CadencePreviousFrameIndex ? std::to_string(*f.CadencePreviousFrameIndex) : "null") << ",\"limitingSource\":\"" << ToString(f.EffectiveLimitingSource) << "\",\"limitingSourceFrame\":" << (f.EffectiveLimitingSourceFrameIndex ? std::to_string(*f.EffectiveLimitingSourceFrameIndex) : "null") << ",\"inputLatencySourceFrame\":" << (f.InputLatencySourceFrameIndex ? std::to_string(*f.InputLatencySourceFrameIndex) : "null") << ",\"inputToSimulationMs\":" << (f.InputToSimulationMilliseconds ? std::to_string(*f.InputToSimulationMilliseconds) : "null") << ",\"inputToSubmitMs\":" << (f.InputToRenderSubmissionMilliseconds ? std::to_string(*f.InputToRenderSubmissionMilliseconds) : "null") << ",\"inputToPresentMs\":" << (f.InputToPresentMilliseconds ? std::to_string(*f.InputToPresentMilliseconds) : "null") << ",\"inputToDisplay\":\"unavailable\",\"clickToPhoton\":\"unavailable\",\"lifecycle\":["; for(size_t e=0;e<f.Lifecycle.size();++e){if(e)out<<',';out<<"{\"phase\":\""<<PhaseName(f.Lifecycle[e].Phase)<<"\",\"ms\":"<<f.Lifecycle[e].MillisecondsFromFrameStart<<",\"qpc\":"<<f.Lifecycle[e].QpcTick<<'}';} out<<"],\"waits\":["; for(size_t w=0;w<f.Waits.size();++w){if(w)out<<',';const auto& x=f.Waits[w];out<<"{\"kind\":\""<<WaitName(x.Kind)<<"\",\"applied\":"<<(x.Applied?"true":"false")<<",\"ms\":"<<x.Milliseconds<<",\"candidate\":\""<<ToString(x.Candidate)<<"\",\"deadlineMissed\":"<<(x.DeadlineMissed?"true":"false")<<",\"requestedDeadlineMs\":"<<x.RequestedDeadlineMilliseconds<<",\"actualReleaseMs\":"<<x.ActualReleaseMilliseconds<<",\"deadlineWait\":"<<DeadlineWaitJson(x)<<'}';} out<<"],\"gpuCompletionFrame\":"<<(f.HasGpuCompletionObservation?std::to_string(f.LastGpuCompletionObservedFrameIndex):"null")<<",\"display\":\"unavailable\",\"replacementDrop\":\"unavailable\",\"inputLatency\":\"unavailable\",\"gpuTimingStatus\":\""<<ToString(f.GpuStatus)<<"\",\"gpuDurationMs\":"<<(gpuDuration == "unavailable" ? "\"unavailable\"" : gpuDuration)<<",\"gpuHeadroom\":"<<(gpuHeadroom == "unavailable" ? "\"unavailable\"" : gpuHeadroom)<<'}' << (i + 1 == s.Frames.size() ? "\n" : ",\n"); }
+            for (size_t i = 0; i < s.Frames.size(); ++i) { const auto& f = s.Frames[i]; const std::string gpuDuration = GpuDurationValue(f), gpuHeadroom = GpuHeadroomValue(f); out << "    {\"frame\":" << f.FrameIndex << ",\"startToStartMs\":" << f.StartToStartMilliseconds << ",\"cpuTotalMs\":" << f.CpuMilliseconds << ",\"cpuActiveMs\":" << f.CpuActiveMilliseconds << ",\"intentionalWaitMs\":" << f.IntentionalPacingMilliseconds << ",\"cadencePreviousFrame\":" << (f.CadencePreviousFrameIndex ? std::to_string(*f.CadencePreviousFrameIndex) : "null") << ",\"limitingSource\":\"" << ToString(f.EffectiveLimitingSource) << "\",\"limitingSourceFrame\":" << (f.EffectiveLimitingSourceFrameIndex ? std::to_string(*f.EffectiveLimitingSourceFrameIndex) : "null") << ",\"inputLatencySourceFrame\":" << (f.InputLatencySourceFrameIndex ? std::to_string(*f.InputLatencySourceFrameIndex) : "null") << ",\"inputToSimulationMs\":" << (f.InputToSimulationMilliseconds ? std::to_string(*f.InputToSimulationMilliseconds) : "null") << ",\"inputToSubmitMs\":" << (f.InputToRenderSubmissionMilliseconds ? std::to_string(*f.InputToRenderSubmissionMilliseconds) : "null") << ",\"inputToPresentMs\":" << (f.InputToPresentMilliseconds ? std::to_string(*f.InputToPresentMilliseconds) : "null") << ",\"inputEvents\":" << InputEventsJson(f) << ",\"inputToDisplay\":\"unavailable\",\"clickToPhoton\":\"unavailable\",\"lifecycle\":["; for(size_t e=0;e<f.Lifecycle.size();++e){if(e)out<<',';out<<"{\"phase\":\""<<PhaseName(f.Lifecycle[e].Phase)<<"\",\"ms\":"<<f.Lifecycle[e].MillisecondsFromFrameStart<<",\"qpc\":"<<f.Lifecycle[e].QpcTick<<'}';} out<<"],\"waits\":["; for(size_t w=0;w<f.Waits.size();++w){if(w)out<<',';const auto& x=f.Waits[w];out<<"{\"kind\":\""<<WaitName(x.Kind)<<"\",\"applied\":"<<(x.Applied?"true":"false")<<",\"ms\":"<<x.Milliseconds<<",\"candidate\":\""<<ToString(x.Candidate)<<"\",\"deadlineMissed\":"<<(x.DeadlineMissed?"true":"false")<<",\"requestedDeadlineMs\":"<<x.RequestedDeadlineMilliseconds<<",\"actualReleaseMs\":"<<x.ActualReleaseMilliseconds<<",\"deadlineWait\":"<<DeadlineWaitJson(x)<<'}';} out<<"],\"gpuCompletionFrame\":"<<(f.HasGpuCompletionObservation?std::to_string(f.LastGpuCompletionObservedFrameIndex):"null")<<",\"display\":\"unavailable\",\"replacementDrop\":\"unavailable\",\"inputLatency\":\"unavailable\",\"gpuTimingStatus\":\""<<ToString(f.GpuStatus)<<"\",\"gpuDurationMs\":"<<(gpuDuration == "unavailable" ? "\"unavailable\"" : gpuDuration)<<",\"gpuHeadroom\":"<<(gpuHeadroom == "unavailable" ? "\"unavailable\"" : gpuHeadroom)<<'}' << (i + 1 == s.Frames.size() ? "\n" : ",\n"); }
             return out.str() + "  ]\n}\n";
         }
 

@@ -124,6 +124,7 @@ $RequiredMarkers = @(
     "SceneRasterPreparationV1 mode=parallel task=Frame.PrepareSceneRaster worker="
     "SceneViewportRenderGraphV1 backend=D3D12 passes=3 labels=clear,raster,output-handoff execution=pass reference=direct comparator=exact-byte-pass"
     "SceneMeshGpuIntegrationV1 backend=D3D12 snapshot=pass resolver=pass cache=pass indexFormat=UInt32 baseVertex=0"
+    "SceneMaterialTextureIntegrationV1 backend=D3D12 material=immutable texture=sRGB-base-color sampler=declared table=bound mips=implicit fallbacks=semantic retained=exact-raster-token result=pass"
     "ProductionRenderGraphRetirementV1 backend=D3D12"
     "RenderGraphTimestampScopesV1 backend=D3D12"
     "RendererGpuTimingV1 backend=NVRHI D3D12"

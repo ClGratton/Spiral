@@ -1169,6 +1169,12 @@ namespace
                 { Engine::RendererFrameLifecyclePhase::PresentEnd, 2.5, 350 }
             };
             timing.InputSample = Engine::RendererInputSample { index, 0.125, 112 };
+            if (index == 1000)
+            {
+                timing.InputEvents.push_back({ Engine::RendererInputEventKind::KeyReleased, 'W', false, 0.1 });
+                timing.InputEvents.push_back({ Engine::RendererInputEventKind::MouseMoved, 0, false, 0.15 });
+                timing.InputEvents.push_back({ Engine::RendererInputEventKind::MouseButtonReleased, 1, false, 0.2 });
+            }
             const bool inputIntervalsApplied = Engine::RefreshRendererInputLatencyIntervals(timing);
             if (!inputIntervalsApplied)
                 return Expect(false, "benchmark fixture publishes same-frame input stage intervals");
@@ -1234,7 +1240,12 @@ namespace
         const Engine::RendererFrameTiming* nonpositiveTargetFrame = findFrame(997);
         const Engine::RendererFrameTiming* pendingFrame = findFrame(996);
         const Engine::RendererFrameTiming* unavailableFrame = findFrame(995);
-        return Expect(continuous && readyApplied && disjointApplied && nonpositiveTargetApplied && pendingApplied && unavailableApplied
+        bool invalidSampleCountRejected = false;
+        try { (void)Engine::ResolveFramePacingBenchmarkSampleCount("1"); }
+        catch (const std::invalid_argument&) { invalidSampleCountRejected = true; }
+        const bool sampleCountParsing = Engine::ResolveFramePacingBenchmarkSampleCount("") == Engine::kDefaultFramePacingBenchmarkSampleCount
+            && Engine::ResolveFramePacingBenchmarkSampleCount("12000") == 12000 && invalidSampleCountRejected;
+        return Expect(sampleCountParsing && continuous && readyApplied && disjointApplied && nonpositiveTargetApplied && pendingApplied && unavailableApplied
                 && sourceAmended && sourceEvictedRejected && evictedRejected && mismatchedRejected && snapshot->Frames.back().StartToStartMilliseconds == 10000.0
                 && snapshot->Summary.SampleCount == 1000 && snapshot->Summary.StartToStartP99Milliseconds == 10.0
                 && snapshot->Summary.CpuActiveP50Milliseconds == 1.0 && snapshot->Summary.CpuActiveP95Milliseconds == 2.0
@@ -1256,7 +1267,7 @@ namespace
                     && unavailableFrame && unavailableFrame->GpuStatus == Engine::RendererTimingStatus::Unavailable && !unavailableFrame->GpuHeadroomMilliseconds,
                 "benchmark GPU amendment derives exact-frame target headroom and preserves unavailable status and target cases")
             && Expect(wrote && csv.find("\"adapter\"\"quoted\tvalue\"") != std::string::npos
-                && csv.find("cadencePreviousFrame,limitingSource,limitingSourceFrame,inputLatencySourceFrame,inputToSimulationMs,inputToSubmitMs,inputToPresentMs") != std::string::npos
+                && csv.find("cadencePreviousFrame,limitingSource,limitingSourceFrame,inputLatencySourceFrame,inputToSimulationMs,inputToSubmitMs,inputToPresentMs,inputEventsJson") != std::string::npos
                 && csv.find("gpuTimingStatus,gpuDurationMs,gpuHeadroom") != std::string::npos
                 && csv.find("{\"\"phase\"\":\"\"InputSample\"\",\"\"ms\"\":0.125,\"\"qpc\"\":112}") != std::string::npos
                 && csv.find("{\"\"phase\"\":\"\"PresentEnd\"\",\"\"ms\"\":2.5,\"\"qpc\"\":350}") != std::string::npos
@@ -1269,12 +1280,13 @@ namespace
                 && json.find("\"kind\":\"MandatoryDxgiFrameLatency\",\"applied\":true,\"ms\":3.5") != std::string::npos
                 && json.find("\"deadlineWait\":{\"primitive\":\"WindowsHighResolutionWaitableTimer\",\"fellBack\":false,\"fallbackReason\":\"None\",\"timerWaitMs\":1.5,\"portableWaitMs\":0,\"activeTailBudgetMs\":0.5,\"activeTailMs\":0.5,\"processCpuTimeMs\":0.5,\"wallTimeMs\":2}") != std::string::npos
                 && json.find("\"gpuCompletionFrame\":998") != std::string::npos
-                && json.find("\"schema\":7") != std::string::npos
+                && json.find("\"schema\":8") != std::string::npos
                 && json.find("\"limitingSource\":\"GpuWork\",\"limitingSourceFrame\":999") != std::string::npos
-                && json.find("\"inputLatencySourceFrame\":1000,\"inputToSimulationMs\":0.125000,\"inputToSubmitMs\":1.375000,\"inputToPresentMs\":2.375000,\"inputToDisplay\":\"unavailable\",\"clickToPhoton\":\"unavailable\"") != std::string::npos
+                && json.find("\"inputLatencySourceFrame\":1000,\"inputToSimulationMs\":0.125000,\"inputToSubmitMs\":1.375000,\"inputToPresentMs\":2.375000") != std::string::npos
+                && json.find("\"inputEvents\":[{\"kind\":\"KeyReleased\",\"code\":87,\"repeat\":false,\"ms\":0.1},{\"kind\":\"MouseMoved\",\"code\":0,\"repeat\":false,\"ms\":0.15},{\"kind\":\"MouseButtonReleased\",\"code\":1,\"repeat\":false,\"ms\":0.2}]") != std::string::npos
                 && json.find("\"gpuTimingStatus\":\"Ready\",\"gpuDurationMs\":4.000000,\"gpuHeadroom\":4.333333") != std::string::npos
                 && json.find("\"gpuTimingStatus\":\"Disjoint\",\"gpuDurationMs\":\"unavailable\",\"gpuHeadroom\":\"unavailable\"") != std::string::npos,
-                "frame pacing benchmark exports stable schema-7 CSV/JSON engine-owned presentation and exact-frame timing records");
+                "frame pacing benchmark exports stable schema-8 CSV/JSON engine-owned presentation, input-event, and exact-frame timing records");
     }
 
     bool TestFramePacingAttachmentReadinessAndReleaseValidation()
@@ -2266,6 +2278,188 @@ namespace
                 "invalid and error-only runtime use never aliases another asset or fabricates a retained token")
             && Expect(released,
                 "device-idle release clears cache table payload and accepted-frame ownership before device destruction");
+    }
+
+    bool TestMaterialTextureBindingResolution()
+    {
+        using namespace Engine;
+        using namespace Engine::RHI;
+
+        AssetRegistry registry;
+        std::string error;
+        AssetHandle baseColor = kInvalidAssetHandle;
+        const bool defaultStored = EnsureDefaultSceneTextureArtifact(registry, baseColor, error);
+        const std::filesystem::path defaultPath = GetCookedTextureArtifactPath(
+            baseColor, TextureTargetProfile::RGBAFallback);
+        TextureArtifact defaultArtifact;
+        const bool defaultLoaded = defaultStored
+            && LoadTextureArtifact(defaultPath, defaultArtifact, error);
+
+        std::vector<std::filesystem::path> artifactPaths;
+        artifactPaths.push_back(defaultPath);
+        bool artifactsStored = defaultLoaded;
+        const auto addTexture = [&](std::string_view path, TextureRole role,
+            TextureColorSpace colorSpace, std::array<u8, 4> pixel)
+        {
+            const std::string normalized = AssetRegistry::NormalizeSourcePath(path);
+            const AssetHandle handle = registry.RegisterAsset(AssetType::Texture,
+                normalized, std::filesystem::path(normalized).stem().string());
+            TextureArtifact artifact;
+            artifact.Asset = handle;
+            artifact.SourcePath = normalized;
+            artifact.Role = role;
+            artifact.ColorSpace = colorSpace;
+            artifact.TargetProfile = TextureTargetProfile::RGBAFallback;
+            artifact.CookedFormat = colorSpace == TextureColorSpace::Srgb
+                ? TextureCookedFormat::R8G8B8A8Srgb
+                : TextureCookedFormat::R8G8B8A8Unorm;
+            artifact.Mips = { { 1, 1, 0, 4 } };
+            artifact.Payload.assign(pixel.begin(), pixel.end());
+            const std::filesystem::path artifactPath = GetCookedTextureArtifactPath(
+                handle, TextureTargetProfile::RGBAFallback);
+            artifactPaths.push_back(artifactPath);
+            artifactsStored = artifactsStored && handle != kInvalidAssetHandle
+                && StoreTextureArtifact(artifactPath, artifact, error);
+            return handle;
+        };
+
+        const AssetHandle normal = addTexture("Tests/Generated/BindingNormal.rgba8",
+            TextureRole::Normal, TextureColorSpace::Linear, {{ 128, 128, 255, 255 }});
+        const AssetHandle orm = addTexture("Tests/Generated/BindingOrm.rgba8",
+            TextureRole::Orm, TextureColorSpace::Linear, {{ 255, 128, 0, 255 }});
+        const AssetHandle emissive = addTexture("Tests/Generated/BindingEmissive.rgba8",
+            TextureRole::Emissive, TextureColorSpace::Srgb, {{ 16, 32, 64, 255 }});
+        const AssetHandle mask = addTexture("Tests/Generated/BindingMask.rgba8",
+            TextureRole::Mask, TextureColorSpace::Linear, {{ 192, 64, 32, 255 }});
+
+        MaterialAsset material;
+        material.Name = "Complete Binding Set";
+        material.Textures.BaseColor = baseColor;
+        material.Textures.Normal = normal;
+        material.Textures.Orm = orm;
+        material.Textures.Emissive = emissive;
+        material.Textures.Opacity = mask;
+        material.Textures.CallistoControl = mask;
+        material.Samplers.BaseColor = MaterialTextureSampler::LinearWrap;
+        material.Samplers.Normal = MaterialTextureSampler::LinearClamp;
+        material.Samplers.Orm = MaterialTextureSampler::PointWrap;
+        material.Samplers.Emissive = MaterialTextureSampler::PointClamp;
+        material.Samplers.Opacity = MaterialTextureSampler::LinearWrap;
+        material.Samplers.CallistoControl = MaterialTextureSampler::PointClamp;
+
+        const AssetHandle materialHandle = registry.RegisterAsset(AssetType::Material,
+            "Tests/Generated/CompleteBindingSet.spiralmat", material.Name);
+        const AssetHandle emptyMaterialHandle = registry.RegisterAsset(AssetType::Material,
+            "Tests/Generated/EmptyBindingSet.spiralmat", "Empty Binding Set");
+        const AssetHandle mismatchMaterialHandle = registry.RegisterAsset(AssetType::Material,
+            "Tests/Generated/MismatchedBindingSet.spiralmat", "Mismatched Binding Set");
+        MaterialAsset emptyMaterial;
+        emptyMaterial.Name = "Empty Binding Set";
+        MaterialAsset mismatchMaterial;
+        mismatchMaterial.Name = "Mismatched Binding Set";
+        mismatchMaterial.Textures.BaseColor = normal;
+        MaterialLibrary materials;
+        const bool materialsStored = materials.Set(materialHandle, material)
+            && materials.Set(emptyMaterialHandle, emptyMaterial)
+            && materials.Set(mismatchMaterialHandle, mismatchMaterial);
+        Renderer::PublishArtifactResolvers(registry, materials);
+
+        MeshGpuCacheTestDevice device(902);
+        device.SetFormatCapabilities({
+            { Format::R8G8B8A8Unorm,
+                FormatUsage::Sampled | FormatUsage::CopyDestination, 1 },
+            { Format::R8G8B8A8UnormSrgb,
+                FormatUsage::Sampled | FormatUsage::CopyDestination, 1 }
+        });
+        Scope<TextureRuntimePublication> runtime = artifactsStored && materialsStored
+            ? TextureRuntimePublication::Create(device,
+                TextureTargetProfile::RGBAFallback, 8, 10)
+            : nullptr;
+        MaterialTextureBindingSet bindings;
+        const bool resolved = runtime
+            && runtime->ResolveMaterialTextures(materialHandle, bindings, error);
+        const TextureBindingHandle errorHandle = runtime
+            ? runtime->GetErrorHandle() : TextureBindingHandle {};
+        const auto isError = [errorHandle](TextureBindingHandle handle)
+        {
+            return handle.Index == errorHandle.Index
+                && handle.Generation == errorHandle.Generation;
+        };
+        const TextureBindingView baseView = resolved
+            ? runtime->GetBindingTable()->Resolve(bindings.Handles[0]) : TextureBindingView {};
+        const TextureBindingView normalView = resolved
+            ? runtime->GetBindingTable()->Resolve(bindings.Handles[1]) : TextureBindingView {};
+        const TextureBindingView ormView = resolved
+            ? runtime->GetBindingTable()->Resolve(bindings.Handles[2]) : TextureBindingView {};
+        const TextureBindingView emissiveView = resolved
+            ? runtime->GetBindingTable()->Resolve(bindings.Handles[3]) : TextureBindingView {};
+        const TextureBindingView opacityView = resolved
+            ? runtime->GetBindingTable()->Resolve(bindings.Handles[4]) : TextureBindingView {};
+        const TextureBindingView controlView = resolved
+            ? runtime->GetBindingTable()->Resolve(bindings.Handles[5]) : TextureBindingView {};
+        const bool completeSet = resolved && bindings.DeclaredMask == 0x3fu
+            && bindings.ErrorMask == 0u && error.empty()
+            && bindings.CatalogGeneration == Renderer::GetPublishedArtifactResolverGeneration()
+            && std::none_of(bindings.Handles.begin(), bindings.Handles.end(), isError)
+            && baseView.TextureResource && normalView.TextureResource
+            && ormView.TextureResource && emissiveView.TextureResource
+            && opacityView.TextureResource && controlView.TextureResource
+            && baseView.TextureResource->GetDescription().TextureFormat == Format::R8G8B8A8UnormSrgb
+            && normalView.TextureResource->GetDescription().TextureFormat == Format::R8G8B8A8Unorm
+            && ormView.TextureResource->GetDescription().TextureFormat == Format::R8G8B8A8Unorm
+            && emissiveView.TextureResource->GetDescription().TextureFormat == Format::R8G8B8A8UnormSrgb
+            && opacityView.TextureResource == controlView.TextureResource
+            && bindings.Handles[4].Index != bindings.Handles[5].Index
+            && baseView.Sampler == TextureSampler::LinearWrap
+            && normalView.Sampler == TextureSampler::LinearClamp
+            && ormView.Sampler == TextureSampler::PointWrap
+            && emissiveView.Sampler == TextureSampler::PointClamp
+            && opacityView.Sampler == TextureSampler::LinearWrap
+            && controlView.Sampler == TextureSampler::PointClamp;
+        const bool defaultMipChain = defaultLoaded
+            && defaultArtifact.Role == TextureRole::BaseColor
+            && defaultArtifact.ColorSpace == TextureColorSpace::Srgb
+            && defaultArtifact.CookedFormat == TextureCookedFormat::R8G8B8A8Srgb
+            && defaultArtifact.Mips.size() == 7
+            && defaultArtifact.Mips.back().Width == 1
+            && defaultArtifact.Mips.back().Height == 1;
+
+        MaterialTextureBindingSet emptyBindings;
+        const bool semanticDefaults = runtime
+            && runtime->ResolveMaterialTextures(emptyMaterialHandle, emptyBindings, error)
+            && emptyBindings.DeclaredMask == 0u && emptyBindings.ErrorMask == 0u
+            && std::all_of(emptyBindings.Handles.begin(), emptyBindings.Handles.end(), isError)
+            && error.empty();
+        MaterialTextureBindingSet mismatchBindings;
+        const bool mismatchVisible = runtime
+            && runtime->ResolveMaterialTextures(mismatchMaterialHandle, mismatchBindings, error)
+            && mismatchBindings.DeclaredMask == 1u && mismatchBindings.ErrorMask == 1u
+            && isError(mismatchBindings.Handles[0])
+            && error.find("BaseColor") != std::string::npos;
+        const MaterialTextureBindingSet preserved = bindings;
+        const bool invalidTransactional = runtime
+            && !runtime->ResolveMaterialTextures(kInvalidAssetHandle, bindings, error)
+            && bindings.Material.Name == preserved.Material.Name
+            && bindings.DeclaredMask == preserved.DeclaredMask
+            && bindings.ErrorMask == preserved.ErrorMask
+            && bindings.Handles[0].Index == preserved.Handles[0].Index
+            && bindings.Handles[0].Generation == preserved.Handles[0].Generation;
+
+        device.WaitIdle();
+        if (runtime) runtime->ReleaseAfterDeviceIdle();
+        Renderer::ClearArtifactResolvers();
+        std::error_code filesystemError;
+        for (const std::filesystem::path& path : artifactPaths)
+            std::filesystem::remove(path, filesystemError);
+
+        return Expect(defaultMipChain,
+                "the first-scene base color is a full-mip sRGB artifact from the normal import path")
+            && Expect(completeSet,
+                "material slots resolve exact role color-space sampler and shared-resource view identities")
+            && Expect(semanticDefaults && mismatchVisible,
+                "unset slots remain semantic shader defaults while declared mismatches use the visible error resource")
+            && Expect(invalidTransactional,
+                "failed material binding resolution preserves the previously accepted complete binding set");
     }
 
     bool TestImmutableMaterialCatalogPublication()
@@ -7166,35 +7360,48 @@ float4 main(VertexInput input) : SV_Position
             && !TextureBindingTable::Create(device, { kMaximumReadOnlyTextureTableCapacity + 1, error, TextureSampler::LinearClamp })
             && !TextureBindingTable::Create(device, { 3, error, invalidSampler });
         Engine::Scope<TextureBindingTable> table = TextureBindingTable::Create(device, description);
+        Engine::Scope<TextureBindingTable> distinctTable = TextureBindingTable::Create(device, description);
+        const Engine::u64 tableIdentity = table ? table->GetIdentity() : 0;
+        const Engine::u64 distinctTableIdentity = distinctTable ? distinctTable->GetIdentity() : 0;
+        const Engine::u64 initialRevision = table ? table->GetRevision() : 0;
+        distinctTable.reset();
         description.ErrorTexture.reset();
         DeviceCapabilities indexedCapabilities;
         indexedCapabilities.GetFeature(DeviceFeature::DescriptorIndexing) = MakeCapabilityState(
             true, true, true, false, "deterministic descriptor-indexing capability");
         const TextureBindingHandle firstHandle = table ? table->Allocate(first, TextureSampler::LinearWrap) : TextureBindingHandle {};
         const TextureBindingHandle secondHandle = table ? table->Allocate(second, TextureSampler::PointWrap) : TextureBindingHandle {};
+        const Engine::u64 allocatedRevision = table ? table->GetRevision() : 0;
         TextureBindingView errorView = table ? table->Resolve({}) : TextureBindingView {};
         error.reset();
         const bool rejectsWithoutMutation = table && !table->Allocate(writableTexture, TextureSampler::LinearClamp).IsValid()
             && !table->Allocate(foreign, TextureSampler::LinearClamp).IsValid()
-            && !table->Allocate(second, invalidSampler).IsValid() && table->GetPendingOperationCount() == 0;
+            && !table->Allocate(second, invalidSampler).IsValid() && table->GetPendingOperationCount() == 0
+            && table->GetRevision() == allocatedRevision;
         const CompletionToken update { 101, 11 }, foreignToken { 202, 11 }, removal { 101, 12 };
         device.SetCompletion(update, CompletionStatus::Incomplete);
         const bool queuedUpdate = table && table->QueueUpdate(firstHandle, replacement, TextureSampler::PointClamp, update)
             && !table->QueueRemoval(firstHandle, foreignToken) && !table->QueueUpdate(firstHandle, replacement, invalidSampler, update)
             && table->Resolve(firstHandle).TextureResource == first
-            && !table->Retire(update) && table->GetPendingOperationCount() == 1;
+            && !table->Retire(update) && table->GetPendingOperationCount() == 1
+            && table->GetRevision() == allocatedRevision;
         first.reset();
         replacement.reset();
         const bool retainedWhilePending = *firstDestroyed == 0 && *replacementDestroyed == 0 && *errorDestroyed == 0;
         device.SetCompletion(update, CompletionStatus::Complete);
         const bool updateRetired = table && table->Retire(update) && *firstDestroyed == 1 && *replacementDestroyed == 0
-            && table->Resolve(firstHandle).TextureResource && table->Resolve(firstHandle).Sampler == TextureSampler::PointClamp;
+            && table->Resolve(firstHandle).TextureResource && table->Resolve(firstHandle).Sampler == TextureSampler::PointClamp
+            && table->GetRevision() == allocatedRevision + 1;
         device.SetCompletion(removal, CompletionStatus::Incomplete);
         const bool queuedRemoval = table && table->QueueRemoval(firstHandle, removal) && !table->Allocate(second, TextureSampler::LinearClamp).IsValid();
         device.SetCompletion(removal, CompletionStatus::Failed);
         const bool removalRetired = table && table->Retire(removal) && *replacementDestroyed == 1;
         Engine::Ref<Texture> reusedTexture = Engine::CreateRef<OwnershipTestTexture>(101, ResourceState::ShaderResource, sampled);
         const TextureBindingHandle reused = table ? table->Allocate(reusedTexture, TextureSampler::LinearClamp) : TextureBindingHandle {};
+        const bool revisionContract = table && tableIdentity != 0 && distinctTableIdentity != 0
+            && tableIdentity != distinctTableIdentity && initialRevision != 0
+            && allocatedRevision == initialRevision + 2
+            && table->GetRevision() == allocatedRevision + 3;
         const bool selectedBoundedFallback = table && table->GetSelectedPath() == CapabilityPath::BoundedReadOnlyTextureTable;
         const bool errorViewWasRetained = errorView.IsError && errorView.TextureResource && errorView.Sampler == TextureSampler::PointClamp;
         table.reset();
@@ -7211,6 +7418,8 @@ float4 main(VertexInput input) : SV_Position
             && Expect(errorViewWasRetained && errorReleasedAfterView,
                 "invalid identities resolve through a retained exact-owned error texture")
             && Expect(rejectsWithoutMutation, "writable foreign and invalid-sampler inputs are rejected without table mutation")
+            && Expect(revisionContract,
+                "table identity is allocation-unique and published revision advances only for visible slot mutations")
             && Expect(queuedUpdate && retainedWhilePending && updateRetired, "table retains old and replacement resources until its exact GPU token retires")
             && Expect(queuedRemoval && removalRetired && reused.Index == firstHandle.Index && reused.Generation != firstHandle.Generation,
                 "Complete and Failed retirement block reuse until the exact token and then advance generation")
@@ -7955,6 +8164,7 @@ int main(int argc, char** argv)
         FAST_TEST("Texture table publication retires exact stable-asset generations", TestTextureTablePublicationRetirement),
         FAST_TEST("Texture runtime composes catalog cache table and exact retirement", TestTextureRuntimePublicationComposition),
         FAST_TEST("Renderer material catalog publishes immutable exact generations", TestImmutableMaterialCatalogPublication),
+        FAST_TEST("Material texture binding resolves semantic slots samplers and fallbacks", TestMaterialTextureBindingResolution),
         INTEGRATION_TEST("Material sampler declarations migrate and validate transactionally", TestMaterialSamplerSchemaMigration),
         FAST_TEST("RHI read-only texture upload validates the full-subresource contract", TestReadOnlyTextureUploadContract),
         FAST_TEST("RHI sampled texture-table binding validates pipeline space offsets and exact ownership", TestSampledTextureTableBindingContract),

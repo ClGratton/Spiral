@@ -1,6 +1,7 @@
 #include "Engine/Core/Application.h"
 
 #include "Engine/Core/Log.h"
+#include "Engine/Events/KeyEvent.h"
 #include "Engine/Events/MouseEvent.h"
 #include "Engine/Jobs/FrameTaskGraph.h"
 #include "Engine/RHI/Device.h"
@@ -362,7 +363,9 @@ namespace Engine
             if (m_Specification.CommandLineArgs.HasFlag("--frame-pacing-benchmark") && !m_FramePacingBenchmarkStarted && m_FrameIndex >= benchmarkWarmupFrames)
             {
                 const std::string_view targetValue = m_Specification.CommandLineArgs.GetOptionValue("--smooth-frametime-target-fps");
-                Renderer::BeginFramePacingBenchmark(512, targetValue.empty() ? 0.0 : std::strtod(std::string(targetValue).c_str(), nullptr), benchmarkWarmupFrames,
+                const size_t sampleCount = ResolveFramePacingBenchmarkSampleCount(
+                    m_Specification.CommandLineArgs.GetOptionValue("--frame-pacing-benchmark-frames"));
+                Renderer::BeginFramePacingBenchmark(sampleCount, targetValue.empty() ? 0.0 : std::strtod(std::string(targetValue).c_str(), nullptr), benchmarkWarmupFrames,
                     { m_FramePacingAttachmentRunId, m_FramePacingAttachmentProcessId,
                         m_FramePacingAttachmentExecutablePath, m_FramePacingAttachmentQpcFrequency });
                 m_FramePacingBenchmarkStarted = true;
@@ -687,6 +690,31 @@ namespace Engine
 
     void Application::OnEvent(Event& event)
     {
+        if (event.GetEventType() == EventType::KeyPressed)
+        {
+            const auto& key = static_cast<const KeyPressedEvent&>(event);
+            Renderer::RecordInputEvent(m_FrameIndex, RendererInputEventKind::KeyPressed,
+                key.GetKeyCode(), key.IsRepeat());
+        }
+        else if (event.GetEventType() == EventType::KeyReleased)
+        {
+            Renderer::RecordInputEvent(m_FrameIndex, RendererInputEventKind::KeyReleased,
+                static_cast<const KeyReleasedEvent&>(event).GetKeyCode());
+        }
+        else if (event.GetEventType() == EventType::MouseMoved)
+        {
+            Renderer::RecordInputEvent(m_FrameIndex, RendererInputEventKind::MouseMoved, 0);
+        }
+        else if (event.GetEventType() == EventType::MouseButtonPressed)
+        {
+            Renderer::RecordInputEvent(m_FrameIndex, RendererInputEventKind::MouseButtonPressed,
+                static_cast<const MouseButtonPressedEvent&>(event).GetMouseButton());
+        }
+        else if (event.GetEventType() == EventType::MouseButtonReleased)
+        {
+            Renderer::RecordInputEvent(m_FrameIndex, RendererInputEventKind::MouseButtonReleased,
+                static_cast<const MouseButtonReleasedEvent&>(event).GetMouseButton());
+        }
         if (m_OpticalTriggerArmed && m_OpticalTriggerId.empty() && event.GetEventType() == EventType::MouseButtonPressed)
         {
             m_OpticalTriggerSynthetic = false;

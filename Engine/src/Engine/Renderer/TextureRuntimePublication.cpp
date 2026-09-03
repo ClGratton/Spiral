@@ -8,6 +8,15 @@ namespace Engine
 {
     namespace
     {
+        constexpr std::array<MaterialTextureSlot, kMaterialTextureBindingCount> kMaterialSlots {{
+            MaterialTextureSlot::BaseColor,
+            MaterialTextureSlot::Normal,
+            MaterialTextureSlot::Orm,
+            MaterialTextureSlot::Emissive,
+            MaterialTextureSlot::Opacity,
+            MaterialTextureSlot::CallistoControl
+        }};
+
         bool SameHandle(RHI::TextureBindingHandle left, RHI::TextureBindingHandle right)
         {
             return left.Index == right.Index && left.Generation == right.Generation;
@@ -16,6 +25,42 @@ namespace Engine
         bool SameToken(const RHI::CompletionToken& left, const RHI::CompletionToken& right)
         {
             return left.DeviceId == right.DeviceId && left.SubmissionId == right.SubmissionId;
+        }
+
+        bool MapSampler(MaterialTextureSampler source, RHI::TextureSampler& destination)
+        {
+            switch (source)
+            {
+                case MaterialTextureSampler::LinearWrap: destination = RHI::TextureSampler::LinearWrap; return true;
+                case MaterialTextureSampler::LinearClamp: destination = RHI::TextureSampler::LinearClamp; return true;
+                case MaterialTextureSampler::PointWrap: destination = RHI::TextureSampler::PointWrap; return true;
+                case MaterialTextureSampler::PointClamp: destination = RHI::TextureSampler::PointClamp; return true;
+            }
+            return false;
+        }
+
+        bool HasExpectedSemantics(MaterialTextureSlot slot, const TextureArtifact& artifact)
+        {
+            switch (slot)
+            {
+                case MaterialTextureSlot::BaseColor:
+                    return artifact.Role == TextureRole::BaseColor
+                        && artifact.ColorSpace == TextureColorSpace::Srgb;
+                case MaterialTextureSlot::Normal:
+                    return artifact.Role == TextureRole::Normal
+                        && artifact.ColorSpace == TextureColorSpace::Linear;
+                case MaterialTextureSlot::Orm:
+                    return artifact.Role == TextureRole::Orm
+                        && artifact.ColorSpace == TextureColorSpace::Linear;
+                case MaterialTextureSlot::Emissive:
+                    return artifact.Role == TextureRole::Emissive
+                        && artifact.ColorSpace == TextureColorSpace::Srgb;
+                case MaterialTextureSlot::Opacity:
+                case MaterialTextureSlot::CallistoControl:
+                    return artifact.Role == TextureRole::Mask
+                        && artifact.ColorSpace == TextureColorSpace::Linear;
+            }
+            return false;
         }
     }
 
@@ -239,6 +284,68 @@ namespace Engine
         return errorHandle;
     }
 
+    bool TextureRuntimePublication::ResolveMaterialTextures(AssetHandle materialAsset,
+        MaterialTextureBindingSet& outBindings, std::string& outError)
+    {
+        if (!m_Publication)
+        {
+            outError = "material texture resolution requires a live texture publication";
+            return false;
+        }
+
+        MaterialTextureBindingSet candidate;
+        candidate.Handles.fill(m_Publication->GetErrorHandle());
+        if (!Renderer::ResolvePublishedMaterialAsset(
+            materialAsset, candidate.Material, candidate.CatalogGeneration, outError))
+            return false;
+
+        std::string diagnostics;
+        for (size_t index = 0; index < kMaterialSlots.size(); ++index)
+        {
+            const MaterialTextureSlot slot = kMaterialSlots[index];
+            const AssetHandle textureAsset = candidate.Material.GetTexture(slot);
+            if (textureAsset == kInvalidAssetHandle)
+                continue;
+
+            candidate.DeclaredMask |= 1u << static_cast<u32>(index);
+            TextureArtifactVariantSet variants;
+            u64 textureGeneration = 0;
+            std::string slotError;
+            RHI::TextureSampler sampler = RHI::TextureSampler::LinearWrap;
+            const bool resolved = MapSampler(candidate.Material.GetSampler(slot), sampler)
+                && Renderer::ResolvePublishedTextureArtifactVariantSet(
+                    textureAsset, m_PreferredTarget, variants, textureGeneration, slotError)
+                && textureGeneration == candidate.CatalogGeneration
+                && HasExpectedSemantics(slot, variants.Preferred);
+            if (!resolved)
+            {
+                candidate.ErrorMask |= 1u << static_cast<u32>(index);
+                if (!diagnostics.empty()) diagnostics += "; ";
+                diagnostics += std::string(ToString(slot)) + "="
+                    + (slotError.empty() ? "sampler, catalog generation, or texture semantics mismatch" : slotError);
+                continue;
+            }
+
+            candidate.Handles[index] = Resolve(textureAsset, sampler, slotError);
+            if (IsError(candidate.Handles[index]))
+            {
+                candidate.ErrorMask |= 1u << static_cast<u32>(index);
+                if (!diagnostics.empty()) diagnostics += "; ";
+                diagnostics += std::string(ToString(slot)) + "="
+                    + (slotError.empty() ? "error texture" : slotError);
+            }
+        }
+
+        if (Renderer::GetPublishedArtifactResolverGeneration() != candidate.CatalogGeneration)
+        {
+            outError = "material texture catalog changed during one binding-set resolution";
+            return false;
+        }
+        outBindings = std::move(candidate);
+        outError = std::move(diagnostics);
+        return true;
+    }
+
     bool TextureRuntimePublication::RetainAcceptedFrame(
         const RHI::CompletionToken& token,
         const std::vector<RHI::TextureBindingHandle>& handles,
@@ -338,6 +445,12 @@ namespace Engine
         }
         outError.clear();
         return true;
+    }
+
+    bool TextureRuntimePublication::HasRetainedFrame(const RHI::CompletionToken& token) const
+    {
+        return std::any_of(m_RetainedTokens.begin(), m_RetainedTokens.end(),
+            [&token](const RHI::CompletionToken& retained) { return SameToken(retained, token); });
     }
 
     RHI::TextureBindingHandle TextureRuntimePublication::GetErrorHandle() const

@@ -2,6 +2,7 @@
 
 #include <Engine.h>
 #include <Engine/Core/EntryPoint.h>
+#include <Engine/Renderer/FramePacingBenchmark.h>
 
 class EditorApplication final : public Engine::Application
 {
@@ -41,9 +42,11 @@ Engine::Application* Engine::CreateApplication(ApplicationCommandLineArgs args)
         || args.HasFlag("--scene-render-snapshot-smoke")
         || args.HasFlag("--scene-origin-raster-smoke")
         || args.HasFlag("--live-d3d12-pipeline-rebuild-smoke");
+    const size_t benchmarkSamples = Engine::ResolveFramePacingBenchmarkSampleCount(
+        args.GetOptionValue("--frame-pacing-benchmark-frames"));
     specification.MaxFrames = args.HasFlag("--live-d3d12-pipeline-rebuild-smoke") ? 900 : (args.HasFlag("--vulkan-render-smoke")
         ? 60
-        : (args.HasFlag("--frame-pacing-benchmark") ? 542 : ((args.HasFlag("--presentation-policy-smoke") || args.HasFlag("--frame-lifecycle-telemetry-smoke") || args.HasFlag("--smooth-frametime-candidate-smoke")) ? 12
+        : (args.HasFlag("--frame-pacing-benchmark") ? static_cast<Engine::u32>(benchmarkSamples + 30) : ((args.HasFlag("--presentation-policy-smoke") || args.HasFlag("--frame-lifecycle-telemetry-smoke") || args.HasFlag("--smooth-frametime-candidate-smoke")) ? 12
             : (args.HasFlag("--scene-origin-raster-smoke") ? 5 : (extendedSmoke ? 4 : (args.HasFlag("--smoke-test") ? 2 : 0))))));
 
     return new EditorApplication(specification);

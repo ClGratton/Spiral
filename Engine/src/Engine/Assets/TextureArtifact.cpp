@@ -25,6 +25,8 @@ namespace Engine
 {
     namespace
     {
+        constexpr std::string_view kDefaultSceneTextureSourcePath =
+            "Engine/Generated/PrototypeSurface.rgba8";
         constexpr u32 kTextureArtifactVersion = 2;
         constexpr u64 kBytesPerRgba8Pixel = 4;
         constexpr u32 kMaxTextureDimension = 16384;
@@ -373,6 +375,54 @@ namespace Engine
     std::filesystem::path GetCookedTextureArtifactPath(AssetHandle asset)
     {
         return std::filesystem::path("output") / "imports" / "textures" / (std::to_string(asset) + ".spiraltexture");
+    }
+
+    std::string_view GetDefaultSceneTextureSourcePath()
+    {
+        return kDefaultSceneTextureSourcePath;
+    }
+
+    bool EnsureDefaultSceneTextureArtifact(
+        AssetRegistry& registry, AssetHandle& outAsset, std::string& outError)
+    {
+        constexpr u32 extent = 64;
+        std::vector<u8> pixels(static_cast<size_t>(extent) * extent * 4u);
+        for (u32 y = 0; y < extent; ++y)
+        {
+            for (u32 x = 0; x < extent; ++x)
+            {
+                const bool grid = x % 16u < 2u || y % 16u < 2u;
+                const bool inset = x % 16u >= 5u && x % 16u <= 10u
+                    && y % 16u >= 5u && y % 16u <= 10u;
+                const bool diagonal = (x + y) % 32u < 3u;
+                const std::array<u8, 3> color = grid
+                    ? std::array<u8, 3> {{ 105, 190, 228 }}
+                    : diagonal ? std::array<u8, 3> {{ 236, 151, 65 }}
+                    : inset ? std::array<u8, 3> {{ 47, 83, 122 }}
+                    : std::array<u8, 3> {{ 25, 43, 68 }};
+                const size_t offset = (static_cast<size_t>(y) * extent + x) * 4u;
+                pixels[offset] = color[0];
+                pixels[offset + 1] = color[1];
+                pixels[offset + 2] = color[2];
+                pixels[offset + 3] = 255;
+            }
+        }
+
+        NormalizedTextureSource source;
+        source.SourcePath = std::string(kDefaultSceneTextureSourcePath);
+        source.Role = TextureRole::BaseColor;
+        source.ColorSpace = TextureColorSpace::Srgb;
+        source.Width = extent;
+        source.Height = extent;
+        source.Mips = { std::move(pixels) };
+        source.MipPolicy = TextureMipPolicy::CompleteMissing;
+        TextureArtifact artifact;
+        if (!TextureImporter::CookNormalizedRgba8(
+            source, registry, TextureTargetProfile::RGBAFallback, artifact, outError))
+            return false;
+        outAsset = artifact.Asset;
+        outError.clear();
+        return true;
     }
 
     std::filesystem::path GetCookedTextureArtifactPath(AssetHandle asset, TextureTargetProfile target)

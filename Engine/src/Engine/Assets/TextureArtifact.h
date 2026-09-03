@@ -103,6 +103,12 @@ namespace Engine
     bool ResolveTextureArtifactVariantSet(const AssetRegistry& registry, AssetHandle asset,
         TextureTargetProfile preferredTarget, TextureArtifactVariantSet& outVariants, std::string& outError);
 
+    // The default Editor scene uses one deterministic, full-mip sRGB surface
+    // through the normal registry/artifact path. It is not a renderer fallback.
+    std::string_view GetDefaultSceneTextureSourcePath();
+    bool EnsureDefaultSceneTextureArtifact(
+        AssetRegistry& registry, AssetHandle& outAsset, std::string& outError);
+
     class TextureImporter
     {
     public:

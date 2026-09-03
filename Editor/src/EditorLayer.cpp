@@ -2,6 +2,7 @@
 
 #include "Engine/Events/KeyEvent.h"
 #include "Engine/Events/MouseEvent.h"
+#include "Engine/Assets/TextureArtifact.h"
 
 #include <imgui.h>
 #include <imgui_internal.h>
@@ -3702,6 +3703,42 @@ bool EditorLayer::LoadProject()
         m_ConsoleLines.emplace_back("Project load failed: default scene mesh artifact");
         return false;
     }
+    const bool defaultTextureWasMissing = loadedRegistry.FindAssetByPath(
+        Engine::AssetType::Texture, Engine::GetDefaultSceneTextureSourcePath())
+        == Engine::kInvalidAssetHandle;
+    Engine::AssetHandle defaultTextureAsset = Engine::kInvalidAssetHandle;
+    std::string defaultTextureError;
+    if (!Engine::EnsureDefaultSceneTextureArtifact(
+        loadedRegistry, defaultTextureAsset, defaultTextureError))
+    {
+        Engine::Log::Error("Could not prepare default scene texture artifact: ", defaultTextureError);
+        m_ConsoleLines.emplace_back("Project load failed: default scene texture artifact");
+        return false;
+    }
+
+    const std::filesystem::path prototypeMaterialPath =
+        std::filesystem::path(manifest.AssetRegistryPath).parent_path() / "PrototypeDefault.spiralmat";
+    const Engine::AssetHandle prototypeMaterialAsset = loadedRegistry.FindAssetByPath(
+        Engine::AssetType::Material, prototypeMaterialPath.string());
+    Engine::MaterialAsset* prototypeMaterial = loadedMaterials.Get(prototypeMaterialAsset);
+    const bool upgradePrototypeMaterial = prototypeMaterial
+        && prototypeMaterial->Textures.BaseColor == Engine::kInvalidAssetHandle;
+    if (upgradePrototypeMaterial)
+    {
+        prototypeMaterial->Textures.BaseColor = defaultTextureAsset;
+        prototypeMaterial->Samplers.BaseColor = Engine::MaterialTextureSampler::LinearWrap;
+        if (!loadedMaterials.Save(prototypeMaterialAsset,
+            Engine::AssetFileSystem::ResolvePath(prototypeMaterialPath.string())))
+        {
+            Engine::Log::Error("Could not upgrade the prototype material with its default texture");
+            return false;
+        }
+    }
+    if (defaultTextureWasMissing && !loadedRegistry.SaveToFile(manifest.AssetRegistryPath))
+    {
+        Engine::Log::Error("Could not persist the default scene texture registration");
+        return false;
+    }
 
     m_ScenePath = std::move(manifest.ScenePath);
     m_AssetRegistryPath = std::move(manifest.AssetRegistryPath);
@@ -3901,6 +3938,11 @@ void EditorLayer::EnsureDefaultSceneEntities()
     std::string prototypeMeshError;
     if (!Engine::EnsureDefaultSceneMeshArtifact(m_AssetRegistry, prototypeMeshAsset, prototypeMeshError))
         throw std::runtime_error("could not publish the default scene mesh artifact: " + prototypeMeshError);
+    Engine::AssetHandle prototypeTextureAsset = Engine::kInvalidAssetHandle;
+    std::string prototypeTextureError;
+    if (!Engine::EnsureDefaultSceneTextureArtifact(
+        m_AssetRegistry, prototypeTextureAsset, prototypeTextureError))
+        throw std::runtime_error("could not publish the default scene texture artifact: " + prototypeTextureError);
     const std::filesystem::path prototypeMaterialPath = std::filesystem::path(m_AssetRegistryPath).parent_path() / "PrototypeDefault.spiralmat";
     const Engine::AssetHandle prototypeMaterialAsset = m_AssetRegistry.RegisterAsset(
         Engine::AssetType::Material,
@@ -3919,10 +3961,25 @@ void EditorLayer::EnsureDefaultSceneEntities()
             SaveMaterialAsset(prototypeMaterialAsset);
         }
     }
+    if (Engine::MaterialAsset* prototypeMaterial = m_MaterialLibrary.Get(prototypeMaterialAsset);
+        prototypeMaterial && prototypeMaterial->Textures.BaseColor == Engine::kInvalidAssetHandle)
+    {
+        prototypeMaterial->Textures.BaseColor = prototypeTextureAsset;
+        prototypeMaterial->Samplers.BaseColor = Engine::MaterialTextureSampler::LinearWrap;
+        if (!SaveMaterialAsset(prototypeMaterialAsset))
+            throw std::runtime_error("could not save the default scene material texture binding");
+    }
 
     m_PrototypeMeshEntity = m_ActiveScene.FindEntityByName("Prototype Mesh");
+    const bool createdPrototypeMesh = !m_PrototypeMeshEntity;
     if (!m_PrototypeMeshEntity)
         m_PrototypeMeshEntity = m_ActiveScene.CreateEntity("Prototype Mesh");
+    if (createdPrototypeMesh)
+    {
+        if (Engine::TransformComponent* transform =
+            m_ActiveScene.TryGetTransform(m_PrototypeMeshEntity))
+            transform->RotationDegrees = { -18.0f, 28.0f, 0.0f };
+    }
     if (Engine::MeshRendererComponent* meshRenderer = m_ActiveScene.TryGetMeshRendererComponent(m_PrototypeMeshEntity))
     {
         meshRenderer->MeshAsset = prototypeMeshAsset;

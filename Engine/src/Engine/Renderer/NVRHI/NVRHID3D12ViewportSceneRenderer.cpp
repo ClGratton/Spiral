@@ -40,7 +40,49 @@ namespace Engine
         struct ViewportConstants
         {
             float ViewProjection[16];
+            float BaseColorAndAlphaCutoff[4];
+            float EmissiveAndStrength[4];
+            float SurfaceFactors[4];
+            float CallistoFactors[4];
+            u32 TextureIndices0[4];
+            u32 TextureIndices1[4];
+            u32 TextureState[4];
         };
+
+        static_assert(sizeof(ViewportConstants) <= kViewportConstantBufferSize);
+
+        ViewportConstants BuildViewportConstants(
+            const SceneRasterInstance& instance, const MaterialTextureBindingSet& bindings)
+        {
+            ViewportConstants constants {};
+            std::memcpy(constants.ViewProjection,
+                instance.ModelViewProjection.Values, sizeof(constants.ViewProjection));
+            constants.BaseColorAndAlphaCutoff[0] = bindings.Material.BaseColor.X;
+            constants.BaseColorAndAlphaCutoff[1] = bindings.Material.BaseColor.Y;
+            constants.BaseColorAndAlphaCutoff[2] = bindings.Material.BaseColor.Z;
+            constants.BaseColorAndAlphaCutoff[3] = bindings.Material.AlphaCutoff;
+            constants.EmissiveAndStrength[0] = bindings.Material.EmissiveColor.X;
+            constants.EmissiveAndStrength[1] = bindings.Material.EmissiveColor.Y;
+            constants.EmissiveAndStrength[2] = bindings.Material.EmissiveColor.Z;
+            constants.EmissiveAndStrength[3] = bindings.Material.EmissiveStrength;
+            constants.SurfaceFactors[0] = bindings.Material.Metallic;
+            constants.SurfaceFactors[1] = bindings.Material.Roughness;
+            constants.SurfaceFactors[2] = bindings.Material.NormalScale;
+            constants.SurfaceFactors[3] = bindings.Material.OcclusionStrength;
+            constants.CallistoFactors[0] = bindings.Material.DiffuseFresnelIntensity;
+            constants.CallistoFactors[1] = bindings.Material.RetroreflectionIntensity;
+            constants.CallistoFactors[2] = bindings.Material.DiffuseFresnelFalloff;
+            constants.CallistoFactors[3] = bindings.Material.RetroreflectionFalloff;
+            for (size_t index = 0; index < 4; ++index)
+                constants.TextureIndices0[index] = bindings.Handles[index].Index;
+            constants.TextureIndices1[0] = bindings.Handles[4].Index;
+            constants.TextureIndices1[1] = bindings.Handles[5].Index;
+            constants.TextureState[0] = bindings.DeclaredMask;
+            constants.TextureState[1] = bindings.ErrorMask;
+            constants.TextureState[2] = static_cast<u32>(bindings.Material.AlphaMode);
+            constants.TextureState[3] = static_cast<u32>(bindings.Material.ShadingModel);
+            return constants;
+        }
 
         struct ConstantBufferAllocation
         {
@@ -124,6 +166,9 @@ namespace Engine
             if (m_Pipeline && rasterFrame.HasValidView && !rasterFrame.Instances.empty())
             {
                 commands->SetGraphicsPipeline(*m_Pipeline);
+                if (!m_TextureRuntime || !m_TextureRuntime->GetBindingTable()
+                    || !commands->BindGraphicsSampledTextureTable(*m_TextureRuntime->GetBindingTable()))
+                    return false;
                 commands->SetViewport({ 0.0f, 0.0f, static_cast<float>(width), static_cast<float>(height), 0.0f, 1.0f });
                 commands->SetScissorRect({ 0, 0, static_cast<int>(width), static_cast<int>(height) });
                 for (const SceneMeshDraw& draw : draws)
@@ -158,7 +203,7 @@ namespace Engine
             if (!RequestInitialPipeline())
                 return false;
             m_TextureRuntime = TextureRuntimePublication::Create(*m_RHIDevice,
-                TextureTargetProfile::DesktopBC, kSceneTextureTableCapacity - 1,
+                TextureTargetProfile::RGBAFallback, kSceneTextureTableCapacity - 1,
                 kSceneTextureTableCapacity);
             return m_TextureRuntime != nullptr;
         }
@@ -213,8 +258,22 @@ namespace Engine
                 return false;
             }
             for (const SubmittedRenderGraphFrameOwner::RetiredFrame& frame : retirement.Retired)
+            {
+                for (const RHI::CompletionToken& completion : frame.Completions)
+                {
+                    if (m_TextureRuntime && m_TextureRuntime->HasRetainedFrame(completion))
+                    {
+                        std::string textureRetirementError;
+                        if (!m_TextureRuntime->Retire(completion, textureRetirementError))
+                        {
+                            Log::Error("D3D12 Scene material texture retirement failed: ", textureRetirementError);
+                            return false;
+                        }
+                    }
+                }
                 if (!frame.TimestampScopes.empty() && !Renderer::PublishRenderGraphTimestampScopes(frame.TimestampScopes))
                     return false;
+            }
             if (Application::Get().GetSpecification().CommandLineArgs.HasFlag("--scene-viewport-render-graph-smoke"))
                 for (const SubmittedRenderGraphFrameOwner::RetiredFrame& frame : retirement.Retired)
                     if (!frame.TimestampScopes.empty())
@@ -254,6 +313,7 @@ namespace Engine
             Ref<ConstantBufferSet> constantBufferSet;
             std::vector<ConstantBufferAllocation>* constantBuffers = nullptr;
             std::vector<SceneMeshDraw> draws;
+            std::vector<RHI::TextureBindingHandle> usedTextureHandles;
             const std::shared_ptr<const SceneRenderSnapshot> snapshot = Renderer::GetSceneRenderSnapshot();
             const std::shared_ptr<const SceneRasterFrame> prepared = Renderer::GetPreparedSceneRasterFrame();
             if (snapshot)
@@ -287,10 +347,27 @@ namespace Engine
                     constantBuffers = &constantBufferSet->Allocations;
                     for (size_t index = 0; index < rasterFrame.Instances.size(); ++index)
                     {
-                        ViewportConstants constants {};
-                        std::memcpy(constants.ViewProjection, rasterFrame.Instances[index].ModelViewProjection.Values, sizeof(constants.ViewProjection));
+                        MaterialTextureBindingSet materialBindings;
+                        std::string materialError;
+                        if (!m_TextureRuntime->ResolveMaterialTextures(
+                            rasterFrame.Instances[index].MaterialAsset, materialBindings, materialError))
+                        {
+                            Log::Error("D3D12 Scene viewport could not resolve snapshot material: ", materialError);
+                            renderSucceeded = false;
+                            break;
+                        }
+                        if (!materialError.empty())
+                            Log::Warn("D3D12 Scene material uses error resources: ", materialError);
+                        for (size_t slot = 0; slot < materialBindings.Handles.size(); ++slot)
+                            if ((materialBindings.DeclaredMask & (1u << static_cast<u32>(slot))) != 0
+                                && (materialBindings.ErrorMask & (1u << static_cast<u32>(slot))) == 0)
+                                usedTextureHandles.push_back(materialBindings.Handles[slot]);
+                        const ViewportConstants constants = BuildViewportConstants(
+                            rasterFrame.Instances[index], materialBindings);
                         std::memcpy((*constantBuffers)[index].Mapped, &constants, sizeof(constants));
                     }
+                    if (!renderSucceeded)
+                        return false;
                     std::string meshError;
                     for (size_t index = 0; index < rasterFrame.Instances.size(); ++index)
                     {
@@ -345,7 +422,8 @@ namespace Engine
             graph->AddWrite(rasterPass, color, RHI::ResourceState::RenderTarget);
             graph->AddWrite(rasterPass, depth, RHI::ResourceState::DepthWrite);
             const Ref<RHI::Pipeline> activePipeline = m_Pipeline;
-            graph->SetPassCallback(rasterPass, [activePipeline, width, height, &rasterFrame, constantBuffers, draws](RenderGraph::ExecutionContext& context)
+            RHI::TextureBindingTable* textureTable = m_TextureRuntime->GetBindingTable();
+            graph->SetPassCallback(rasterPass, [activePipeline, textureTable, width, height, &rasterFrame, constantBuffers, draws](RenderGraph::ExecutionContext& context)
             {
                 RHI::Texture* graphColor = context.GetTexture({ 0 });
                 RHI::Texture* graphDepth = context.GetTexture({ 1 });
@@ -353,6 +431,7 @@ namespace Engine
                 if (!graphColor || !graphDepth || !commands.BindViewportOutputs(*graphColor, graphDepth)) return false;
                 if (!activePipeline || !rasterFrame.HasValidView || rasterFrame.Instances.empty()) return true;
                 commands.SetGraphicsPipeline(*activePipeline);
+                if (!textureTable || !commands.BindGraphicsSampledTextureTable(*textureTable)) return false;
                 commands.SetViewport({ 0.0f, 0.0f, static_cast<float>(width), static_cast<float>(height), 0.0f, 1.0f });
                 commands.SetScissorRect({ 0, 0, static_cast<int>(width), static_cast<int>(height) });
                 for (const SceneMeshDraw& draw : draws)
@@ -385,6 +464,17 @@ namespace Engine
             if (Application::Get().GetSpecification().CommandLineArgs.HasFlag("--scene-viewport-render-graph-smoke")) Log::Info("RenderGraphRecordingV1 backend=D3D12 mode=", executeOptions.RecordingMode == FrameTaskExecutionMode::Parallel ? "worker" : "inline", " workerPasses=", executed.WorkerRecordedPassCount, " overlap=", executed.WorkerRecordingOverlapObserved ? "yes" : "no", " submitted=", executed.AcceptedPassCount, " result=", executed.Success ? "pass" : "fail");
             if (!executed.Completions.empty())
             {
+                if (executed.Completions.size() > 1 && !usedTextureHandles.empty())
+                {
+                    std::string textureRetentionError;
+                    if (!m_TextureRuntime->RetainAcceptedFrame(
+                        executed.Completions[1], usedTextureHandles, textureRetentionError))
+                    {
+                        Log::Error("D3D12 Scene viewport could not retain material textures: ", textureRetentionError);
+                        m_RHIDevice->WaitIdle();
+                        return false;
+                    }
+                }
                 std::vector<Ref<void>> payloads;
                 if (constantBufferSet)
                     payloads.emplace_back(constantBufferSet);
@@ -400,6 +490,12 @@ namespace Engine
                 {
                     Log::Error("D3D12 Scene viewport could not retain an accepted RenderGraph submission: ", retentionError);
                     m_RHIDevice->WaitIdle();
+                    if (executed.Completions.size() > 1 && m_TextureRuntime
+                        && m_TextureRuntime->HasRetainedFrame(executed.Completions[1]))
+                    {
+                        std::string ignoredTextureRetirementError;
+                        m_TextureRuntime->Retire(executed.Completions[1], ignoredTextureRetirementError);
+                    }
                     return false;
                 }
             }
@@ -409,6 +505,9 @@ namespace Engine
                 && m_Pipeline && rasterFrame.HasValidView && !rasterFrame.Instances.empty() && !draws.empty())
                 Log::Info("SceneMeshGpuIntegrationV1 backend=D3D12 snapshot=pass resolver=pass cache=pass indexFormat=UInt32 baseVertex=0 instances=", rasterFrame.Instances.size(),
                     " draws=", draws.size(), " constants=per-instance retained=gpu-retirement result=pass");
+            if (Application::Get().GetSpecification().CommandLineArgs.HasFlag("--scene-viewport-render-graph-smoke")
+                && !usedTextureHandles.empty())
+                Log::Info("SceneMaterialTextureIntegrationV1 backend=D3D12 material=immutable texture=sRGB-base-color sampler=declared table=bound mips=implicit fallbacks=semantic retained=exact-raster-token result=pass");
             if (Application::Get().GetSpecification().CommandLineArgs.HasFlag("--scene-viewport-render-graph-smoke"))
                 Log::Info("ProductionRenderGraphRetirementV1 backend=D3D12 frame=", Application::Get().GetFrameIndex(),
                     " passes=", executed.AcceptedPassCount, " cpuWaitBetween=no pending=", m_SubmittedGraphFrames.GetPendingCount(), " result=pass");
@@ -473,7 +572,9 @@ namespace Engine
             request.CompilerPackageHash = GE_SLANG_PACKAGE_SHA256;
             request.DownstreamCompilerPackageHash = GE_DXC_PACKAGE_SHA256;
             request.ExpectedLayout = {
-                { "ViewportConstants", 'b', 0, 0, stage, "ConstantBuffer", "struct{ViewProjection:float32x4x4:row-major@0}", 1, 64, 0, 0 }
+                { "ViewportConstants", 'b', 0, 0, stage, "ConstantBuffer", "struct{ViewProjection:float32x4x4:row-major@0,BaseColorAndAlphaCutoff:float32x4@64,EmissiveAndStrength:float32x4@80,SurfaceFactors:float32x4@96,CallistoFactors:float32x4@112,TextureIndices0:uint32x4@128,TextureIndices1:uint32x4@144,TextureState:uint32x4@160}", 1, 176, 0, 0 },
+                { "ReadOnlySamplers", 's', 0, 1, stage, "SamplerState", "sampler", kSceneTextureTableCapacity, 0, 0, 0 },
+                { "ReadOnlyTextures", 't', 0, 1, stage, "Texture2D", "float32x4", kSceneTextureTableCapacity, 0, 1, 4 }
             };
             if (stage == RHI::ShaderStage::Vertex)
             {
@@ -632,9 +733,11 @@ namespace Engine
         {
             Scope<RHI::Shader> vertexShader;
             Scope<RHI::Shader> pixelShader;
-            if (!CreateRhiShader(RHI::ShaderStage::Vertex, "VSMain", "Editor Viewport Vertex Shader", vertexPackage.Dxil, vertexShader))
+            if (!CreateRhiShader(RHI::ShaderStage::Vertex, "VSMain", "Editor Viewport Vertex Shader",
+                vertexPackage.Dxil, vertexPackage.Reflection, vertexShader))
                 return false;
-            if (!CreateRhiShader(RHI::ShaderStage::Pixel, "PSMain", "Editor Viewport Pixel Shader", pixelPackage.Dxil, pixelShader))
+            if (!CreateRhiShader(RHI::ShaderStage::Pixel, "PSMain", "Editor Viewport Pixel Shader",
+                pixelPackage.Dxil, pixelPackage.Reflection, pixelShader))
                 return false;
 
             RHI::PipelineDescription pipelineDesc;
@@ -650,6 +753,8 @@ namespace Engine
             pipelineDesc.ConstantBufferBindings = {
                 { 0, 0, RHI::ShaderStage::AllGraphics }
             };
+            pipelineDesc.SampledTextureTable = RHI::SampledTextureTableBinding {
+                kSceneTextureTableCapacity };
             pipelineDesc.Topology = RHI::PrimitiveTopology::TriangleList;
             pipelineDesc.RasterCullMode = RHI::CullMode::None;
             pipelineDesc.ColorFormat = RHI::Format::R8G8B8A8Unorm;
@@ -676,6 +781,7 @@ namespace Engine
             const char* entryPoint,
             const char* debugName,
             const std::vector<u8>& dxil,
+            const std::vector<RHI::ShaderReflectionBinding>& reflection,
             Scope<RHI::Shader>& shader)
         {
             RHI::ShaderDescription description;
@@ -685,6 +791,7 @@ namespace Engine
             description.Stage = stage;
             description.BinaryFormat = RHI::ShaderBinaryFormat::Dxil;
             description.Binary = dxil;
+            description.Reflection = reflection;
 
             shader = m_RHIDevice->CreateShader(description);
             if (!shader)

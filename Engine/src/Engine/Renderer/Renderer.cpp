@@ -801,6 +801,16 @@ namespace Engine
         return s_FramePacingPolicy;
     }
 
+    bool Renderer::RecordInputEvent(u64 applicationFrameIndex, RendererInputEventKind kind,
+        int code, bool repeated)
+    {
+        if (!s_RendererFrameTimingActive || s_FrameTiming.FrameIndex != applicationFrameIndex)
+            return false;
+        s_FrameTiming.InputEvents.push_back({ kind, code, repeated,
+            ToMilliseconds(Clock::now() - s_RendererFrameStart) });
+        return true;
+    }
+
     std::optional<RendererInputSample> Renderer::RecordInputSample(u64 applicationFrameIndex)
     {
         if (!s_RendererFrameTimingActive || s_FrameTiming.FrameIndex != applicationFrameIndex)

@@ -308,9 +308,17 @@ namespace Engine
                 ++m_SuccessfulPresentCount;
                 if (m_ViewportTextureQueued)
                 {
-                    Log::Info("VulkanSceneOutputHandoffV1 producer=pass outputGeneration=", m_ViewportOutputGeneration,
-                        " descriptor=registered descriptorGeneration=", m_ViewportDescriptorGeneration,
-                        " imgui=queued present=pass swapchainGeneration=", m_SwapchainGeneration);
+                    if (m_ViewportOutputGeneration != m_LastLoggedViewportOutputGeneration
+                        || m_ViewportDescriptorGeneration != m_LastLoggedViewportDescriptorGeneration
+                        || m_SwapchainGeneration != m_LastLoggedViewportSwapchainGeneration)
+                    {
+                        Log::Info("VulkanSceneOutputHandoffV1 producer=pass outputGeneration=", m_ViewportOutputGeneration,
+                            " descriptor=registered descriptorGeneration=", m_ViewportDescriptorGeneration,
+                            " imgui=queued present=pass swapchainGeneration=", m_SwapchainGeneration);
+                        m_LastLoggedViewportOutputGeneration = m_ViewportOutputGeneration;
+                        m_LastLoggedViewportDescriptorGeneration = m_ViewportDescriptorGeneration;
+                        m_LastLoggedViewportSwapchainGeneration = m_SwapchainGeneration;
+                    }
                     m_ViewportTextureQueued = false;
                 }
             }
@@ -389,6 +397,9 @@ namespace Engine
             m_ViewportImageView = VK_NULL_HANDLE;
             m_ViewportSampler = VK_NULL_HANDLE;
             m_ViewportTextureQueued = false;
+            m_LastLoggedViewportOutputGeneration = 0;
+            m_LastLoggedViewportDescriptorGeneration = 0;
+            m_LastLoggedViewportSwapchainGeneration = 0;
         }
 
         void MarkViewportTextureQueued(u64 textureId)
@@ -512,6 +523,9 @@ namespace Engine
         u64 m_ViewportTextureId = 0;
         u64 m_ViewportOutputGeneration = 0;
         u64 m_ViewportDescriptorGeneration = 0;
+        u64 m_LastLoggedViewportOutputGeneration = 0;
+        u64 m_LastLoggedViewportDescriptorGeneration = 0;
+        u64 m_LastLoggedViewportSwapchainGeneration = 0;
         bool m_ViewportTextureQueued = false;
         struct SubmittedFrameAssociation { u64 ApplicationFrameIndex = 0; u64 SwapchainGeneration = 0; };
         std::unordered_map<u32, SubmittedFrameAssociation> m_SubmittedFrameIds;

@@ -59,7 +59,7 @@ foreach ($offset in @(10000, 20000, 30000)) {
     }
 }
 $engine = [ordered]@{
-    schema = 7
+    schema = 8
     condition = [ordered]@{
         runId = $runId; processId = $PID; executablePath = [IO.Path]::GetFullPath($processPath); qpcFrequency = $frequency
         backend = if ($Backend -eq "Vulkan") { "NVRHI Vulkan" } else { "NVRHI D3D12" }

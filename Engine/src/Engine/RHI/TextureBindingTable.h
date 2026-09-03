@@ -56,6 +56,12 @@ namespace Engine::RHI
 
         CapabilityPath GetSelectedPath() const { return m_SelectedPath; }
         u32 GetCapacity() const { return static_cast<u32>(m_Slots.size()); }
+        // Native bounded-table realizations use this pair as an immutable
+        // snapshot key. Identity distinguishes a newly allocated table at a
+        // reused address; revision advances only when published slot content
+        // changes, never while a GPU-retired operation is merely pending.
+        u64 GetIdentity() const { return m_Identity; }
+        u64 GetRevision() const { return m_Revision; }
         TextureBindingHandle GetErrorHandle() const { return { 0, m_Slots[0].Generation }; }
         // Public binding validation intentionally exposes only exact-device
         // identity; native descriptor ownership remains backend-private.
@@ -100,9 +106,12 @@ namespace Engine::RHI
         static bool IsValidSampler(TextureSampler sampler);
         bool IsCurrent(TextureBindingHandle handle) const;
         bool CanRetireToken(const CompletionToken& token) const;
+        void AdvanceRevision();
 
         Device& m_Device;
         CapabilityPath m_SelectedPath = CapabilityPath::None;
         std::vector<Slot> m_Slots;
+        u64 m_Identity = 0;
+        u64 m_Revision = 1;
     };
 }

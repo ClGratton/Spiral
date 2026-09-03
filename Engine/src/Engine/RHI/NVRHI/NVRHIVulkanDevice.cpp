@@ -200,6 +200,16 @@ namespace Engine::RHI
             nvrhi::ShaderHandle m_Shader;
         };
 
+        struct VulkanSampledTextureTableState
+        {
+            u64 TableIdentity = 0;
+            u64 TableRevision = 0;
+            u32 Capacity = 0;
+            nvrhi::BindingSetHandle BindingSet;
+            std::array<nvrhi::SamplerHandle, 4> Samplers;
+            std::vector<Ref<Texture>> RetainedTextures;
+        };
+
         class VulkanPipeline final : public Pipeline
         {
         public:
@@ -209,6 +219,25 @@ namespace Engine::RHI
             nvrhi::IInputLayout* InputLayout() const { return m_InputLayout; }
             nvrhi::IBindingLayout* Bindings() const { return m_Bindings; }
             nvrhi::IBindingLayout* TableBindings() const { return m_TableBindings; }
+            Ref<VulkanSampledTextureTableState> FindSampledTextureTableState(
+                u64 identity, u64 revision) const
+            {
+                return m_SampledTextureTableState
+                    && m_SampledTextureTableState->TableIdentity == identity
+                    && m_SampledTextureTableState->TableRevision == revision
+                    ? m_SampledTextureTableState : nullptr;
+            }
+            void PublishSampledTextureTableState(Ref<VulkanSampledTextureTableState> state)
+            {
+                m_SampledTextureTableState = std::move(state);
+            }
+            bool ReportSampledTextureTableReuseOnce()
+            {
+                if (m_SampledTextureTableReuseReported)
+                    return false;
+                m_SampledTextureTableReuseReported = true;
+                return true;
+            }
             nvrhi::IGraphicsPipeline* GetOrCreateNative(nvrhi::IDevice* device, const nvrhi::FramebufferInfo& framebufferInfo)
             {
                 if (m_NativePipeline && m_FramebufferInfo == framebufferInfo)
@@ -238,6 +267,8 @@ namespace Engine::RHI
             nvrhi::ShaderHandle m_Pixel;
             nvrhi::GraphicsPipelineHandle m_NativePipeline;
             nvrhi::FramebufferInfo m_FramebufferInfo;
+            Ref<VulkanSampledTextureTableState> m_SampledTextureTableState;
+            bool m_SampledTextureTableReuseReported = false;
         };
 
         struct VulkanTimestampQueryState
@@ -311,11 +342,9 @@ namespace Engine::RHI
                 m_TextureOwnershipOperations.clear();
                 m_Pipeline = nullptr;
                 m_BindingSet = nullptr;
-                m_TableBindingSet = nullptr;
+                m_TableBindingState.reset();
                 m_ConstantBuffer = nullptr;
                 m_TextureTable = nullptr;
-                m_TableSamplers.clear();
-                m_BoundTableTextures.clear();
                 m_State = State::Recording;
                 return true;
             }
@@ -472,11 +501,9 @@ namespace Engine::RHI
             {
                 m_Pipeline = dynamic_cast<VulkanPipeline*>(&pipeline);
                 m_BindingSet = nullptr;
-                m_TableBindingSet = nullptr;
+                m_TableBindingState.reset();
                 m_ConstantBuffer = nullptr;
                 m_TextureTable = nullptr;
-                m_TableSamplers.clear();
-                m_BoundTableTextures.clear();
             }
             void SetGraphicsConstantBuffer(u32 rootParameterIndex, Buffer& buffer) override
             {
@@ -495,11 +522,32 @@ namespace Engine::RHI
                     || m_Pipeline->GetDescription().SampledTextureTable->Capacity != table.GetCapacity()
                     || !table.IsOwnedBy(*m_OwnerDevice) || !m_Pipeline->TableBindings())
                     return false;
+
+                Ref<VulkanSampledTextureTableState> cached = m_Pipeline->FindSampledTextureTableState(
+                    table.GetIdentity(), table.GetRevision());
+                if (cached)
+                {
+                    for (const Ref<Texture>& retained : cached->RetainedTextures)
+                    {
+                        auto* texture = dynamic_cast<VulkanTexture*>(retained.get());
+                        if (!texture || !CanUseTexture(texture)
+                            || texture->GetCurrentState() != ResourceState::ShaderResource)
+                            return false;
+                    }
+                    m_TableBindingState = std::move(cached);
+                    m_TextureTable = &table;
+                    if (m_Pipeline->ReportSampledTextureTableReuseOnce())
+                        Log::Info("VulkanSampledTableCacheV1 identity=", table.GetIdentity(),
+                            " revision=", table.GetRevision(), " capacity=", table.GetCapacity(),
+                            " nativeRebuild=avoided result=pass");
+                    return true;
+                }
+
                 nvrhi::BindingSetDesc tableBindings;
-                std::vector<nvrhi::SamplerHandle> samplers;
-                std::vector<Ref<Texture>> retained;
-                samplers.reserve(table.GetCapacity());
-                retained.reserve(table.GetCapacity());
+                Ref<VulkanSampledTextureTableState> state = CreateRef<VulkanSampledTextureTableState>();
+                state->TableIdentity = table.GetIdentity();
+                state->TableRevision = table.GetRevision();
+                state->Capacity = table.GetCapacity();
                 for (u32 index = 0; index < table.GetCapacity(); ++index)
                 {
                     const TextureBindingView view = table.ResolvePublishedSlot(index);
@@ -509,19 +557,26 @@ namespace Engine::RHI
                     nvrhi::SamplerDesc samplerDescription;
                     const bool point = view.Sampler == TextureSampler::PointClamp || view.Sampler == TextureSampler::PointWrap;
                     const bool wrap = view.Sampler == TextureSampler::LinearWrap || view.Sampler == TextureSampler::PointWrap;
-                    samplerDescription.setAllFilters(!point).setAllAddressModes(wrap ? nvrhi::SamplerAddressMode::Wrap : nvrhi::SamplerAddressMode::Clamp);
-                    nvrhi::SamplerHandle sampler = m_Device->createSampler(samplerDescription);
-                    if (!sampler) return false;
+                    const size_t samplerIndex = static_cast<size_t>(view.Sampler);
+                    if (samplerIndex >= state->Samplers.size()) return false;
+                    if (!state->Samplers[samplerIndex])
+                    {
+                        samplerDescription.setAllFilters(!point).setAllAddressModes(
+                            wrap ? nvrhi::SamplerAddressMode::Wrap : nvrhi::SamplerAddressMode::Clamp);
+                        state->Samplers[samplerIndex] = m_Device->createSampler(samplerDescription);
+                    }
+                    if (!state->Samplers[samplerIndex]) return false;
                     tableBindings.bindings.push_back(nvrhi::BindingSetItem::Texture_SRV(0, texture->Native()).setArrayElement(index));
-                    tableBindings.bindings.push_back(nvrhi::BindingSetItem::Sampler(0, sampler).setArrayElement(index));
-                    samplers.push_back(sampler);
-                    retained.push_back(view.TextureResource);
+                    tableBindings.bindings.push_back(nvrhi::BindingSetItem::Sampler(
+                        0, state->Samplers[samplerIndex]).setArrayElement(index));
+                    if (std::none_of(state->RetainedTextures.begin(), state->RetainedTextures.end(),
+                        [&](const Ref<Texture>& retained) { return retained.get() == view.TextureResource.get(); }))
+                        state->RetainedTextures.push_back(view.TextureResource);
                 }
-                nvrhi::BindingSetHandle bindingSet = m_Device->createBindingSet(tableBindings, m_Pipeline->TableBindings());
-                if (!bindingSet) return false;
-                m_TableBindingSet = std::move(bindingSet);
-                m_TableSamplers = std::move(samplers);
-                m_BoundTableTextures = std::move(retained);
+                state->BindingSet = m_Device->createBindingSet(tableBindings, m_Pipeline->TableBindings());
+                if (!state->BindingSet) return false;
+                m_Pipeline->PublishSampledTextureTableState(state);
+                m_TableBindingState = std::move(state);
                 m_TextureTable = &table;
                 return true;
             }
@@ -559,8 +614,8 @@ namespace Engine::RHI
                 state.setPipeline(nativePipeline).setFramebuffer(m_Framebuffer).setViewport(viewport).addBindingSet(m_BindingSet)
                     .addVertexBuffer(nvrhi::VertexBufferBinding().setBuffer(m_Vertex->Native()).setSlot(0).setOffset(0))
                     .setIndexBuffer(nvrhi::IndexBufferBinding().setBuffer(m_Index->Native()).setFormat(m_IndexFormat == IndexFormat::Uint16 ? nvrhi::Format::R16_UINT : nvrhi::Format::R32_UINT).setOffset(0));
-                if (m_Pipeline->GetDescription().SampledTextureTable && !m_TableBindingSet) return;
-                if (m_TableBindingSet) state.addBindingSet(m_TableBindingSet);
+                if (m_Pipeline->GetDescription().SampledTextureTable && !m_TableBindingState) return;
+                if (m_TableBindingState) state.addBindingSet(m_TableBindingState->BindingSet);
                 m_List->setGraphicsState(state);
                 m_List->drawIndexed(nvrhi::DrawArguments().setVertexCount(indexCount).setInstanceCount(instanceCount).setStartIndexLocation(startIndex).setStartVertexLocation(0).setStartInstanceLocation(startInstance));
             }
@@ -787,12 +842,10 @@ namespace Engine::RHI
             nvrhi::IDevice* m_Device = nullptr;
             nvrhi::FramebufferHandle m_Framebuffer;
             nvrhi::BindingSetHandle m_BindingSet;
-            nvrhi::BindingSetHandle m_TableBindingSet;
+            Ref<VulkanSampledTextureTableState> m_TableBindingState;
             VulkanBuffer* m_ConstantBuffer = nullptr;
             TextureBindingTable* m_TextureTable = nullptr;
             Device* m_OwnerDevice = nullptr;
-            std::vector<nvrhi::SamplerHandle> m_TableSamplers;
-            std::vector<Ref<Texture>> m_BoundTableTextures;
             VulkanTexture* m_Color = nullptr;
             VulkanTexture* m_Depth = nullptr;
             VulkanPipeline* m_Pipeline = nullptr;

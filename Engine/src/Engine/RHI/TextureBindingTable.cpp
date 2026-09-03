@@ -1,7 +1,14 @@
 #include "Engine/RHI/TextureBindingTable.h"
 
+#include <atomic>
+
 namespace Engine::RHI
 {
+    namespace
+    {
+        std::atomic<u64> s_NextTextureBindingTableIdentity { 1 };
+    }
+
     CapabilityPath SelectReadOnlyTextureTablePath(const DeviceCapabilities& capabilities)
     {
         return capabilities.GetFeature(DeviceFeature::DescriptorIndexing).IsUsable()
@@ -20,11 +27,19 @@ namespace Engine::RHI
     }
 
     TextureBindingTable::TextureBindingTable(Device& device, CapabilityPath selectedPath, const TextureBindingTableDescription& description)
-        : m_Device(device), m_SelectedPath(selectedPath), m_Slots(description.Capacity)
+        : m_Device(device), m_SelectedPath(selectedPath), m_Slots(description.Capacity),
+          m_Identity(s_NextTextureBindingTableIdentity.fetch_add(1))
     {
         m_Slots[0].TextureResource = description.ErrorTexture;
         m_Slots[0].Sampler = description.ErrorSampler;
         m_Slots[0].Active = true;
+    }
+
+    void TextureBindingTable::AdvanceRevision()
+    {
+        ++m_Revision;
+        if (m_Revision == 0)
+            ++m_Revision;
     }
 
     bool TextureBindingTable::IsReadOnlyOwnedTexture(const Ref<Texture>& texture) const
@@ -70,6 +85,7 @@ namespace Engine::RHI
             slot.Active = true;
             slot.TextureResource = texture;
             slot.Sampler = sampler;
+            AdvanceRevision();
             return { index, slot.Generation };
         }
         return {};
@@ -85,6 +101,7 @@ namespace Engine::RHI
             return false;
         slot.TextureResource = replacement;
         slot.Sampler = sampler;
+        AdvanceRevision();
         return true;
     }
 
@@ -100,6 +117,7 @@ namespace Engine::RHI
         ++slot.Generation;
         if (slot.Generation == 0)
             ++slot.Generation;
+        AdvanceRevision();
         return true;
     }
 
@@ -148,6 +166,8 @@ namespace Engine::RHI
             }
             changed = true;
         }
+        if (changed)
+            AdvanceRevision();
         return changed;
     }
 
