@@ -7,6 +7,7 @@ Owned responsibilities:
 - worker lifecycle, external job injection, worker-local queues, and work stealing;
 - stable worker identity and scheduler statistics for diagnostics;
 - frame-task dependency validation, execution lanes, graph-local completion, failure/skip propagation, deterministic single-thread execution, and profiler events;
+- graph-local completion state whose last worker notification completes before a waiter can observe the terminal count and return;
 - typed staged publication that exposes immutable data only after a producer succeeds.
 
 Forbidden responsibilities:

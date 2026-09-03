@@ -34,7 +34,8 @@ namespace Engine
         SceneRenderTransform Transform;
         LightType Type = LightType::Directional;
         Math::Vec3 Color = { 1.0f, 1.0f, 1.0f };
-        float Intensity = 1.0f;
+        double PhotometricValue = kDefaultDirectionalIlluminanceLux;
+        LightPhotometricUnit PhotometricUnit = LightPhotometricUnit::Lux;
         float Range = 10.0f;
         float InnerConeDegrees = 25.0f;
         float OuterConeDegrees = 45.0f;

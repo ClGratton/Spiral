@@ -175,7 +175,8 @@ namespace Engine
             if (source.SourceEntity == kInvalidEntityId || !IsFinite(source.Color)
                 || source.Color.X < 0.0f || source.Color.Y < 0.0f || source.Color.Z < 0.0f
                 || !IsFinite(source.Transform.RotationDegrees)
-                || !std::isfinite(source.Intensity) || source.Intensity < 0.0f
+                || !IsValidLightPhotometricValue(
+                    source.Type, source.PhotometricUnit, source.PhotometricValue)
                 || !std::isfinite(source.Range) || source.Range < 0.0f
                 || !std::isfinite(source.InnerConeDegrees)
                 || !std::isfinite(source.OuterConeDegrees)
@@ -214,7 +215,8 @@ namespace Engine
             light.WorldDirection = LightDirection(source.Transform.RotationDegrees);
             light.ViewDirection = TransformDirection(light.WorldDirection, view.View);
             light.Color = source.Color;
-            light.Intensity = source.Intensity;
+            light.PhotometricValue = source.PhotometricValue;
+            light.PhotometricUnit = source.PhotometricUnit;
             light.Range = source.Range;
             light.InnerConeCosine = std::cos(Math::DegreesToRadians(source.InnerConeDegrees));
             light.OuterConeCosine = std::cos(Math::DegreesToRadians(source.OuterConeDegrees));
@@ -227,7 +229,7 @@ namespace Engine
                 candidate.GlobalLightIndices.push_back(lightIndex);
                 continue;
             }
-            if (source.Range <= 0.0f || source.Intensity <= 0.0f)
+            if (source.Range <= 0.0f || source.PhotometricValue <= 0.0)
                 continue;
 
             const float minimumDepth = std::max(candidate.NearClip, light.ViewPosition.Z - source.Range);

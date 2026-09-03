@@ -566,6 +566,38 @@ The focused `RHI sampled texture-table binding validates pipeline space offsets 
 
 Run `EngineTests --test "Clustered light grid builds bounded deterministic assignments"` for the CPU reference contract. It requires exact viewport tile/depth dimensions, a compact directional list, conservative local-light CSR assignment, deterministic cap overflow, camera/light orientation, logarithmic depth selection, and transactional invalid-request rejection. `Scripts/TestVulkan.sh Debug gmake --skip-build` and the hosted D3D12 render smoke expose `ClusteredLightGridV1` from the actual Scene render path. The marker must report nonzero dimensions, light/global/local-reference counts, explicit overflow, `storage=bounded-csr`, and `result=pass`. This is not GPU grid construction or proof that the current material shader evaluates point/spot lights.
 
+## Phase 3E Live-Editor Frame-Task Completion Lifetime Prerequisite
+
+After one coherent Debug build, run the focused forced-release race, complete Integration registry, and native Vulkan harness:
+
+```bash
+./bin/Debug-linux-x86_64-gmake/EngineTests/EngineTests --test "Frame task graph completion notification retains wait state"
+./bin/Debug-linux-x86_64-gmake/EngineTests/EngineTests --tier integration
+bash Scripts/TestVulkan.sh Debug gmake --skip-build
+```
+
+The focused test uses one worker and 4,096 fresh mixed caller/worker graphs. The caller waits until the worker reaches its release gate, releases it, and immediately lets `Execute` observe terminal completion; every execution must succeed, every submitted job must complete, and the same worker must remain reusable. This targets the exact lifetime failure hypothesis: decrementing the stack-local terminal count before a later out-of-lock `notify_one` allowed the caller to observe zero and destroy the condition variable before the final worker used it. The retained implementation performs the zero transition and notification inside the same completion-mutex critical section.
+
+The headed gate uses the actual current Debug Editor with `--renderer-vulkan`, confirms the reported Vulkan device/backend and requested monitor placement, performs real viewport or Inspector input, exceeds the observed failure window, closes the exact window through the desktop/window-manager path, and requires normal Application, Jobs, Renderer, and GLFW teardown. Compare `coredumpctl` before and after; intentional fatal-signal test child dumps are not Editor failures.
+
+The 2026-09-03 acceptance passed a warning-free Debug GMake build, the focused test in 50.464 ms, 102/102 Integration tests, style/diff gates, and the complete native NVIDIA GeForce RTX 3080 Ti Vulkan harness. The rebuilt Editor PID 679685 ran for 16 minutes 59 seconds and 203,687 frames; a 150-sample guarded monitor covered 749 seconds after launch preparation, every sample remained alive, and real photometric Inspector interactions ran during the soak. Window-manager close produced `Application stopped`, `Job system shutdown`, `Renderer shutdown`, GLFW destruction, and log shutdown, and `coredumpctl` contained no Editor dump after launch. GPU process residency stayed at 87 MiB. CPU RSS rose from 133,948 KiB at the first monitor sample to 200,060 KiB before close; the completion-lifetime prerequisite makes no CPU-memory-stability claim, and that observation must be investigated or bounded separately rather than attributed to this fix.
+
+## Phase 3E Photometric Light Authoring/Publication/Readout Prerequisite
+
+After one coherent Debug build, run the focused CPU contract, complete integration registry, and native Vulkan harness:
+
+```bash
+./bin/Debug-linux-x86_64-gmake/EngineTests/EngineTests --test "Photometric light schema publication and diagnostics are transactional"
+./bin/Debug-linux-x86_64-gmake/EngineTests/EngineTests --tier integration
+bash Scripts/TestVulkan.sh Debug gmake --skip-build
+```
+
+The focused test must prove the default and type/unit mapping; the documented schema-1-through-4 migration scales including exact-at-boundary acceptance and above-boundary rejection; schema-5 self-describing round trip with nontrivial-double precision; wrong-unit, negative, nonfinite, out-of-range, duplicate-Light, and trailing-token rejection without destination replacement; exact typed publication through `SceneRenderSnapshot` and `ClusteredLightGrid`; and the public effective-EV100/`exp2(-EV100)` diagnostic math. The Vulkan harness requires `ScenePhotometricLightPublicationV1 backend=Vulkan` with directional/local counts, `directionalUnit=lux localUnit=lm snapshot=typed grid=typed`, effective EV100 and exposure scale, and `shaderConsumption=no result=pass` from the actual Scene viewport path.
+
+The CPU test is backend-neutral and can run natively on Linux. The marker qualifies only a successful Linux/Vulkan execution on the device used; Windows/D3D12 and macOS/MoltenVK remain separately gated. Neither command proves light-buffer upload, physical attenuation or angular normalization, shader lighting, PBR, shadows, or visible response to changing a photometric value. The headed acceptance gate is the actual Debug Vulkan Editor Inspector: select directional, point, and spot lights; confirm the control changes between `Illuminance (lux)` and `Luminous flux (lm)` and that the readout reports the selected type/value/unit plus the effective project EV100 and exposure scale; enter an invalid value and confirm the prior valid component remains intact. Because this readout is diagnostic-only, visible scene brightness must remain unchanged in this prerequisite.
+
+The 2026-09-03 Linux acceptance passed the warning-free Debug GMake build, the focused test in 0.735 ms, 102/102 Integration tests, style/diff gates, and the complete native RTX 3080 Ti Vulkan harness. Its smoke scene contained one 30,000-lux directional light and one 2,000-lumen point light, and emitted the required exact EV0 marker with `directional=1 local=1`; later ordinary Editor frames honestly reported `local=0 localUnit=none` when only the default directional light existed. In the actual rebuilt Debug Editor on DP-3, Wayland virtual-pointer and targeted key input selected Directional, Point, and Spot; the control/readout changed from lux to lumens and reported effective EV100 0/exposure scale 1. Spot was set to its valid 10,000,000 lm maximum, then the `+10` step was clicked and both the stored value and readout remained at 10,000,000 lm, proving the invalid candidate did not replace the prior valid component. The live component was restored to Directional 30,000 lux without saving. Ignored evidence is under `output/verification/frame-task-photometric-20260903-accepted` and `output/live/photometric-*.png`.
+
 ## Phase 3E Scene-Linear HDR Foundation
 
 After one coherent Debug build, run the complete integration registry and native backend harness:

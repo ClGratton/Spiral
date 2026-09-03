@@ -72,7 +72,7 @@ namespace Spiral::Tests
         const int sector = static_cast<int>(byte(2, 0)) - 128;
         const double local = (static_cast<int>(byte(3, 128)) - 128) * 0.25;
         std::ostringstream output;
-        output << "SpiralScene 4\nName \"Structured Fuzz\"\n\n"
+        output << "SpiralScene 5\nName \"Structured Fuzz\"\n\n"
             << "[WorldGrid]\nVersion 1\nSectorExtent 4096\nOriginHysteresis 1024\nOriginMode ExactCamera\n\n"
             << "[MainCamera]\nPrimary true\nVerticalFovDegrees 45\nNearClip 0.1\nFarClip 1000\n"
             << "BackgroundColor 0.1 0.2 0.3\n\n[Entities]\nNextEntityId 2\nMainCameraEntity 1\n"

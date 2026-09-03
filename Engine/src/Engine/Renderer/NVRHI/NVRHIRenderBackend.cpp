@@ -2246,6 +2246,21 @@ float4 PSMain(PixelInput input) : SV_Target { return ReadOnlyTextures[1].SampleL
             Math::DegreesToRadians(60.0f), 4.0f / 3.0f, 0.1f, 100.0f);
         view.Camera.ViewProjection = Math::Mat4::Identity();
         snapshot.Views.push_back(view);
+        SceneRenderLight directionalLight;
+        directionalLight.SourceEntity = 2;
+        directionalLight.Transform.Position = view.Camera.TranslationOriginPosition;
+        directionalLight.PhotometricValue = 30000.0;
+        snapshot.Lights.push_back(directionalLight);
+        SceneRenderLight pointLight;
+        pointLight.SourceEntity = 3;
+        pointLight.Type = LightType::Point;
+        pointLight.PhotometricValue = 2000.0;
+        pointLight.PhotometricUnit = LightPhotometricUnit::Lumens;
+        pointLight.Range = 10.0f;
+        if (!Math::TryDecomposeWorldPosition(
+                { 0.0, 0.0, 5.0 }, snapshot.WorldGridPolicy, pointLight.Transform.Position))
+            return false;
+        snapshot.Lights.push_back(pointLight);
         SceneRenderMesh mesh;
         mesh.SourceEntity = 1;
         mesh.MeshAsset = smokeMesh;

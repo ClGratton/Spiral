@@ -448,7 +448,27 @@ Rules:
 
 The CPU prototype does not make the renderer CPU-driven permanently. The GPU build must match this reference on deterministic fixtures before replacing it, and the later light consumer must retain a bounded overflow/debug path rather than silently dropping unreported lights.
 
-## 15. Material ID And BRDF Table Contract
+## 15. Photometric Light Authoring And Publication Contract
+
+Phase 3E light authoring uses an explicit type-dependent photometric value/unit pair. This is a Scene authoring, persistence, immutable-snapshot publication, clustered-record publication, Editor readout, and diagnostic-math prerequisite; it does not yet make any light shader-visible.
+
+Accepted semantics:
+
+- Directional lights store illuminance in lux. Point and spot lights store luminous flux in lumens. `LightPhotometricUnit` is serialized and carried beside the numeric value; inferring a missing unit is allowed only while migrating scene schemas 1 through 4.
+- The default directional light is `10,000 lux`. Accepted values are finite and nonnegative, with an explicit upper bound of `1,000,000,000 lux` for directional lights and `10,000,000 lm` for point/spot lights. A type/unit mismatch, invalid enum, negative/nonfinite value, or value above the type bound rejects the whole component or scene load without replacing the destination.
+- Scene schema 5 writes `PhotometricValue` followed by `Lux` or `Lumens` in every light record. Schemas 1 through 4 migrate the old unitless scalar monotonically: directional values multiply by `10,000` and local-light values multiply by `100`. Thus the previous shipped directional value `3` becomes `30,000 lux` and the clustered-grid local fixture value `20` becomes `2,000 lm`. Each positive per-type scale preserves ordering, equality, zero, and ratios among legacy lights of the same type. Cross-type ratios are deliberately not preserved because the former directional and local scalars had no shared physical dimension.
+- The migration bounds retain the former Editor scalar ceiling of `100,000`: multiplied by its type's migration scale, it lands exactly on the new accepted maximum. Larger legacy values reject instead of being clamped or silently reinterpreted.
+- `SceneRenderSnapshot` and `ClusteredLightGrid` records carry the exact validated double-precision value and explicit unit. Neither layer converts to radiance, applies attenuation, uploads a light buffer, nor consumes the values in a shader.
+- The Inspector obtains its unit label from the public Scene helper, retains the prior valid value when an edit is invalid, and publishes one concise public diagnostic record containing selected light type/value/unit plus the effective project EV100 and `exp2(-EV100)` exposure scale. Editor code must not duplicate type-to-unit label policy or exposure math.
+
+Calibration boundary:
+
+- The current scene-linear target and project exposure convention remain relative: tone mapping multiplies rendered scene-linear values by `exp2(-effectiveEV100)`, with EV100 `0` producing unit scale. Publishing a physical light value beside that scale is an authoring/readout calibration convention, not proof that lux or lumens currently determine scene radiance.
+- The future point-light consumer must normalize luminous flux over an isotropic sphere (`4*pi` steradians) before applying its defined inverse-square/range policy. The future spot-light consumer must normalize its angular distribution so the integral over the authored cone equals the stored luminous flux; for a uniform cone the solid angle is `2*pi*(1-cos(thetaOuter))`, while a smooth inner/outer falloff requires its own integral rather than an unnormalized multiplier. The lighting slice must also define the color/luminous-efficacy-to-radiometric convention before shader consumption. These conversions belong at the renderer light-consumption boundary, not in Scene persistence or clustered assignment.
+
+The native marker may prove that valid typed records reached the Vulkan Scene snapshot/grid path and that the same accepted exposure settings produced the reported readout math. It must say `shaderConsumption=no`; it is not evidence for PBR, photometric attenuation, GPU light buffers, shadows, D3D12 execution, or MoltenVK execution.
+
+## 16. Material ID And BRDF Table Contract
 
 Material IDs are a core part of the "not plastic" material strategy.
 
@@ -467,7 +487,7 @@ Do not:
 - Require a new lighting shader permutation for every material instance.
 - Use material IDs to hide bad texture packing or missing calibrated parameters.
 
-## 16. Color Pipeline And Tone Mapping Contract
+## 17. Color Pipeline And Tone Mapping Contract
 
 Tone mapping is not an arbitrary final-post effect. It is part of the physical-material and exposure system.
 

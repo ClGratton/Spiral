@@ -102,18 +102,6 @@ namespace
         return false;
     }
 
-    const char* ToLightTypeName(Engine::LightType type)
-    {
-        switch (type)
-        {
-            case Engine::LightType::Directional: return "Directional";
-            case Engine::LightType::Point: return "Point";
-            case Engine::LightType::Spot: return "Spot";
-        }
-
-        return "Directional";
-    }
-
     bool ValidateCapabilityDiagnostics(const Engine::RHI::DeviceCapabilities& capabilities, std::string& error)
     {
         if (capabilities.ProfileName.empty())
@@ -1508,9 +1496,10 @@ void EditorLayer::DrawInspectorPanel()
         ImGui::Separator();
         ImGui::PushID("LightComponent");
         ImGui::TextUnformatted("Light Component");
-        Engine::LightComponent& light = *selectedEntity->Light;
+        const Engine::LightComponent originalLight = *selectedEntity->Light;
+        Engine::LightComponent editedLight = originalLight;
         bool lightChanged = false;
-        const char* lightTypeName = ToLightTypeName(light.Type);
+        const char* lightTypeName = Engine::ToString(editedLight.Type);
         if (ImGui::BeginCombo("Type", lightTypeName))
         {
             const Engine::LightType lightTypes[] = {
@@ -1520,10 +1509,11 @@ void EditorLayer::DrawInspectorPanel()
             };
             for (Engine::LightType candidate : lightTypes)
             {
-                const bool selected = light.Type == candidate;
-                if (ImGui::Selectable(ToLightTypeName(candidate), selected))
+                const bool selected = editedLight.Type == candidate;
+                if (ImGui::Selectable(Engine::ToString(candidate), selected))
                 {
-                    light.Type = candidate;
+                    editedLight.Type = candidate;
+                    editedLight.PhotometricUnit = Engine::GetLightPhotometricUnit(candidate);
                     lightChanged = true;
                 }
                 if (selected)
@@ -1531,15 +1521,42 @@ void EditorLayer::DrawInspectorPanel()
             }
             ImGui::EndCombo();
         }
-        lightChanged |= ImGui::ColorEdit3("Color", &light.Color.X);
-        lightChanged |= ImGui::DragFloat("Intensity", &light.Intensity, 0.05f, 0.0f, 100000.0f);
-        lightChanged |= ImGui::DragFloat("Range", &light.Range, 0.1f, 0.0f, 10000.0f);
-        lightChanged |= ImGui::DragFloat("Inner Cone", &light.InnerConeDegrees, 0.5f, 0.0f, 180.0f);
-        lightChanged |= ImGui::DragFloat("Outer Cone", &light.OuterConeDegrees, 0.5f, 0.0f, 180.0f);
-        if (light.OuterConeDegrees < light.InnerConeDegrees)
-            light.OuterConeDegrees = light.InnerConeDegrees;
-        lightChanged |= ImGui::Checkbox("Casts Shadows", &light.CastsShadows);
-        historyStateChanged |= lightChanged;
+        lightChanged |= ImGui::ColorEdit3("Color", &editedLight.Color.X);
+        const double photometricStep = editedLight.Type == Engine::LightType::Directional ? 100.0 : 10.0;
+        if (ImGui::InputDouble(Engine::GetLightPhotometricControlLabel(editedLight.Type),
+            &editedLight.PhotometricValue, photometricStep, photometricStep * 10.0, "%.2f"))
+        {
+            lightChanged = true;
+        }
+        lightChanged |= ImGui::DragFloat("Range", &editedLight.Range, 0.1f, 0.0f, 10000.0f);
+        lightChanged |= ImGui::DragFloat("Inner Cone", &editedLight.InnerConeDegrees, 0.5f, 0.0f, 180.0f);
+        lightChanged |= ImGui::DragFloat("Outer Cone", &editedLight.OuterConeDegrees, 0.5f, 0.0f, 180.0f);
+        if (editedLight.OuterConeDegrees < editedLight.InnerConeDegrees)
+            editedLight.OuterConeDegrees = editedLight.InnerConeDegrees;
+        lightChanged |= ImGui::Checkbox("Casts Shadows", &editedLight.CastsShadows);
+
+        bool lightEditAccepted = true;
+        if (lightChanged)
+        {
+            lightEditAccepted = Engine::IsValidLightComponent(editedLight)
+                && m_ActiveScene.AddLightComponent(selectedEntity->EntityHandle, editedLight);
+            historyStateChanged |= lightEditAccepted;
+        }
+        const Engine::LightComponent& readoutLight = lightEditAccepted ? editedLight : originalLight;
+        Engine::PhotometricLightReadout photometricReadout;
+        if (Engine::TryBuildPhotometricLightReadout(
+            readoutLight, m_ProjectColorPipelineSettings, photometricReadout))
+        {
+            ImGui::Text("%s: %.2f %s | effective EV100 %.2f | exposure scale %.6g",
+                Engine::ToString(photometricReadout.Type), photometricReadout.Value,
+                Engine::GetLightPhotometricUnitSymbol(photometricReadout.Unit),
+                photometricReadout.EffectiveExposureEV100, photometricReadout.ExposureScale);
+        }
+        if (!lightEditAccepted)
+        {
+            ImGui::TextDisabled("Photometric value must be finite and within the %s range; prior valid state is retained.",
+                Engine::GetLightPhotometricUnitSymbol(originalLight.PhotometricUnit));
+        }
         ImGui::PopID();
     }
 
@@ -4522,7 +4539,7 @@ void EditorLayer::EnsureDefaultSceneEntities()
         Engine::LightComponent light;
         light.Type = Engine::LightType::Directional;
         light.Color = { 1.0f, 0.96f, 0.86f };
-        light.Intensity = 3.0f;
+        light.PhotometricValue = 30000.0;
         m_ActiveScene.AddLightComponent(m_DirectionalLightEntity, light);
         if (Engine::TransformComponent* transform = m_ActiveScene.TryGetTransform(m_DirectionalLightEntity))
             transform->RotationDegrees = { 45.0f, -35.0f, 0.0f };

@@ -262,6 +262,30 @@ namespace Engine
             std::string lightGridError;
             if (!BuildClusteredLightGrid(snapshot, 0, width, height, {}, frame.LightGrid, lightGridError))
             { Log::Error("Vulkan Scene viewport could not build clustered light grid: ", lightGridError); return false; }
+            size_t directionalLightCount = 0;
+            size_t localLightCount = 0;
+            bool photometricPublicationValid = frame.LightGrid.Lights.size() == snapshot.Lights.size();
+            for (size_t lightIndex = 0;
+                photometricPublicationValid && lightIndex < snapshot.Lights.size(); ++lightIndex)
+            {
+                const SceneRenderLight& published = snapshot.Lights[lightIndex];
+                const ClusteredLightRecord& clustered = frame.LightGrid.Lights[lightIndex];
+                photometricPublicationValid = IsValidLightPhotometricValue(
+                        published.Type, published.PhotometricUnit, published.PhotometricValue)
+                    && clustered.SourceEntity == published.SourceEntity
+                    && clustered.Type == published.Type
+                    && clustered.PhotometricValue == published.PhotometricValue
+                    && clustered.PhotometricUnit == published.PhotometricUnit;
+                if (published.Type == LightType::Directional)
+                    ++directionalLightCount;
+                else
+                    ++localLightCount;
+            }
+            if (!photometricPublicationValid)
+            {
+                Log::Error("Vulkan Scene viewport rejected an invalid photometric light publication");
+                return false;
+            }
             Ref<ConstantBufferSet> constantBufferSet = AcquireConstantBuffers(snapshot.FrameIndex, frame.Instances.size());
             if (!constantBufferSet) return false;
             std::vector<ConstantBufferAllocation>& constants = constantBufferSet->Allocations;
@@ -382,6 +406,7 @@ namespace Engine
             if (Application::Get().GetSpecification().CommandLineArgs.HasFlag("--scene-viewport-render-graph-smoke") && !usedTextureHandles.empty()) Log::Info("SceneMaterialTextureIntegrationV1 backend=Vulkan material=immutable texture=sRGB-base-color sampler=declared table=bound mips=implicit fallbacks=semantic retained=exact-raster-token result=pass");
             if (Application::Get().GetSpecification().CommandLineArgs.HasFlag("--scene-viewport-render-graph-smoke")) Log::Info("ProductionRenderGraphRetirementV1 backend=Vulkan frame=", snapshot.FrameIndex, " passes=", executed.AcceptedPassCount, " cpuWaitBetween=no pending=", m_SubmittedGraphFrames.GetPendingCount(), " result=pass");
             if (Application::Get().GetSpecification().CommandLineArgs.HasFlag("--scene-viewport-render-graph-smoke")) Log::Info("ClusteredLightGridV1 backend=Vulkan tiles=", frame.LightGrid.TileCountX, "x", frame.LightGrid.TileCountY, " depthSlices=", frame.LightGrid.DepthSliceCount, " lights=", frame.LightGrid.Lights.size(), " global=", frame.LightGrid.GlobalLightIndices.size(), " localReferences=", frame.LightGrid.LocalLightIndices.size(), " overflow=", frame.LightGrid.OverflowedLocalLightReferences, " storage=bounded-csr result=pass");
+            if (Application::Get().GetSpecification().CommandLineArgs.HasFlag("--scene-viewport-render-graph-smoke")) Log::Info("ScenePhotometricLightPublicationV1 backend=Vulkan directional=", directionalLightCount, " local=", localLightCount, " directionalUnit=", directionalLightCount > 0 ? "lux" : "none", " localUnit=", localLightCount > 0 ? "lm" : "none", " snapshot=typed grid=typed effectiveExposureEV100=", EffectiveExposureEV100(colorSettings), " exposureScale=", ManualExposureScale(colorSettings), " shaderConsumption=no result=pass");
             const bool comparisonRequested = Application::Get().GetSpecification().CommandLineArgs.HasFlag("--scene-viewport-render-graph-smoke");
             if (comparisonRequested)
             {

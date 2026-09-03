@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <fstream>
 #include <iomanip>
+#include <limits>
 #include <sstream>
 #include <stdexcept>
 #include <string_view>
@@ -13,7 +14,7 @@ namespace Engine
 {
     namespace
     {
-        constexpr int kSceneFormatVersion = 4;
+        constexpr int kSceneFormatVersion = 5;
 
         void WriteVec3(std::ostream& stream, std::string_view name, const Math::Vec3& value)
         {
@@ -51,39 +52,6 @@ namespace Engine
             if (value == "SectorSnapped")
             {
                 outMode = Math::WorldOriginMode::SectorSnapped;
-                return true;
-            }
-
-            return false;
-        }
-
-        const char* ToString(LightType type)
-        {
-            switch (type)
-            {
-                case LightType::Directional: return "Directional";
-                case LightType::Point: return "Point";
-                case LightType::Spot: return "Spot";
-            }
-
-            return "Directional";
-        }
-
-        bool ParseLightType(std::string_view value, LightType& outType)
-        {
-            if (value == "Directional")
-            {
-                outType = LightType::Directional;
-                return true;
-            }
-            if (value == "Point")
-            {
-                outType = LightType::Point;
-                return true;
-            }
-            if (value == "Spot")
-            {
-                outType = LightType::Spot;
                 return true;
             }
 
@@ -167,7 +135,8 @@ namespace Engine
                 light.Transform = transform;
                 light.Type = entity.Light->Type;
                 light.Color = entity.Light->Color;
-                light.Intensity = entity.Light->Intensity;
+                light.PhotometricValue = entity.Light->PhotometricValue;
+                light.PhotometricUnit = entity.Light->PhotometricUnit;
                 light.Range = entity.Light->Range;
                 light.InnerConeDegrees = entity.Light->InnerConeDegrees;
                 light.OuterConeDegrees = entity.Light->OuterConeDegrees;
@@ -329,7 +298,7 @@ namespace Engine
     LightComponent* Scene::AddLightComponent(Entity entity, const LightComponent& light)
     {
         SceneEntity* sceneEntity = FindEntityStorage(entity);
-        if (!sceneEntity)
+        if (!sceneEntity || !IsValidLightComponent(light))
             return nullptr;
 
         sceneEntity->Light = light;
@@ -439,6 +408,11 @@ namespace Engine
                 Log::Error("Could not save scene with a noncanonical transform: ", entity.Name);
                 return false;
             }
+            if (entity.Light && !IsValidLightComponent(*entity.Light))
+            {
+                Log::Error("Could not save scene with invalid photometric light data: ", entity.Name);
+                return false;
+            }
         }
 
         std::error_code error;
@@ -459,7 +433,7 @@ namespace Engine
             return false;
         }
 
-        output << std::setprecision(17);
+        output << std::setprecision(std::numeric_limits<double>::max_digits10);
         output << "SpiralScene " << kSceneFormatVersion << '\n';
         output << "Name " << std::quoted(m_Name) << '\n';
         output << '\n';
@@ -510,7 +484,8 @@ namespace Engine
                     << ' ' << entity.Light->Color.X
                     << ' ' << entity.Light->Color.Y
                     << ' ' << entity.Light->Color.Z
-                    << ' ' << entity.Light->Intensity
+                    << ' ' << entity.Light->PhotometricValue
+                    << ' ' << ToString(entity.Light->PhotometricUnit)
                     << ' ' << entity.Light->Range
                     << ' ' << entity.Light->InnerConeDegrees
                     << ' ' << entity.Light->OuterConeDegrees
@@ -696,7 +671,7 @@ namespace Engine
             else if (section == "MainCamera.Transform")
             {
                 if (version >= 4)
-                    return fail("MainCamera.Transform is legacy duplicated state in scene format version 4");
+                    return fail("MainCamera.Transform is legacy duplicated state in scene format version 4 or newer");
 
                 bool parsed = false;
                 if (key == "Position")
@@ -798,19 +773,24 @@ namespace Engine
                 {
                     Entity entity;
                     std::string type;
+                    std::string photometricUnit;
                     std::string castsShadows;
                     LightComponent light;
-                    if (!(stream >> entity.Id >> type
-                            >> light.Color.X
-                            >> light.Color.Y
-                            >> light.Color.Z
-                            >> light.Intensity
-                            >> light.Range
-                            >> light.InnerConeDegrees
-                            >> light.OuterConeDegrees
-                            >> castsShadows)
-                        || !ParseLightType(type, light.Type)
+                    double legacyIntensity = 0.0;
+                    const bool commonPrefix = static_cast<bool>(stream >> entity.Id >> type
+                        >> light.Color.X >> light.Color.Y >> light.Color.Z)
+                        && TryParseLightType(type, light.Type);
+                    const bool photometricParsed = version >= 5
+                        ? static_cast<bool>(stream >> light.PhotometricValue >> photometricUnit)
+                            && TryParseLightPhotometricUnit(photometricUnit, light.PhotometricUnit)
+                        : static_cast<bool>(stream >> legacyIntensity)
+                            && TryMigrateLegacyLightIntensity(light.Type, legacyIntensity,
+                                light.PhotometricValue, light.PhotometricUnit);
+                    if (!commonPrefix || !photometricParsed
+                        || !(stream >> light.Range >> light.InnerConeDegrees
+                            >> light.OuterConeDegrees >> castsShadows)
                         || !ParseBoolean(castsShadows, light.CastsShadows)
+                        || scene.TryGetLightComponent(entity)
                         || !scene.AddLightComponent(entity, light))
                         return fail("invalid Light record or unknown entity");
                 }

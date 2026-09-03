@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Engine/Core/Base.h"
+#include "Engine/Scene/Components.h"
 
 #include <cmath>
 #include <string_view>
@@ -107,5 +108,29 @@ namespace Engine
     inline double ManualExposureScale(const RendererColorPipelineSettings& settings)
     {
         return std::exp2(-EffectiveExposureEV100(settings));
+    }
+
+    struct PhotometricLightReadout
+    {
+        LightType Type = LightType::Directional;
+        double Value = 0.0;
+        LightPhotometricUnit Unit = LightPhotometricUnit::Lux;
+        double EffectiveExposureEV100 = 0.0;
+        double ExposureScale = 1.0;
+    };
+
+    inline bool TryBuildPhotometricLightReadout(const LightComponent& light,
+        const RendererColorPipelineSettings& settings, PhotometricLightReadout& outReadout)
+    {
+        if (!IsValidLightComponent(light) || !IsValidRendererColorPipelineSettings(settings))
+            return false;
+        outReadout = {
+            light.Type,
+            light.PhotometricValue,
+            light.PhotometricUnit,
+            EffectiveExposureEV100(settings),
+            ManualExposureScale(settings)
+        };
+        return true;
     }
 }

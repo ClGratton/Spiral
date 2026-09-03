@@ -298,9 +298,12 @@ namespace Engine
                             runTask(taskId);
                             {
                                 std::scoped_lock lock(completionMutex);
-                                --remaining;
+                                // Keep notification inside the same critical section as the
+                                // terminal count. A waiter that observes zero may immediately
+                                // destroy this graph-local state when Execute returns.
+                                if (--remaining == 0)
+                                    completionCondition.notify_one();
                             }
-                            completionCondition.notify_one();
                         }, jobName);
                     }
                     catch (...)

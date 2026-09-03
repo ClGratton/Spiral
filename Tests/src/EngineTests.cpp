@@ -15,6 +15,7 @@
 #include "Engine/RHI/NVRHI/VulkanQueueAdmission.h"
 #include "Engine/Renderer/CapabilityDiagnostics.h"
 #include "Engine/Renderer/ClusteredLightGrid.h"
+#include "Engine/Renderer/ColorPipelineSettings.h"
 #include "Engine/Renderer/FramePacingPolicy.h"
 #include "Engine/Renderer/FramePacingBenchmark.h"
 #include "Engine/Renderer/Renderer.h"
@@ -1928,6 +1929,52 @@ namespace
             && Expect(workerIdentityObserved, "parallel task profile events identify their worker");
     }
 
+    bool TestFrameTaskGraphCompletionNotificationLifetime()
+    {
+        Engine::JobSystem& jobs = Engine::JobSystem::Get();
+        jobs.Shutdown();
+        jobs.Initialize(1);
+
+        constexpr int iterationCount = 4096;
+        bool allIterationsSucceeded = true;
+        for (int iteration = 0; iteration < iterationCount && allIterationsSucceeded; ++iteration)
+        {
+            std::atomic<int> gate = 0;
+            Engine::FrameTaskGraph graph;
+
+            Engine::FrameTaskDescription worker;
+            worker.Name = "Completion lifetime worker";
+            worker.Execute = [&]()
+            {
+                gate.store(1, std::memory_order_release);
+                while (gate.load(std::memory_order_acquire) != 2)
+                    std::this_thread::yield();
+            };
+            graph.AddTask(std::move(worker));
+
+            Engine::FrameTaskDescription caller;
+            caller.Name = "Completion lifetime caller";
+            caller.Lane = Engine::FrameTaskLane::CallingThread;
+            caller.Execute = [&]()
+            {
+                while (gate.load(std::memory_order_acquire) != 1)
+                    std::this_thread::yield();
+                gate.store(2, std::memory_order_release);
+            };
+            graph.AddTask(std::move(caller));
+
+            allIterationsSucceeded = graph.Execute(jobs).Succeeded();
+        }
+
+        const Engine::JobSystemStatistics statistics = jobs.GetStatistics();
+        jobs.Shutdown();
+        return Expect(allIterationsSucceeded,
+                "caller and worker completion races retain valid graph-local wait state")
+            && Expect(statistics.SubmittedJobs == static_cast<Engine::u64>(iterationCount)
+                    && statistics.CompletedJobs == statistics.SubmittedJobs,
+                "every completion-race worker remains reusable and reaches terminal accounting");
+    }
+
     bool TestFrameTaskGraphRejectsCycles()
     {
         Engine::FrameTaskGraph graph;
@@ -3664,7 +3711,7 @@ namespace
                 "exact-device format selection uses only a separately cooked semantic RGBA fallback");
     }
 
-    bool TestSceneVersionFourCanonicalPersistence()
+    bool TestSceneVersionFiveCanonicalPersistence()
     {
         using namespace Engine;
         using namespace Engine::Math;
@@ -3673,7 +3720,7 @@ namespace
         policy.SectorExtent = 8192.0;
         policy.OriginHysteresis = 128.0;
         policy.OriginMode = WorldOriginMode::SectorSnapped;
-        Scene source("Canonical V4", policy);
+        Scene source("Canonical V5", policy);
         const Entity entity = source.CreateEntity("Far Entity");
         SectorLocalPosition expected;
         expected.Sector = { std::numeric_limits<i64>::max() - 17, -9007199254740993LL, 42 };
@@ -3687,7 +3734,7 @@ namespace
         const bool inspectorAxisEdited = source.SetEntityWorldPositionAxis(inspectorAxisEntity, 0, 12.5);
         const TransformComponent* inspectorTransform = source.TryGetTransform(inspectorAxisEntity);
 
-        const std::filesystem::path path = TestFilePath("scene-version-four.spiral");
+        const std::filesystem::path path = TestFilePath("scene-version-five.spiral");
         const bool saved = source.SaveToFile(path);
         std::ifstream savedFile(path);
         const std::string contents(
@@ -3703,7 +3750,7 @@ namespace
         std::filesystem::remove(path, error);
 
         const WorldGridPolicy& loadedPolicy = loaded.GetWorldGridPolicy();
-        return Expect(assigned && saved && loadedSuccessfully, "canonical sector/local version 4 state saves and loads")
+        return Expect(assigned && saved && loadedSuccessfully, "canonical sector/local version 5 state saves and loads")
             && Expect(inspectorAssigned
                     && inspectorAxisEdited
                     && inspectorTransform
@@ -3713,15 +3760,15 @@ namespace
                     && inspectorTransform->GetPosition().Sector.Z == inspectorAxisPosition.Sector.Z
                     && inspectorTransform->GetPosition().Local.Z == inspectorAxisPosition.Local.Z,
                 "absolute inspector axis edits preserve untouched canonical sector/local axes")
-            && Expect(contents.find("SpiralScene 4") != std::string::npos
+            && Expect(contents.find("SpiralScene 5") != std::string::npos
                     && contents.find("[WorldGrid]") != std::string::npos
                     && contents.find("Version 1") != std::string::npos
                     && contents.find("SectorExtent 8192") != std::string::npos
                     && contents.find("OriginHysteresis 128") != std::string::npos
                     && contents.find("OriginMode SectorSnapped") != std::string::npos,
-                "version 4 writes the explicit immutable world-grid policy")
+                "version 5 writes the explicit immutable world-grid policy")
             && Expect(contents.find("[MainCamera.Transform]") == std::string::npos,
-                "version 4 does not write a duplicated main-camera transform authority")
+                "version 5 does not write a duplicated main-camera transform authority")
             && Expect(loadedPolicy.Version == policy.Version
                     && loadedPolicy.SectorExtent == policy.SectorExtent
                     && loadedPolicy.OriginHysteresis == policy.OriginHysteresis
@@ -4349,15 +4396,16 @@ namespace
         Engine::LightComponent directional;
         directional.Type = Engine::LightType::Directional;
         directional.Color = { 1.0f, 0.8f, 0.6f };
-        directional.Intensity = 3.0f;
+        directional.PhotometricValue = 30000.0;
         scene.AddLightComponent(directionalEntity, directional);
         if (Engine::TransformComponent* transform = scene.TryGetTransform(directionalEntity))
             transform->RotationDegrees = { 45.0f, -35.0f, 0.0f };
 
         Engine::LightComponent point;
         point.Type = Engine::LightType::Point;
+        point.PhotometricUnit = Engine::LightPhotometricUnit::Lumens;
         point.Range = 0.5f;
-        point.Intensity = 20.0f;
+        point.PhotometricValue = 2000.0;
         const Engine::Entity firstPointEntity = scene.CreateEntity("First Point");
         scene.SetEntityWorldPosition(firstPointEntity, { -2.0, 0.0, 5.0 });
         scene.AddLightComponent(firstPointEntity, point);
@@ -4411,6 +4459,230 @@ namespace
                 "invalid clustered-grid requests preserve the caller's prior accepted grid");
     }
 
+    bool TestPhotometricLightAuthoringPublicationAndDiagnostics()
+    {
+        using namespace Engine;
+
+        LightComponent defaultLight;
+        double migratedDirectional = 0.0;
+        double migratedPoint = 0.0;
+        double migratedBoundary = -1.0;
+        LightPhotometricUnit migratedDirectionalUnit = LightPhotometricUnit::Lumens;
+        LightPhotometricUnit migratedPointUnit = LightPhotometricUnit::Lux;
+        LightPhotometricUnit migratedBoundaryUnit = LightPhotometricUnit::Lumens;
+        const bool mappingValid = defaultLight.Type == LightType::Directional
+            && defaultLight.PhotometricValue == kDefaultDirectionalIlluminanceLux
+            && defaultLight.PhotometricUnit == LightPhotometricUnit::Lux
+            && GetLightPhotometricUnit(LightType::Directional) == LightPhotometricUnit::Lux
+            && GetLightPhotometricUnit(LightType::Point) == LightPhotometricUnit::Lumens
+            && GetLightPhotometricUnit(LightType::Spot) == LightPhotometricUnit::Lumens
+            && std::string_view(GetLightPhotometricControlLabel(LightType::Directional)) == "Illuminance (lux)"
+            && std::string_view(GetLightPhotometricControlLabel(LightType::Point)) == "Luminous flux (lm)"
+            && TryMigrateLegacyLightIntensity(LightType::Directional, 3.0,
+                migratedDirectional, migratedDirectionalUnit)
+            && TryMigrateLegacyLightIntensity(LightType::Point, 20.0,
+                migratedPoint, migratedPointUnit)
+            && TryMigrateLegacyLightIntensity(LightType::Directional, 100000.0,
+                migratedBoundary, migratedBoundaryUnit)
+            && migratedDirectional == 30000.0
+            && migratedDirectionalUnit == LightPhotometricUnit::Lux
+            && migratedPoint == 2000.0
+            && migratedPointUnit == LightPhotometricUnit::Lumens
+            && migratedBoundary == kMaximumDirectionalIlluminanceLux
+            && migratedBoundaryUnit == LightPhotometricUnit::Lux;
+        const double preservedBoundary = migratedBoundary;
+        const LightPhotometricUnit preservedBoundaryUnit = migratedBoundaryUnit;
+        const bool legacyAboveBoundaryRejected = !TryMigrateLegacyLightIntensity(
+                LightType::Directional, 100000.0001, migratedBoundary, migratedBoundaryUnit)
+            && migratedBoundary == preservedBoundary
+            && migratedBoundaryUnit == preservedBoundaryUnit;
+
+        RendererColorPipelineSettings exposure;
+        exposure.ExposureMode = RendererExposureMode::ManualEV100;
+        exposure.ManualExposureEV100 = 2.0;
+        PhotometricLightReadout readout;
+        LightComponent point;
+        point.Type = LightType::Point;
+        point.PhotometricUnit = LightPhotometricUnit::Lumens;
+        point.PhotometricValue = 1600.1234567890123;
+        const bool diagnosticValid = TryBuildPhotometricLightReadout(point, exposure, readout)
+            && readout.Type == LightType::Point
+            && readout.Value == point.PhotometricValue
+            && readout.Unit == LightPhotometricUnit::Lumens
+            && readout.EffectiveExposureEV100 == 2.0
+            && readout.ExposureScale == 0.25;
+        const PhotometricLightReadout preservedReadout = readout;
+        LightComponent wrongUnit = point;
+        wrongUnit.PhotometricUnit = LightPhotometricUnit::Lux;
+        const bool invalidDiagnosticTransactional = !TryBuildPhotometricLightReadout(
+                wrongUnit, exposure, readout)
+            && readout.Type == preservedReadout.Type
+            && readout.Value == preservedReadout.Value
+            && readout.Unit == preservedReadout.Unit
+            && !IsValidLightPhotometricValue(
+                LightType::Point, LightPhotometricUnit::Lux, point.PhotometricValue)
+            && !IsValidLightPhotometricValue(LightType::Point, LightPhotometricUnit::Lumens,
+                std::numeric_limits<double>::infinity())
+            && !IsValidLightPhotometricValue(LightType::Point, LightPhotometricUnit::Lumens,
+                kMaximumLocalLuminousFluxLumens + 1.0)
+            && !IsValidLightPhotometricValue(
+                static_cast<LightType>(999), LightPhotometricUnit::Lumens, 1.0);
+
+        Scene source("Photometric V5");
+        const Entity directionalEntity = source.CreateEntity("Photometric Directional");
+        LightComponent directional;
+        directional.PhotometricValue = 45000.0;
+        const bool directionalAdded = source.AddLightComponent(directionalEntity, directional) != nullptr;
+        const Entity pointEntity = source.CreateEntity("Photometric Point");
+        source.SetEntityWorldPosition(pointEntity, { 0.0, 0.0, 5.0 });
+        const bool pointAdded = source.AddLightComponent(pointEntity, point) != nullptr;
+        const std::filesystem::path roundTripPath = TestFilePath("scene-photometric-v5.spiral");
+        const bool saved = source.SaveToFile(roundTripPath);
+        std::ifstream savedFile(roundTripPath);
+        const std::string savedContents(
+            (std::istreambuf_iterator<char>(savedFile)), std::istreambuf_iterator<char>());
+        savedFile.close();
+
+        Scene loaded;
+        const bool loadedSuccessfully = Scene::LoadFromFile(roundTripPath, loaded);
+        const Entity loadedDirectional = loaded.FindEntityByName("Photometric Directional");
+        const Entity loadedPoint = loaded.FindEntityByName("Photometric Point");
+        const LightComponent* loadedDirectionalLight = loaded.TryGetLightComponent(loadedDirectional);
+        const LightComponent* loadedPointLight = loaded.TryGetLightComponent(loadedPoint);
+        CameraProjection projection;
+        const CameraView view = BuildCameraView({}, {}, projection, 2.0f, {});
+        const SceneRenderSnapshot snapshot = loaded.ExtractRenderSnapshot(500, view);
+        ClusteredLightGridConfig gridConfig;
+        gridConfig.TileSizePixels = 64;
+        gridConfig.DepthSliceCount = 4;
+        ClusteredLightGrid grid;
+        std::string gridError;
+        const bool gridBuilt = BuildClusteredLightGrid(
+            snapshot, 0, 128, 64, gridConfig, grid, gridError);
+        const bool roundTripPublicationValid = directionalAdded && pointAdded && saved
+            && savedContents.find("SpiralScene 5") != std::string::npos
+            && savedContents.find(" 45000 Lux ") != std::string::npos
+            && savedContents.find(" Lumens ") != std::string::npos
+            && loadedSuccessfully && loadedDirectionalLight && loadedPointLight
+            && loadedDirectionalLight->PhotometricValue == 45000.0
+            && loadedDirectionalLight->PhotometricUnit == LightPhotometricUnit::Lux
+            && loadedPointLight->PhotometricValue == point.PhotometricValue
+            && loadedPointLight->PhotometricUnit == LightPhotometricUnit::Lumens
+            && snapshot.Lights.size() == 2
+            && snapshot.Lights[0].PhotometricValue == 45000.0
+            && snapshot.Lights[0].PhotometricUnit == LightPhotometricUnit::Lux
+            && snapshot.Lights[1].PhotometricValue == point.PhotometricValue
+            && snapshot.Lights[1].PhotometricUnit == LightPhotometricUnit::Lumens
+            && gridBuilt && gridError.empty() && grid.Lights.size() == 2
+            && grid.Lights[0].PhotometricValue == 45000.0
+            && grid.Lights[0].PhotometricUnit == LightPhotometricUnit::Lux
+            && grid.Lights[1].PhotometricValue == point.PhotometricValue
+            && grid.Lights[1].PhotometricUnit == LightPhotometricUnit::Lumens;
+
+        bool migratedEveryLegacyVersion = true;
+        std::vector<std::filesystem::path> cleanupPaths { roundTripPath };
+        for (int version : { 1, 2, 3, 4 })
+        {
+            const std::filesystem::path path = TestFilePath(
+                "scene-photometric-legacy-v" + std::to_string(version) + ".spiral");
+            cleanupPaths.push_back(path);
+            {
+                std::ofstream file(path);
+                file << "SpiralScene " << version << "\nName \"Legacy Photometric\"\n\n";
+                if (version >= 4)
+                {
+                    file << "[WorldGrid]\nVersion 1\nSectorExtent 4096\n"
+                         << "OriginHysteresis 256\nOriginMode ExactCamera\n\n";
+                }
+                file << "[Entities]\nNextEntityId 3\nMainCameraEntity 0\n"
+                     << "Entity 1 \"Legacy Directional\"\n";
+                if (version >= 4)
+                    file << "Transform 1 0 0 0 0 0 0 0 0 0 1 1 1\n";
+                else
+                    file << "Transform 1 0 0 0 0 0 0 1 1 1\n";
+                file << "Light 1 Directional 1 1 1 3 10 25 45 true\n"
+                     << "Entity 2 \"Legacy Point\"\n";
+                if (version >= 4)
+                    file << "Transform 2 0 0 0 0 0 5 0 0 0 1 1 1\n";
+                else
+                    file << "Transform 2 0 0 5 0 0 0 1 1 1\n";
+                file << "Light 2 Point 1 1 1 20 10 25 45 true\n";
+            }
+            Scene migratedScene;
+            const bool migratedSuccessfully = Scene::LoadFromFile(path, migratedScene);
+            const LightComponent* migratedDirectionalLight = migratedScene.TryGetLightComponent(
+                migratedScene.FindEntityByName("Legacy Directional"));
+            const LightComponent* migratedPointLight = migratedScene.TryGetLightComponent(
+                migratedScene.FindEntityByName("Legacy Point"));
+            migratedEveryLegacyVersion = migratedEveryLegacyVersion
+                && migratedSuccessfully && migratedDirectionalLight && migratedPointLight
+                && migratedDirectionalLight->PhotometricValue == 30000.0
+                && migratedDirectionalLight->PhotometricUnit == LightPhotometricUnit::Lux
+                && migratedPointLight->PhotometricValue == 2000.0
+                && migratedPointLight->PhotometricUnit == LightPhotometricUnit::Lumens;
+        }
+
+        Scene destination("Preserved Destination");
+        const Entity preservedEntity = destination.CreateEntity("Preserved");
+        LightComponent preservedLight;
+        preservedLight.PhotometricValue = 12000.0;
+        destination.AddLightComponent(preservedEntity, preservedLight);
+        const auto writeInvalidScene = [&](std::string_view suffix, std::string_view valueAndUnit,
+            std::string_view lightRecordSuffix = {}, std::string_view extraRecords = {})
+        {
+            const std::filesystem::path path = TestFilePath(
+                "scene-photometric-invalid-" + std::string(suffix) + ".spiral");
+            cleanupPaths.push_back(path);
+            std::ofstream file(path);
+            file << "SpiralScene 5\nName \"Invalid Photometric\"\n\n"
+                 << "[WorldGrid]\nVersion 1\nSectorExtent 4096\n"
+                 << "OriginHysteresis 256\nOriginMode ExactCamera\n\n"
+                 << "[Entities]\nNextEntityId 2\nMainCameraEntity 0\n"
+                 << "Entity 1 \"Invalid Light\"\n"
+                 << "Transform 1 0 0 0 0 0 0 0 0 0 1 1 1\n"
+                 << "Light 1 Directional 1 1 1 " << valueAndUnit
+                 << " 10 25 45 true" << lightRecordSuffix << '\n'
+                 << extraRecords;
+            file.close();
+            return !Scene::LoadFromFile(path, destination);
+        };
+        const bool rejectedWrongUnit = writeInvalidScene("unit", "1000 Lumens");
+        const bool rejectedNonfinite = writeInvalidScene("nonfinite", "nan Lux");
+        const bool rejectedNegative = writeInvalidScene("negative", "-1 Lux");
+        const bool rejectedOutOfRange = writeInvalidScene("range", "1000000001 Lux");
+        const bool rejectedTrailingToken = writeInvalidScene("trailing", "1000 Lux", " unexpected");
+        const bool rejectedDuplicate = writeInvalidScene("duplicate", "1000 Lux", {},
+            "Light 1 Directional 1 1 1 2000 Lux 10 25 45 true\n");
+        const LightComponent* retainedLight = destination.TryGetLightComponent(preservedEntity);
+        const bool destinationPreserved = destination.GetName() == "Preserved Destination"
+            && destination.FindEntityByName("Preserved") == preservedEntity
+            && retainedLight && retainedLight->PhotometricValue == 12000.0
+            && retainedLight->PhotometricUnit == LightPhotometricUnit::Lux;
+        LightComponent invalidReplacement = preservedLight;
+        invalidReplacement.PhotometricUnit = LightPhotometricUnit::Lumens;
+        const bool componentReplacementRejected = !destination.AddLightComponent(
+                preservedEntity, invalidReplacement)
+            && destination.TryGetLightComponent(preservedEntity)
+            && destination.TryGetLightComponent(preservedEntity)->PhotometricValue == 12000.0;
+
+        std::error_code cleanupError;
+        for (const std::filesystem::path& path : cleanupPaths)
+            std::filesystem::remove(path, cleanupError);
+
+        return Expect(mappingValid && legacyAboveBoundaryRejected,
+                "light defaults, type-dependent units, labels, legacy scales, and migration bounds are deterministic")
+            && Expect(diagnosticValid && invalidDiagnosticTransactional,
+                "photometric readout publishes value, unit, effective EV100, and exposure scale transactionally")
+            && Expect(roundTripPublicationValid,
+                "scene version 5 round trips self-describing units through snapshot and clustered-grid records")
+            && Expect(migratedEveryLegacyVersion,
+                "scene versions 1-4 migrate legacy directional and local-light values with stable per-type ratios")
+            && Expect(rejectedWrongUnit && rejectedNonfinite && rejectedNegative
+                    && rejectedOutOfRange && rejectedTrailingToken && rejectedDuplicate
+                    && destinationPreserved && componentReplacementRejected,
+                "invalid photometric records and component replacements preserve the prior destination state");
+    }
+
     bool TestSceneRenderSnapshotExtractionAndRetainedEpochs()
     {
         Engine::Scene scene("Render Snapshot");
@@ -4448,8 +4720,9 @@ namespace
         const Engine::Entity lightEntity = scene.CreateEntity("Light");
         Engine::LightComponent lightComponent;
         lightComponent.Type = Engine::LightType::Spot;
+        lightComponent.PhotometricUnit = Engine::LightPhotometricUnit::Lumens;
         lightComponent.Color = { 0.2f, 0.4f, 0.8f };
-        lightComponent.Intensity = 7.5f;
+        lightComponent.PhotometricValue = 750.0;
         lightComponent.Range = 125.0f;
         lightComponent.InnerConeDegrees = 15.0f;
         lightComponent.OuterConeDegrees = 35.0f;
@@ -4497,7 +4770,8 @@ namespace
             && first->Lights[0].SourceEntity == lightEntity.Id
             && first->Lights[0].Type == Engine::LightType::Spot
             && first->Lights[0].Color.Z == 0.8f
-            && first->Lights[0].Intensity == 7.5f
+            && first->Lights[0].PhotometricValue == 750.0
+            && first->Lights[0].PhotometricUnit == Engine::LightPhotometricUnit::Lumens
             && first->Lights[0].Range == 125.0f
             && first->Lights[0].InnerConeDegrees == 15.0f
             && first->Lights[0].OuterConeDegrees == 35.0f
@@ -8654,6 +8928,7 @@ int main(int argc, char** argv)
         FAST_TEST("Frame task graph publishes deterministically", TestFrameTaskGraphPublishesDeterministically),
         FAST_TEST("Frame task graph propagates failure", TestFrameTaskGraphPropagatesFailure),
         FAST_TEST("Frame task graph schedules fan-in and fan-out", TestFrameTaskGraphSchedulesFanInAndFanOut),
+        INTEGRATION_TEST("Frame task graph completion notification retains wait state", TestFrameTaskGraphCompletionNotificationLifetime),
         FAST_TEST("Frame task graph rejects cycles", TestFrameTaskGraphRejectsCycles),
         FAST_TEST("Frame task graph rejects invalid dependencies", TestFrameTaskGraphRejectsInvalidDependencies),
         INTEGRATION_TEST("Scene round trip", TestSceneRoundTrip),
@@ -8665,7 +8940,7 @@ int main(int argc, char** argv)
         FAST_TEST("Texture artifacts select exact-device immutable mip upload plans", TestTextureArtifactUploadPlan),
         FAST_TEST("Mesh GPU resource cache preserves exact immutable generations", TestMeshGpuResourceCache),
         FAST_TEST("Texture GPU resource cache publishes exact immutable generations", TestTextureGpuResourceCache),
-        INTEGRATION_TEST("Scene version 4 canonical persistence", TestSceneVersionFourCanonicalPersistence),
+        INTEGRATION_TEST("Scene version 5 canonical persistence", TestSceneVersionFiveCanonicalPersistence),
         INTEGRATION_TEST("Scene loads legacy absolute transforms", TestSceneLoadsLegacyAbsoluteTransforms),
         INTEGRATION_TEST("Scene rejects invalid version 4 world state", TestSceneRejectsInvalidVersionFourWorldState),
         FAST_TEST("Camera-relative large-world transform", TestCameraRelativeLargeWorldTransform),
@@ -8674,6 +8949,7 @@ int main(int argc, char** argv)
         FAST_TEST("Per-view sector-snapped origin tracking", TestPerViewSectorSnappedOriginTracking),
         FAST_TEST("Scene raster origin epoch invariance", TestSceneRasterOriginEpochInvariance),
         FAST_TEST("Clustered light grid builds bounded deterministic assignments", TestClusteredLightGridBuildsBoundedDeterministicAssignments),
+        INTEGRATION_TEST("Photometric light schema publication and diagnostics are transactional", TestPhotometricLightAuthoringPublicationAndDiagnostics),
         FAST_TEST("Scene render snapshot extraction and retained epochs", TestSceneRenderSnapshotExtractionAndRetainedEpochs),
         INTEGRATION_TEST("Scene rejects truncated components", TestSceneRejectsTruncatedComponent),
         INTEGRATION_TEST("Scene loads version-one camera", TestSceneLoadsVersionOneCamera),

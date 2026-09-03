@@ -27,7 +27,8 @@ namespace Engine
         Math::Vec3 WorldDirection;
         Math::Vec3 ViewDirection;
         Math::Vec3 Color = { 1.0f, 1.0f, 1.0f };
-        float Intensity = 0.0f;
+        double PhotometricValue = 0.0;
+        LightPhotometricUnit PhotometricUnit = LightPhotometricUnit::Lux;
         float Range = 0.0f;
         float InnerConeCosine = 1.0f;
         float OuterConeCosine = 1.0f;
