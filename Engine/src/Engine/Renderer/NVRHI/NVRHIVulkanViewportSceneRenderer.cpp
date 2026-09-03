@@ -252,6 +252,9 @@ namespace Engine
             if (!prepared || prepared->SnapshotFrameIndex != snapshot.FrameIndex) return false;
             SceneRasterFrame frame = *prepared;
             if (!frame.HasValidView || frame.Instances.empty()) return false;
+            std::string lightGridError;
+            if (!BuildClusteredLightGrid(snapshot, 0, width, height, {}, frame.LightGrid, lightGridError))
+            { Log::Error("Vulkan Scene viewport could not build clustered light grid: ", lightGridError); return false; }
             Ref<ConstantBufferSet> constantBufferSet = AcquireConstantBuffers(snapshot.FrameIndex, frame.Instances.size());
             if (!constantBufferSet) return false;
             std::vector<ConstantBufferAllocation>& constants = constantBufferSet->Allocations;
@@ -351,6 +354,7 @@ namespace Engine
             if (Application::Get().GetSpecification().CommandLineArgs.HasFlag("--scene-viewport-render-graph-smoke")) Log::Info("SceneMeshGpuIntegrationV1 backend=Vulkan snapshot=pass resolver=pass cache=pass indexFormat=UInt32 baseVertex=0 instances=", frame.Instances.size(), " draws=", draws.size(), " constants=per-instance retained=gpu-retirement result=pass");
             if (Application::Get().GetSpecification().CommandLineArgs.HasFlag("--scene-viewport-render-graph-smoke") && !usedTextureHandles.empty()) Log::Info("SceneMaterialTextureIntegrationV1 backend=Vulkan material=immutable texture=sRGB-base-color sampler=declared table=bound mips=implicit fallbacks=semantic retained=exact-raster-token result=pass");
             if (Application::Get().GetSpecification().CommandLineArgs.HasFlag("--scene-viewport-render-graph-smoke")) Log::Info("ProductionRenderGraphRetirementV1 backend=Vulkan frame=", snapshot.FrameIndex, " passes=", executed.AcceptedPassCount, " cpuWaitBetween=no pending=", m_SubmittedGraphFrames.GetPendingCount(), " result=pass");
+            if (Application::Get().GetSpecification().CommandLineArgs.HasFlag("--scene-viewport-render-graph-smoke")) Log::Info("ClusteredLightGridV1 backend=Vulkan tiles=", frame.LightGrid.TileCountX, "x", frame.LightGrid.TileCountY, " depthSlices=", frame.LightGrid.DepthSliceCount, " lights=", frame.LightGrid.Lights.size(), " global=", frame.LightGrid.GlobalLightIndices.size(), " localReferences=", frame.LightGrid.LocalLightIndices.size(), " overflow=", frame.LightGrid.OverflowedLocalLightReferences, " storage=bounded-csr result=pass");
             const bool comparisonRequested = Application::Get().GetSpecification().CommandLineArgs.HasFlag("--scene-viewport-render-graph-smoke");
             if (comparisonRequested)
             {

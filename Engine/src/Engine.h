@@ -30,6 +30,7 @@
 #include "Engine/Renderer/FramePacingBenchmark.h"
 #include "Engine/Renderer/SceneRasterPreparation.h"
 #include "Engine/Renderer/CapabilityDiagnostics.h"
+#include "Engine/Renderer/ClusteredLightGrid.h"
 #include "Engine/Renderer/ShaderLibrary.h"
 #include "Engine/RHI/RHI.h"
 #include "Engine/Scene/Camera.h"

@@ -2240,6 +2240,9 @@ float4 PSMain(PixelInput input) : SV_Target { return ReadOnlyTextures[1].SampleL
         view.Camera.Valid = true;
         view.Camera.TranslationOrigin = { 0.0, 0.0, 0.0 };
         view.Camera.HasCanonicalTranslationOrigin = Math::TryDecomposeWorldPosition(view.Camera.TranslationOrigin, snapshot.WorldGridPolicy, view.Camera.TranslationOriginPosition);
+        view.Camera.View = Math::Mat4::Identity();
+        view.Camera.Projection = Math::PerspectiveLH(
+            Math::DegreesToRadians(60.0f), 4.0f / 3.0f, 0.1f, 100.0f);
         view.Camera.ViewProjection = Math::Mat4::Identity();
         snapshot.Views.push_back(view);
         SceneRenderMesh mesh;

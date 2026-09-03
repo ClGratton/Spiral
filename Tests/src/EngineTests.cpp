@@ -12,6 +12,7 @@
 #include "Engine/RHI/NVRHI/NVRHID3D12Device.h"
 #include "Engine/RHI/NVRHI/VulkanQueueAdmission.h"
 #include "Engine/Renderer/CapabilityDiagnostics.h"
+#include "Engine/Renderer/ClusteredLightGrid.h"
 #include "Engine/Renderer/FramePacingPolicy.h"
 #include "Engine/Renderer/FramePacingBenchmark.h"
 #include "Engine/Renderer/Renderer.h"
@@ -4009,6 +4010,75 @@ namespace
             && Expect(canonicalExtremeValid, "tracker-derived canonical snapshot/raster conversion preserves nonzero local deltas when extreme absolute doubles alias")
             && Expect(!invalidRaster.HasValidView && invalidRaster.Instances.empty(),
                 "a snapshot without a valid view cannot produce raster instances");
+    }
+
+    bool TestClusteredLightGridBuildsBoundedDeterministicAssignments()
+    {
+        Engine::Scene scene("Clustered Light Grid");
+        const Engine::Entity directionalEntity = scene.CreateEntity("Directional");
+        Engine::LightComponent directional;
+        directional.Type = Engine::LightType::Directional;
+        directional.Color = { 1.0f, 0.8f, 0.6f };
+        directional.Intensity = 3.0f;
+        scene.AddLightComponent(directionalEntity, directional);
+        if (Engine::TransformComponent* transform = scene.TryGetTransform(directionalEntity))
+            transform->RotationDegrees = { 45.0f, -35.0f, 0.0f };
+
+        Engine::LightComponent point;
+        point.Type = Engine::LightType::Point;
+        point.Range = 0.5f;
+        point.Intensity = 20.0f;
+        const Engine::Entity firstPointEntity = scene.CreateEntity("First Point");
+        scene.SetEntityWorldPosition(firstPointEntity, { -2.0, 0.0, 5.0 });
+        scene.AddLightComponent(firstPointEntity, point);
+        const Engine::Entity secondPointEntity = scene.CreateEntity("Second Point");
+        scene.SetEntityWorldPosition(secondPointEntity, { -2.0, 0.0, 5.0 });
+        scene.AddLightComponent(secondPointEntity, point);
+        const Engine::Entity offscreenPointEntity = scene.CreateEntity("Offscreen Point");
+        scene.SetEntityWorldPosition(offscreenPointEntity, { 50.0, 0.0, 5.0 });
+        scene.AddLightComponent(offscreenPointEntity, point);
+
+        Engine::CameraProjection projection;
+        const Engine::CameraView view = Engine::BuildCameraView(
+            {}, {}, projection, 2.0f, {});
+        const Engine::SceneRenderSnapshot snapshot = scene.ExtractRenderSnapshot(77, view);
+        Engine::ClusteredLightGridConfig config;
+        config.TileSizePixels = 64;
+        config.DepthSliceCount = 4;
+        config.MaximumLocalLightsPerCluster = 1;
+        Engine::ClusteredLightGrid grid;
+        std::string error;
+        const bool built = Engine::BuildClusteredLightGrid(
+            snapshot, 0, 128, 64, config, grid, error);
+
+        const size_t assignedCluster = grid.GetClusterIndex(
+            0, 0, grid.SelectDepthSlice(5.0f));
+        const bool dimensionsValid = built && error.empty()
+            && grid.TileCountX == 2 && grid.TileCountY == 1
+            && grid.DepthSliceCount == 4 && grid.GetClusterCount() == 8
+            && grid.ClusterOffsets.size() == 9;
+        const bool globalValid = dimensionsValid
+            && grid.Lights.size() == 4
+            && grid.GlobalLightIndices == std::vector<Engine::u32> { 0 }
+            && grid.Lights[0].SourceEntity == directionalEntity.Id
+            && std::abs(grid.Lights[0].WorldDirection.Y + 0.7071067f) < 0.0001f;
+        const bool localValid = dimensionsValid
+            && grid.LocalLightIndices.size() == 1
+            && grid.LocalLightIndices[0] == 1
+            && grid.ClusterOffsets[assignedCluster + 1] - grid.ClusterOffsets[assignedCluster] == 1
+            && grid.OverflowedLocalLightReferences == 1;
+
+        Engine::ClusteredLightGrid retained = grid;
+        retained.ViewportWidth = 7;
+        Engine::ClusteredLightGridConfig invalidConfig = config;
+        invalidConfig.MaximumLocalLightsPerCluster = 0;
+        const bool rejected = !Engine::BuildClusteredLightGrid(
+            snapshot, 0, 128, 64, invalidConfig, retained, error);
+        return Expect(dimensionsValid, "the clustered grid derives bounded screen tiles and logarithmic depth slices")
+            && Expect(globalValid, "directional lights retain deterministic compact global identity and orientation")
+            && Expect(localValid, "local-light CSR assignment is conservative, stable, and explicitly overflow bounded")
+            && Expect(rejected && retained.ViewportWidth == 7 && !error.empty(),
+                "invalid clustered-grid requests preserve the caller's prior accepted grid");
     }
 
     bool TestSceneRenderSnapshotExtractionAndRetainedEpochs()
@@ -8239,6 +8309,7 @@ int main(int argc, char** argv)
         FAST_TEST("Generated world-grid normalization preserves canonical reference results", TestGeneratedWorldGridNormalizationProperties),
         FAST_TEST("Per-view sector-snapped origin tracking", TestPerViewSectorSnappedOriginTracking),
         FAST_TEST("Scene raster origin epoch invariance", TestSceneRasterOriginEpochInvariance),
+        FAST_TEST("Clustered light grid builds bounded deterministic assignments", TestClusteredLightGridBuildsBoundedDeterministicAssignments),
         FAST_TEST("Scene render snapshot extraction and retained epochs", TestSceneRenderSnapshotExtractionAndRetainedEpochs),
         INTEGRATION_TEST("Scene rejects truncated components", TestSceneRejectsTruncatedComponent),
         INTEGRATION_TEST("Scene loads version-one camera", TestSceneLoadsVersionOneCamera),

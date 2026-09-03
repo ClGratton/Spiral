@@ -4,6 +4,7 @@
 #include "Engine/Core/Base.h"
 #include "Engine/Math/Math.h"
 #include "Engine/Math/WorldGrid.h"
+#include "Engine/Renderer/ClusteredLightGrid.h"
 #include "Engine/Scene/Entity.h"
 #include "Engine/Scene/SceneRenderSnapshot.h"
 
@@ -41,6 +42,7 @@ namespace Engine
         u32 IssuedDrawCount = 0;
         Availability RasterAvailability = Availability::Ready;
         std::string Diagnostic;
+        ClusteredLightGrid LightGrid;
         std::vector<SceneRasterInstance> Instances;
     };
 

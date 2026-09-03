@@ -341,7 +341,7 @@ Capability groups are added as dependency-ordered checklist items immediately be
 
 ### Phase 3E: Conventional Renderer Baseline
 
-- [ ] Forward+/clustered light grid prototype.
+- [x] **Phase 3E Forward+/clustered light-grid prototype:** each actual D3D12/Vulkan Scene render builds a deterministic bounded CPU reference grid from the immutable snapshot and current viewport. It uses 64-pixel XY tiles, 16 logarithmic view-depth slices, a compact global directional-light list, and capped 64-entry per-cluster point/spot CSR lists with explicit overflow accounting. Light positions preserve the camera-relative sector/local origin before view transformation; invalid projection, light, dimensions, or capacity fail without replacing caller state. The focused assignment/overflow/transaction test, warning-free Debug GMake build, 97/97 suite, complete RTX 3080 Ti Vulkan harness, style, and diff gates pass with `ClusteredLightGridV1`; D3D12 carries the same integration and marker for the next hosted batch. This prototype is the conservative CPU reference and diagnostic structure, not yet the GPU grid build or a claim that the material shader consumes local lights.
 - [ ] Scene-referred HDR color pipeline with calibrated exposure, a neutral baseline tone mapper, and grading/LUTs applied only after tone mapping.
 - [ ] Photometric light units and exposure/debug readouts used by the actual Phase 3 lights and material validation path.
 - [ ] Basic PBR shading with material IDs.

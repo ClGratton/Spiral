@@ -26,6 +26,7 @@ Adapter/feature negotiation, portable shader targets, descriptor fallback, and q
 | Selected occluder prepass | Allowed and encouraged for large proven occluders, but it writes depth/coverage/visibility only, not shaded G-buffer outputs. |
 | Material IDs | Material/BRDF IDs enrich lighting through structured tables; they are distinct from visibility IDs. |
 | Color pipeline | Tone mapping is a calibrated color-science stage before grading, with explicit profiles and validation scenes. |
+| Clustered lighting | Keep directional lights global; assign point/spot volumes to bounded logarithmic view clusters with explicit overflow. |
 
 ## 1. Visibility ID Contract
 
@@ -430,7 +431,24 @@ Rejected:
 - Drawing every object in a depth prepass by default.
 - Treating prepass as an excuse to keep poor front-to-back ordering or bad occluder data.
 
-## 14. Material ID And BRDF Table Contract
+## 14. Clustered Light Grid Contract
+
+The Phase 3E CPU grid is the deterministic reference for the later GPU Forward+/lighting implementation. It is built from one immutable Scene snapshot, one view, and the exact current viewport dimensions.
+
+Rules:
+
+- Use 64-pixel screen tiles and 16 logarithmic depth slices for the first measured prototype; treat these as tunable policy, not shader ABI.
+- Keep directional lights in a compact global list instead of copying them into every cluster.
+- Conservatively bound point and spot lights by their range; cone rejection can narrow spot assignments only after it remains conservative.
+- Store local-light membership as one CSR offset/index table with a 64-reference per-cluster cap and explicit overflow count.
+- Convert canonical sector/local light positions relative to the same snapshot view origin before float view-space projection.
+- Reject malformed dimensions, projection matrices, lights, and capacities transactionally. Never publish a partial grid.
+- Preserve snapshot light order so overflow, captures, and the CPU/GPU reference comparison remain deterministic.
+- The native Scene paths must expose tile, slice, global/local-reference, and overflow counts in a bounded smoke marker.
+
+The CPU prototype does not make the renderer CPU-driven permanently. The GPU build must match this reference on deterministic fixtures before replacing it, and the later light consumer must retain a bounded overflow/debug path rather than silently dropping unreported lights.
+
+## 15. Material ID And BRDF Table Contract
 
 Material IDs are a core part of the "not plastic" material strategy.
 
@@ -449,7 +467,7 @@ Do not:
 - Require a new lighting shader permutation for every material instance.
 - Use material IDs to hide bad texture packing or missing calibrated parameters.
 
-## 15. Color Pipeline And Tone Mapping Contract
+## 16. Color Pipeline And Tone Mapping Contract
 
 Tone mapping is not an arbitrary final-post effect. It is part of the physical-material and exposure system.
 

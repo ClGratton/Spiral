@@ -324,7 +324,15 @@ namespace Engine
                 if (!prepared || prepared->SnapshotFrameIndex != snapshot->FrameIndex)
                     return false;
                 rasterFrame = *prepared;
+                std::string lightGridError;
+                if (rasterFrame.HasValidView && !BuildClusteredLightGrid(
+                    *snapshot, 0, width, height, {}, rasterFrame.LightGrid, lightGridError))
+                {
+                    Log::Error("D3D12 Scene viewport could not build clustered light grid: ", lightGridError);
+                    return false;
+                }
             }
+            recordStage("D3D12 Viewport Clustered Light Grid");
             if (!m_Pipeline)
             {
                 rasterFrame.RasterAvailability = m_ShaderPipelineTerminalFailure
@@ -514,6 +522,13 @@ namespace Engine
             if (Application::Get().GetSpecification().CommandLineArgs.HasFlag("--scene-viewport-render-graph-smoke"))
                 Log::Info("ProductionRenderGraphRetirementV1 backend=D3D12 frame=", Application::Get().GetFrameIndex(),
                     " passes=", executed.AcceptedPassCount, " cpuWaitBetween=no pending=", m_SubmittedGraphFrames.GetPendingCount(), " result=pass");
+            if (Application::Get().GetSpecification().CommandLineArgs.HasFlag("--scene-viewport-render-graph-smoke"))
+                Log::Info("ClusteredLightGridV1 backend=D3D12 tiles=", rasterFrame.LightGrid.TileCountX,
+                    "x", rasterFrame.LightGrid.TileCountY, " depthSlices=", rasterFrame.LightGrid.DepthSliceCount,
+                    " lights=", rasterFrame.LightGrid.Lights.size(), " global=", rasterFrame.LightGrid.GlobalLightIndices.size(),
+                    " localReferences=", rasterFrame.LightGrid.LocalLightIndices.size(),
+                    " overflow=", rasterFrame.LightGrid.OverflowedLocalLightReferences,
+                    " storage=bounded-csr result=pass");
             const bool comparisonRequested = Application::Get().GetSpecification().CommandLineArgs.HasFlag("--scene-viewport-render-graph-smoke");
             if (comparisonRequested)
             {
