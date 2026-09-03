@@ -98,6 +98,13 @@ namespace Engine::RHI
             (void)table;
             return false;
         }
+        // Binds the one renderer-internal SRV declared by the active graphics
+        // pipeline. The texture must already be in ShaderResource state.
+        virtual bool BindGraphicsSampledTexture(Texture& texture)
+        {
+            (void)texture;
+            return false;
+        }
         virtual void SetViewport(const Viewport& viewport) = 0;
         virtual void SetScissorRect(const ScissorRect& rect) = 0;
         virtual void SetVertexBuffer(u32 slot, Buffer& buffer) = 0;

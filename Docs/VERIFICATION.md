@@ -532,6 +532,17 @@ The focused `RHI sampled texture-table binding validates pipeline space offsets 
 
 Run `EngineTests --test "Clustered light grid builds bounded deterministic assignments"` for the CPU reference contract. It requires exact viewport tile/depth dimensions, a compact directional list, conservative local-light CSR assignment, deterministic cap overflow, camera/light orientation, logarithmic depth selection, and transactional invalid-request rejection. `Scripts/TestVulkan.sh Debug gmake --skip-build` and the hosted D3D12 render smoke expose `ClusteredLightGridV1` from the actual Scene render path. The marker must report nonzero dimensions, light/global/local-reference counts, explicit overflow, `storage=bounded-csr`, and `result=pass`. This is not GPU grid construction or proof that the current material shader evaluates point/spot lights.
 
+## Phase 3E Scene-Linear HDR Foundation
+
+After one coherent Debug build, run the complete integration registry and native backend harness:
+
+```bash
+./bin/Debug-linux-x86_64-gmake/EngineTests/EngineTests --tier integration
+bash Scripts/TestVulkan.sh Debug gmake --skip-build
+```
+
+The Vulkan harness requires `SceneViewportRenderGraphV1 backend=Vulkan passes=4 labels=clear,raster,tone-map,output-handoff execution=pass reference=direct comparator=exact-byte-pass` at two sizes and `SceneColorPipelineV1 backend=Vulkan sceneLinear=RGBA16F exposureEV100=0 toneMap=Khronos-PBR-Neutral output=sRGB-encoded-RGBA8 result=pass`. It also requires four completion-gated timestamp scopes and four-pass exact-frame GPU timing. The 2026-09-03 RTX 3080 Ti acceptance used 1,253 MiB of 12,288 MiB before launch, passed 97/97 tests, preserved resize/ImGui/presentation, and reported 1.03693 ms whole-graph GPU work on its first published frame. The direct recorder is a graph/state/order comparator using the same shader, while the independent scene-raster background expectation catches the explicit low-range tone-map/sRGB result. This qualifies the native Vulkan RGBA16F target, pass-local sampled binding, neutral operator, encoded RGBA8 handoff, and resource transitions. It does not qualify D3D12 until `Scripts/TestRender.ps1` emits the matching marker, nor editable/calibrated exposure, grading/LUTs, HDR display output, photometric light coupling, or alternative tone mappers.
+
 ## RHI Completion Tokens And Recording Reuse
 
 The render-graph completion prerequisite requires both deterministic contract coverage and headed backend evidence. Contract tests must verify invalid token shape rejection. Each headed D3D12 and Vulkan/NVRHI smoke must submit a real closed graphics list, query the returned token without waiting, reject an invalid, cross-device, and unissued/stale token, wait to final completion, and re-record/re-submit the same list only after retirement. Fast devices may legitimately report the first query as complete; tests must accept either `nonblocking-incomplete` or `nonblocking-complete`, but must never manufacture an incomplete state with CPU frame counters or destroy/recreate the context. The required `RHICompletionSmokeV1` marker reports token validation, first query state, wait completion, and retired reuse separately.

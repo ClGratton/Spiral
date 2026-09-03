@@ -98,7 +98,8 @@ REQUIRED_MARKERS=(
     "VulkanRHIIndexedDrawV1 package=pass reflection=pass pipeline=pass constants=pass draw=pass submit=pass readback=pass interior=pass background=pass"
     "VulkanSceneOutputCaptureV1 outputGeneration="
     "VulkanSceneOutputHandoffV1 producer=pass"
-    "SceneViewportRenderGraphV1 backend=Vulkan passes=3 labels=clear,raster,output-handoff execution=pass reference=direct comparator=exact-byte-pass"
+    "SceneViewportRenderGraphV1 backend=Vulkan passes=4 labels=clear,raster,tone-map,output-handoff execution=pass reference=direct comparator=exact-byte-pass"
+    "SceneColorPipelineV1 backend=Vulkan sceneLinear=RGBA16F exposureEV100=0 toneMap=Khronos-PBR-Neutral output=sRGB-encoded-RGBA8 result=pass"
     "SceneMeshGpuIntegrationV1 backend=Vulkan snapshot=pass resolver=pass cache=pass indexFormat=UInt32 baseVertex=0"
     "SceneMaterialTextureIntegrationV1 backend=Vulkan material=immutable texture=sRGB-base-color sampler=declared table=bound mips=implicit fallbacks=semantic retained=exact-raster-token result=pass"
     "ProductionRenderGraphRetirementV1 backend=Vulkan"
@@ -170,12 +171,12 @@ for ((ATTEMPT = 1; ATTEMPT <= ITERATIONS; ++ATTEMPT)); do
             exit 1
         fi
     done
-    TIMESTAMP_SCOPE_COUNT=$(grep -Ec 'RenderGraphTimestampScopesV1 backend=Vulkan frame=[0-9]+ scopes=3 raw=ready cpuWaitBetween=no result=pass' "$LOG_FILE" || true)
+    TIMESTAMP_SCOPE_COUNT=$(grep -Ec 'RenderGraphTimestampScopesV1 backend=Vulkan frame=[0-9]+ scopes=4 raw=ready cpuWaitBetween=no result=pass' "$LOG_FILE" || true)
     if [[ "$TIMESTAMP_SCOPE_COUNT" -lt 2 ]]; then
         echo "Vulkan render smoke did not prove completion-gated raw timestamp scopes across consecutive frames on attempt $ATTEMPT/$ITERATIONS." >&2
         exit 1
     fi
-    GPU_TIMING_COUNT=$(grep -Ec 'RendererGpuTimingV1 backend=NVRHI Vulkan frame=[0-9]+ passes=3 wholeMs=[0-9]+([.][0-9]+)? status=Ready capability=GpuTimestamps result=pass' "$LOG_FILE" || true)
+    GPU_TIMING_COUNT=$(grep -Ec 'RendererGpuTimingV1 backend=NVRHI Vulkan frame=[0-9]+ passes=4 wholeMs=[0-9]+([.][0-9]+)? status=Ready capability=GpuTimestamps result=pass' "$LOG_FILE" || true)
     if [[ "$GPU_TIMING_COUNT" -lt 1 ]]; then
         echo "Vulkan render smoke did not publish exact-frame GPU durations and promote the exercised capability path on attempt $ATTEMPT/$ITERATIONS." >&2
         exit 1

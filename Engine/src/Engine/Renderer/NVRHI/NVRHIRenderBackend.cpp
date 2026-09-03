@@ -2261,7 +2261,9 @@ float4 PSMain(PixelInput input) : SV_Target { return ReadOnlyTextures[1].SampleL
         const u64 outputGeneration = m_VulkanSceneRenderer->GetOutputGeneration();
         RHI::TextureReadback readback;
         const bool readbackOk = resizedRaster && m_VulkanSceneRenderer->ReadbackColor(readback);
-        const std::array<u8, 4> expectedBackground { 10, 13, 15, 255 };
+        // Linear clear color after EV100=0 PBR-neutral mapping and explicit
+        // sRGB output encoding.
+        const std::array<u8, 4> expectedBackground { 25, 39, 48, 255 };
         auto pixel = [&readback](u32 x, u32 y) { return &readback.Data[static_cast<size_t>(y) * readback.RowPitchBytes + static_cast<size_t>(x) * 4]; };
         bool backgroundOk = readbackOk && readback.Extent.Width == 64 && readback.Extent.Height == 48 && readback.RowPitchBytes >= 64 * 4 && readback.Data.size() >= static_cast<size_t>(readback.RowPitchBytes) * 48;
         if (backgroundOk) for (u32 channel = 0; channel < 4; ++channel) if (std::abs(static_cast<int>(pixel(2, 2)[channel]) - expectedBackground[channel]) > 3) backgroundOk = false;

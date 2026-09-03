@@ -70,6 +70,18 @@ namespace Engine::RHI
         u32 VulkanSamplerBindingOffset = 300;
     };
 
+    // One explicitly-declared sampled texture for renderer-internal passes such
+    // as tone mapping. Space two keeps writable graph resources separate from
+    // the immutable material table in space one.
+    struct FixedSampledTextureBinding
+    {
+        u32 TextureRegister = 0;
+        u32 SamplerRegister = 0;
+        u32 RegisterSpace = 2;
+        u32 VulkanTextureBindingOffset = 100;
+        u32 VulkanSamplerBindingOffset = 300;
+    };
+
     struct PipelineDescription;
 
     inline bool IsValidSampledTextureTableBinding(const SampledTextureTableBinding& binding,
@@ -107,6 +119,39 @@ namespace Engine::RHI
 
     inline bool IsValidSampledTextureTablePipeline(const PipelineDescription& description);
 
+    inline bool IsValidFixedSampledTextureBinding(const FixedSampledTextureBinding& binding,
+        const std::vector<RootConstantBufferBinding>& constantBuffers)
+    {
+        if (binding.TextureRegister != 0 || binding.SamplerRegister != 0 || binding.RegisterSpace != 2
+            || binding.VulkanTextureBindingOffset != 100 || binding.VulkanSamplerBindingOffset != 300)
+            return false;
+        for (const RootConstantBufferBinding& constantBuffer : constantBuffers)
+            if (constantBuffer.RegisterSpace == binding.RegisterSpace) return false;
+        return true;
+    }
+
+    inline bool ShaderDeclaresFixedSampledTexture(const Shader* shader, char kind,
+        std::string_view resourceKind, const FixedSampledTextureBinding& binding)
+    {
+        if (!shader) return false;
+        for (const ShaderReflectionBinding& reflected : shader->GetDescription().Reflection)
+            if (reflected.Kind == kind && reflected.Register == 0 && reflected.Space == binding.RegisterSpace
+                && reflected.ResourceKind == resourceKind && reflected.Count == 1)
+                return true;
+        return false;
+    }
+
+    inline bool HasValidFixedSampledTextureReflection(const FixedSampledTextureBinding& binding,
+        const Shader* vertexShader, const Shader* pixelShader)
+    {
+        return (ShaderDeclaresFixedSampledTexture(vertexShader, 't', "Texture2D", binding)
+                    || ShaderDeclaresFixedSampledTexture(pixelShader, 't', "Texture2D", binding))
+            && (ShaderDeclaresFixedSampledTexture(vertexShader, 's', "SamplerState", binding)
+                    || ShaderDeclaresFixedSampledTexture(pixelShader, 's', "SamplerState", binding));
+    }
+
+    inline bool IsValidFixedSampledTexturePipeline(const PipelineDescription& description);
+
     struct PipelineDescription
     {
         std::string DebugName;
@@ -116,6 +161,7 @@ namespace Engine::RHI
         std::vector<VertexInputAttribute> VertexInputs;
         std::vector<RootConstantBufferBinding> ConstantBufferBindings;
         std::optional<SampledTextureTableBinding> SampledTextureTable;
+        std::optional<FixedSampledTextureBinding> FixedSampledTexture;
         PrimitiveTopology Topology = PrimitiveTopology::TriangleList;
         CullMode RasterCullMode = CullMode::Back;
         Format ColorFormat = Format::R8G8B8A8Unorm;
@@ -129,6 +175,15 @@ namespace Engine::RHI
         return description.SampledTextureTable
             && IsValidSampledTextureTableBinding(*description.SampledTextureTable, description.ConstantBufferBindings)
             && HasValidSampledTextureTableReflection(*description.SampledTextureTable,
+                description.VertexShader, description.PixelShader);
+    }
+
+    inline bool IsValidFixedSampledTexturePipeline(const PipelineDescription& description)
+    {
+        return description.FixedSampledTexture && !description.SampledTextureTable
+            && IsValidFixedSampledTextureBinding(*description.FixedSampledTexture,
+                description.ConstantBufferBindings)
+            && HasValidFixedSampledTextureReflection(*description.FixedSampledTexture,
                 description.VertexShader, description.PixelShader);
     }
 

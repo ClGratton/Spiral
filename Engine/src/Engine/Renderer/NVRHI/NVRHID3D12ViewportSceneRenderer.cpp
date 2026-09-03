@@ -13,6 +13,7 @@
 #include "Engine/Renderer/ShaderLibrary.h"
 #include "Engine/Renderer/SlangShaderCompiler.h"
 #include "Engine/Renderer/TextureRuntimePublication.h"
+#include "Engine/Renderer/ToneMapPass.h"
 
 #if defined(GE_HAS_NVRHI_D3D12)
     #include <cstddef>
@@ -146,6 +147,7 @@ namespace Engine
     struct NVRHID3D12ViewportSceneRenderer::Impl
     {
         bool RecordBootstrapReference(
+            RHI::Texture& hdrTexture,
             RHI::Texture& colorTexture,
             RHI::Texture& depthTexture,
             u32 width,
@@ -157,9 +159,9 @@ namespace Engine
         {
             Scope<RHI::CommandList> commands = m_RHIDevice->CreateCommandList(RHI::QueueType::Graphics, "Scene Viewport Bootstrap Reference");
             if (!commands || !commands->Begin()
-                || !commands->TransitionTexture(colorTexture, RHI::ResourceState::RenderTarget)
+                || !commands->TransitionTexture(hdrTexture, RHI::ResourceState::RenderTarget)
                 || !commands->TransitionTexture(depthTexture, RHI::ResourceState::DepthWrite)
-                || !commands->BindViewportOutputs(colorTexture, &depthTexture)
+                || !commands->BindViewportOutputs(hdrTexture, &depthTexture)
                 || !commands->ClearViewportOutputs(clear)) return false;
             commands->BeginDebugMarker("Scene Viewport Bootstrap Reference Raster");
             if (m_Pipeline && rasterFrame.HasValidView && !rasterFrame.Instances.empty())
@@ -179,7 +181,10 @@ namespace Engine
                 }
             }
             commands->EndDebugMarker();
-            return commands->TransitionTexture(colorTexture, RHI::ResourceState::CopySource)
+            return commands->TransitionTexture(hdrTexture, RHI::ResourceState::ShaderResource)
+                && commands->TransitionTexture(colorTexture, RHI::ResourceState::RenderTarget)
+                && m_ToneMap.Record(*commands, hdrTexture, colorTexture, width, height)
+                && commands->TransitionTexture(colorTexture, RHI::ResourceState::CopySource)
                 && commands->End() && m_RHIDevice->SubmitAndWait(*commands);
         }
 
@@ -208,7 +213,7 @@ namespace Engine
             m_TextureRuntime = TextureRuntimePublication::Create(*m_RHIDevice,
                 TextureTargetProfile::RGBAFallback, m_TextureTableCapacity - 1,
                 m_TextureTableCapacity);
-            return m_TextureRuntime != nullptr;
+            return m_TextureRuntime != nullptr && m_ToneMap.Initialize(*m_RHIDevice);
         }
 
         void Shutdown()
@@ -222,6 +227,8 @@ namespace Engine
             m_SubmittedGraphFrames.ReleaseAfterDeviceIdle();
             m_MeshResourceCache.Clear();
             m_FrameConstantBuffers.clear();
+            m_ToneMap.Shutdown();
+            m_HdrColor.reset();
             m_Pipeline.reset();
             m_PixelShader.reset();
             m_VertexShader.reset();
@@ -229,6 +236,31 @@ namespace Engine
                 m_ShaderPackages->Shutdown();
             m_ShaderPackages.reset();
             m_RHIDevice = nullptr;
+        }
+
+        bool EnsureHdrOutput(u32 width, u32 height)
+        {
+            if (m_HdrColor && m_HdrWidth == width && m_HdrHeight == height)
+                return true;
+            if (m_SubmittedGraphFrames.GetPendingCount() != 0)
+            {
+                Log::Error("D3D12 Scene HDR output replacement deferred because an exact RenderGraph token is still incomplete");
+                return false;
+            }
+            m_HdrColor.reset();
+            RHI::TextureDescription description;
+            description.DebugName = "D3D12 Scene Viewport Linear HDR";
+            description.Extent = { width, height };
+            description.TextureFormat = RHI::Format::R16G16B16A16Float;
+            description.Usage = static_cast<RHI::TextureUsage>(
+                static_cast<u32>(RHI::TextureUsage::RenderTarget)
+                | static_cast<u32>(RHI::TextureUsage::ShaderResource));
+            m_HdrColor = m_RHIDevice ? m_RHIDevice->CreateTexture(description) : nullptr;
+            if (!m_HdrColor)
+                return false;
+            m_HdrWidth = width;
+            m_HdrHeight = height;
+            return true;
         }
 
         bool Render(
@@ -301,9 +333,14 @@ namespace Engine
             PollShaderCompilation();
             recordStage("D3D12 Viewport Shader Poll");
 
+            if (!EnsureHdrOutput(width, height))
+                return false;
+
+            RHI::ResourceState hdrColorState = RHI::ResourceState::Unknown;
             RHI::ResourceState colorState = RHI::ResourceState::Unknown;
             RHI::ResourceState depthState = RHI::ResourceState::Unknown;
-            if (!m_RHIDevice->QueryResourceState(&colorTexture, colorState)
+            if (!m_RHIDevice->QueryResourceState(m_HdrColor.get(), hdrColorState)
+                || !m_RHIDevice->QueryResourceState(&colorTexture, colorState)
                 || !m_RHIDevice->QueryResourceState(&depthTexture, depthState))
                 return false;
 
@@ -412,32 +449,35 @@ namespace Engine
             recordStage("D3D12 Viewport Scene Resolve");
 
             Scope<RenderGraph> graph = CreateScope<RenderGraph>();
+            RHI::TextureDescription hdrColorDescription = m_HdrColor->GetDescription();
+            hdrColorDescription.InitialState = hdrColorState;
             RHI::TextureDescription colorDescription = colorTexture.GetDescription();
             colorDescription.InitialState = colorState;
             RHI::TextureDescription depthDescription = depthTexture.GetDescription();
             depthDescription.InitialState = depthState;
+            const RenderGraph::ResourceHandle hdrColor = graph->AddTexture(hdrColorDescription, RenderGraph::ResourceLifetimeKind::Imported);
             const RenderGraph::ResourceHandle color = graph->AddTexture(colorDescription, RenderGraph::ResourceLifetimeKind::Imported);
             const RenderGraph::ResourceHandle depth = graph->AddTexture(depthDescription, RenderGraph::ResourceLifetimeKind::Imported);
             const RenderGraph::PassHandle clearPass = graph->AddPass("Scene Viewport Graph Clear", RHI::QueueType::Graphics);
-            graph->AddWrite(clearPass, color, RHI::ResourceState::RenderTarget);
+            graph->AddWrite(clearPass, hdrColor, RHI::ResourceState::RenderTarget);
             graph->AddWrite(clearPass, depth, RHI::ResourceState::DepthWrite);
             graph->SetPassCallback(clearPass, [clear](RenderGraph::ExecutionContext& context)
             {
                 RHI::Texture* graphColor = context.GetTexture({ 0 });
-                RHI::Texture* graphDepth = context.GetTexture({ 1 });
+                RHI::Texture* graphDepth = context.GetTexture({ 2 });
                 return graphColor && graphDepth && context.GetCommandList().BindViewportOutputs(*graphColor, graphDepth)
                     && context.GetCommandList().ClearViewportOutputs(clear);
             });
             graph->SetPassWorkerRecordingEligible(clearPass);
             const RenderGraph::PassHandle rasterPass = graph->AddPass("Scene Viewport Graph Raster", RHI::QueueType::Graphics);
-            graph->AddWrite(rasterPass, color, RHI::ResourceState::RenderTarget);
+            graph->AddWrite(rasterPass, hdrColor, RHI::ResourceState::RenderTarget);
             graph->AddWrite(rasterPass, depth, RHI::ResourceState::DepthWrite);
             const Ref<RHI::Pipeline> activePipeline = m_Pipeline;
             RHI::TextureBindingTable* textureTable = m_TextureRuntime->GetBindingTable();
             graph->SetPassCallback(rasterPass, [activePipeline, textureTable, width, height, &rasterFrame, constantBuffers, draws](RenderGraph::ExecutionContext& context)
             {
                 RHI::Texture* graphColor = context.GetTexture({ 0 });
-                RHI::Texture* graphDepth = context.GetTexture({ 1 });
+                RHI::Texture* graphDepth = context.GetTexture({ 2 });
                 RHI::CommandList& commands = context.GetCommandList();
                 if (!graphColor || !graphDepth || !commands.BindViewportOutputs(*graphColor, graphDepth)) return false;
                 if (!activePipeline || !rasterFrame.HasValidView || rasterFrame.Instances.empty()) return true;
@@ -455,9 +495,19 @@ namespace Engine
                 }
                 return true;
             });
+            const RenderGraph::PassHandle toneMapPass = graph->AddPass("Scene Viewport Graph Tone Map", RHI::QueueType::Graphics);
+            graph->AddRead(toneMapPass, hdrColor, RHI::ResourceState::ShaderResource, RHI::ShaderStage::Pixel);
+            graph->AddWrite(toneMapPass, color, RHI::ResourceState::RenderTarget);
+            graph->SetPassCallback(toneMapPass, [this, width, height](RenderGraph::ExecutionContext& context)
+            {
+                RHI::Texture* graphHdr = context.GetTexture({ 0 });
+                RHI::Texture* graphColor = context.GetTexture({ 1 });
+                return graphHdr && graphColor && m_ToneMap.Record(
+                    context.GetCommandList(), *graphHdr, *graphColor, width, height);
+            });
             const RenderGraph::PassHandle handoffPass = graph->AddPass("Scene Viewport Graph Output Handoff", RHI::QueueType::Graphics);
             graph->AddRead(handoffPass, color, RHI::ResourceState::ShaderResource, RHI::ShaderStage::Pixel);
-            graph->SetPassCallback(handoffPass, [](RenderGraph::ExecutionContext& context) { return context.GetTexture({ 0 }) != nullptr; });
+            graph->SetPassCallback(handoffPass, [](RenderGraph::ExecutionContext& context) { return context.GetTexture({ 1 }) != nullptr; });
             graph->SetPassWorkerRecordingEligible(handoffPass);
             const RenderGraph::CompileResult compiled = graph->Compile();
             recordStage("D3D12 Viewport Graph Build And Compile");
@@ -469,7 +519,8 @@ namespace Engine
             executeOptions.EnableTimestampScopes = timestampCaptureRequested
                 && !args.HasFlag("--renderer-disable-gpu-timestamps")
                 && m_RHIDevice->GetCapabilities().GetFeature(RHI::DeviceFeature::Timestamps).IsUsable();
-            const RenderGraph::ExecuteResult executed = graph->BindTexture(color, colorTexture) && graph->BindTexture(depth, depthTexture)
+            const RenderGraph::ExecuteResult executed = graph->BindTexture(hdrColor, *m_HdrColor)
+                && graph->BindTexture(color, colorTexture) && graph->BindTexture(depth, depthTexture)
                 ? graph->Execute(*m_RHIDevice, compiled, executeOptions) : RenderGraph::ExecuteResult {};
             recordStage("D3D12 Viewport Graph Execute");
             if (Application::Get().GetSpecification().CommandLineArgs.HasFlag("--scene-viewport-render-graph-smoke")) Log::Info("RenderGraphRecordingV1 backend=D3D12 mode=", executeOptions.RecordingMode == FrameTaskExecutionMode::Parallel ? "worker" : "inline", " workerPasses=", executed.WorkerRecordedPassCount, " overlap=", executed.WorkerRecordingOverlapObserved ? "yes" : "no", " submitted=", executed.AcceptedPassCount, " result=", executed.Success ? "pass" : "fail");
@@ -534,21 +585,26 @@ namespace Engine
             {
                 RHI::TextureDescription referenceColorDescription = colorTexture.GetDescription();
                 referenceColorDescription.DebugName = "Scene Viewport Bootstrap Reference Color";
+                RHI::TextureDescription referenceHdrDescription = m_HdrColor->GetDescription();
+                referenceHdrDescription.DebugName = "Scene Viewport Bootstrap Reference Linear HDR";
                 RHI::TextureDescription referenceDepthDescription = depthTexture.GetDescription();
                 referenceDepthDescription.DebugName = "Scene Viewport Bootstrap Reference Depth";
+                Scope<RHI::Texture> referenceHdr = m_RHIDevice->CreateTexture(referenceHdrDescription);
                 Scope<RHI::Texture> referenceColor = m_RHIDevice->CreateTexture(referenceColorDescription);
                 Scope<RHI::Texture> referenceDepth = m_RHIDevice->CreateTexture(referenceDepthDescription);
                 RHI::TextureReadback graphReadback, referenceReadback;
-                const bool referenceRendered = referenceColor && referenceDepth && RecordBootstrapReference(
-                    *referenceColor, *referenceDepth, width, height, clear, rasterFrame, constantBuffers, draws);
+                const bool referenceRendered = referenceHdr && referenceColor && referenceDepth && RecordBootstrapReference(
+                    *referenceHdr, *referenceColor, *referenceDepth, width, height, clear, rasterFrame, constantBuffers, draws);
                 const bool readBack = referenceRendered && ReadbackGraphOutput(colorTexture, graphReadback)
                     && m_RHIDevice->ReadbackTexture(*referenceColor, referenceReadback);
                 const bool equivalent = readBack && graphReadback.Extent.Width == referenceReadback.Extent.Width
                     && graphReadback.Extent.Height == referenceReadback.Extent.Height
                     && graphReadback.RowPitchBytes == referenceReadback.RowPitchBytes
                     && graphReadback.Data == referenceReadback.Data;
-                Log::Info("SceneViewportRenderGraphV1 backend=D3D12 passes=3 labels=clear,raster,output-handoff execution=pass reference=direct comparator=exact-byte-",
+                Log::Info("SceneViewportRenderGraphV1 backend=D3D12 passes=4 labels=clear,raster,tone-map,output-handoff execution=pass reference=direct comparator=exact-byte-",
                     equivalent ? "pass" : "fail", " size=", width, "x", height, " bytes=", graphReadback.Data.size());
+                Log::Info("SceneColorPipelineV1 backend=D3D12 sceneLinear=RGBA16F exposureEV100=0 toneMap=Khronos-PBR-Neutral output=sRGB-encoded-RGBA8 result=",
+                    equivalent ? "pass" : "fail");
                 if (!equivalent) return false;
             }
             Renderer::PublishSceneRasterFrame(std::move(rasterFrame));
@@ -776,7 +832,7 @@ namespace Engine
                 m_TextureTableCapacity };
             pipelineDesc.Topology = RHI::PrimitiveTopology::TriangleList;
             pipelineDesc.RasterCullMode = RHI::CullMode::None;
-            pipelineDesc.ColorFormat = RHI::Format::R8G8B8A8Unorm;
+            pipelineDesc.ColorFormat = RHI::Format::R16G16B16A16Float;
             pipelineDesc.DepthFormat = RHI::Format::D32Float;
             pipelineDesc.DepthTestEnable = true;
             pipelineDesc.DepthWriteEnable = true;
@@ -895,6 +951,10 @@ namespace Engine
         MeshGpuResourceCache m_MeshResourceCache { 32 };
         u32 m_TextureTableCapacity = 0;
         Scope<TextureRuntimePublication> m_TextureRuntime;
+        ToneMapPass m_ToneMap;
+        Scope<RHI::Texture> m_HdrColor;
+        u32 m_HdrWidth = 0;
+        u32 m_HdrHeight = 0;
         Ref<RHI::Pipeline> m_Pipeline;
         Ref<RHI::Shader> m_VertexShader;
         Ref<RHI::Shader> m_PixelShader;

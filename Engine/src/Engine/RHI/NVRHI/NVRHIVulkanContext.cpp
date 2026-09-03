@@ -494,6 +494,10 @@ namespace Engine::RHI
                 FormatUsage::ColorAttachment | FormatUsage::CopySource
             });
             profile.RequiredFormats.push_back({ Format::D32Float, FormatUsage::DepthStencil });
+            profile.RequiredFormats.push_back({
+                Format::R16G16B16A16Float,
+                FormatUsage::Sampled | FormatUsage::ColorAttachment
+            });
 
             std::vector<AdapterCandidate> candidates;
             std::vector<NativeCandidate> nativeCandidates;
@@ -542,6 +546,10 @@ namespace Engine::RHI
                     device, Format::R8G8B8A8Unorm, VK_FORMAT_R8G8B8A8_UNORM));
                 candidate.Formats.push_back(QueryFormatCapability(
                     device, Format::R8G8B8A8UnormSrgb, VK_FORMAT_R8G8B8A8_SRGB));
+                candidate.Formats.push_back(QueryFormatCapability(
+                    device, Format::R11G11B10Float, VK_FORMAT_B10G11R11_UFLOAT_PACK32));
+                candidate.Formats.push_back(QueryFormatCapability(
+                    device, Format::R16G16B16A16Float, VK_FORMAT_R16G16B16A16_SFLOAT));
                 candidate.Formats.push_back(QueryFormatCapability(
                     device, Format::BC5Unorm, VK_FORMAT_BC5_UNORM_BLOCK));
                 candidate.Formats.push_back(QueryFormatCapability(
