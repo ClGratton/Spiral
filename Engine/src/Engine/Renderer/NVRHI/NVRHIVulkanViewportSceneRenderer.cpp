@@ -399,7 +399,9 @@ namespace Engine
                 Log::Info("SceneViewportRenderGraphV1 backend=Vulkan passes=4 labels=clear,raster,tone-map,output-handoff execution=pass reference=direct comparator=exact-byte-", equivalent ? "pass" : "fail", " size=", width, "x", height, " bytes=", graphReadback.Data.size());
                 Log::Info("SceneColorPipelineV1 backend=Vulkan sceneLinear=RGBA16F manualExposureEV100=", colorSettings.ManualExposureEV100,
                     " exposureScale=", ManualExposureScale(colorSettings),
-                    " toneMap=Khronos-PBR-Neutral output=sRGB-encoded-RGBA8 result=", equivalent ? "pass" : "fail");
+                    " toneMap=Khronos-PBR-Neutral postToneMapSaturation=", colorSettings.PostToneMapSaturation,
+                    " postToneMapContrast=", colorSettings.PostToneMapContrast,
+                    " output=sRGB-encoded-RGBA8 result=", equivalent ? "pass" : "fail");
                 if (!equivalent) return false;
             }
             Renderer::PublishSceneRasterFrame(std::move(frame));

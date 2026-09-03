@@ -1,6 +1,7 @@
 cbuffer ToneMapConstants : register(b0)
 {
-    // x = exposure in EV100 stops, y = paper-white scale, zw reserved.
+    // x = exposure in EV100 stops, y = paper-white scale,
+    // z = post-tone-map saturation, w = post-tone-map contrast.
     float4 ExposureAndOutput;
 };
 
@@ -58,10 +59,23 @@ float3 LinearToSrgb(float3 color)
     return lerp(high, low, step(color, 0.0031308f));
 }
 
+float3 ApplyPostToneMapGrade(float3 displayLinear)
+{
+    // Preserve the pre-grading output path exactly for project defaults. The
+    // algebraic identity form can still round at float/UNORM boundaries.
+    if (ExposureAndOutput.z == 1.0f && ExposureAndOutput.w == 1.0f)
+        return displayLinear;
+
+    const float luminance = dot(displayLinear, float3(0.2126f, 0.7152f, 0.0722f));
+    const float3 saturated = lerp(luminance.xxx, displayLinear, ExposureAndOutput.z);
+    return (saturated - 0.5f) * ExposureAndOutput.w + 0.5f;
+}
+
 float4 PSMain(VSOutput input) : SV_Target0
 {
     const float exposure = exp2(-ExposureAndOutput.x) * ExposureAndOutput.y;
     const float3 hdr = max(HdrScene.SampleLevel(HdrSceneSampler, input.UV, 0.0f).rgb, 0.0f);
     const float3 displayLinear = saturate(NeutralToneMap(hdr * exposure));
-    return float4(LinearToSrgb(displayLinear), 1.0f);
+    const float3 graded = saturate(ApplyPostToneMapGrade(displayLinear));
+    return float4(LinearToSrgb(graded), 1.0f);
 }

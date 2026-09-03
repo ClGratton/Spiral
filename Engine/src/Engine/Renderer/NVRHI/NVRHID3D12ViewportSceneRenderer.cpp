@@ -611,7 +611,9 @@ namespace Engine
                     equivalent ? "pass" : "fail", " size=", width, "x", height, " bytes=", graphReadback.Data.size());
                 Log::Info("SceneColorPipelineV1 backend=D3D12 sceneLinear=RGBA16F manualExposureEV100=", colorSettings.ManualExposureEV100,
                     " exposureScale=", ManualExposureScale(colorSettings),
-                    " toneMap=Khronos-PBR-Neutral output=sRGB-encoded-RGBA8 result=", equivalent ? "pass" : "fail");
+                    " toneMap=Khronos-PBR-Neutral postToneMapSaturation=", colorSettings.PostToneMapSaturation,
+                    " postToneMapContrast=", colorSettings.PostToneMapContrast,
+                    " output=sRGB-encoded-RGBA8 result=", equivalent ? "pass" : "fail");
                 if (!equivalent) return false;
             }
             Renderer::PublishSceneRasterFrame(std::move(rasterFrame));

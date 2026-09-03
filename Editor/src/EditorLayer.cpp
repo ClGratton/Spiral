@@ -21,7 +21,7 @@
 namespace
 {
     constexpr const char* AssetDragPayloadType = "SPIRAL_ASSET_HANDLE";
-    constexpr int ProjectFormatVersion = 4;
+    constexpr int ProjectFormatVersion = 5;
     constexpr int EditorSettingsFormatVersion = 1;
 
     struct EditorSettings
@@ -395,6 +395,8 @@ namespace
         output << "FramePacingTargetFps " << manifest.FramePacingPolicy.SmoothTargetFramesPerSecond << '\n';
         output << "PresentationPolicy " << Engine::ToString(manifest.PresentationPolicy) << '\n';
         output << "ManualExposureEV100 " << manifest.ColorPipelineSettings.ManualExposureEV100 << '\n';
+        output << "PostToneMapSaturation " << manifest.ColorPipelineSettings.PostToneMapSaturation << '\n';
+        output << "PostToneMapContrast " << manifest.ColorPipelineSettings.PostToneMapContrast << '\n';
         return static_cast<bool>(output);
     }
 
@@ -414,6 +416,8 @@ namespace
         bool readFramePacingTarget = version == 1;
         bool readPresentationPolicy = version < 3;
         bool readManualExposure = version < 4;
+        bool readPostToneMapSaturation = version < 5;
+        bool readPostToneMapContrast = version < 5;
         std::string key;
         while (input >> key)
         {
@@ -448,6 +452,20 @@ namespace
                     return false;
                 readManualExposure = true;
             }
+            else if (version >= 5 && key == "PostToneMapSaturation")
+            {
+                if (!(input >> manifest.ColorPipelineSettings.PostToneMapSaturation)
+                    || !Engine::IsValidRendererColorPipelineSettings(manifest.ColorPipelineSettings))
+                    return false;
+                readPostToneMapSaturation = true;
+            }
+            else if (version >= 5 && key == "PostToneMapContrast")
+            {
+                if (!(input >> manifest.ColorPipelineSettings.PostToneMapContrast)
+                    || !Engine::IsValidRendererColorPipelineSettings(manifest.ColorPipelineSettings))
+                    return false;
+                readPostToneMapContrast = true;
+            }
             else
                 return false;
 
@@ -456,6 +474,7 @@ namespace
         }
 
         if (!readFramePacingMode || !readFramePacingTarget || !readPresentationPolicy || !readManualExposure
+            || !readPostToneMapSaturation || !readPostToneMapContrast
             || manifest.ScenePath.empty() || manifest.AssetRegistryPath.empty()
             || !Engine::IsValidFramePacingPolicy(manifest.FramePacingPolicy)
             || !Engine::IsValidRendererColorPipelineSettings(manifest.ColorPipelineSettings))
@@ -1103,6 +1122,40 @@ void EditorLayer::DrawMainMenuBar()
             if (!Engine::IsValidRendererColorPipelineSettings(previewColorPipelineSettings))
                 ImGui::TextDisabled("Manual EV100 must be finite and between %.0f and %.0f; current saved value remains unchanged.",
                     Engine::kMinimumManualExposureEV100, Engine::kMaximumManualExposureEV100);
+
+            double postToneMapSaturation = m_ProjectColorPipelineSettings.PostToneMapSaturation;
+            if (ImGui::InputDouble("Post-tone-map saturation", &postToneMapSaturation, 0.05, 0.25, "%.2f"))
+            {
+                Engine::RendererColorPipelineSettings edited = m_ProjectColorPipelineSettings;
+                edited.PostToneMapSaturation = postToneMapSaturation;
+                if (Engine::IsValidRendererColorPipelineSettings(edited))
+                {
+                    m_ProjectColorPipelineSettings = edited;
+                    PublishColorPipelineSettings();
+                }
+            }
+            Engine::RendererColorPipelineSettings previewSaturationSettings = m_ProjectColorPipelineSettings;
+            previewSaturationSettings.PostToneMapSaturation = postToneMapSaturation;
+            if (!Engine::IsValidRendererColorPipelineSettings(previewSaturationSettings))
+                ImGui::TextDisabled("Saturation must be finite and between %.0f and %.0f; current saved value remains unchanged.",
+                    Engine::kMinimumPostToneMapSaturation, Engine::kMaximumPostToneMapSaturation);
+
+            double postToneMapContrast = m_ProjectColorPipelineSettings.PostToneMapContrast;
+            if (ImGui::InputDouble("Post-tone-map contrast", &postToneMapContrast, 0.05, 0.25, "%.2f"))
+            {
+                Engine::RendererColorPipelineSettings edited = m_ProjectColorPipelineSettings;
+                edited.PostToneMapContrast = postToneMapContrast;
+                if (Engine::IsValidRendererColorPipelineSettings(edited))
+                {
+                    m_ProjectColorPipelineSettings = edited;
+                    PublishColorPipelineSettings();
+                }
+            }
+            Engine::RendererColorPipelineSettings previewContrastSettings = m_ProjectColorPipelineSettings;
+            previewContrastSettings.PostToneMapContrast = postToneMapContrast;
+            if (!Engine::IsValidRendererColorPipelineSettings(previewContrastSettings))
+                ImGui::TextDisabled("Contrast must be finite and between %.0f and %.0f; current saved value remains unchanged.",
+                    Engine::kMinimumPostToneMapContrast, Engine::kMaximumPostToneMapContrast);
 
             if (ImGui::Button("Save Project Settings"))
             {
@@ -3186,15 +3239,20 @@ void EditorLayer::RunColorPipelineSettingsSmoke()
     const std::filesystem::path smokeRoot = "output/projects/color-pipeline-settings-smoke";
     const std::filesystem::path v3ManifestPath = smokeRoot / "v3.spiralproject";
     const std::filesystem::path v4ManifestPath = smokeRoot / "v4.spiralproject";
+    const std::filesystem::path v5ManifestPath = smokeRoot / "v5.spiralproject";
     const std::filesystem::path invalidBoundsPath = smokeRoot / "invalid-bounds.spiralproject";
     const std::filesystem::path invalidNonfinitePath = smokeRoot / "invalid-nonfinite.spiralproject";
+    const std::filesystem::path invalidSaturationPath = smokeRoot / "invalid-saturation.spiralproject";
+    const std::filesystem::path invalidContrastPath = smokeRoot / "invalid-contrast.spiralproject";
 
     const bool v3Written = WriteTextFile(v3ManifestPath,
         "SpiralProject 3\nScene \"v3.spiral\"\nAssetRegistry \"v3.spiralassets\"\n"
         "FramePacingMode Responsive\nFramePacingTargetFps 60\nPresentationPolicy Synchronized\n");
     ProjectManifest v3Manifest;
     const bool v3Migrated = v3Written && ReadProjectManifest(v3ManifestPath, v3Manifest)
-        && v3Manifest.ColorPipelineSettings.ManualExposureEV100 == 0.0;
+        && v3Manifest.ColorPipelineSettings.ManualExposureEV100 == 0.0
+        && v3Manifest.ColorPipelineSettings.PostToneMapSaturation == 1.0
+        && v3Manifest.ColorPipelineSettings.PostToneMapContrast == 1.0;
 
     const bool v4Written = WriteTextFile(v4ManifestPath,
         "SpiralProject 4\nScene \"v4.spiral\"\nAssetRegistry \"v4.spiralassets\"\n"
@@ -3202,14 +3260,35 @@ void EditorLayer::RunColorPipelineSettingsSmoke()
         "ManualExposureEV100 -2\n");
     ProjectManifest v4Manifest;
     const bool v4Loaded = v4Written && ReadProjectManifest(v4ManifestPath, v4Manifest)
-        && v4Manifest.ColorPipelineSettings.ManualExposureEV100 == -2.0;
+        && v4Manifest.ColorPipelineSettings.ManualExposureEV100 == -2.0
+        && v4Manifest.ColorPipelineSettings.PostToneMapSaturation == 1.0
+        && v4Manifest.ColorPipelineSettings.PostToneMapContrast == 1.0;
+
+    const bool v5Written = WriteTextFile(v5ManifestPath,
+        "SpiralProject 5\nScene \"v5.spiral\"\nAssetRegistry \"v5.spiralassets\"\n"
+        "FramePacingMode Responsive\nFramePacingTargetFps 60\nPresentationPolicy Synchronized\n"
+        "ManualExposureEV100 -1\nPostToneMapSaturation 0.25\nPostToneMapContrast 1.5\n");
+    ProjectManifest v5Manifest;
+    const bool v5Loaded = v5Written && ReadProjectManifest(v5ManifestPath, v5Manifest)
+        && v5Manifest.ColorPipelineSettings.ManualExposureEV100 == -1.0
+        && v5Manifest.ColorPipelineSettings.PostToneMapSaturation == 0.25
+        && v5Manifest.ColorPipelineSettings.PostToneMapContrast == 1.5;
 
     const ProjectManifest beforeInvalidRead {
         "unchanged.spiral",
         "unchanged.spiralassets",
-        {},
-        Engine::PresentationPolicy::Synchronized,
-        { 1.0 }
+        { Engine::FramePacingMode::SmoothFrametime, 123.0 },
+        Engine::PresentationPolicy::TearingAllowed,
+        { 1.0, 0.75, 1.25 }
+    };
+    const auto invalidReadPreserved = [&beforeInvalidRead](const ProjectManifest& target)
+    {
+        return target.ScenePath == beforeInvalidRead.ScenePath
+            && target.AssetRegistryPath == beforeInvalidRead.AssetRegistryPath
+            && target.FramePacingPolicy.Mode == beforeInvalidRead.FramePacingPolicy.Mode
+            && target.FramePacingPolicy.SmoothTargetFramesPerSecond == beforeInvalidRead.FramePacingPolicy.SmoothTargetFramesPerSecond
+            && target.PresentationPolicy == beforeInvalidRead.PresentationPolicy
+            && target.ColorPipelineSettings == beforeInvalidRead.ColorPipelineSettings;
     };
     ProjectManifest invalidBoundsTarget = beforeInvalidRead;
     const bool invalidBoundsWritten = WriteTextFile(invalidBoundsPath,
@@ -3218,7 +3297,7 @@ void EditorLayer::RunColorPipelineSettingsSmoke()
         "ManualExposureEV100 17\n");
     const bool invalidBoundsRejected = invalidBoundsWritten
         && !ReadProjectManifest(invalidBoundsPath, invalidBoundsTarget)
-        && invalidBoundsTarget.ColorPipelineSettings.ManualExposureEV100 == 1.0;
+        && invalidReadPreserved(invalidBoundsTarget);
 
     ProjectManifest invalidNonfiniteTarget = beforeInvalidRead;
     const bool invalidNonfiniteWritten = WriteTextFile(invalidNonfinitePath,
@@ -3227,28 +3306,55 @@ void EditorLayer::RunColorPipelineSettingsSmoke()
         "ManualExposureEV100 1e9999\n");
     const bool invalidNonfiniteRejected = invalidNonfiniteWritten
         && !ReadProjectManifest(invalidNonfinitePath, invalidNonfiniteTarget)
-        && invalidNonfiniteTarget.ColorPipelineSettings.ManualExposureEV100 == 1.0;
+        && invalidReadPreserved(invalidNonfiniteTarget);
+
+    ProjectManifest invalidSaturationTarget = beforeInvalidRead;
+    const bool invalidSaturationWritten = WriteTextFile(invalidSaturationPath,
+        "SpiralProject 5\nScene \"invalid.spiral\"\nAssetRegistry \"invalid.spiralassets\"\n"
+        "FramePacingMode Responsive\nFramePacingTargetFps 60\nPresentationPolicy Synchronized\n"
+        "ManualExposureEV100 0\nPostToneMapSaturation 2.25\nPostToneMapContrast 1\n");
+    const bool invalidSaturationRejected = invalidSaturationWritten
+        && !ReadProjectManifest(invalidSaturationPath, invalidSaturationTarget)
+        && invalidReadPreserved(invalidSaturationTarget);
+
+    ProjectManifest invalidContrastTarget = beforeInvalidRead;
+    const bool invalidContrastWritten = WriteTextFile(invalidContrastPath,
+        "SpiralProject 5\nScene \"invalid.spiral\"\nAssetRegistry \"invalid.spiralassets\"\n"
+        "FramePacingMode Responsive\nFramePacingTargetFps 60\nPresentationPolicy Synchronized\n"
+        "ManualExposureEV100 0\nPostToneMapSaturation 1\nPostToneMapContrast 1e9999\n");
+    const bool invalidContrastRejected = invalidContrastWritten
+        && !ReadProjectManifest(invalidContrastPath, invalidContrastTarget)
+        && invalidReadPreserved(invalidContrastTarget);
 
     const Engine::RendererColorPipelineSettings previousSettings = m_ProjectColorPipelineSettings;
-    m_ProjectColorPipelineSettings = { 2.0 };
+    m_ProjectColorPipelineSettings = { 2.0, 0.5, 1.25 };
     PublishColorPipelineSettings();
-    const bool rendererPublished = Engine::Renderer::GetColorPipelineSettings().ManualExposureEV100 == 2.0;
+    const bool rendererPublished = Engine::Renderer::GetColorPipelineSettings().ManualExposureEV100 == 2.0
+        && Engine::Renderer::GetColorPipelineSettings().PostToneMapSaturation == 0.5
+        && Engine::Renderer::GetColorPipelineSettings().PostToneMapContrast == 1.25;
     const bool savedAndReloaded = SaveProject() && LoadProject()
         && m_ProjectColorPipelineSettings.ManualExposureEV100 == 2.0
-        && Engine::Renderer::GetColorPipelineSettings().ManualExposureEV100 == 2.0;
+        && m_ProjectColorPipelineSettings.PostToneMapSaturation == 0.5
+        && m_ProjectColorPipelineSettings.PostToneMapContrast == 1.25
+        && Engine::Renderer::GetColorPipelineSettings().ManualExposureEV100 == 2.0
+        && Engine::Renderer::GetColorPipelineSettings().PostToneMapSaturation == 0.5
+        && Engine::Renderer::GetColorPipelineSettings().PostToneMapContrast == 1.25;
     m_ProjectColorPipelineSettings = previousSettings;
     PublishColorPipelineSettings();
     const bool restoredAndSaved = SaveProject();
 
     m_ColorPipelineSettingsSmokeCompleted = true;
-    if (!v3Migrated || !v4Loaded || !invalidBoundsRejected || !invalidNonfiniteRejected
+    if (!v3Migrated || !v4Loaded || !v5Loaded || !invalidBoundsRejected || !invalidNonfiniteRejected
+        || !invalidSaturationRejected || !invalidContrastRejected
         || !rendererPublished || !savedAndReloaded || !restoredAndSaved)
     {
         throw std::runtime_error("Color pipeline settings smoke failed");
     }
 
-    Engine::Log::Info("ColorPipelineSettingsSmokeV1 default=pass bounds=pass nonfinite=pass v3Migration=pass saveReopen=pass rendererPublication=pass manualExposureEV100=",
-        Engine::Renderer::GetColorPipelineSettings().ManualExposureEV100, " result=pass");
+    const Engine::RendererColorPipelineSettings published = Engine::Renderer::GetColorPipelineSettings();
+    Engine::Log::Info("ColorPipelineSettingsSmokeV1 default=pass bounds=pass nonfinite=pass v3Migration=pass v4GradingMigration=pass v5SaveReopen=pass rendererPublication=pass manualExposureEV100=",
+        published.ManualExposureEV100, " postToneMapSaturation=", published.PostToneMapSaturation,
+        " postToneMapContrast=", published.PostToneMapContrast, " result=pass");
     m_ConsoleLines.emplace_back("Color pipeline settings smoke passed");
 }
 

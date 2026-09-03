@@ -89,8 +89,8 @@ namespace Engine
             return {
                 static_cast<float>(settings.ManualExposureEV100),
                 kPaperWhiteScale,
-                0.0f,
-                0.0f
+                static_cast<float>(settings.PostToneMapSaturation),
+                static_cast<float>(settings.PostToneMapContrast)
             };
         }
     }
@@ -161,7 +161,7 @@ namespace Engine
             Shutdown();
             return false;
         }
-        Log::Info("SceneColorPipelineV1 hdr=RGBA16F manualExposureEV100=0 toneMap=Khronos-PBR-Neutral output=sRGB-encoded-RGBA8 result=ready");
+        Log::Info("SceneColorPipelineV1 hdr=RGBA16F manualExposureEV100=0 toneMap=Khronos-PBR-Neutral postToneMapGrade=saturation-contrast output=sRGB-encoded-RGBA8 result=ready");
         return true;
     }
 

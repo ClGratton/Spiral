@@ -290,6 +290,7 @@ Baseline:
 - HDR sun and sky radiance.
 - Aerial perspective/fog.
 - Dynamic exposure pipeline. The current executable prerequisite is the renderer-owned manual project EV100 control (`scale=exp2(-EV100)`, finite `[-16,+16]`, default `0.0`); automatic metering/zones remain future work until a lighting-validation consumer requires them.
+- Display-referred grading occurs only after the scene-referred HDR lighting result has passed through the accepted neutral tone mapper. The current executable controls are analytic post-tone-map saturation and midpoint contrast with identity defaults; they are not light-unit calibration, exposure compensation, or a texture-backed LUT path.
 - Weather/cloudiness as an art-directed modifier.
 
 Implementation path:

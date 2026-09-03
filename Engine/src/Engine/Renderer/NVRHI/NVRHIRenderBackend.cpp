@@ -15,6 +15,7 @@
 #include "Engine/RenderGraph/RenderGraph.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstring>
 #include <filesystem>
@@ -2280,6 +2281,99 @@ float4 PSMain(PixelInput input) : SV_Target { return ReadOnlyTextures[1].SampleL
             const u8* value = &sample.Data[static_cast<size_t>(2) * sample.RowPitchBytes + static_cast<size_t>(2) * 4];
             return static_cast<u32>(value[0]) + static_cast<u32>(value[1]) + static_cast<u32>(value[2]);
         };
+        const auto neutralToneMap = [](std::array<float, 3> color)
+        {
+            const float startCompression = 0.76f;
+            const float desaturation = 0.15f;
+            for (float& channel : color)
+                channel = std::min(channel, 6.25f);
+            const float minimum = std::min(color[0], std::min(color[1], color[2]));
+            const float offset = minimum < 0.08f ? minimum - 6.25f * minimum * minimum : 0.04f;
+            for (float& channel : color)
+                channel -= offset;
+            const float peak = std::max(color[0], std::max(color[1], color[2]));
+            if (peak < startCompression)
+                return color;
+            const float distance = 1.0f - startCompression;
+            const float newPeak = 1.0f - distance * distance / (peak + distance - startCompression);
+            for (float& channel : color)
+                channel *= newPeak / peak;
+            const float desaturationAmount = 1.0f - 1.0f / (desaturation * (peak - newPeak) + 1.0f);
+            for (float& channel : color)
+                channel = channel + (newPeak - channel) * desaturationAmount;
+            return color;
+        };
+        const auto gradeDisplayLinear = [](std::array<float, 3> color, double saturation, double contrast)
+        {
+            const float luminance = color[0] * 0.2126f + color[1] * 0.7152f + color[2] * 0.0722f;
+            for (float& channel : color)
+            {
+                const float saturated = luminance + (channel - luminance) * static_cast<float>(saturation);
+                channel = (saturated - 0.5f) * static_cast<float>(contrast) + 0.5f;
+                channel = std::clamp(channel, 0.0f, 1.0f);
+            }
+            return color;
+        };
+        const auto linearToSrgbByte = [](float value)
+        {
+            value = std::clamp(value, 0.0f, 1.0f);
+            const float encoded = value <= 0.0031308f
+                ? value * 12.92f
+                : 1.055f * std::pow(value, 1.0f / 2.4f) - 0.055f;
+            return static_cast<u8>(std::clamp(static_cast<int>(std::lround(encoded * 255.0f)), 0, 255));
+        };
+        const auto expectedPostToneMapPixel = [&](ClearColor input, const RendererColorPipelineSettings& settings)
+        {
+            const float exposure = static_cast<float>(ManualExposureScale(settings));
+            std::array<float, 3> color {
+                std::max(input.R * exposure, 0.0f),
+                std::max(input.G * exposure, 0.0f),
+                std::max(input.B * exposure, 0.0f)
+            };
+            color = neutralToneMap(color);
+            for (float& channel : color)
+                channel = std::clamp(channel, 0.0f, 1.0f);
+            color = gradeDisplayLinear(color, settings.PostToneMapSaturation, settings.PostToneMapContrast);
+            return std::array<u8, 4> { linearToSrgbByte(color[0]), linearToSrgbByte(color[1]), linearToSrgbByte(color[2]), 255 };
+        };
+        const auto expectedPreToneMapPixel = [&](ClearColor input, const RendererColorPipelineSettings& settings)
+        {
+            const float exposure = static_cast<float>(ManualExposureScale(settings));
+            std::array<float, 3> color {
+                std::max(input.R * exposure, 0.0f),
+                std::max(input.G * exposure, 0.0f),
+                std::max(input.B * exposure, 0.0f)
+            };
+            color = gradeDisplayLinear(color, settings.PostToneMapSaturation, settings.PostToneMapContrast);
+            color = neutralToneMap(color);
+            for (float& channel : color)
+                channel = std::clamp(channel, 0.0f, 1.0f);
+            return std::array<u8, 4> { linearToSrgbByte(color[0]), linearToSrgbByte(color[1]), linearToSrgbByte(color[2]), 255 };
+        };
+        const auto backgroundPixelMatches = [&](const RHI::TextureReadback& sample, const std::array<u8, 4>& expected, int tolerance)
+        {
+            if (sample.Extent.Width < 3 || sample.Extent.Height < 3
+                || sample.RowPitchBytes < sample.Extent.Width * 4
+                || sample.Data.size() < static_cast<size_t>(sample.RowPitchBytes) * sample.Extent.Height)
+                return false;
+            const u8* value = &sample.Data[static_cast<size_t>(2) * sample.RowPitchBytes + static_cast<size_t>(2) * 4];
+            for (u32 channel = 0; channel < 4; ++channel)
+                if (std::abs(static_cast<int>(value[channel]) - static_cast<int>(expected[channel])) > tolerance)
+                    return false;
+            return true;
+        };
+        const auto backgroundPixelDiffers = [&](const RHI::TextureReadback& sample, const std::array<u8, 4>& expected, int minimumTotalDifference)
+        {
+            if (sample.Extent.Width < 3 || sample.Extent.Height < 3
+                || sample.RowPitchBytes < sample.Extent.Width * 4
+                || sample.Data.size() < static_cast<size_t>(sample.RowPitchBytes) * sample.Extent.Height)
+                return false;
+            const u8* value = &sample.Data[static_cast<size_t>(2) * sample.RowPitchBytes + static_cast<size_t>(2) * 4];
+            int difference = 0;
+            for (u32 channel = 0; channel < 3; ++channel)
+                difference += std::abs(static_cast<int>(value[channel]) - static_cast<int>(expected[channel]));
+            return difference >= minimumTotalDifference;
+        };
         auto renderExposure = [&](double ev100, u64 frameIndex, RHI::TextureReadback& outReadback)
         {
             if (!Renderer::SetColorPipelineSettings({ ev100 }))
@@ -2296,6 +2390,8 @@ float4 PSMain(PixelInput input) : SV_Target { return ReadOnlyTextures[1].SampleL
         RHI::TextureReadback darkExposure;
         const ToneMapPassConstantCacheDiagnostics baselineConstantCache =
             m_VulkanSceneRenderer->GetToneMapConstantCacheDiagnostics();
+        const bool identityGradeOk = resizedRaster && backgroundOk
+            && baselineConstantCache.CurrentSettings == RendererColorPipelineSettings {};
         const bool exposureRenders = renderExposure(-2.0, 2, brightExposure)
             && renderExposure(0.0, 3, neutralExposure)
             && renderExposure(2.0, 4, darkExposure);
@@ -2323,7 +2419,44 @@ float4 PSMain(PixelInput input) : SV_Target { return ReadOnlyTextures[1].SampleL
             exposureConstantCache.AllocationCount, " reuses=", exposureConstantCache.ReuseCount,
             " generations=", exposureConstantCache.CurrentGeneration, " result=",
             (exposureRenders && exposureReadbacks && monotonic && constantCacheOk) ? "pass" : "fail");
+
+        const RendererColorPipelineSettings gradedSettings { 0.0, 0.25, 1.5 };
+        const ClearColor gradingBackground { 1.40f, 0.23f, 0.05f, 1.0f };
+        RHI::TextureReadback gradedReadback;
+        const bool gradingSet = Renderer::SetColorPipelineSettings(gradedSettings);
+        SceneRenderSnapshot gradingSnapshot = snapshot;
+        gradingSnapshot.FrameIndex = 5;
+        Renderer::PublishSceneRenderSnapshot(std::move(gradingSnapshot));
+        const bool gradingRendered = gradingSet
+            && Renderer::PrepareCurrentSceneRasterFrame()
+            && m_VulkanSceneRenderer->RenderCurrentSnapshot(64, 48, gradingBackground)
+            && m_VulkanSceneRenderer->ReadbackColor(gradedReadback);
+        const ToneMapPassConstantCacheDiagnostics gradingConstantCache =
+            m_VulkanSceneRenderer->GetToneMapConstantCacheDiagnostics();
+        const std::array<u8, 4> postToneMapExpected = expectedPostToneMapPixel(
+            gradingBackground, gradedSettings);
+        const std::array<u8, 4> preToneMapExpected = expectedPreToneMapPixel(
+            gradingBackground, gradedSettings);
+        const bool postOrderMatched = gradingRendered
+            && backgroundPixelMatches(gradedReadback, postToneMapExpected, 4);
+        const bool preOrderRejected = gradingRendered
+            && backgroundPixelDiffers(gradedReadback, preToneMapExpected, 12);
+        const bool gradingConstantsOk = gradingConstantCache.AllocationCount == 5
+            && gradingConstantCache.ReuseCount >= exposureConstantCache.ReuseCount
+            && gradingConstantCache.CurrentGeneration == 5
+            && gradingConstantCache.CurrentSettings == gradedSettings;
+        Renderer::SetColorPipelineSettings(previousColorSettings);
+        Log::Info("ScenePostToneMapGradingV1 backend=Vulkan identity=", identityGradeOk ? "pass" : "fail",
+            " controls=saturation-contrast order=",
+            postOrderMatched && preOrderRejected ? "after-tone-map" : "fail",
+            " graph=", gradingRendered ? "exact-byte-pass" : "fail",
+            " constants=", gradingConstantsOk ? "immutable-retained-cached" : "fail",
+            " result=", (identityGradeOk && gradingRendered && postOrderMatched && preOrderRejected && gradingConstantsOk) ? "pass" : "fail",
+            " postExpected=", static_cast<u32>(postToneMapExpected[0]), ",",
+            static_cast<u32>(postToneMapExpected[1]), ",", static_cast<u32>(postToneMapExpected[2]),
+            " preRejected=", preOrderRejected ? "pass" : "fail");
         return resizedRaster && readbackOk && geometryOk && backgroundOk && resizeOk
-            && exposureRenders && exposureReadbacks && monotonic && constantCacheOk;
+            && exposureRenders && exposureReadbacks && monotonic && constantCacheOk
+            && identityGradeOk && gradingRendered && postOrderMatched && preOrderRejected && gradingConstantsOk;
     }
 }

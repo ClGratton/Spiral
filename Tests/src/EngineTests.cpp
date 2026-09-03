@@ -873,13 +873,15 @@ namespace
                 "invalid Smooth Frametime override updates leave the prior runtime state unchanged");
     }
 
-    bool TestRendererColorPipelineSettingsValidateManualExposure()
+    bool TestRendererColorPipelineSettingsValidateManualExposureAndPostToneMapGrade()
     {
         using namespace Engine;
 
         const RendererColorPipelineSettings defaults;
         const bool defaultValid = IsValidRendererColorPipelineSettings(defaults)
             && defaults.ManualExposureEV100 == 0.0
+            && defaults.PostToneMapSaturation == 1.0
+            && defaults.PostToneMapContrast == 1.0
             && ManualExposureScale(defaults) == 1.0;
 
         const RendererColorPipelineSettings minimum { kMinimumManualExposureEV100 };
@@ -894,6 +896,22 @@ namespace
             { std::numeric_limits<double>::quiet_NaN() });
         const bool infinityRejected = !IsValidRendererColorPipelineSettings(
             { std::numeric_limits<double>::infinity() });
+        const bool saturationBoundsAccepted = IsValidRendererColorPipelineSettings(
+            { 0.0, kMinimumPostToneMapSaturation, 1.0 })
+            && IsValidRendererColorPipelineSettings({ 0.0, kMaximumPostToneMapSaturation, 1.0 });
+        const bool saturationBoundsRejected = !IsValidRendererColorPipelineSettings(
+            { 0.0, kMinimumPostToneMapSaturation - 0.01, 1.0 })
+            && !IsValidRendererColorPipelineSettings({ 0.0, kMaximumPostToneMapSaturation + 0.01, 1.0 });
+        const bool saturationNonfiniteRejected = !IsValidRendererColorPipelineSettings(
+            { 0.0, std::numeric_limits<double>::quiet_NaN(), 1.0 });
+        const bool contrastBoundsAccepted = IsValidRendererColorPipelineSettings(
+            { 0.0, 1.0, kMinimumPostToneMapContrast })
+            && IsValidRendererColorPipelineSettings({ 0.0, 1.0, kMaximumPostToneMapContrast });
+        const bool contrastBoundsRejected = !IsValidRendererColorPipelineSettings(
+            { 0.0, 1.0, kMinimumPostToneMapContrast - 0.01 })
+            && !IsValidRendererColorPipelineSettings({ 0.0, 1.0, kMaximumPostToneMapContrast + 0.01 });
+        const bool contrastNonfiniteRejected = !IsValidRendererColorPipelineSettings(
+            { 0.0, 1.0, std::numeric_limits<double>::infinity() });
 
         const RendererColorPipelineSettings brighter { -2.0 };
         const RendererColorPipelineSettings darker { 2.0 };
@@ -901,18 +919,22 @@ namespace
             && ManualExposureScale(darker) == 0.25;
 
         const RendererColorPipelineSettings previous = Renderer::GetColorPipelineSettings();
-        const bool published = Renderer::SetColorPipelineSettings(brighter)
-            && Renderer::GetColorPipelineSettings() == brighter;
-        const bool invalidPublicationRejected = !Renderer::SetColorPipelineSettings({ 17.0 })
-            && !Renderer::SetColorPipelineSettings({ std::numeric_limits<double>::quiet_NaN() })
-            && Renderer::GetColorPipelineSettings() == brighter;
+        const RendererColorPipelineSettings graded { -1.0, 0.5, 1.5 };
+        const bool published = Renderer::SetColorPipelineSettings(graded)
+            && Renderer::GetColorPipelineSettings() == graded;
+        const bool invalidPublicationRejected = !Renderer::SetColorPipelineSettings({ 17.0, 1.0, 1.0 })
+            && !Renderer::SetColorPipelineSettings({ 0.0, 2.5, 1.0 })
+            && !Renderer::SetColorPipelineSettings({ 0.0, 1.0, std::numeric_limits<double>::quiet_NaN() })
+            && Renderer::GetColorPipelineSettings() == graded;
         const bool restored = Renderer::SetColorPipelineSettings(previous)
             && Renderer::GetColorPipelineSettings() == previous;
 
         return Expect(defaultValid && boundsAccepted && belowRejected && aboveRejected
-                && nanRejected && infinityRejected && signConvention && published
-                && invalidPublicationRejected && restored,
-            "manual EV100 exposure defaults to zero, validates finite bounded stops, publishes transactionally, and preserves sign convention");
+                && nanRejected && infinityRejected && saturationBoundsAccepted
+                && saturationBoundsRejected && saturationNonfiniteRejected
+                && contrastBoundsAccepted && contrastBoundsRejected && contrastNonfiniteRejected
+                && signConvention && published && invalidPublicationRejected && restored,
+            "manual EV100 and post-tone-map grading default to identity, validate finite bounded controls, publish transactionally, and preserve exposure sign convention");
     }
 
     class FakeFramePacingClock final : public Engine::FramePacingClock
@@ -8521,7 +8543,7 @@ int main(int argc, char** argv)
         INTEGRATION_TEST("Linux fatal signals publish minimal receipts and preserve default termination", TestLinuxFatalSignalSafety),
 #endif
         FAST_TEST("Frame pacing policy resolves overrides and validates targets", TestFramePacingPolicyResolutionAndValidation),
-        FAST_TEST("Renderer color pipeline settings validate manual exposure", TestRendererColorPipelineSettingsValidateManualExposure),
+        FAST_TEST("Renderer color pipeline settings validate manual exposure and post-tone-map grading", TestRendererColorPipelineSettingsValidateManualExposureAndPostToneMapGrade),
         FAST_TEST("Presentation policy resolves immediate or no-replacement FIFO", TestPresentationPolicyResolverRejectsReplacementModes),
         FAST_TEST("Presentation fallback transition commits once across stable frames", TestPresentationPolicyFallbackTransitionAppliesOnce),
         FAST_TEST("Layer stack clear detaches exactly once before subsystem teardown", TestLayerStackClearDetachesExactlyOnce),
