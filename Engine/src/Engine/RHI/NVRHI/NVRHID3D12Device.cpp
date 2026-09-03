@@ -2982,6 +2982,9 @@ namespace Engine::RHI
                 m_Capabilities.Fallbacks = m_SelectionFallbacks;
                 m_Capabilities.AdapterCandidates = m_AdapterCandidates;
                 m_Capabilities.AdapterSelection = m_AdapterSelection;
+                m_Capabilities.MaximumReadOnlyTextureTableCapacity = std::min<u32>(
+                    kMaximumReadOnlyTextureTableCapacity,
+                    D3D12_MAX_SHADER_VISIBLE_SAMPLER_HEAP_SIZE);
 
                 if ((m_AdapterFlags & DXGI_ADAPTER_FLAG_SOFTWARE) != 0)
                 {

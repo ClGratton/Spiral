@@ -23,7 +23,6 @@ namespace Engine
     namespace
     {
         constexpr u32 kConstantBufferSize = 256;
-        constexpr u32 kSceneTextureTableCapacity = RHI::kMaximumReadOnlyTextureTableCapacity;
 
         struct Constants
         {
@@ -141,11 +140,15 @@ namespace Engine
             m_Device = device;
             if (!m_Device)
                 return false;
+            m_TextureTableCapacity = RHI::SelectReadOnlyTextureTableCapacity(
+                m_Device->GetCapabilities());
+            if (m_TextureTableCapacity < 2)
+                return false;
 
             ShaderSourceFile source = ShaderLibrary::LoadSource("Engine/Shaders/EditorViewport.hlsl", "Vulkan Scene viewport");
             if (source.Status != ShaderSourceStatus::Loaded)
                 return false;
-            auto makeRequest = [&source](RHI::ShaderStage stage, const char* entry) {
+            auto makeRequest = [&source, this](RHI::ShaderStage stage, const char* entry) {
                 PortableShaderRequest request;
                 request.SourceName = source.ResolvedPath.string(); request.Source = source.Source; request.EntryPoint = entry; request.Stage = stage;
 #ifdef _WIN32
@@ -154,10 +157,11 @@ namespace Engine
                 request.Targets = { PortableShaderTarget::Spirv };
 #endif
                 request.CompilerIdentity = "Slang"; request.CompilerVersion = "2026.13.1"; request.CompilerPackageHash = GE_SLANG_PACKAGE_SHA256;
+                request.Defines = { "GE_READ_ONLY_TEXTURE_CAPACITY=" + std::to_string(m_TextureTableCapacity) };
                 request.ExpectedLayout = {
                     { "ViewportConstants", 'b', 0, 0, stage, "ConstantBuffer", "struct{ViewProjection:float32x4x4:row-major@0,BaseColorAndAlphaCutoff:float32x4@64,EmissiveAndStrength:float32x4@80,SurfaceFactors:float32x4@96,CallistoFactors:float32x4@112,TextureIndices0:uint32x4@128,TextureIndices1:uint32x4@144,TextureState:uint32x4@160}", 1, 176, 0, 0 },
-                    { "ReadOnlySamplers", 's', 0, 1, stage, "SamplerState", "sampler", kSceneTextureTableCapacity, 0, 0, 0 },
-                    { "ReadOnlyTextures", 't', 0, 1, stage, "Texture2D", "float32x4", kSceneTextureTableCapacity, 0, 1, 4 }
+                    { "ReadOnlySamplers", 's', 0, 1, stage, "SamplerState", "sampler", m_TextureTableCapacity, 0, 0, 0 },
+                    { "ReadOnlyTextures", 't', 0, 1, stage, "Texture2D", "float32x4", m_TextureTableCapacity, 0, 1, 4 }
                 };
                 if (stage == RHI::ShaderStage::Vertex) request.ExpectedVertexInputs = {{ "Position", "POSITION", 0, 0, "float32x3", 12, 1, 3 }, { "Color", "COLOR", 0, 1, "float32x3", 12, 1, 3 }, { "UV", "TEXCOORD", 0, 2, "float32x2", 8, 1, 2 }};
                 return request;
@@ -170,11 +174,11 @@ namespace Engine
             RHI::ShaderDescription vs; vs.DebugName = "Vulkan Scene Viewport VS"; vs.SourceName = source.ResolvedPath.string(); vs.EntryPoint = "main"; vs.Stage = RHI::ShaderStage::Vertex; vs.BinaryFormat = RHI::ShaderBinaryFormat::Spirv; vs.Binary = vertex.Spirv; vs.Reflection = vertex.Reflection;
             RHI::ShaderDescription ps = vs; ps.DebugName = "Vulkan Scene Viewport PS"; ps.Stage = RHI::ShaderStage::Pixel; ps.Binary = pixel.Spirv; ps.Reflection = pixel.Reflection;
             m_VertexShader = m_Device->CreateShader(vs); m_PixelShader = m_Device->CreateShader(ps);
-            RHI::PipelineDescription pipeline; pipeline.DebugName = "Vulkan Scene Viewport Pipeline"; pipeline.VertexShader = m_VertexShader.get(); pipeline.PixelShader = m_PixelShader.get(); pipeline.VertexInputs = {{ "POSITION", 0, RHI::Format::R32G32B32Float, 0, offsetof(MeshArtifactVertex, Position) }, { "COLOR", 0, RHI::Format::R32G32B32Float, 0, offsetof(MeshArtifactVertex, Color) }, { "TEXCOORD", 0, RHI::Format::R32G32Float, 0, offsetof(MeshArtifactVertex, UV) }}; pipeline.ConstantBufferBindings = {{ 0, 0, RHI::ShaderStage::AllGraphics }}; pipeline.SampledTextureTable = RHI::SampledTextureTableBinding { kSceneTextureTableCapacity }; pipeline.ColorFormat = RHI::Format::R8G8B8A8Unorm; pipeline.DepthFormat = RHI::Format::D32Float; pipeline.DepthTestEnable = true; pipeline.DepthWriteEnable = true; pipeline.RasterCullMode = RHI::CullMode::None;
+            RHI::PipelineDescription pipeline; pipeline.DebugName = "Vulkan Scene Viewport Pipeline"; pipeline.VertexShader = m_VertexShader.get(); pipeline.PixelShader = m_PixelShader.get(); pipeline.VertexInputs = {{ "POSITION", 0, RHI::Format::R32G32B32Float, 0, offsetof(MeshArtifactVertex, Position) }, { "COLOR", 0, RHI::Format::R32G32B32Float, 0, offsetof(MeshArtifactVertex, Color) }, { "TEXCOORD", 0, RHI::Format::R32G32Float, 0, offsetof(MeshArtifactVertex, UV) }}; pipeline.ConstantBufferBindings = {{ 0, 0, RHI::ShaderStage::AllGraphics }}; pipeline.SampledTextureTable = RHI::SampledTextureTableBinding { m_TextureTableCapacity }; pipeline.ColorFormat = RHI::Format::R8G8B8A8Unorm; pipeline.DepthFormat = RHI::Format::D32Float; pipeline.DepthTestEnable = true; pipeline.DepthWriteEnable = true; pipeline.RasterCullMode = RHI::CullMode::None;
             m_Pipeline = m_VertexShader && m_PixelShader ? m_Device->CreatePipeline(pipeline) : nullptr;
             m_TextureRuntime = m_Pipeline ? TextureRuntimePublication::Create(*m_Device,
-                TextureTargetProfile::RGBAFallback, kSceneTextureTableCapacity - 1,
-                kSceneTextureTableCapacity) : nullptr;
+                TextureTargetProfile::RGBAFallback, m_TextureTableCapacity - 1,
+                m_TextureTableCapacity) : nullptr;
             return m_Pipeline != nullptr && m_TextureRuntime != nullptr;
         }
 
@@ -381,6 +385,7 @@ namespace Engine
             m_PixelShader.reset(); m_VertexShader.reset(); m_Device = nullptr;
         }
         RHI::Device* m_Device = nullptr; MeshGpuResourceCache m_MeshResourceCache { 32 };
+        u32 m_TextureTableCapacity = 0;
         Scope<TextureRuntimePublication> m_TextureRuntime;
         Scope<RHI::Shader> m_VertexShader, m_PixelShader; Scope<RHI::Pipeline> m_Pipeline;
         Scope<RHI::Texture> m_Color, m_Depth; SubmittedRenderGraphFrameOwner m_SubmittedGraphFrames;

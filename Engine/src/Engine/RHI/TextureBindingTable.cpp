@@ -1,5 +1,6 @@
 #include "Engine/RHI/TextureBindingTable.h"
 
+#include <algorithm>
 #include <atomic>
 
 namespace Engine::RHI
@@ -16,9 +17,16 @@ namespace Engine::RHI
             : CapabilityPath::BoundedReadOnlyTextureTable;
     }
 
+    u32 SelectReadOnlyTextureTableCapacity(const DeviceCapabilities& capabilities)
+    {
+        return std::min(capabilities.MaximumReadOnlyTextureTableCapacity,
+            kMaximumReadOnlyTextureTableCapacity);
+    }
+
     Scope<TextureBindingTable> TextureBindingTable::Create(Device& device, const TextureBindingTableDescription& description)
     {
-        if (description.Capacity < 2 || description.Capacity > kMaximumReadOnlyTextureTableCapacity
+        if (description.Capacity < 2
+            || description.Capacity > SelectReadOnlyTextureTableCapacity(device.GetCapabilities())
             || !description.ErrorTexture || !IsValidSampler(description.ErrorSampler)) return nullptr;
         Scope<TextureBindingTable> table(new TextureBindingTable(
             device, SelectReadOnlyTextureTablePath(device.GetCapabilities()), description));

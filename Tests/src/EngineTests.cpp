@@ -7181,7 +7181,12 @@ float4 main(VertexInput input) : SV_Position
     class OwnershipTestDevice : public Engine::RHI::Device
     {
     public:
-        explicit OwnershipTestDevice(Engine::u64 ownerId) : m_OwnerId(ownerId) {}
+        explicit OwnershipTestDevice(Engine::u64 ownerId,
+            Engine::u32 maximumTextureTableCapacity = Engine::RHI::kMaximumReadOnlyTextureTableCapacity)
+            : m_OwnerId(ownerId)
+        {
+            m_Capabilities.MaximumReadOnlyTextureTableCapacity = maximumTextureTableCapacity;
+        }
         const Engine::RHI::DeviceDescription& GetDescription() const override { return m_Description; }
         const Engine::RHI::DeviceCapabilities& GetCapabilities() const override { return m_Capabilities; }
         Engine::Scope<Engine::RHI::Buffer> CreateBuffer(const Engine::RHI::BufferDescription&) override { return nullptr; }
@@ -7356,10 +7361,15 @@ float4 main(VertexInput input) : SV_Position
         Engine::Ref<Texture> second = Engine::CreateRef<OwnershipTestTexture>(101, ResourceState::ShaderResource, sampled);
         const Engine::Ref<Texture> writableTexture = Engine::CreateRef<OwnershipTestTexture>(101, ResourceState::ShaderResource, writable);
         const Engine::Ref<Texture> foreign = Engine::CreateRef<OwnershipTestTexture>(202, ResourceState::ShaderResource, sampled);
+        OwnershipTestDevice limitedDevice(303, 2);
+        const Engine::Ref<Texture> limitedError = Engine::CreateRef<OwnershipTestTexture>(303,
+            ResourceState::ShaderResource, sampled);
         TextureBindingTableDescription description { 3, error, TextureSampler::PointClamp };
         const bool invalidCreationRejected = !TextureBindingTable::Create(device, { 1, error, TextureSampler::LinearClamp })
             && !TextureBindingTable::Create(device, { kMaximumReadOnlyTextureTableCapacity + 1, error, TextureSampler::LinearClamp })
-            && !TextureBindingTable::Create(device, { 3, error, invalidSampler });
+            && !TextureBindingTable::Create(device, { 3, error, invalidSampler })
+            && !TextureBindingTable::Create(limitedDevice, { 3, limitedError, TextureSampler::LinearClamp })
+            && SelectReadOnlyTextureTableCapacity(limitedDevice.GetCapabilities()) == 2;
         Engine::Scope<TextureBindingTable> table = TextureBindingTable::Create(device, description);
         Engine::Scope<TextureBindingTable> distinctTable = TextureBindingTable::Create(device, description);
         const Engine::u64 tableIdentity = table ? table->GetIdentity() : 0;
@@ -7413,7 +7423,7 @@ float4 main(VertexInput input) : SV_Position
                 "unimplemented descriptor indexing selects the declared bounded table fallback")
             && Expect(SelectReadOnlyTextureTablePath(indexedCapabilities) == CapabilityPath::ReadOnlyBindlessDescriptorTable,
                 "the bindless path is selected only from the usable capability lifecycle")
-            && Expect(invalidCreationRejected, "below-minimum above-maximum and invalid-error-sampler table descriptions are rejected")
+            && Expect(invalidCreationRejected, "below-minimum global/adapter-oversized and invalid-error-sampler table descriptions are rejected")
             && Expect(firstHandle.IsValid() && secondHandle.IsValid(),
                 "allocation is deterministic and capacity includes the error slot")
             && Expect(errorViewWasRetained && errorReleasedAfterView,

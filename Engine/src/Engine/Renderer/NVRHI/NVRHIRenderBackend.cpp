@@ -2095,6 +2095,8 @@ float4 PSMain(PixelInput input) : SV_Target { return ReadOnlyTextures[1].SampleL
     {
         RHI::Device* device = m_VulkanContext ? m_VulkanContext->GetRHIDevice() : nullptr;
         constexpr u32 width = 32, height = 24;
+        const u32 tableCapacity = device
+            ? RHI::SelectReadOnlyTextureTableCapacity(device->GetCapabilities()) : 0;
         struct Vertex { float Position[3]; float Color[3]; float UV[2]; };
         struct Constants
         {
@@ -2124,7 +2126,7 @@ float4 PSMain(PixelInput input) : SV_Target { return ReadOnlyTextures[1].SampleL
         constants.CallistoFactors[2] = constants.CallistoFactors[3] = 0.75f;
         constants.TextureState[3] = 1u;
         ShaderSourceFile source = ShaderLibrary::LoadSource("Engine/Shaders/EditorViewport.hlsl", "Vulkan indexed draw smoke");
-        auto makeRequest = [&source](RHI::ShaderStage stage, const char* entry) {
+        auto makeRequest = [&source, tableCapacity](RHI::ShaderStage stage, const char* entry) {
             PortableShaderRequest request;
             request.SourceName = source.ResolvedPath.string(); request.Source = source.Source; request.EntryPoint = entry; request.Stage = stage;
             #ifdef _WIN32
@@ -2135,10 +2137,11 @@ float4 PSMain(PixelInput input) : SV_Target { return ReadOnlyTextures[1].SampleL
             #endif
             request.CompilerIdentity = "Slang"; request.CompilerVersion = "2026.13.1";
             request.CompilerPackageHash = GE_SLANG_PACKAGE_SHA256;
+            request.Defines = { "GE_READ_ONLY_TEXTURE_CAPACITY=" + std::to_string(tableCapacity) };
             request.ExpectedLayout = {
                 { "ViewportConstants", 'b', 0, 0, stage, "ConstantBuffer", "struct{ViewProjection:float32x4x4:row-major@0,BaseColorAndAlphaCutoff:float32x4@64,EmissiveAndStrength:float32x4@80,SurfaceFactors:float32x4@96,CallistoFactors:float32x4@112,TextureIndices0:uint32x4@128,TextureIndices1:uint32x4@144,TextureState:uint32x4@160}", 1, 176, 0, 0 },
-                { "ReadOnlySamplers", 's', 0, 1, stage, "SamplerState", "sampler", RHI::kMaximumReadOnlyTextureTableCapacity, 0, 0, 0 },
-                { "ReadOnlyTextures", 't', 0, 1, stage, "Texture2D", "float32x4", RHI::kMaximumReadOnlyTextureTableCapacity, 0, 1, 4 }
+                { "ReadOnlySamplers", 's', 0, 1, stage, "SamplerState", "sampler", tableCapacity, 0, 0, 0 },
+                { "ReadOnlyTextures", 't', 0, 1, stage, "Texture2D", "float32x4", tableCapacity, 0, 1, 4 }
             };
             if (stage == RHI::ShaderStage::Vertex) request.ExpectedVertexInputs = {{ "Position", "POSITION", 0, 0, "float32x3", 12, 1, 3 }, { "Color", "COLOR", 0, 1, "float32x3", 12, 1, 3 }, { "UV", "TEXCOORD", 0, 2, "float32x2", 8, 1, 2 }};
             return request;
@@ -2157,11 +2160,11 @@ float4 PSMain(PixelInput input) : SV_Target { return ReadOnlyTextures[1].SampleL
         Scope<RHI::Shader> pixelShader = packageOk ? device->CreateShader(ps) : nullptr;
         RHI::PipelineDescription pipelineDescription; pipelineDescription.DebugName = "VulkanRHIIndexedDrawV1 Pipeline"; pipelineDescription.VertexShader = vertexShader.get(); pipelineDescription.PixelShader = pixelShader.get();
         pipelineDescription.VertexInputs = {{ "POSITION", 0, RHI::Format::R32G32B32Float, 0, offsetof(Vertex, Position) }, { "COLOR", 0, RHI::Format::R32G32B32Float, 0, offsetof(Vertex, Color) }, { "TEXCOORD", 0, RHI::Format::R32G32Float, 0, offsetof(Vertex, UV) }};
-        pipelineDescription.ConstantBufferBindings = {{ 0, 0, RHI::ShaderStage::AllGraphics }}; pipelineDescription.SampledTextureTable = RHI::SampledTextureTableBinding { RHI::kMaximumReadOnlyTextureTableCapacity }; pipelineDescription.ColorFormat = RHI::Format::R8G8B8A8Unorm; pipelineDescription.DepthFormat = RHI::Format::D32Float; pipelineDescription.DepthTestEnable = false; pipelineDescription.DepthWriteEnable = false; pipelineDescription.RasterCullMode = RHI::CullMode::None;
+        pipelineDescription.ConstantBufferBindings = {{ 0, 0, RHI::ShaderStage::AllGraphics }}; pipelineDescription.SampledTextureTable = RHI::SampledTextureTableBinding { tableCapacity }; pipelineDescription.ColorFormat = RHI::Format::R8G8B8A8Unorm; pipelineDescription.DepthFormat = RHI::Format::D32Float; pipelineDescription.DepthTestEnable = false; pipelineDescription.DepthWriteEnable = false; pipelineDescription.RasterCullMode = RHI::CullMode::None;
         Scope<RHI::Pipeline> pipeline = vertexShader && pixelShader ? device->CreatePipeline(pipelineDescription) : nullptr;
         Scope<TextureRuntimePublication> textureRuntime = pipeline
             ? TextureRuntimePublication::Create(*device, TextureTargetProfile::RGBAFallback,
-                1, RHI::kMaximumReadOnlyTextureTableCapacity)
+                1, tableCapacity)
             : nullptr;
         auto createBuffer = [device](const char* name, u64 size, u32 stride, RHI::BufferUsage usage) { RHI::BufferDescription d; d.DebugName = name; d.SizeBytes = size; d.StrideBytes = stride; d.Usage = static_cast<RHI::BufferUsage>(static_cast<u32>(usage) | static_cast<u32>(RHI::BufferUsage::CopyDest)); return device->CreateBuffer(d); };
         Scope<RHI::Buffer> vertexBuffer = packageOk ? createBuffer("VulkanRHIIndexedDrawV1 Vertices", sizeof(vertices), sizeof(Vertex), RHI::BufferUsage::Vertex) : nullptr;

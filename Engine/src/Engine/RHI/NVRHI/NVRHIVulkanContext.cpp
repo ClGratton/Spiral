@@ -14,6 +14,7 @@
     #include <nvrhi/vulkan.h>
     #include <vulkan/vulkan_beta.h>
 
+    #include <algorithm>
     #include <cstring>
     #include <iomanip>
     #include <limits>
@@ -253,6 +254,13 @@ namespace Engine::RHI
             m_Capabilities.Formats = m_SelectedFormats;
             m_Capabilities.AdapterCandidates = m_AdapterCandidates;
             m_Capabilities.AdapterSelection = m_AdapterSelection;
+            m_Capabilities.MaximumReadOnlyTextureTableCapacity = std::min({
+                kMaximumReadOnlyTextureTableCapacity,
+                m_SelectedProperties.limits.maxPerStageDescriptorSamplers,
+                m_SelectedProperties.limits.maxPerStageDescriptorSampledImages,
+                m_SelectedProperties.limits.maxDescriptorSetSamplers,
+                m_SelectedProperties.limits.maxDescriptorSetSampledImages
+            });
 
             const bool nvrhiRayTracingAdvertised =
                 m_NVRHIDevice->queryFeatureSupport(nvrhi::Feature::RayTracingAccelStruct)
@@ -352,7 +360,8 @@ namespace Engine::RHI
                 ", API=", VK_API_VERSION_MAJOR(m_SelectedProperties.apiVersion), ".",
                 VK_API_VERSION_MINOR(m_SelectedProperties.apiVersion), ".",
                 VK_API_VERSION_PATCH(m_SelectedProperties.apiVersion),
-                ", driver=", m_Capabilities.Identity.DriverVersion);
+                ", driver=", m_Capabilities.Identity.DriverVersion,
+                ", sampledTableCapacity=", m_Capabilities.MaximumReadOnlyTextureTableCapacity);
             for (u32 featureIndex = 0; featureIndex < static_cast<u32>(DeviceFeature::Count); ++featureIndex)
             {
                 const DeviceFeature feature = static_cast<DeviceFeature>(featureIndex);

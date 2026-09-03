@@ -28,7 +28,6 @@ namespace Engine
     namespace
     {
         constexpr u32 kViewportConstantBufferSize = 256;
-        constexpr u32 kSceneTextureTableCapacity = RHI::kMaximumReadOnlyTextureTableCapacity;
         constexpr std::string_view kViewportShaderPath = "Engine/Shaders/EditorViewport.hlsl";
 
         std::string_view ViewportShaderPath()
@@ -199,12 +198,16 @@ namespace Engine
             m_RHIDevice = rhiDevice;
             if (!m_RHIDevice)
                 return false;
+            m_TextureTableCapacity = RHI::SelectReadOnlyTextureTableCapacity(
+                m_RHIDevice->GetCapabilities());
+            if (m_TextureTableCapacity < 2)
+                return false;
 
             if (!RequestInitialPipeline())
                 return false;
             m_TextureRuntime = TextureRuntimePublication::Create(*m_RHIDevice,
-                TextureTargetProfile::RGBAFallback, kSceneTextureTableCapacity - 1,
-                kSceneTextureTableCapacity);
+                TextureTargetProfile::RGBAFallback, m_TextureTableCapacity - 1,
+                m_TextureTableCapacity);
             return m_TextureRuntime != nullptr;
         }
 
@@ -571,10 +574,11 @@ namespace Engine
             request.CompilerVersion = "2026.13.1";
             request.CompilerPackageHash = GE_SLANG_PACKAGE_SHA256;
             request.DownstreamCompilerPackageHash = GE_DXC_PACKAGE_SHA256;
+            request.Defines = { "GE_READ_ONLY_TEXTURE_CAPACITY=" + std::to_string(m_TextureTableCapacity) };
             request.ExpectedLayout = {
                 { "ViewportConstants", 'b', 0, 0, stage, "ConstantBuffer", "struct{ViewProjection:float32x4x4:row-major@0,BaseColorAndAlphaCutoff:float32x4@64,EmissiveAndStrength:float32x4@80,SurfaceFactors:float32x4@96,CallistoFactors:float32x4@112,TextureIndices0:uint32x4@128,TextureIndices1:uint32x4@144,TextureState:uint32x4@160}", 1, 176, 0, 0 },
-                { "ReadOnlySamplers", 's', 0, 1, stage, "SamplerState", "sampler", kSceneTextureTableCapacity, 0, 0, 0 },
-                { "ReadOnlyTextures", 't', 0, 1, stage, "Texture2D", "float32x4", kSceneTextureTableCapacity, 0, 1, 4 }
+                { "ReadOnlySamplers", 's', 0, 1, stage, "SamplerState", "sampler", m_TextureTableCapacity, 0, 0, 0 },
+                { "ReadOnlyTextures", 't', 0, 1, stage, "Texture2D", "float32x4", m_TextureTableCapacity, 0, 1, 4 }
             };
             if (stage == RHI::ShaderStage::Vertex)
             {
@@ -754,7 +758,7 @@ namespace Engine
                 { 0, 0, RHI::ShaderStage::AllGraphics }
             };
             pipelineDesc.SampledTextureTable = RHI::SampledTextureTableBinding {
-                kSceneTextureTableCapacity };
+                m_TextureTableCapacity };
             pipelineDesc.Topology = RHI::PrimitiveTopology::TriangleList;
             pipelineDesc.RasterCullMode = RHI::CullMode::None;
             pipelineDesc.ColorFormat = RHI::Format::R8G8B8A8Unorm;
@@ -874,6 +878,7 @@ namespace Engine
 
         RHI::Device* m_RHIDevice = nullptr;
         MeshGpuResourceCache m_MeshResourceCache { 32 };
+        u32 m_TextureTableCapacity = 0;
         Scope<TextureRuntimePublication> m_TextureRuntime;
         Ref<RHI::Pipeline> m_Pipeline;
         Ref<RHI::Shader> m_VertexShader;

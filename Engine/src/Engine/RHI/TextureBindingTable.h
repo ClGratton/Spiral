@@ -7,6 +7,10 @@
 #include <limits>
 #include <vector>
 
+#if defined(DeviceCapabilities)
+    #undef DeviceCapabilities
+#endif
+
 namespace Engine::RHI
 {
     // Logical sampler state only. Native sampler objects and shader bindings are
@@ -45,6 +49,7 @@ namespace Engine::RHI
     };
 
     CapabilityPath SelectReadOnlyTextureTablePath(const DeviceCapabilities& capabilities);
+    u32 SelectReadOnlyTextureTableCapacity(const DeviceCapabilities& capabilities);
 
     // CPU-side authority for future Scene texture/material consumers. It models
     // only read-only sampled texture identities; it creates no native descriptor

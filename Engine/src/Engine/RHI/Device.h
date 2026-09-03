@@ -14,6 +14,13 @@
 #include <array>
 #include <string_view>
 
+// Windows headers can (re)introduce this dispatch macro after Capability.h was
+// first included. Undefine it at every public declaration boundary that owns
+// or consumes the engine type.
+#if defined(DeviceCapabilities)
+    #undef DeviceCapabilities
+#endif
+
 namespace Engine::RHI
 {
     struct DeviceCapabilities
@@ -29,6 +36,10 @@ namespace Engine::RHI
         std::vector<std::string> Fallbacks;
         std::vector<AdapterCandidate> AdapterCandidates;
         AdapterSelectionResult AdapterSelection;
+        // Exact native bounded-table ceiling, including error slot zero. The
+        // default preserves deterministic test devices; real backends replace
+        // it with the selected adapter's descriptor/sampler limit.
+        u32 MaximumReadOnlyTextureTableCapacity = kMaximumReadOnlyTextureTableCapacity;
 
         const CapabilityState& GetFeature(DeviceFeature feature) const
         {

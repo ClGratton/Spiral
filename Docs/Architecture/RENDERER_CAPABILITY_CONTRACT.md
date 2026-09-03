@@ -63,6 +63,8 @@ The engine must enumerate adapters and select by required capabilities, limits, 
 
 A strict backend request fails clearly if its minimum contract is not met. An ordinary launch may use a documented fallback selected before native device creation. The reported active backend must match the device actually running.
 
+The selected device also publishes `MaximumReadOnlyTextureTableCapacity`, including reserved error slot zero. Vulkan derives it from the minimum of the selected physical device's per-stage and descriptor-set sampler/sampled-image limits and the engine ceiling. D3D12 derives it from the engine ceiling and the shader-visible sampler-heap limit. Shader defines, reflected array counts, logical table allocation, native layout realization, and Scene cache capacity must all use this one value. A logical table request above the selected adapter limit fails before native layout creation; a portable fallback must never compile a 4096-element interface merely because a different adapter supports it.
+
 Use `--renderer-adapter=<exact name or stable ID>` (or the split-value form) to prefer a device. A missing or unqualified preference falls back to the best qualified device and records the reason. Add `--renderer-adapter-strict` to reject every nonmatching device and terminate initialization instead of falling back. Stable IDs are the unambiguous choice when multiple devices expose the same display name; they are runtime identifiers, not content or save-file identifiers.
 
 ## Required Capability Groups
