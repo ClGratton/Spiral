@@ -2079,16 +2079,24 @@ namespace
 
         const TextureBindingHandle initial = runtime
             ? runtime->Resolve(asset, TextureSampler::LinearWrap, error) : TextureBindingHandle {};
+        const TextureBindingHandle alternate = runtime
+            ? runtime->Resolve(asset, TextureSampler::PointClamp, error) : TextureBindingHandle {};
         const auto initialView = runtime && runtime->GetBindingTable()
             ? runtime->GetBindingTable()->Resolve(initial) : TextureBindingView {};
+        const auto alternateView = runtime && runtime->GetBindingTable()
+            ? runtime->GetBindingTable()->Resolve(alternate) : TextureBindingView {};
         const CompletionToken firstUse { 901, 1 };
         device.SetCompletion(firstUse, CompletionStatus::Incomplete);
         const bool initialPublished = runtime && initial.IsValid() && !isError(initial)
             && initialView.TextureResource && !initialView.IsError
-            && runtime->GetPublishedAssetCount() == 1
+            && alternate.IsValid() && !isError(alternate) && alternate.Index != initial.Index
+            && alternateView.TextureResource == initialView.TextureResource
+            && initialView.Sampler == TextureSampler::LinearWrap
+            && alternateView.Sampler == TextureSampler::PointClamp
+            && runtime->GetPublishedViewCount() == 2
             && runtime->GetCachedResourceCount() == 1
             && runtime->RetainAcceptedFrame(firstUse,
-                { errorHandle, initial, initial }, error)
+                { errorHandle, initial, alternate }, error)
             && runtime->GetRetainedFrameCount() == 1;
 
         TextureArtifact changed = preferred;
@@ -2097,18 +2105,31 @@ namespace
         Renderer::PublishArtifactResolvers(registry);
         const TextureBindingHandle pendingReplacement = runtime
             ? runtime->Resolve(asset, TextureSampler::LinearWrap, error) : TextureBindingHandle {};
+        const TextureBindingHandle pendingAlternateReplacement = runtime
+            ? runtime->Resolve(asset, TextureSampler::PointClamp, error) : TextureBindingHandle {};
         const bool replacementQueued = changedStored && runtime && isError(pendingReplacement)
-            && runtime->GetPendingOperationCount() == 1
+            && isError(pendingAlternateReplacement)
+            && runtime->GetPendingOperationCount() == 2
             && runtime->GetBindingTable()->Resolve(initial).TextureResource == initialView.TextureResource;
         device.SetCompletion(firstUse, CompletionStatus::Complete);
         const bool replacementRetired = replacementQueued && runtime->Retire(firstUse, error);
         const TextureBindingHandle replaced = replacementRetired
             ? runtime->Resolve(asset, TextureSampler::LinearWrap, error) : TextureBindingHandle {};
+        const TextureBindingHandle alternateReplaced = replacementRetired
+            ? runtime->Resolve(asset, TextureSampler::PointClamp, error) : TextureBindingHandle {};
         const auto replacementView = runtime && runtime->GetBindingTable()
             ? runtime->GetBindingTable()->Resolve(replaced) : TextureBindingView {};
+        const auto alternateReplacementView = runtime && runtime->GetBindingTable()
+            ? runtime->GetBindingTable()->Resolve(alternateReplaced) : TextureBindingView {};
         const bool replacementPublished = replacementRetired && !isError(replaced)
             && replaced.Index == initial.Index && replaced.Generation == initial.Generation
+            && !isError(alternateReplaced)
+            && alternateReplaced.Index == alternate.Index
+            && alternateReplaced.Generation == alternate.Generation
             && replacementView.TextureResource && replacementView.TextureResource != initialView.TextureResource
+            && alternateReplacementView.TextureResource == replacementView.TextureResource
+            && replacementView.Sampler == TextureSampler::LinearWrap
+            && alternateReplacementView.Sampler == TextureSampler::PointClamp
             && runtime->GetPendingOperationCount() == 0
             && runtime->GetRetainedFrameCount() == 0;
 
@@ -2162,11 +2183,15 @@ namespace
         Renderer::PublishArtifactResolvers(registry);
         const TextureBindingHandle pendingRemoval = runtime
             ? runtime->Resolve(asset, TextureSampler::LinearWrap, error) : TextureBindingHandle {};
+        const TextureBindingHandle alternateMissing = runtime
+            ? runtime->Resolve(asset, TextureSampler::PointClamp, error) : TextureBindingHandle {};
         const bool removalQueued = secondRetained && registryRemoved && isError(pendingRemoval)
+            && isError(alternateMissing) && runtime->GetPublishedViewCount() == 1
+            && runtime->GetBindingTable()->Resolve(alternateReplaced).IsError
             && runtime->GetPendingOperationCount() == 1;
         device.SetCompletion(secondUse, CompletionStatus::Failed);
         const bool removalRetired = removalQueued && runtime->Retire(secondUse, error)
-            && runtime->GetPublishedAssetCount() == 0
+            && runtime->GetPublishedViewCount() == 0
             && runtime->GetPendingOperationCount() == 0
             && runtime->GetBindingTable()->Resolve(replacedBeforeUse).IsError
             && isError(runtime->Resolve(asset, TextureSampler::LinearWrap, error));
@@ -2201,7 +2226,7 @@ namespace
             : TextureBindingHandle {};
         const bool unacceptedRemovalPublished = unusedRemovedFromCatalog
             && isError(unusedMissing)
-            && runtime->GetPublishedAssetCount() == 0
+            && runtime->GetPublishedViewCount() == 0
             && runtime->GetBindingTable()->Resolve(unusedHandle).IsError
             && runtime->GetPendingOperationCount() == 0;
 
@@ -2216,7 +2241,7 @@ namespace
         if (runtime)
             runtime->ReleaseAfterDeviceIdle();
         const bool released = runtime && runtime->GetBindingTable() == nullptr
-            && runtime->GetPublishedAssetCount() == 0
+            && runtime->GetPublishedViewCount() == 0
             && runtime->GetCachedResourceCount() == 0
             && runtime->GetRetainedFrameCount() == 0;
         Renderer::ClearArtifactResolvers();
@@ -7232,7 +7257,7 @@ float4 main(VertexInput input) : SV_Position
         Ref<Texture> errorTexture = CreateRef<OwnershipTestTexture>(401,
             ResourceState::ShaderResource, errorDescription);
         Scope<TextureTablePublication> publication = TextureTablePublication::Create(device,
-            { 3, errorTexture, TextureSampler::PointClamp });
+            { 4, errorTexture, TextureSampler::PointClamp });
         if (!publication) return Expect(false, "texture table publication creates over one exact-device logical table");
         const TextureBindingHandle errorHandle = publication->GetErrorHandle();
         const auto isError = [errorHandle](TextureBindingHandle handle)
@@ -7253,17 +7278,22 @@ float4 main(VertexInput input) : SV_Position
             && isError(publication->Publish(11, foreign, TextureSampler::LinearClamp, error))
             && isError(publication->Publish(11, unready, TextureSampler::LinearClamp, error))
             && isError(publication->Publish(11, wrongAsset, TextureSampler::LinearClamp, error))
-            && publication->GetAssetCount() == 0;
+            && publication->GetViewCount() == 0;
 
         const TextureBindingHandle firstHandle = publication->Publish(11, first, TextureSampler::LinearWrap, error);
         const TextureBindingHandle stableHandle = publication->Publish(11, first, TextureSampler::LinearWrap, error);
+        const TextureBindingHandle alternateHandle = publication->Publish(11, first, TextureSampler::PointClamp, error);
         const TextureBindingHandle secondHandle = publication->Publish(12, second, TextureSampler::PointWrap, error);
         const TextureBindingHandle capacityFailure = publication->Publish(13, third, TextureSampler::LinearClamp, error);
         const bool stablePublication = firstHandle.IsValid() && firstHandle.Index != 0
             && stableHandle.Index == firstHandle.Index && stableHandle.Generation == firstHandle.Generation
+            && alternateHandle.IsValid() && alternateHandle.Index != firstHandle.Index
+            && publication->GetBindingTable()->Resolve(alternateHandle).TextureResource == first->Texture
+            && publication->GetBindingTable()->Resolve(alternateHandle).Sampler == TextureSampler::PointClamp
             && secondHandle.IsValid() && secondHandle.Index != firstHandle.Index
-            && isError(capacityFailure) && isError(publication->Resolve(99))
-            && publication->GetAssetCount() == 2;
+            && isError(capacityFailure)
+            && isError(publication->Resolve(99, TextureSampler::LinearWrap))
+            && publication->GetViewCount() == 3;
 
         const CompletionToken firstUse { 401, 41 }, lastUse { 401, 42 }, laterUse { 401, 43 };
         const CompletionToken foreignToken { 402, 41 }, untracked { 401, 99 };
@@ -7275,7 +7305,8 @@ float4 main(VertexInput input) : SV_Position
             && !publication->RetainAcceptedFrame(firstUse, {}, error)
             && !publication->RetainAcceptedFrame(firstUse, { errorHandle }, error);
         const bool framesRetained = publication->RetainAcceptedFrame(firstUse, { firstHandle }, error)
-            && publication->RetainAcceptedFrame(lastUse, { firstHandle, secondHandle }, error)
+            && publication->RetainAcceptedFrame(lastUse,
+                { firstHandle, alternateHandle, secondHandle }, error)
             && !publication->RetainAcceptedFrame(lastUse, { secondHandle }, error)
             && publication->GetRetainedFrameCount() == 2;
 
@@ -7283,13 +7314,14 @@ float4 main(VertexInput input) : SV_Position
         const RHI::Texture* replacementTexture = replacement->Texture.get();
         std::weak_ptr<const TextureGpuResourceBundle> firstLifetime = first;
         std::weak_ptr<const TextureGpuResourceBundle> replacementLifetime = replacement;
-        const bool replacementQueued = publication->QueueReplacement(
-            11, replacement, TextureSampler::PointClamp, error)
-            && publication->GetPendingOperationCount() == 1
-            && isError(publication->Resolve(11))
+        const bool replacementQueued = publication->QueueReplacement(firstHandle, replacement, error)
+            && publication->QueueRemoval(alternateHandle, error)
+            && publication->GetPendingOperationCount() == 2
+            && isError(publication->Resolve(11, TextureSampler::LinearWrap))
+            && isError(publication->Resolve(11, TextureSampler::PointClamp))
             && publication->GetBindingTable()->Resolve(firstHandle).TextureResource.get() == firstTexture
             && !publication->RetainAcceptedFrame(laterUse, { firstHandle }, error)
-            && !publication->QueueRemoval(11, error);
+            && !publication->QueueRemoval(firstHandle, error);
         first.reset();
         replacement.reset();
         const bool generationsRetained = !firstLifetime.expired() && !replacementLifetime.expired();
@@ -7297,30 +7329,33 @@ float4 main(VertexInput input) : SV_Position
         device.SetCompletion(firstUse, CompletionStatus::Complete);
         const bool earlierUseRetiredOnly = publication->Retire(firstUse, error)
             && publication->GetRetainedFrameCount() == 1
-            && publication->GetPendingOperationCount() == 1
+            && publication->GetPendingOperationCount() == 2
             && publication->GetBindingTable()->Resolve(firstHandle).TextureResource.get() == firstTexture;
         const bool incompleteAndUntrackedRejected = !publication->Retire(lastUse, error)
             && !publication->Retire(untracked, error)
-            && publication->GetPendingOperationCount() == 1;
+            && publication->GetPendingOperationCount() == 2;
         device.SetCompletion(lastUse, CompletionStatus::Failed);
         const TextureBindingHandle expectedError = publication->GetErrorHandle();
         const bool replacementRetired = publication->Retire(lastUse, error)
             && publication->GetRetainedFrameCount() == 0 && publication->GetPendingOperationCount() == 0
-            && publication->Resolve(11).Index == firstHandle.Index
-            && publication->Resolve(11).Generation == firstHandle.Generation
+            && publication->Resolve(11, TextureSampler::LinearWrap).Index == firstHandle.Index
+            && publication->Resolve(11, TextureSampler::LinearWrap).Generation == firstHandle.Generation
+            && isError(publication->Resolve(11, TextureSampler::PointClamp))
             && publication->GetBindingTable()->Resolve(firstHandle).TextureResource.get() == replacementTexture
-            && publication->GetBindingTable()->Resolve(firstHandle).Sampler == TextureSampler::PointClamp
+            && publication->GetBindingTable()->Resolve(firstHandle).Sampler == TextureSampler::LinearWrap
+            && publication->GetBindingTable()->Resolve(alternateHandle).IsError
             && firstLifetime.expired() && !replacementLifetime.expired();
 
         const bool removalQueued = publication->RetainAcceptedFrame(laterUse, { firstHandle }, error)
-            && publication->QueueRemoval(11, error) && isError(publication->Resolve(11))
+            && publication->QueueRemoval(firstHandle, error)
+            && isError(publication->Resolve(11, TextureSampler::LinearWrap))
             && publication->GetPendingOperationCount() == 1 && publication->GetRetainedFrameCount() == 1;
         device.SetCompletion(laterUse, CompletionStatus::Failed);
         const bool removalRetired = publication->Retire(laterUse, error)
-            && publication->GetAssetCount() == 1 && publication->GetPendingOperationCount() == 0
+            && publication->GetViewCount() == 1 && publication->GetPendingOperationCount() == 0
             && publication->GetRetainedFrameCount() == 0 && replacementLifetime.expired()
-            && publication->Resolve(11).Index == expectedError.Index
-            && publication->Resolve(11).Generation == expectedError.Generation
+            && publication->Resolve(11, TextureSampler::LinearWrap).Index == expectedError.Index
+            && publication->Resolve(11, TextureSampler::LinearWrap).Generation == expectedError.Generation
             && publication->GetBindingTable()->Resolve(firstHandle).IsError;
         const TextureBindingHandle reused = publication->Publish(13, third, TextureSampler::LinearClamp, error);
         const bool generationSafeReuse = reused.IsValid() && reused.Index == firstHandle.Index
@@ -7329,7 +7364,7 @@ float4 main(VertexInput input) : SV_Position
         const std::array<CompletionToken, TextureTablePublication::RetainedFrameCapacity + 1> boundedTokens {{
             { 401, 51 }, { 401, 52 }, { 401, 53 }, { 401, 54 }, { 401, 55 }
         }};
-        bool boundedRetention = !publication->QueueRemoval(13, error);
+        bool boundedRetention = !publication->QueueRemoval(reused, error);
         for (size_t index = 0; boundedRetention && index < TextureTablePublication::RetainedFrameCapacity; ++index)
         {
             device.SetCompletion(boundedTokens[index], CompletionStatus::Incomplete);
@@ -7348,13 +7383,13 @@ float4 main(VertexInput input) : SV_Position
 
         publication->ReleaseAfterDeviceIdle();
         const bool idleRelease = publication->GetBindingTable() == nullptr
-            && publication->GetAssetCount() == 0 && publication->GetRetainedFrameCount() == 0
+            && publication->GetViewCount() == 0 && publication->GetRetainedFrameCount() == 0
             && publication->GetPendingOperationCount() == 0;
         return Expect(failureUsesError, "texture table publication keeps the declared error handle on invalid T4B bundles")
-            && Expect(stablePublication, "stable texture assets allocate one generation-safe table handle only after T4B publication")
+            && Expect(stablePublication, "stable asset/sampler views allocate independent generation-safe handles over one T4B bundle")
             && Expect(invalidFrameRejected && framesRetained, "accepted frame references validate exact tokens handles and bounded retention")
             && Expect(replacementQueued && generationsRetained && earlierUseRetiredOnly && incompleteAndUntrackedRejected,
-                "replacement stays hidden and retains old and new bundles through the exact latest accepted use")
+                "view replacement and sibling-sampler removal stay hidden through the exact latest accepted use")
             && Expect(replacementRetired, "Failed is terminal for exact replacement publication and retained-frame release")
             && Expect(removalQueued && removalRetired && generationSafeReuse,
                 "exact Failed removal advances the slot generation before deterministic reuse")

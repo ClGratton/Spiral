@@ -27,7 +27,6 @@ namespace Engine
         RHI::CompletionToken LastUse;
         Ref<const TextureGpuResourceBundle> OldBundle;
         Ref<const TextureGpuResourceBundle> NewBundle;
-        RHI::TextureSampler Sampler = RHI::TextureSampler::LinearClamp;
     };
 
     struct TextureTablePublication::Entry
@@ -99,20 +98,22 @@ namespace Engine
         return true;
     }
 
-    TextureTablePublication::Entry* TextureTablePublication::FindEntry(AssetHandle asset)
+    TextureTablePublication::Entry* TextureTablePublication::FindEntry(
+        AssetHandle asset, RHI::TextureSampler sampler)
     {
-        const auto found = std::find_if(m_Entries.begin(), m_Entries.end(), [asset](const Entry& entry)
+        const auto found = std::find_if(m_Entries.begin(), m_Entries.end(), [asset, sampler](const Entry& entry)
         {
-            return entry.Asset == asset;
+            return entry.Asset == asset && entry.Sampler == sampler;
         });
         return found == m_Entries.end() ? nullptr : &*found;
     }
 
-    const TextureTablePublication::Entry* TextureTablePublication::FindEntry(AssetHandle asset) const
+    const TextureTablePublication::Entry* TextureTablePublication::FindEntry(
+        AssetHandle asset, RHI::TextureSampler sampler) const
     {
-        const auto found = std::find_if(m_Entries.begin(), m_Entries.end(), [asset](const Entry& entry)
+        const auto found = std::find_if(m_Entries.begin(), m_Entries.end(), [asset, sampler](const Entry& entry)
         {
-            return entry.Asset == asset;
+            return entry.Asset == asset && entry.Sampler == sampler;
         });
         return found == m_Entries.end() ? nullptr : &*found;
     }
@@ -126,9 +127,10 @@ namespace Engine
         return found == m_Entries.end() ? nullptr : &*found;
     }
 
-    RHI::TextureBindingHandle TextureTablePublication::Resolve(AssetHandle asset) const
+    RHI::TextureBindingHandle TextureTablePublication::Resolve(
+        AssetHandle asset, RHI::TextureSampler sampler) const
     {
-        const Entry* entry = FindEntry(asset);
+        const Entry* entry = FindEntry(asset, sampler);
         return entry && !entry->Pending ? entry->Handle : m_ErrorHandle;
     }
 
@@ -138,14 +140,14 @@ namespace Engine
     {
         if (!IsPublishable(asset, bundle, outError))
             return m_ErrorHandle;
-        if (Entry* existing = FindEntry(asset))
+        if (Entry* existing = FindEntry(asset, sampler))
         {
-            if (!existing->Pending && existing->Bundle == bundle && existing->Sampler == sampler)
+            if (!existing->Pending && existing->Bundle == bundle)
             {
                 outError.clear();
                 return existing->Handle;
             }
-            outError = "texture asset already has a different or pending table publication";
+            outError = "texture asset/sampler view already has a different or pending table publication";
             return m_ErrorHandle;
         }
 
@@ -160,41 +162,40 @@ namespace Engine
         return handle;
     }
 
-    bool TextureTablePublication::ReplaceUnaccepted(AssetHandle asset,
-        const Ref<const TextureGpuResourceBundle>& replacement,
-        RHI::TextureSampler sampler, std::string& outError)
+    bool TextureTablePublication::ReplaceUnaccepted(RHI::TextureBindingHandle handle,
+        const Ref<const TextureGpuResourceBundle>& replacement, std::string& outError)
     {
-        Entry* entry = FindEntry(asset);
+        Entry* entry = FindEntry(handle);
         if (!entry || entry->Pending || entry->LastAcceptedUse.IsValid())
         {
-            outError = !entry ? "unaccepted texture replacement targets an unpublished asset"
-                : entry->Pending ? "texture asset already has a pending table operation"
+            outError = !entry ? "unaccepted texture replacement targets an unpublished view"
+                : entry->Pending ? "texture view already has a pending table operation"
                 : "texture replacement requires exact GPU retirement after accepted use";
             return false;
         }
-        if (!IsPublishable(asset, replacement, outError))
+        if (!IsPublishable(entry->Asset, replacement, outError))
             return false;
-        if (!m_Table->ReplaceUnsubmitted(entry->Handle, replacement->Texture, sampler))
+        if (!m_Table->ReplaceUnsubmitted(entry->Handle, replacement->Texture, entry->Sampler))
         {
             outError = "texture table rejected an unaccepted replacement";
             return false;
         }
         entry->Bundle = replacement;
-        entry->Sampler = sampler;
         outError.clear();
         return true;
     }
 
-    bool TextureTablePublication::RemoveUnaccepted(AssetHandle asset, std::string& outError)
+    bool TextureTablePublication::RemoveUnaccepted(
+        RHI::TextureBindingHandle handle, std::string& outError)
     {
-        const auto found = std::find_if(m_Entries.begin(), m_Entries.end(), [asset](const Entry& entry)
+        const auto found = std::find_if(m_Entries.begin(), m_Entries.end(), [handle](const Entry& entry)
         {
-            return entry.Asset == asset;
+            return entry.Handle.Index == handle.Index && entry.Handle.Generation == handle.Generation;
         });
         if (found == m_Entries.end() || found->Pending || found->LastAcceptedUse.IsValid())
         {
-            outError = found == m_Entries.end() ? "unaccepted texture removal targets an unpublished asset"
-                : found->Pending ? "texture asset already has a pending table operation"
+            outError = found == m_Entries.end() ? "unaccepted texture removal targets an unpublished view"
+                : found->Pending ? "texture view already has a pending table operation"
                 : "texture removal requires exact GPU retirement after accepted use";
             return false;
         }
@@ -236,7 +237,7 @@ namespace Engine
                 || std::any_of(entries.begin(), entries.end(), [entry](const Entry* prior) { return prior == entry; }))
             {
                 outError = !entry ? "accepted texture frame contains an unknown or stale handle"
-                    : entry->Pending ? "accepted texture frame cannot extend a pending asset's last use"
+                    : entry->Pending ? "accepted texture frame cannot extend a pending view's last use"
                     : "accepted texture frame repeats a bound handle";
                 return false;
             }
@@ -253,43 +254,44 @@ namespace Engine
         return true;
     }
 
-    bool TextureTablePublication::QueueReplacement(AssetHandle asset,
-        const Ref<const TextureGpuResourceBundle>& replacement,
-        RHI::TextureSampler sampler, std::string& outError)
+    bool TextureTablePublication::QueueReplacement(RHI::TextureBindingHandle handle,
+        const Ref<const TextureGpuResourceBundle>& replacement, std::string& outError)
     {
-        Entry* entry = FindEntry(asset);
+        Entry* entry = FindEntry(handle);
         if (!entry || entry->Pending || !entry->LastAcceptedUse.IsValid())
         {
-            outError = !entry ? "texture replacement targets an unpublished asset"
-                : entry->Pending ? "texture asset already has a pending table operation"
+            outError = !entry ? "texture replacement targets an unpublished view"
+                : entry->Pending ? "texture view already has a pending table operation"
                 : "texture replacement has no accepted last-use token";
             return false;
         }
-        if (!IsPublishable(asset, replacement, outError))
+        if (!IsPublishable(entry->Asset, replacement, outError))
             return false;
-        if (entry->Bundle == replacement && entry->Sampler == sampler)
+        if (entry->Bundle == replacement)
         {
-            outError = "texture replacement does not change the published bundle or sampler";
+            outError = "texture replacement does not change the published bundle";
             return false;
         }
-        if (!m_Table->QueueUpdate(entry->Handle, replacement->Texture, sampler, entry->LastAcceptedUse))
+        if (!m_Table->QueueUpdate(entry->Handle, replacement->Texture,
+            entry->Sampler, entry->LastAcceptedUse))
         {
             outError = "texture table rejected the exact last-use replacement operation";
             return false;
         }
         entry->Pending = PendingOperation { PendingOperation::Kind::Replacement,
-            entry->LastAcceptedUse, entry->Bundle, replacement, sampler };
+            entry->LastAcceptedUse, entry->Bundle, replacement };
         outError.clear();
         return true;
     }
 
-    bool TextureTablePublication::QueueRemoval(AssetHandle asset, std::string& outError)
+    bool TextureTablePublication::QueueRemoval(
+        RHI::TextureBindingHandle handle, std::string& outError)
     {
-        Entry* entry = FindEntry(asset);
+        Entry* entry = FindEntry(handle);
         if (!entry || entry->Pending || !entry->LastAcceptedUse.IsValid())
         {
-            outError = !entry ? "texture removal targets an unpublished asset"
-                : entry->Pending ? "texture asset already has a pending table operation"
+            outError = !entry ? "texture removal targets an unpublished view"
+                : entry->Pending ? "texture view already has a pending table operation"
                 : "texture removal has no accepted last-use token";
             return false;
         }
@@ -299,7 +301,7 @@ namespace Engine
             return false;
         }
         entry->Pending = PendingOperation { PendingOperation::Kind::Removal,
-            entry->LastAcceptedUse, entry->Bundle, {}, entry->Sampler };
+            entry->LastAcceptedUse, entry->Bundle, {} };
         outError.clear();
         return true;
     }
@@ -349,7 +351,6 @@ namespace Engine
             if (entry->Pending->Operation == PendingOperation::Kind::Replacement)
             {
                 entry->Bundle = std::move(entry->Pending->NewBundle);
-                entry->Sampler = entry->Pending->Sampler;
                 entry->LastAcceptedUse = {};
                 entry->Pending.reset();
                 ++entry;
@@ -374,7 +375,7 @@ namespace Engine
         m_Table.reset();
     }
 
-    size_t TextureTablePublication::GetAssetCount() const
+    size_t TextureTablePublication::GetViewCount() const
     {
         return m_Entries.size();
     }

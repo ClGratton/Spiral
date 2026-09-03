@@ -10,8 +10,8 @@
 
 namespace Engine
 {
-    // Owns stable asset-to-table publication after T4B has produced a complete
-    // exact-device bundle. Mutation is serialized with accepted frame use.
+    // Owns stable asset/sampler-view-to-table publication after T4B has produced
+    // a complete exact-device bundle. Mutation is serialized with accepted use.
     class TextureTablePublication final
     {
     public:
@@ -22,7 +22,7 @@ namespace Engine
         ~TextureTablePublication();
 
         RHI::TextureBindingHandle GetErrorHandle() const { return m_ErrorHandle; }
-        RHI::TextureBindingHandle Resolve(AssetHandle asset) const;
+        RHI::TextureBindingHandle Resolve(AssetHandle asset, RHI::TextureSampler sampler) const;
         // Exposed for command binding and published-slot inspection only;
         // this coordinator remains the sole table-mutation authority.
         RHI::TextureBindingTable* GetBindingTable() const { return m_Table.get(); }
@@ -32,27 +32,25 @@ namespace Engine
         RHI::TextureBindingHandle Publish(AssetHandle asset,
             const Ref<const TextureGpuResourceBundle>& bundle,
             RHI::TextureSampler sampler, std::string& outError);
-        bool ReplaceUnaccepted(AssetHandle asset,
-            const Ref<const TextureGpuResourceBundle>& replacement,
-            RHI::TextureSampler sampler, std::string& outError);
-        bool RemoveUnaccepted(AssetHandle asset, std::string& outError);
+        bool ReplaceUnaccepted(RHI::TextureBindingHandle handle,
+            const Ref<const TextureGpuResourceBundle>& replacement, std::string& outError);
+        bool RemoveUnaccepted(RHI::TextureBindingHandle handle, std::string& outError);
 
         // Calls must follow submission-acceptance order. Pending assets are
         // frozen so later frames cannot extend the operation's last-use token.
         bool RetainAcceptedFrame(const RHI::CompletionToken& token,
             const std::vector<RHI::TextureBindingHandle>& handles,
             std::string& outError);
-        bool QueueReplacement(AssetHandle asset,
-            const Ref<const TextureGpuResourceBundle>& replacement,
-            RHI::TextureSampler sampler, std::string& outError);
-        bool QueueRemoval(AssetHandle asset, std::string& outError);
+        bool QueueReplacement(RHI::TextureBindingHandle handle,
+            const Ref<const TextureGpuResourceBundle>& replacement, std::string& outError);
+        bool QueueRemoval(RHI::TextureBindingHandle handle, std::string& outError);
         bool Retire(const RHI::CompletionToken& token, std::string& outError);
 
         // The caller establishes device idle before releasing the table and
         // every retained bundle, and calls this before device destruction.
         void ReleaseAfterDeviceIdle();
 
-        size_t GetAssetCount() const;
+        size_t GetViewCount() const;
         size_t GetRetainedFrameCount() const;
         size_t GetPendingOperationCount() const;
 
@@ -64,8 +62,8 @@ namespace Engine
         TextureTablePublication(RHI::Device& device, Scope<RHI::TextureBindingTable> table);
         bool IsPublishable(AssetHandle asset, const Ref<const TextureGpuResourceBundle>& bundle,
             std::string& outError) const;
-        Entry* FindEntry(AssetHandle asset);
-        const Entry* FindEntry(AssetHandle asset) const;
+        Entry* FindEntry(AssetHandle asset, RHI::TextureSampler sampler);
+        const Entry* FindEntry(AssetHandle asset, RHI::TextureSampler sampler) const;
         Entry* FindEntry(RHI::TextureBindingHandle handle);
 
         RHI::Device& m_Device;

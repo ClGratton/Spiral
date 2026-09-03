@@ -1386,8 +1386,15 @@ namespace Engine
         const RHI::TextureBindingHandle initialHandle = runtime
             ? runtime->Resolve(runtimeAsset, RHI::TextureSampler::LinearWrap, runtimeError)
             : RHI::TextureBindingHandle {};
+        const RHI::TextureBindingHandle alternateHandle = runtime
+            ? runtime->Resolve(runtimeAsset, RHI::TextureSampler::PointClamp, runtimeError)
+            : RHI::TextureBindingHandle {};
         const RHI::Texture* initialTexture = runtime && runtime->GetBindingTable()
             ? runtime->GetBindingTable()->Resolve(initialHandle).TextureResource.get() : nullptr;
+        const RHI::TextureBindingView initialView = runtime && runtime->GetBindingTable()
+            ? runtime->GetBindingTable()->Resolve(initialHandle) : RHI::TextureBindingView {};
+        const RHI::TextureBindingView alternateView = runtime && runtime->GetBindingTable()
+            ? runtime->GetBindingTable()->Resolve(alternateHandle) : RHI::TextureBindingView {};
 
         Scope<RHI::CommandList> firstUseList = runtime
             ? device.CreateCommandList(RHI::QueueType::Graphics, "TextureRuntimePublicationSmokeV1 First Use")
@@ -1396,8 +1403,13 @@ namespace Engine
         const RHI::CompletionToken firstUse = firstClosed
             ? device.Submit(*firstUseList) : RHI::CompletionToken {};
         const bool initialPublished = runtime && !isError(initialHandle) && initialTexture
+            && !isError(alternateHandle) && alternateHandle.Index != initialHandle.Index
+            && alternateView.TextureResource == initialView.TextureResource
+            && initialView.Sampler == RHI::TextureSampler::LinearWrap
+            && alternateView.Sampler == RHI::TextureSampler::PointClamp
+            && runtime->GetPublishedViewCount() == 2
             && firstUse.IsValid() && runtime->RetainAcceptedFrame(
-                firstUse, { errorHandle, initialHandle, initialHandle }, runtimeError);
+                firstUse, { errorHandle, initialHandle, alternateHandle }, runtimeError);
 
         TextureArtifact runtimeChanged = runtimePreferred;
         if (runtimeChanged.Payload.size() > 17)
@@ -1409,8 +1421,12 @@ namespace Engine
         const RHI::TextureBindingHandle pendingReplacement = replacementStored
             ? runtime->Resolve(runtimeAsset, RHI::TextureSampler::LinearWrap, runtimeError)
             : RHI::TextureBindingHandle {};
+        const RHI::TextureBindingHandle pendingAlternateReplacement = replacementStored
+            ? runtime->Resolve(runtimeAsset, RHI::TextureSampler::PointClamp, runtimeError)
+            : RHI::TextureBindingHandle {};
         const bool replacementQueued = replacementStored && isError(pendingReplacement)
-            && runtime->GetPendingOperationCount() == 1
+            && isError(pendingAlternateReplacement)
+            && runtime->GetPendingOperationCount() == 2
             && runtime->GetBindingTable()->Resolve(initialHandle).TextureResource.get() == initialTexture;
         const bool firstComplete = firstUse.IsValid() && device.WaitForCompletion(firstUse, 5000);
         const bool replacementRetired = replacementQueued && firstComplete
@@ -1418,12 +1434,22 @@ namespace Engine
         const RHI::TextureBindingHandle replacementHandle = replacementRetired
             ? runtime->Resolve(runtimeAsset, RHI::TextureSampler::LinearWrap, runtimeError)
             : RHI::TextureBindingHandle {};
+        const RHI::TextureBindingHandle alternateReplacementHandle = replacementRetired
+            ? runtime->Resolve(runtimeAsset, RHI::TextureSampler::PointClamp, runtimeError)
+            : RHI::TextureBindingHandle {};
         const RHI::Texture* replacementTexture = runtime && runtime->GetBindingTable()
             ? runtime->GetBindingTable()->Resolve(replacementHandle).TextureResource.get() : nullptr;
+        const RHI::TextureBindingView alternateReplacementView = runtime && runtime->GetBindingTable()
+            ? runtime->GetBindingTable()->Resolve(alternateReplacementHandle) : RHI::TextureBindingView {};
         const bool replacementPublished = replacementRetired && !isError(replacementHandle)
             && replacementHandle.Index == initialHandle.Index
             && replacementHandle.Generation == initialHandle.Generation
-            && replacementTexture && replacementTexture != initialTexture;
+            && !isError(alternateReplacementHandle)
+            && alternateReplacementHandle.Index == alternateHandle.Index
+            && alternateReplacementHandle.Generation == alternateHandle.Generation
+            && replacementTexture && replacementTexture != initialTexture
+            && alternateReplacementView.TextureResource.get() == replacementTexture
+            && alternateReplacementView.Sampler == RHI::TextureSampler::PointClamp;
 
         Scope<RHI::CommandList> secondUseList = replacementPublished
             ? device.CreateCommandList(RHI::QueueType::Graphics, "TextureRuntimePublicationSmokeV1 Second Use")
@@ -1432,20 +1458,26 @@ namespace Engine
         const RHI::CompletionToken secondUse = secondClosed
             ? device.Submit(*secondUseList) : RHI::CompletionToken {};
         const bool secondRetained = secondUse.IsValid()
-            && runtime->RetainAcceptedFrame(secondUse, { replacementHandle }, runtimeError);
+            && runtime->RetainAcceptedFrame(secondUse,
+                { replacementHandle, alternateReplacementHandle }, runtimeError);
         const bool registryRemoved = secondRetained && runtimeRegistry.RemoveAsset(runtimeAsset);
         if (registryRemoved)
             Renderer::PublishArtifactResolvers(runtimeRegistry);
         const RHI::TextureBindingHandle pendingRemoval = registryRemoved
             ? runtime->Resolve(runtimeAsset, RHI::TextureSampler::LinearWrap, runtimeError)
             : RHI::TextureBindingHandle {};
+        const RHI::TextureBindingHandle pendingAlternateRemoval = registryRemoved
+            ? runtime->Resolve(runtimeAsset, RHI::TextureSampler::PointClamp, runtimeError)
+            : RHI::TextureBindingHandle {};
         const bool removalQueued = registryRemoved && isError(pendingRemoval)
-            && runtime->GetPendingOperationCount() == 1;
+            && isError(pendingAlternateRemoval)
+            && runtime->GetPendingOperationCount() == 2;
         const bool secondComplete = secondUse.IsValid() && device.WaitForCompletion(secondUse, 5000);
         const bool removalRetired = removalQueued && secondComplete
             && runtime->Retire(secondUse, runtimeError)
-            && runtime->GetPublishedAssetCount() == 0
+            && runtime->GetPublishedViewCount() == 0
             && runtime->GetBindingTable()->Resolve(replacementHandle).IsError
+            && runtime->GetBindingTable()->Resolve(alternateReplacementHandle).IsError
             && isError(runtime->Resolve(runtimeAsset, RHI::TextureSampler::LinearWrap, runtimeError));
         const bool failureUsesError = runtime
             && isError(runtime->Resolve(kInvalidAssetHandle,

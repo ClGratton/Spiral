@@ -40,7 +40,6 @@ namespace Engine
         RHI::CompletionToken PendingToken;
         u64 PendingCatalogGeneration = 0;
         Ref<const TextureGpuResourceBundle> PendingBundle;
-        RHI::TextureSampler PendingSampler = RHI::TextureSampler::LinearClamp;
     };
 
     Scope<TextureRuntimePublication> TextureRuntimePublication::Create(RHI::Device& device,
@@ -91,11 +90,12 @@ namespace Engine
 
     TextureRuntimePublication::~TextureRuntimePublication() = default;
 
-    TextureRuntimePublication::Entry* TextureRuntimePublication::FindEntry(AssetHandle asset)
+    TextureRuntimePublication::Entry* TextureRuntimePublication::FindEntry(
+        AssetHandle asset, RHI::TextureSampler sampler)
     {
-        const auto found = std::find_if(m_Entries.begin(), m_Entries.end(), [asset](const Entry& entry)
+        const auto found = std::find_if(m_Entries.begin(), m_Entries.end(), [asset, sampler](const Entry& entry)
         {
-            return entry.Asset == asset;
+            return entry.Asset == asset && entry.Sampler == sampler;
         });
         return found == m_Entries.end() ? nullptr : &*found;
     }
@@ -130,7 +130,7 @@ namespace Engine
             return errorHandle;
         }
 
-        Entry* entry = FindEntry(asset);
+        Entry* entry = FindEntry(asset, sampler);
         if (entry && entry->Pending != Entry::PendingKind::None)
         {
             outError = "texture runtime publication is waiting for the asset's exact last-use token";
@@ -138,7 +138,7 @@ namespace Engine
         }
 
         const u64 currentGeneration = Renderer::GetPublishedArtifactResolverGeneration();
-        if (entry && entry->CatalogGeneration == currentGeneration && entry->Sampler == sampler)
+        if (entry && entry->CatalogGeneration == currentGeneration)
         {
             outError.clear();
             return entry->Handle;
@@ -151,14 +151,15 @@ namespace Engine
         {
             if (entry && !entry->HasAcceptedUse)
             {
-                if (!m_Publication->RemoveUnaccepted(asset, outError))
+                if (!m_Publication->RemoveUnaccepted(entry->Handle, outError))
                     return errorHandle;
                 m_Entries.erase(std::remove_if(m_Entries.begin(), m_Entries.end(),
-                    [asset](const Entry& candidate) { return candidate.Asset == asset; }),
+                    [asset, sampler](const Entry& candidate)
+                    { return candidate.Asset == asset && candidate.Sampler == sampler; }),
                     m_Entries.end());
                 outError = "texture asset is unavailable; its unaccepted publication was removed";
             }
-            else if (entry && m_Publication->QueueRemoval(asset, outError))
+            else if (entry && m_Publication->QueueRemoval(entry->Handle, outError))
             {
                 entry->Pending = Entry::PendingKind::Removal;
                 entry->PendingToken = entry->LastAcceptedUse;
@@ -199,7 +200,7 @@ namespace Engine
             return handle;
         }
 
-        if (entry->Bundle == bundle && entry->Sampler == sampler)
+        if (entry->Bundle == bundle)
         {
             entry->CatalogGeneration = resolvedGeneration;
             outError.clear();
@@ -207,27 +208,25 @@ namespace Engine
         }
         if (!entry->HasAcceptedUse)
         {
-            if (!m_Publication->ReplaceUnaccepted(asset, bundle, sampler, outError))
+            if (!m_Publication->ReplaceUnaccepted(entry->Handle, bundle, outError))
                 return errorHandle;
             entry->CatalogGeneration = resolvedGeneration;
             entry->Bundle = std::move(bundle);
-            entry->Sampler = sampler;
             outError.clear();
             return entry->Handle;
         }
-        if (!m_Publication->QueueReplacement(asset, bundle, sampler, outError))
+        if (!m_Publication->QueueReplacement(entry->Handle, bundle, outError))
             return errorHandle;
         entry->Pending = Entry::PendingKind::Replacement;
         entry->PendingToken = entry->LastAcceptedUse;
         entry->PendingCatalogGeneration = resolvedGeneration;
         entry->PendingBundle = std::move(bundle);
-        entry->PendingSampler = sampler;
         if (entry->LastAcceptedUseTerminal)
         {
             const RHI::CompletionToken terminal = entry->PendingToken;
             if (!Retire(terminal, outError))
                 return errorHandle;
-            entry = FindEntry(asset);
+            entry = FindEntry(asset, sampler);
             if (!entry)
             {
                 outError = "terminal texture replacement lost its published entry";
@@ -329,7 +328,6 @@ namespace Engine
             }
             entry->CatalogGeneration = entry->PendingCatalogGeneration;
             entry->Bundle = std::move(entry->PendingBundle);
-            entry->Sampler = entry->PendingSampler;
             entry->HasAcceptedUse = false;
             entry->LastAcceptedUse = {};
             entry->LastAcceptedUseTerminal = false;
@@ -352,9 +350,9 @@ namespace Engine
         return m_Publication ? m_Publication->GetBindingTable() : nullptr;
     }
 
-    size_t TextureRuntimePublication::GetPublishedAssetCount() const
+    size_t TextureRuntimePublication::GetPublishedViewCount() const
     {
-        return m_Publication ? m_Publication->GetAssetCount() : 0;
+        return m_Publication ? m_Publication->GetViewCount() : 0;
     }
 
     size_t TextureRuntimePublication::GetCachedResourceCount() const

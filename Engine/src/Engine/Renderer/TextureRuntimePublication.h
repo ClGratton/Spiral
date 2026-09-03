@@ -34,7 +34,7 @@ namespace Engine
 
         RHI::TextureBindingHandle GetErrorHandle() const;
         RHI::TextureBindingTable* GetBindingTable() const;
-        size_t GetPublishedAssetCount() const;
+        size_t GetPublishedViewCount() const;
         size_t GetCachedResourceCount() const;
         size_t GetRetainedFrameCount() const;
         size_t GetPendingOperationCount() const;
@@ -50,7 +50,7 @@ namespace Engine
             TextureTargetProfile preferredTarget, size_t cacheCapacity,
             Ref<RHI::Texture> errorTexture,
             Scope<TextureTablePublication> publication);
-        Entry* FindEntry(AssetHandle asset);
+        Entry* FindEntry(AssetHandle asset, RHI::TextureSampler sampler);
         Entry* FindEntry(RHI::TextureBindingHandle handle);
         bool IsError(RHI::TextureBindingHandle handle) const;
 
