@@ -41,6 +41,7 @@ int main(int argc, char** argv)
 
     Engine::JobSystem::Get().Shutdown();
     delete application;
+    Engine::CrashHandler::Shutdown();
     Engine::Log::Shutdown();
     return exitCode;
 }

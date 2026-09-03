@@ -1,5 +1,6 @@
 #include "Engine/Core/Log.h"
 #include "Engine/Core/LayerStack.h"
+#include "Engine/Diagnostics/CrashHandler.h"
 #include "Engine/Jobs/FrameTaskGraph.h"
 #include "Engine/Jobs/JobSystem.h"
 #include "Engine/Math/WorldGrid.h"
@@ -39,6 +40,7 @@
 #include <atomic>
 #include <charconv>
 #include <chrono>
+#include <cerrno>
 #include <cstring>
 #include <cmath>
 #include <condition_variable>
@@ -56,6 +58,15 @@
 #include <thread>
 #include <unordered_map>
 #include <vector>
+
+#if defined(GE_PLATFORM_LINUX)
+    #include <signal.h>
+    #include <sys/resource.h>
+    #include <sys/stat.h>
+    #include <sys/types.h>
+    #include <sys/wait.h>
+    #include <unistd.h>
+#endif
 
 namespace
 {
@@ -477,6 +488,207 @@ namespace
             std::cerr << "  Expected: " << message << '\n';
         return condition;
     }
+
+#if defined(GE_PLATFORM_LINUX)
+    constexpr std::string_view kLinuxFatalSignalProbeArgument = "--internal-linux-fatal-signal-probe";
+
+    int RunLinuxFatalSignalProbe(int argc, char** argv)
+    {
+        if (argc != 4 || std::string_view(argv[1]) != kLinuxFatalSignalProbeArgument)
+            return 120;
+        if (::chdir(argv[3]) != 0)
+            return 121;
+
+        const struct rlimit coreLimit = { 0, 0 };
+        if (::setrlimit(RLIMIT_CORE, &coreLimit) != 0)
+            return 122;
+
+        Engine::Log::Init();
+        Engine::CrashHandler::Install();
+        const std::string_view mode = argv[2];
+        if (mode == "normal")
+        {
+            Engine::CrashHandler::Shutdown();
+            for (const int signal : { SIGABRT, SIGFPE, SIGILL, SIGSEGV })
+            {
+                struct sigaction action = {};
+                if (::sigaction(signal, nullptr, &action) != 0 || action.sa_handler != SIG_DFL)
+                    return 125;
+            }
+            Engine::Log::Shutdown();
+            return 0;
+        }
+
+        int signal = 0;
+        if (mode == "abrt") signal = SIGABRT;
+        else if (mode == "segv") signal = SIGSEGV;
+        else if (mode == "term") signal = SIGTERM;
+        else return 123;
+
+        ::raise(signal);
+        return 124;
+    }
+
+    struct LinuxFatalSignalProbeResult
+    {
+        int Status = 0;
+        bool Waited = false;
+        bool TimedOut = false;
+        bool ProcessGroupCleaned = false;
+        std::filesystem::path Directory;
+        std::vector<std::filesystem::path> ReceiptFiles;
+        std::vector<std::filesystem::path> RichReportFiles;
+    };
+
+    LinuxFatalSignalProbeResult RunLinuxFatalSignalChild(std::string_view mode)
+    {
+        LinuxFatalSignalProbeResult result;
+        result.Directory = std::filesystem::temp_directory_path() / ("spiral-fatal-signal-" +
+            std::string(mode) + "-" + std::to_string(::getpid()) + "-" +
+            std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+        std::error_code filesystemError;
+        std::filesystem::remove_all(result.Directory, filesystemError);
+        std::filesystem::create_directories(result.Directory, filesystemError);
+        if (filesystemError)
+            return result;
+
+        const std::string executable = std::filesystem::absolute(g_TestExecutable).string();
+        const std::string modeText(mode);
+        const std::string directory = result.Directory.string();
+        const pid_t child = ::fork();
+        if (child == 0)
+        {
+            ::setpgid(0, 0);
+            char* const arguments[] = {
+                const_cast<char*>(executable.c_str()),
+                const_cast<char*>(kLinuxFatalSignalProbeArgument.data()),
+                const_cast<char*>(modeText.c_str()),
+                const_cast<char*>(directory.c_str()),
+                nullptr
+            };
+            ::execv(executable.c_str(), arguments);
+            ::_exit(126);
+        }
+        if (child < 0)
+            return result;
+
+        if (::setpgid(child, child) != 0 && errno != EACCES && errno != ESRCH)
+        {
+            ::kill(child, SIGKILL);
+            ::waitpid(child, &result.Status, 0);
+            result.Waited = true;
+            return result;
+        }
+
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        while (std::chrono::steady_clock::now() < deadline)
+        {
+            const pid_t waited = ::waitpid(child, &result.Status, WNOHANG);
+            if (waited == child)
+            {
+                result.Waited = true;
+                break;
+            }
+            if (waited < 0)
+                break;
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+
+        if (!result.Waited)
+        {
+            result.TimedOut = true;
+            ::kill(-child, SIGKILL);
+            ::kill(child, SIGKILL);
+            if (::waitpid(child, &result.Status, 0) == child)
+                result.Waited = true;
+        }
+
+        const auto cleanupDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+        while (std::chrono::steady_clock::now() < cleanupDeadline)
+        {
+            if (::kill(-child, 0) != 0 && errno == ESRCH)
+            {
+                result.ProcessGroupCleaned = true;
+                break;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+
+        const std::filesystem::path crashDirectory = result.Directory / "output" / "crashes";
+        if (std::filesystem::exists(crashDirectory))
+        {
+            for (const auto& entry : std::filesystem::directory_iterator(crashDirectory))
+            {
+                if (entry.path().extension() == ".receipt")
+                    result.ReceiptFiles.push_back(entry.path());
+                else if (entry.path().extension() == ".txt")
+                    result.RichReportFiles.push_back(entry.path());
+            }
+        }
+        return result;
+    }
+
+    bool ValidateLinuxFatalSignalReceipt(const LinuxFatalSignalProbeResult& result, int expectedSignal,
+        std::string_view expectedReceipt, std::string_view label)
+    {
+        if (!Expect(result.Waited && !result.TimedOut, std::string(label) + " child terminates before its deadline")
+            || !Expect(WIFSIGNALED(result.Status) && WTERMSIG(result.Status) == expectedSignal,
+                std::string(label) + " child terminates through its original signal")
+            || !Expect(result.ProcessGroupCleaned, std::string(label) + " owned process group is fully cleaned")
+            || !Expect(result.ReceiptFiles.size() == 1, std::string(label) + " creates exactly one receipt slot")
+            || !Expect(result.RichReportFiles.empty(), std::string(label) + " creates no legacy rich signal report"))
+            return false;
+
+        struct stat metadata = {};
+        if (::stat(result.ReceiptFiles.front().c_str(), &metadata) != 0)
+            return Expect(false, std::string(label) + " receipt metadata is readable");
+        std::ifstream input(result.ReceiptFiles.front(), std::ios::binary);
+        const std::string contents((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
+        return Expect((metadata.st_mode & 0777) == 0600, std::string(label) + " receipt permissions are exactly 0600")
+            && Expect(!contents.empty() && contents == expectedReceipt,
+                std::string(label) + " receipt is nonempty exact schema-1 data");
+    }
+
+    bool TestLinuxFatalSignalSafety()
+    {
+        constexpr std::string_view abortReceipt =
+            "SpiralFatalSignalReceiptV1 signal=SIGABRT disposition=reset-reraise enrichment=none\n";
+        constexpr std::string_view segmentationReceipt =
+            "SpiralFatalSignalReceiptV1 signal=SIGSEGV disposition=reset-reraise enrichment=none\n";
+
+        LinuxFatalSignalProbeResult abortResult = RunLinuxFatalSignalChild("abrt");
+        LinuxFatalSignalProbeResult segmentationResult = RunLinuxFatalSignalChild("segv");
+        LinuxFatalSignalProbeResult terminationResult = RunLinuxFatalSignalChild("term");
+        LinuxFatalSignalProbeResult normalResult = RunLinuxFatalSignalChild("normal");
+
+        bool passed = ValidateLinuxFatalSignalReceipt(abortResult, SIGABRT, abortReceipt, "SIGABRT")
+            && ValidateLinuxFatalSignalReceipt(segmentationResult, SIGSEGV, segmentationReceipt, "SIGSEGV")
+            && Expect(terminationResult.Waited && !terminationResult.TimedOut
+                    && WIFSIGNALED(terminationResult.Status) && WTERMSIG(terminationResult.Status) == SIGTERM,
+                "SIGTERM retains default non-crash signal termination")
+            && Expect(terminationResult.ProcessGroupCleaned, "SIGTERM owned process group is fully cleaned")
+            && Expect(terminationResult.RichReportFiles.empty(), "SIGTERM creates no rich crash report")
+            && Expect(terminationResult.ReceiptFiles.size() == 1
+                    && std::filesystem::file_size(terminationResult.ReceiptFiles.front()) == 0,
+                "SIGTERM leaves only an empty armed slot, never a generated receipt")
+            && Expect(normalResult.Waited && !normalResult.TimedOut
+                    && WIFEXITED(normalResult.Status) && WEXITSTATUS(normalResult.Status) == 0,
+                "normal install and shutdown exits successfully")
+            && Expect(normalResult.ProcessGroupCleaned, "normal child owned process group is fully cleaned")
+            && Expect(normalResult.ReceiptFiles.empty() && normalResult.RichReportFiles.empty(),
+                "normal shutdown removes its unused receipt slot");
+
+        for (const LinuxFatalSignalProbeResult* result : { &abortResult, &segmentationResult, &terminationResult, &normalResult })
+        {
+            std::error_code filesystemError;
+            std::filesystem::remove_all(result->Directory, filesystemError);
+        }
+
+        if (passed)
+            std::cout << "LinuxFatalSignalSafetyV1 abrt=pass segv=pass term=default normalCleanup=pass defaultRestored=pass receipts=schema-1 permissions=0600 processTree=clean result=pass\n";
+        return passed;
+    }
+#endif
 
     bool TestGeneratedTestSupportReplaysAndMinimizes()
     {
@@ -8252,12 +8464,20 @@ bool TestLayerStackClearDetachesExactlyOnce()
 
 int main(int argc, char** argv)
 {
+#if defined(GE_PLATFORM_LINUX)
+    if (argc >= 2 && std::string_view(argv[1]) == kLinuxFatalSignalProbeArgument)
+        return RunLinuxFatalSignalProbe(argc, argv);
+#endif
+
 #define FAST_TEST(name, function) TestCase { name, function, TestTier::Fast }
 #define INTEGRATION_TEST(name, function) TestCase { name, function, TestTier::Integration }
     const std::vector<TestCase> tests = {
         FAST_TEST("Generated test support replays and minimizes counterexamples", TestGeneratedTestSupportReplaysAndMinimizes),
         INTEGRATION_TEST("Generated counterexample artifacts preserve replay data", TestGeneratedCounterexampleArtifactPreservesReplayData),
         INTEGRATION_TEST("Structured Scene and shader fuzz corpus replays deterministically", TestStructuredFuzzCorpusReplay),
+#if defined(GE_PLATFORM_LINUX)
+        INTEGRATION_TEST("Linux fatal signals publish minimal receipts and preserve default termination", TestLinuxFatalSignalSafety),
+#endif
         FAST_TEST("Frame pacing policy resolves overrides and validates targets", TestFramePacingPolicyResolutionAndValidation),
         FAST_TEST("Presentation policy resolves immediate or no-replacement FIFO", TestPresentationPolicyResolverRejectsReplacementModes),
         FAST_TEST("Presentation fallback transition commits once across stable frames", TestPresentationPolicyFallbackTransitionAppliesOnce),

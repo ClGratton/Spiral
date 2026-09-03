@@ -158,8 +158,16 @@ for ((ATTEMPT = 1; ATTEMPT <= ITERATIONS; ++ATTEMPT)); do
     if [[ $STATUS -ne 0 ]]; then
         for CRASH_REPORT in "$ROOT"/output/crashes/*.txt; do
             if [[ -f "$CRASH_REPORT" ]]; then
-                echo "Vulkan smoke crash report: $CRASH_REPORT" >&2
+                echo "Vulkan smoke rich crash report: $CRASH_REPORT" >&2
                 sed -n '1,240p' "$CRASH_REPORT" >&2
+            fi
+        done
+        for SIGNAL_RECEIPT in "$ROOT"/output/crashes/*.receipt; do
+            if [[ -s "$SIGNAL_RECEIPT" ]] && grep -Eq '^SpiralFatalSignalReceiptV1 signal=SIG(ABRT|FPE|ILL|SEGV) disposition=reset-reraise enrichment=none$' "$SIGNAL_RECEIPT"; then
+                echo "Vulkan smoke minimal fatal-signal receipt: $SIGNAL_RECEIPT" >&2
+                sed -n '1p' "$SIGNAL_RECEIPT" >&2
+            elif [[ -s "$SIGNAL_RECEIPT" ]]; then
+                echo "Vulkan smoke invalid fatal-signal receipt: $SIGNAL_RECEIPT" >&2
             fi
         done
         echo "Vulkan render smoke failed with exit code $STATUS on attempt $ATTEMPT/$ITERATIONS." >&2

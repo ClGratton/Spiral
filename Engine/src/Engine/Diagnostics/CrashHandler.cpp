@@ -26,6 +26,9 @@
     #include <Windows.h>
 #else
     #include <execinfo.h>
+    #include <fcntl.h>
+    #include <signal.h>
+    #include <sys/stat.h>
     #include <unistd.h>
 #endif
 
@@ -37,6 +40,67 @@ namespace Engine
         std::string s_ApplicationName = "Spiral";
         std::atomic_bool s_Installed = false;
         std::uint32_t s_ReportSequence = 0;
+
+#if !defined(GE_PLATFORM_WINDOWS)
+        std::atomic<int> s_SignalReceiptFile = -1;
+        std::atomic_flag s_SignalReceiptClaimed = ATOMIC_FLAG_INIT;
+        std::filesystem::path s_SignalReceiptPath;
+        static_assert(std::atomic<int>::is_always_lock_free,
+            "The POSIX fatal-signal callback requires a lock-free descriptor publication.");
+
+        constexpr char s_AbortReceipt[] =
+            "SpiralFatalSignalReceiptV1 signal=SIGABRT disposition=reset-reraise enrichment=none\n";
+        constexpr char s_FloatingPointReceipt[] =
+            "SpiralFatalSignalReceiptV1 signal=SIGFPE disposition=reset-reraise enrichment=none\n";
+        constexpr char s_IllegalInstructionReceipt[] =
+            "SpiralFatalSignalReceiptV1 signal=SIGILL disposition=reset-reraise enrichment=none\n";
+        constexpr char s_SegmentationViolationReceipt[] =
+            "SpiralFatalSignalReceiptV1 signal=SIGSEGV disposition=reset-reraise enrichment=none\n";
+        constexpr char s_UnknownSignalReceipt[] =
+            "SpiralFatalSignalReceiptV1 signal=UNKNOWN disposition=reset-reraise enrichment=none\n";
+        constexpr std::array<int, 4> s_PosixFatalSignals { SIGABRT, SIGFPE, SIGILL, SIGSEGV };
+
+        struct SignalReceipt
+        {
+            const char* Data;
+            std::size_t Size;
+        };
+
+        SignalReceipt GetSignalReceipt(int signal) noexcept
+        {
+            switch (signal)
+            {
+                case SIGABRT: return { s_AbortReceipt, sizeof(s_AbortReceipt) - 1 };
+                case SIGFPE: return { s_FloatingPointReceipt, sizeof(s_FloatingPointReceipt) - 1 };
+                case SIGILL: return { s_IllegalInstructionReceipt, sizeof(s_IllegalInstructionReceipt) - 1 };
+                case SIGSEGV: return { s_SegmentationViolationReceipt, sizeof(s_SegmentationViolationReceipt) - 1 };
+                default: return { s_UnknownSignalReceipt, sizeof(s_UnknownSignalReceipt) - 1 };
+            }
+        }
+
+        void HandlePosixFatalSignal(int signal) noexcept
+        {
+            if (!s_SignalReceiptClaimed.test_and_set(std::memory_order_relaxed))
+            {
+                const int receiptFile = s_SignalReceiptFile.load(std::memory_order_relaxed);
+                if (receiptFile >= 0)
+                {
+                    const SignalReceipt receipt = GetSignalReceipt(signal);
+                    std::size_t written = 0;
+                    for (int attempt = 0; attempt < 4 && written < receipt.Size; ++attempt)
+                    {
+                        const ssize_t result = ::write(receiptFile, receipt.Data + written, receipt.Size - written);
+                        if (result <= 0)
+                            break;
+                        written += static_cast<std::size_t>(result);
+                    }
+                }
+            }
+
+            if (::kill(::getpid(), signal) != 0)
+                ::_exit(128 + signal);
+        }
+#endif
 
         std::string SanitizeFilePart(std::string_view value)
         {
@@ -97,6 +161,7 @@ namespace Engine
             return std::filesystem::path("output") / "crashes" / fileName;
         }
 
+#if defined(GE_PLATFORM_WINDOWS)
         const char* SignalName(int signal)
         {
             switch (signal)
@@ -111,6 +176,7 @@ namespace Engine
 
             return "Unknown signal";
         }
+#endif
 
         std::string CaptureStackTrace()
         {
@@ -181,6 +247,7 @@ namespace Engine
             std::_Exit(1);
         }
 
+#if defined(GE_PLATFORM_WINDOWS)
         void HandleSignal(int signal)
         {
             std::ostringstream details;
@@ -189,12 +256,9 @@ namespace Engine
             const auto path = CrashHandler::WriteReport("Fatal signal", details.str());
             Log::Error("Fatal signal. Crash report: ", path.string());
 
-#if defined(_WIN32)
             _exit(128 + signal);
-#else
-            _Exit(128 + signal);
-#endif
         }
+#endif
 
 #if defined(GE_PLATFORM_WINDOWS)
         LONG WINAPI HandleWindowsException(EXCEPTION_POINTERS* exceptionPointers)
@@ -217,17 +281,96 @@ namespace Engine
             return;
 
         std::set_terminate(HandleTerminate);
+
+#if defined(GE_PLATFORM_WINDOWS)
         std::signal(SIGABRT, HandleSignal);
         std::signal(SIGFPE, HandleSignal);
         std::signal(SIGILL, HandleSignal);
         std::signal(SIGSEGV, HandleSignal);
         std::signal(SIGTERM, HandleSignal);
-
-#if defined(GE_PLATFORM_WINDOWS)
         SetUnhandledExceptionFilter(HandleWindowsException);
+#else
+        std::error_code directoryError;
+        const std::filesystem::path receiptDirectory = std::filesystem::path("output") / "crashes";
+        std::filesystem::create_directories(receiptDirectory, directoryError);
+
+        if (!directoryError)
+        {
+            const auto now = std::chrono::system_clock::now();
+            for (std::uint32_t attempt = 1; attempt <= 32; ++attempt)
+            {
+                const std::string fileName = "Spiral-" + FormatTimestampForFile(now) + "-" +
+                    std::to_string(getpid()) + "-" + std::to_string(attempt) + ".receipt";
+                const std::filesystem::path path = receiptDirectory / fileName;
+                const std::string nativePath = path.string();
+                const int receiptFile = ::open(nativePath.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC,
+                    S_IRUSR | S_IWUSR);
+                if (receiptFile < 0)
+                    continue;
+
+                if (::fchmod(receiptFile, S_IRUSR | S_IWUSR) != 0)
+                {
+                    ::close(receiptFile);
+                    std::error_code removeError;
+                    std::filesystem::remove(path, removeError);
+                    continue;
+                }
+
+                s_SignalReceiptPath = path;
+                s_SignalReceiptFile.store(receiptFile, std::memory_order_release);
+                break;
+            }
+        }
+
+        struct sigaction action = {};
+        action.sa_handler = HandlePosixFatalSignal;
+        sigemptyset(&action.sa_mask);
+        sigaddset(&action.sa_mask, SIGABRT);
+        sigaddset(&action.sa_mask, SIGFPE);
+        sigaddset(&action.sa_mask, SIGILL);
+        sigaddset(&action.sa_mask, SIGSEGV);
+        action.sa_flags = SA_RESETHAND | SA_NODEFER;
+
+        bool handlersInstalled = true;
+        for (const int signal : s_PosixFatalSignals)
+            handlersInstalled = sigaction(signal, &action, nullptr) == 0 && handlersInstalled;
+
+        if (s_SignalReceiptFile.load(std::memory_order_acquire) < 0)
+            Log::Warn("POSIX fatal-signal receipt could not be armed; default signal termination remains available");
+        if (!handlersInstalled)
+            Log::Warn("One or more POSIX fatal-signal handlers could not be installed");
 #endif
 
         Log::Info("Crash handler installed");
+    }
+
+    void CrashHandler::Shutdown()
+    {
+#if !defined(GE_PLATFORM_WINDOWS)
+        struct sigaction defaultAction = {};
+        defaultAction.sa_handler = SIG_DFL;
+        sigemptyset(&defaultAction.sa_mask);
+
+        bool handlersRestored = true;
+        for (const int signal : s_PosixFatalSignals)
+            handlersRestored = sigaction(signal, &defaultAction, nullptr) == 0 && handlersRestored;
+        if (!handlersRestored)
+        {
+            Log::Warn("One or more POSIX fatal-signal dispositions could not be restored; receipt remains armed");
+            return;
+        }
+
+        const int receiptFile = s_SignalReceiptFile.exchange(-1, std::memory_order_acq_rel);
+        if (receiptFile >= 0)
+            ::close(receiptFile);
+
+        if (!s_SignalReceiptPath.empty())
+        {
+            std::error_code error;
+            std::filesystem::remove(s_SignalReceiptPath, error);
+            s_SignalReceiptPath.clear();
+        }
+#endif
     }
 
     void CrashHandler::SetApplicationName(std::string_view applicationName)

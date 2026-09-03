@@ -10,6 +10,7 @@ namespace Engine
     {
     public:
         static void Install();
+        static void Shutdown();
         static void SetApplicationName(std::string_view applicationName);
         static std::filesystem::path WriteReport(std::string_view reason, std::string_view details = {});
 

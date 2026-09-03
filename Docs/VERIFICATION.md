@@ -150,6 +150,24 @@ Linux/macOS:
 
 Use the actual generated system/architecture path on the host.
 
+### Linux fatal-signal reporting safety
+
+After the Linux Debug build, run the focused Integration probe with:
+
+```bash
+./bin/Debug-linux-x86_64-gmake/EngineTests/EngineTests --test "Linux fatal signals publish minimal receipts and preserve default termination"
+```
+
+The parent test executes fresh internal children for raised `SIGABRT`, `SIGSEGV`, `SIGTERM`, and normal install/shutdown in unique temporary working directories. Every child owns a distinct process group and a five-second deadline. Timeout/error cleanup kills the still-owned group before reaping the root; successful probes are reaped normally and then require the group to have disappeared without sending it another signal. Each child sets `RLIMIT_CORE=0`, so this automated test never stores a core payload.
+
+`SIGABRT` and `SIGSEGV` must terminate through their original signal according to `WIFSIGNALED`/`WTERMSIG`, not an encoded `_Exit` status. Each must leave exactly one mode-`0600` `.receipt` containing the exact single-line `SpiralFatalSignalReceiptV1` record for that signal and no legacy rich signal `.txt` report. `SIGTERM` must retain default non-crash signal termination and leave only the empty pre-armed slot, which is not a generated receipt. The normal child must exit zero after `CrashHandler::Shutdown` restores all four fatal dispositions to `SIG_DFL` while the slot remains armed, then closes and removes that unused slot. Success emits:
+
+```text
+LinuxFatalSignalSafetyV1 abrt=pass segv=pass term=default normalCleanup=pass defaultRestored=pass receipts=schema-1 permissions=0600 processTree=clean result=pass
+```
+
+The exact schema distinguishes a bounded signal-context receipt from rich C++ exception/terminate reports and postmortem core symbolization. Source review must separately confirm that the POSIX callback performs no mutex, allocation, string/iostream/filesystem/logger, stack-unwind, or symbolization work. The sanitizer lane is regression evidence only; it cannot prove async-signal safety. Signal-status termination proves the engine restores the default core-producing action, but actual core retention and later `coredumpctl` availability remain conditional on host limits, `core_pattern`, and systemd policy. This test does not reproduce or attribute the fault that originally raised a signal, and it makes no macOS or Windows runtime claim.
+
 ## Live Editor Visual And Interaction Gate
 
 For an editor-facing, viewport, or input claim on a host with a desktop, launch the current workspace's actual Debug Editor after the coherent build. Use the native backend under test; on Linux the current Vulkan command is:
