@@ -55,6 +55,10 @@ namespace Engine
     };
 
     std::filesystem::path GetCookedMeshArtifactPath(AssetHandle asset);
+    // A nonempty cooked root selects one immutable generation. Empty retains
+    // the legacy mutable import location used by existing cookers.
+    std::filesystem::path GetCookedMeshArtifactPath(AssetHandle asset,
+        std::string_view cookedRoot, const std::filesystem::path& cookedArtifactBase);
     // The default Editor scene and the bounded backend raster fixtures share
     // this one versioned cooked payload. It is an engine-owned current
     // consumer of the normal MeshArtifact publication path, not a second

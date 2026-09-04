@@ -10,7 +10,9 @@
 
 #include "Engine/Assets/AssetHandle.h"
 #include "Engine/Assets/AssetFileSystem.h"
+#include "Engine/Assets/FabImportReceipt.h"
 #include "Engine/Assets/GltfImporter.h"
+#include "Engine/Assets/LocalPackageSnapshot.h"
 #include "Engine/Assets/MeshArtifact.h"
 #include "Engine/Assets/MaterialAsset.h"
 #include "Engine/Assets/AssetRegistry.h"
@@ -24,6 +26,7 @@
 #include "Engine/Jobs/FrameTaskGraph.h"
 #include "Engine/Math/Math.h"
 #include "Engine/Math/WorldGrid.h"
+#include "Engine/Platform/ExternalUrl.h"
 #include "Engine/RenderGraph/RenderGraph.h"
 #include "Engine/Renderer/Renderer.h"
 #include "Engine/Renderer/FramePacingPolicy.h"

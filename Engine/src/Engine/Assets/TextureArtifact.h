@@ -7,6 +7,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace Engine
@@ -94,6 +95,13 @@ namespace Engine
 
     std::filesystem::path GetCookedTextureArtifactPath(AssetHandle asset);
     std::filesystem::path GetCookedTextureArtifactPath(AssetHandle asset, TextureTargetProfile target);
+    // A nonempty cooked root selects one immutable generation. Empty retains
+    // the legacy mutable import locations used by existing cookers.
+    std::filesystem::path GetCookedTextureArtifactPath(AssetHandle asset,
+        std::string_view cookedRoot, const std::filesystem::path& cookedArtifactBase);
+    std::filesystem::path GetCookedTextureArtifactPath(AssetHandle asset,
+        TextureTargetProfile target, std::string_view cookedRoot,
+        const std::filesystem::path& cookedArtifactBase);
     bool ValidateTextureArtifact(const TextureArtifact& artifact, std::string& outError);
     bool StoreTextureArtifact(const std::filesystem::path& path, const TextureArtifact& artifact, std::string& outError);
     bool LoadTextureArtifact(const std::filesystem::path& path, TextureArtifact& outArtifact, std::string& outError);

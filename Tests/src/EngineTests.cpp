@@ -1,5 +1,6 @@
 #include "Engine/Core/Log.h"
 #include "Engine/Core/LayerStack.h"
+#include "Engine/Core/Sha256.h"
 #include "Engine/Diagnostics/CrashHandler.h"
 #include "Engine/Jobs/FrameTaskGraph.h"
 #include "Engine/Jobs/JobSystem.h"
@@ -36,10 +37,14 @@
 #include "Engine/Renderer/TextureRuntimePublication.h"
 #include "Engine/Assets/MeshArtifact.h"
 #include "Engine/Assets/GltfImporter.h"
+#include "Engine/Assets/LocalPackageSnapshot.h"
 #include "Engine/Assets/MaterialAsset.h"
 #include "Engine/Assets/TextureArtifact.h"
 #include "Engine/Assets/AssetRegistry.h"
 #include "Engine/Scene/Scene.h"
+#include "ExternalUrlTests.h"
+#include "FabImmutableAssetTests.h"
+#include "FabImportReceiptTests.h"
 #include "TestSupport/GeneratedTest.h"
 #include "TestSupport/StructuredFuzz.h"
 
@@ -68,6 +73,7 @@
 #include <vector>
 
 #if defined(GE_PLATFORM_LINUX)
+    #include <fcntl.h>
     #include <signal.h>
     #include <sys/resource.h>
     #include <sys/stat.h>
@@ -773,6 +779,501 @@ namespace
     {
         return std::filesystem::temp_directory_path() / ("spiral-" + std::string(name));
     }
+
+    bool TestCoreSha256VectorsAndStreaming()
+    {
+        using Engine::Sha256Builder;
+        const bool knownVectors = Sha256Builder::HashString("")
+                == "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            && Sha256Builder::HashString("abc")
+                == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+            && Sha256Builder::HashString("abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq")
+                == "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1";
+
+        std::string millionA(1'000'000, 'a');
+        const bool millionVector = Sha256Builder::HashString(millionA)
+            == "cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0";
+
+        std::string boundaryInput;
+        boundaryInput.resize(4097);
+        for (size_t index = 0; index < boundaryInput.size(); ++index)
+            boundaryInput[index] = static_cast<char>((index * 37 + 11) & 0xff);
+        const std::string oneShot = Sha256Builder::HashString(boundaryInput);
+        const auto chunkedHash = [&](size_t chunkBytes)
+        {
+            Sha256Builder builder;
+            for (size_t offset = 0; offset < boundaryInput.size(); offset += chunkBytes)
+                builder.Update(std::string_view(boundaryInput).substr(offset,
+                    std::min(chunkBytes, boundaryInput.size() - offset)));
+            const std::string firstFinalization = builder.FinalizeHex();
+            return firstFinalization == builder.FinalizeHex() ? firstFinalization : std::string {};
+        };
+        const bool chunkBoundaries = chunkedHash(1) == oneShot
+            && chunkedHash(63) == oneShot
+            && chunkedHash(64) == oneShot
+            && chunkedHash(65) == oneShot
+            && chunkedHash(257) == oneShot;
+        const bool rendererCompatibility = Engine::PortableShaderContract::Sha256(boundaryInput) == oneShot;
+        return Expect(knownVectors && millionVector,
+                "Core SHA-256 matches independent empty, short, multiblock, and million-byte vectors")
+            && Expect(chunkBoundaries && rendererCompatibility,
+                "Core streaming SHA-256 is chunk-boundary invariant and preserves the portable shader API output");
+    }
+
+#if defined(GE_PLATFORM_LINUX)
+    class ScopedPackageTestRoot
+    {
+    public:
+        ScopedPackageTestRoot()
+        {
+            static std::atomic<Engine::u64> sequence { 1 };
+            Root = std::filesystem::temp_directory_path()
+                / ("spiral-package-snapshot-test-" + std::to_string(static_cast<Engine::u64>(getpid()))
+                    + '-' + std::to_string(sequence.fetch_add(1, std::memory_order_relaxed)));
+            std::error_code error;
+            std::filesystem::remove_all(Root, error);
+            std::filesystem::create_directories(Root, error);
+            std::filesystem::permissions(Root, std::filesystem::perms::owner_all,
+                std::filesystem::perm_options::replace, error);
+        }
+
+        ~ScopedPackageTestRoot()
+        {
+            std::error_code error;
+            std::filesystem::remove_all(Root, error);
+        }
+
+        std::filesystem::path Root;
+    };
+
+    bool WritePackageText(const std::filesystem::path& path, std::string_view contents)
+    {
+        std::error_code error;
+        std::filesystem::create_directories(path.parent_path(), error);
+        std::ofstream output(path, std::ios::binary | std::ios::trunc);
+        output.write(contents.data(), static_cast<std::streamsize>(contents.size()));
+        return !error && !!output;
+    }
+
+    std::string ReadPackageText(const std::filesystem::path& path)
+    {
+        std::ifstream input(path, std::ios::binary);
+        return { std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>() };
+    }
+
+    std::string MinimalGltf(std::string_view bufferUri = {}, size_t byteLength = 0)
+    {
+        if (bufferUri.empty())
+            return R"({"asset":{"version":"2.0"}})";
+        return "{\"asset\":{\"version\":\"2.0\"},\"buffers\":[{\"uri\":\""
+            + std::string(bufferUri) + "\",\"byteLength\":" + std::to_string(byteLength) + "}]}";
+    }
+
+    std::string MinimalGlb(std::string json = MinimalGltf(), std::string_view binary = {})
+    {
+        while (json.size() % 4 != 0)
+            json.push_back(' ');
+        std::string result;
+        const size_t paddedBinaryBytes = (binary.size() + 3) & ~size_t(3);
+        result.reserve(20 + json.size() + (binary.empty() ? 0 : 8 + paddedBinaryBytes));
+        const auto appendU32 = [&](Engine::u32 value)
+        {
+            for (size_t byte = 0; byte < 4; ++byte)
+                result.push_back(static_cast<char>(value >> (byte * 8)));
+        };
+        appendU32(0x46546c67u);
+        appendU32(2);
+        appendU32(static_cast<Engine::u32>(20 + json.size()
+            + (binary.empty() ? 0 : 8 + paddedBinaryBytes)));
+        appendU32(static_cast<Engine::u32>(json.size()));
+        appendU32(0x4e4f534au);
+        result.append(json);
+        if (!binary.empty())
+        {
+            appendU32(static_cast<Engine::u32>(paddedBinaryBytes));
+            appendU32(0x004e4942u);
+            result.append(binary);
+            result.append(paddedBinaryBytes - binary.size(), '\0');
+        }
+        return result;
+    }
+
+    size_t DirectoryEntryCount(const std::filesystem::path& path)
+    {
+        std::error_code error;
+        size_t count = 0;
+        for (std::filesystem::directory_iterator iterator(path, error), end; !error && iterator != end; ++iterator)
+            ++count;
+        return error ? std::numeric_limits<size_t>::max() : count;
+    }
+
+    bool TestLocalPackageSnapshotCopiesDeterministically()
+    {
+        using namespace Engine;
+        ScopedPackageTestRoot fixture;
+        const std::filesystem::path source = fixture.Root / "source";
+        const std::filesystem::path staging = fixture.Root / "private-staging";
+        const std::filesystem::path outside = fixture.Root / "outside.keep";
+        std::error_code filesystemError;
+        std::filesystem::create_directories(source / "Buffers", filesystemError);
+        std::filesystem::create_directories(staging, filesystemError);
+        std::filesystem::permissions(staging, std::filesystem::perms::owner_all,
+            std::filesystem::perm_options::replace, filesystemError);
+        const std::string gltf = MinimalGltf("Buffers/data.bin", 3);
+        const bool fixtureWritten = WritePackageText(source / "scene.gltf", gltf)
+            && WritePackageText(source / "Buffers/data.bin", "abc")
+            && WritePackageText(source / "source.keep", "source sentinel")
+            && WritePackageText(source / "texture.png", "")
+            && WritePackageText(outside, "outside sentinel");
+
+        LocalPackageSnapshot first;
+        LocalPackageSnapshot second;
+        std::string error;
+        const bool firstCreated = fixtureWritten && LocalPackageSnapshot::Create(
+            source, staging, {}, first, error);
+        const bool secondCreated = firstCreated && LocalPackageSnapshot::Create(
+            source, staging, {}, second, error);
+        const std::vector<std::string> expectedPaths {
+            "Buffers/data.bin", "scene.gltf", "source.keep", "texture.png"
+        };
+        std::vector<std::string> actualPaths;
+        for (const LocalPackageSnapshotEntry& entry : first.GetEntries())
+            actualPaths.push_back(entry.RelativePath);
+        const auto dataEntry = std::find_if(first.GetEntries().begin(), first.GetEntries().end(), [](const auto& entry)
+        {
+            return entry.RelativePath == "Buffers/data.bin";
+        });
+        const auto emptyEntry = std::find_if(first.GetEntries().begin(), first.GetEntries().end(), [](const auto& entry)
+        {
+            return entry.RelativePath == "texture.png";
+        });
+        struct stat stagingStatus {};
+        struct stat copiedFileStatus {};
+        const bool stagingPrivate = firstCreated && stat(first.GetDirectory().c_str(), &stagingStatus) == 0
+            && (stagingStatus.st_mode & 0777) == 0500
+            && stat((first.GetDirectory() / "Buffers/data.bin").c_str(), &copiedFileStatus) == 0
+            && (copiedFileStatus.st_mode & 0777) == 0400;
+        const int retainedDirectoryDescriptor = firstCreated
+            ? std::stoi(first.GetDirectory().filename().string()) : -1;
+        const bool descriptorPrivate = retainedDirectoryDescriptor >= 0
+            && (fcntl(retainedDirectoryDescriptor, F_GETFD) & FD_CLOEXEC) != 0;
+        const bool exactInventory = firstCreated && secondCreated && actualPaths == expectedPaths
+            && dataEntry != first.GetEntries().end() && dataEntry->SizeBytes == 3
+            && dataEntry->Sha256 == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+            && emptyEntry != first.GetEntries().end()
+            && emptyEntry->Sha256 == "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+        const bool deterministic = first.GetTreeSha256()
+                == "41dd4d94e48ef524cb53ad59a97016603a2fc7503c0a14409f087e9515256293"
+            && first.GetTreeSha256() == second.GetTreeSha256();
+        const bool copiedBytes = ReadPackageText(first.GetDirectory() / "scene.gltf") == gltf
+            && ReadPackageText(first.GetDirectory() / "Buffers/data.bin") == "abc"
+            && first.GetRootRelativePath() == "scene.gltf"
+            && first.GetRootPath() == first.GetDirectory() / "scene.gltf";
+        const std::filesystem::path preservedDirectory = first.GetDirectory();
+        const std::string preservedTree = first.GetTreeSha256();
+        LocalPackageSnapshotOptions rejectingOptions;
+        rejectingOptions.Limits.MaximumFileCount = 0;
+        const bool rejectedReplacementPreservesSnapshot = !LocalPackageSnapshot::Create(
+            source, staging, rejectingOptions, first, error)
+            && first.GetDirectory() == preservedDirectory && first.GetTreeSha256() == preservedTree
+            && std::filesystem::exists(first.GetRootPath());
+        const std::filesystem::path releasedDirectory = first.GetDirectory();
+        first = LocalPackageSnapshot {};
+        const bool lifetime = !std::filesystem::exists(releasedDirectory)
+            && std::filesystem::exists(second.GetDirectory());
+        second = LocalPackageSnapshot {};
+        const bool sentinels = ReadPackageText(source / "source.keep") == "source sentinel"
+            && ReadPackageText(outside) == "outside sentinel" && DirectoryEntryCount(staging) == 0;
+        return Expect(exactInventory && deterministic && copiedBytes && stagingPrivate && descriptorPrivate
+                    && rejectedReplacementPreservesSnapshot,
+                "directory snapshot copies exact sorted bytes and hashes into a private deterministic tree")
+            && Expect(lifetime && sentinels,
+                "snapshot RAII owns only its unique staging directory and preserves source/outside sentinels");
+    }
+
+    bool TestLocalPackageSnapshotRejectsHostileInputs()
+    {
+        using namespace Engine;
+        ScopedPackageTestRoot fixture;
+        const std::filesystem::path staging = fixture.Root / "private-staging";
+        const std::filesystem::path outside = fixture.Root / "outside.keep";
+        std::error_code filesystemError;
+        std::filesystem::create_directories(staging, filesystemError);
+        std::filesystem::permissions(staging, std::filesystem::perms::owner_all,
+            std::filesystem::perm_options::replace, filesystemError);
+        WritePackageText(outside, "outside sentinel");
+
+        const auto rejects = [&](const std::filesystem::path& source)
+        {
+            const size_t before = DirectoryEntryCount(staging);
+            LocalPackageSnapshot snapshot;
+            std::string error;
+            const bool rejected = !LocalPackageSnapshot::Create(source, staging, {}, snapshot, error)
+                && !snapshot.IsValid() && !error.empty();
+            return rejected && DirectoryEntryCount(staging) == before;
+        };
+        const auto makeSource = [&](std::string_view name)
+        {
+            const std::filesystem::path source = fixture.Root / std::string(name);
+            std::filesystem::create_directories(source, filesystemError);
+            return source;
+        };
+
+        const std::filesystem::path missingRoot = makeSource("missing-root");
+        WritePackageText(missingRoot / "data.bin", "abc");
+        const std::filesystem::path ambiguousRoot = makeSource("ambiguous-root");
+        WritePackageText(ambiguousRoot / "a.gltf", MinimalGltf());
+        WritePackageText(ambiguousRoot / "b.GLB", "not a GLB");
+        const std::filesystem::path corruptGlb = makeSource("corrupt-glb");
+        WritePackageText(corruptGlb / "root.glb", "glTF\x02\x00\x00\x00\x0c\x00\x00\x00");
+        const bool rootsRejected = rejects(missingRoot) && rejects(ambiguousRoot) && rejects(corruptGlb);
+
+        const std::filesystem::path validGlb = makeSource("valid-glb");
+        WritePackageText(validGlb / "root.glb", MinimalGlb());
+        LocalPackageSnapshot glbSnapshot;
+        std::string glbError;
+        const bool validGlbAccepted = LocalPackageSnapshot::Create(
+            validGlb, staging, {}, glbSnapshot, glbError)
+            && glbSnapshot.GetRootRelativePath() == "root.glb";
+        const std::filesystem::path missingDependency = makeSource("missing-dependency");
+        WritePackageText(missingDependency / "root.gltf", MinimalGltf("missing.bin", 3));
+        const std::filesystem::path shortDependency = makeSource("short-dependency");
+        WritePackageText(shortDependency / "root.gltf", MinimalGltf("short.bin", 4));
+        WritePackageText(shortDependency / "short.bin", "x");
+        const std::filesystem::path missingGlbBinary = makeSource("missing-glb-binary");
+        WritePackageText(missingGlbBinary / "root.glb", MinimalGlb(
+            R"({"asset":{"version":"2.0"},"buffers":[{"byteLength":4}]})"));
+        const std::filesystem::path shortGlbBinary = makeSource("short-glb-binary");
+        WritePackageText(shortGlbBinary / "root.glb", MinimalGlb(
+            R"({"asset":{"version":"2.0"},"buffers":[{"byteLength":5}]})", "1234"));
+        const std::filesystem::path multipleGlbBuffers = makeSource("multiple-glb-buffers");
+        WritePackageText(multipleGlbBuffers / "root.glb", MinimalGlb(
+            R"({"asset":{"version":"2.0"},"buffers":[{"byteLength":4},{"byteLength":4}]})", "12345678"));
+        const bool dependencyClosureRejected = rejects(missingDependency)
+            && rejects(shortDependency) && rejects(missingGlbBinary)
+            && rejects(shortGlbBinary) && rejects(multipleGlbBuffers);
+
+        const std::filesystem::path traversal = makeSource("traversal");
+        WritePackageText(traversal / "root.gltf", MinimalGltf("../outside.keep", 16));
+        const std::filesystem::path encodedTraversal = makeSource("encoded-traversal");
+        WritePackageText(encodedTraversal / "root.gltf", MinimalGltf("%2e%2e/outside.keep", 16));
+        const std::filesystem::path encodedSeparator = makeSource("encoded-separator");
+        WritePackageText(encodedSeparator / "root.gltf", MinimalGltf("..%2foutside.keep", 16));
+        const bool traversalRejected = rejects(traversal) && rejects(encodedTraversal) && rejects(encodedSeparator);
+
+        const std::filesystem::path rootTarget = makeSource("root-target");
+        WritePackageText(rootTarget / "root.gltf", MinimalGltf());
+        const std::filesystem::path linkedRoot = fixture.Root / "linked-root";
+        std::filesystem::create_directory_symlink(rootTarget, linkedRoot, filesystemError);
+        const bool rootSymlinkCreated = !filesystemError;
+        const std::filesystem::path childSymlink = makeSource("child-symlink");
+        WritePackageText(childSymlink / "root.gltf", MinimalGltf());
+        std::filesystem::create_symlink(outside, childSymlink / "escape.bin", filesystemError);
+        const bool childSymlinkCreated = !filesystemError;
+        const std::filesystem::path hardlink = makeSource("hardlink");
+        WritePackageText(hardlink / "root.gltf", MinimalGltf());
+        std::filesystem::create_hard_link(outside, hardlink / "aliased.bin", filesystemError);
+        const bool hardlinkCreated = !filesystemError;
+        const std::filesystem::path fifo = makeSource("fifo");
+        WritePackageText(fifo / "root.gltf", MinimalGltf());
+        const bool fifoCreated = mkfifo((fifo / "pipe").c_str(), 0600) == 0;
+        const bool objectTypesRejected = rootSymlinkCreated && childSymlinkCreated && hardlinkCreated && fifoCreated
+            && rejects(linkedRoot) && rejects(childSymlink) && rejects(hardlink) && rejects(fifo);
+
+        const std::filesystem::path collision = makeSource("case-collision");
+        WritePackageText(collision / "root.gltf", MinimalGltf());
+        WritePackageText(collision / "Texture.bin", "A");
+        WritePackageText(collision / "texture.BIN", "B");
+        const bool collisionRejected = rejects(collision);
+        const std::filesystem::path embeddedData = makeSource("embedded-data");
+        WritePackageText(embeddedData / "root.gltf",
+            MinimalGltf("data:application/octet-stream;base64,YWJj", 3));
+        const std::filesystem::path trailingJson = makeSource("trailing-json");
+        std::string nulJson = MinimalGltf();
+        nulJson.append("\0{}", 3);
+        WritePackageText(trailingJson / "root.gltf", nulJson);
+        const std::filesystem::path malformedLiteral = makeSource("malformed-literal");
+        WritePackageText(malformedLiteral / "root.gltf",
+            R"({"asset":{"version":"2.0"},"invalid":truE})");
+        const std::filesystem::path trailingComma = makeSource("trailing-comma");
+        WritePackageText(trailingComma / "root.gltf", R"({"asset":{"version":"2.0"},})");
+        const std::filesystem::path nestedArchive = makeSource("nested-archive");
+        WritePackageText(nestedArchive / "root.gltf", MinimalGltf());
+        WritePackageText(nestedArchive / "renamed.bin", "PK\x03\x04payload");
+        const std::filesystem::path scriptPayload = makeSource("script-payload");
+        WritePackageText(scriptPayload / "root.gltf", MinimalGltf());
+        WritePackageText(scriptPayload / "install.sh", "echo unsafe");
+        const std::filesystem::path executablePayload = makeSource("executable-payload");
+        WritePackageText(executablePayload / "root.gltf", MinimalGltf());
+        WritePackageText(executablePayload / "tool.bin", "ordinary bytes");
+        chmod((executablePayload / "tool.bin").c_str(), 0700);
+        const bool unsupportedRejected = rejects(embeddedData) && rejects(trailingJson)
+            && rejects(malformedLiteral) && rejects(trailingComma)
+            && rejects(nestedArchive) && rejects(scriptPayload) && rejects(executablePayload);
+        const std::filesystem::path publicStaging = fixture.Root / "public-staging";
+        std::filesystem::create_directories(publicStaging, filesystemError);
+        chmod(publicStaging.c_str(), 0755);
+        LocalPackageSnapshot publicSnapshot;
+        std::string publicError;
+        const bool publicStagingRejected = !LocalPackageSnapshot::Create(
+            rootTarget, publicStaging, {}, publicSnapshot, publicError)
+            && !publicSnapshot.IsValid() && !publicError.empty();
+        const bool sentinelPreserved = ReadPackageText(outside) == "outside sentinel";
+        return Expect(validGlbAccepted && rootsRejected && traversalRejected && dependencyClosureRejected,
+                "snapshot accepts a minimal GLB and rejects missing/ambiguous roots, corrupt GLB, missing dependencies, and plain or encoded traversal")
+            && Expect(objectTypesRejected && collisionRejected && unsupportedRejected
+                    && publicStagingRejected && sentinelPreserved,
+                "snapshot rejects links, special objects, portable collisions, unsafe payloads, and non-private staging without touching outside data");
+    }
+
+    bool TestLocalPackageSnapshotLimitsRacesAndCancellation()
+    {
+        using namespace Engine;
+        ScopedPackageTestRoot fixture;
+        const std::filesystem::path source = fixture.Root / "source";
+        const std::filesystem::path staging = fixture.Root / "private-staging";
+        const std::filesystem::path outside = fixture.Root / "outside.keep";
+        std::error_code filesystemError;
+        std::filesystem::create_directories(source, filesystemError);
+        std::filesystem::create_directories(staging, filesystemError);
+        std::filesystem::permissions(staging, std::filesystem::perms::owner_all,
+            std::filesystem::perm_options::replace, filesystemError);
+        const std::string gltf = MinimalGltf("d.bin", 3);
+        WritePackageText(source / "root.gltf", gltf);
+        WritePackageText(source / "d.bin", "abc");
+        WritePackageText(outside, "outside sentinel");
+
+        const auto createsWith = [&](const LocalPackageSnapshotOptions& options)
+        {
+            LocalPackageSnapshot snapshot;
+            std::string error;
+            return LocalPackageSnapshot::Create(source, staging, options, snapshot, error);
+        };
+        const auto boundary = [&](u64 exact, const std::function<void(LocalPackageSnapshotOptions&, u64)>& setLimit)
+        {
+            LocalPackageSnapshotOptions below;
+            setLimit(below, exact - 1);
+            LocalPackageSnapshotOptions at;
+            setLimit(at, exact);
+            LocalPackageSnapshotOptions above;
+            setLimit(above, exact + 1);
+            return !createsWith(below) && createsWith(at) && createsWith(above)
+                && DirectoryEntryCount(staging) == 0;
+        };
+        const u64 longestPath = std::max<u64>(std::string_view("root.gltf").size(), std::string_view("d.bin").size());
+        const u64 largestFile = std::max<u64>(gltf.size(), 3);
+        const u64 aggregate = static_cast<u64>(gltf.size()) + 3;
+        const bool boundaries = boundary(2, [](auto& options, u64 value) { options.Limits.MaximumFileCount = value; })
+            && boundary(1, [](auto& options, u64 value) { options.Limits.MaximumDepth = value; })
+            && boundary(longestPath, [](auto& options, u64 value) { options.Limits.MaximumPathBytes = value; })
+            && boundary(longestPath, [](auto& options, u64 value) { options.Limits.MaximumSegmentBytes = value; })
+            && boundary(largestFile, [](auto& options, u64 value) { options.Limits.MaximumFileBytes = value; })
+            && boundary(aggregate, [](auto& options, u64 value) { options.Limits.MaximumAggregateBytes = value; })
+            && boundary(gltf.size(), [](auto& options, u64 value) { options.Limits.MaximumGltfJsonBytes = value; });
+
+        bool changedHookRan = false;
+        LocalPackageSnapshotOptions changedOptions;
+        changedOptions.TestHook = [&](LocalPackageSnapshotHookPoint point, std::string_view relativePath)
+        {
+            if (!changedHookRan && point == LocalPackageSnapshotHookPoint::BeforeFileCopy
+                && relativePath == "d.bin")
+            {
+                changedHookRan = WritePackageText(source / "d.bin", "xyz");
+            }
+        };
+        LocalPackageSnapshot changedSnapshot;
+        std::string changedError;
+        const bool changedRejected = !LocalPackageSnapshot::Create(
+            source, staging, changedOptions, changedSnapshot, changedError)
+            && changedHookRan && !changedSnapshot.IsValid() && DirectoryEntryCount(staging) == 0;
+        WritePackageText(source / "d.bin", "abc");
+
+        const auto cancelsAt = [&](LocalPackageSnapshotHookPoint cancellationPoint)
+        {
+            bool cancelled = false;
+            LocalPackageSnapshotOptions options;
+            options.TestHook = [&](LocalPackageSnapshotHookPoint point, std::string_view)
+            {
+                if (point == cancellationPoint)
+                    cancelled = true;
+            };
+            options.IsCancelled = [&]() { return cancelled; };
+            LocalPackageSnapshot snapshot;
+            std::string error;
+            return !LocalPackageSnapshot::Create(source, staging, options, snapshot, error)
+                && cancelled && !snapshot.IsValid() && DirectoryEntryCount(staging) == 0;
+        };
+        LocalPackageSnapshotOptions immediateOptions;
+        immediateOptions.IsCancelled = []() { return true; };
+        const bool cancellations = !createsWith(immediateOptions)
+            && cancelsAt(LocalPackageSnapshotHookPoint::StagingCreated)
+            && cancelsAt(LocalPackageSnapshotHookPoint::InventoryEntry)
+            && cancelsAt(LocalPackageSnapshotHookPoint::InventoryComplete)
+            && cancelsAt(LocalPackageSnapshotHookPoint::BeforeFileCopy)
+            && cancelsAt(LocalPackageSnapshotHookPoint::AfterFileCopy)
+            && cancelsAt(LocalPackageSnapshotHookPoint::BeforeReenumeration)
+            && cancelsAt(LocalPackageSnapshotHookPoint::BeforeDependencyValidation)
+            && cancelsAt(LocalPackageSnapshotHookPoint::BeforeCommit);
+
+        LocalPackageSnapshotOptions tamperedOptions;
+        bool stagedFileReplaced = false;
+        tamperedOptions.TestHook = [&](LocalPackageSnapshotHookPoint point, std::string_view)
+        {
+            if (point != LocalPackageSnapshotHookPoint::BeforeCommit || stagedFileReplaced)
+                return;
+            for (const std::filesystem::directory_entry& entry : std::filesystem::directory_iterator(staging))
+            {
+                const std::filesystem::path stagedRoot = entry.path() / "root.gltf";
+                if (!std::filesystem::exists(stagedRoot))
+                    continue;
+                std::filesystem::permissions(stagedRoot, std::filesystem::perms::owner_all,
+                    std::filesystem::perm_options::replace, filesystemError);
+                stagedFileReplaced = !filesystemError && WritePackageText(stagedRoot, MinimalGltf());
+                break;
+            }
+        };
+        LocalPackageSnapshot tamperedSnapshot;
+        std::string tamperedError;
+        const bool stagedTamperingRejected = !LocalPackageSnapshot::Create(
+            source, staging, tamperedOptions, tamperedSnapshot, tamperedError)
+            && stagedFileReplaced && !tamperedSnapshot.IsValid()
+            && DirectoryEntryCount(staging) == 0;
+
+        LocalPackageSnapshot retainedSnapshot;
+        LocalPackageSnapshotOptions renamedParentOptions;
+        const std::filesystem::path movedStaging = fixture.Root / "moved-private-staging";
+        bool stagingParentReplaced = false;
+        renamedParentOptions.TestHook = [&](LocalPackageSnapshotHookPoint point, std::string_view)
+        {
+            if (point != LocalPackageSnapshotHookPoint::BeforeCommit || stagingParentReplaced)
+                return;
+            std::filesystem::rename(staging, movedStaging, filesystemError);
+            if (filesystemError)
+                return;
+            std::filesystem::create_directories(staging, filesystemError);
+            std::filesystem::permissions(staging, std::filesystem::perms::owner_all,
+                std::filesystem::perm_options::replace, filesystemError);
+            stagingParentReplaced = !filesystemError
+                && WritePackageText(staging / "replacement.keep", "replacement sentinel");
+        };
+        std::string retainedError;
+        const bool retainedIdentity = LocalPackageSnapshot::Create(
+            source, staging, renamedParentOptions, retainedSnapshot, retainedError)
+            && stagingParentReplaced
+            && ReadPackageText(retainedSnapshot.GetRootPath()) == gltf
+            && ReadPackageText(staging / "replacement.keep") == "replacement sentinel";
+        retainedSnapshot = LocalPackageSnapshot {};
+        const bool retainedCleanup = DirectoryEntryCount(movedStaging) == 0
+            && ReadPackageText(staging / "replacement.keep") == "replacement sentinel";
+        const bool sentinels = ReadPackageText(source / "d.bin") == "abc"
+            && ReadPackageText(outside) == "outside sentinel";
+        return Expect(boundaries,
+                "snapshot enforces B-1/B/B+1 file-count, depth, path, segment, per-file, and aggregate limits")
+            && Expect(changedRejected && cancellations && stagedTamperingRejected
+                    && retainedIdentity && retainedCleanup && sentinels,
+                "snapshot detects changed-on-read input, cancels at every exposed boundary, retains exact identity across parent replacement, and cleans only owned staging");
+    }
+#endif
 
     bool TestGeneratedCounterexampleArtifactPreservesReplayData()
     {
@@ -11649,6 +12150,15 @@ int main(int argc, char** argv)
 #define FAST_TEST(name, function) TestCase { name, function, TestTier::Fast }
 #define INTEGRATION_TEST(name, function) TestCase { name, function, TestTier::Integration }
     const std::vector<TestCase> tests = {
+        FAST_TEST("Core SHA-256 matches independent vectors and streaming boundaries", TestCoreSha256VectorsAndStreaming),
+        FAST_TEST("External HTTPS navigation accepts only the declared host", TestExternalHttpsUrlPolicy),
+        INTEGRATION_TEST("Fab receipts derive stable identity and preserve provenance transactionally", Spiral::Tests::TestFabImportReceiptAuthority),
+        INTEGRATION_TEST("Fab immutable asset generations retain exact rooted resolvers", SpiralTests::TestFabImmutableAssetGenerations),
+#if defined(GE_PLATFORM_LINUX)
+        INTEGRATION_TEST("Local package snapshot copies deterministic immutable directory input", TestLocalPackageSnapshotCopiesDeterministically),
+        INTEGRATION_TEST("Local package snapshot rejects hostile roots paths and objects", TestLocalPackageSnapshotRejectsHostileInputs),
+        INTEGRATION_TEST("Local package snapshot enforces limits races cancellation and cleanup", TestLocalPackageSnapshotLimitsRacesAndCancellation),
+#endif
         FAST_TEST("Generated test support replays and minimizes counterexamples", TestGeneratedTestSupportReplaysAndMinimizes),
         INTEGRATION_TEST("Generated counterexample artifacts preserve replay data", TestGeneratedCounterexampleArtifactPreservesReplayData),
         INTEGRATION_TEST("Structured Scene and shader fuzz corpus replays deterministically", TestStructuredFuzzCorpusReplay),

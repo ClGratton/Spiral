@@ -90,6 +90,19 @@ namespace Engine
         return std::filesystem::path("output") / "imports" / "gltf" / (std::to_string(asset) + ".spiralmesh");
     }
 
+    std::filesystem::path GetCookedMeshArtifactPath(AssetHandle asset,
+        std::string_view cookedRoot, const std::filesystem::path& cookedArtifactBase)
+    {
+        if (asset == kInvalidAssetHandle || !AssetRegistry::IsValidCookedRoot(cookedRoot))
+            return {};
+        if (cookedRoot.empty())
+            return GetCookedMeshArtifactPath(asset);
+        if (cookedArtifactBase.empty() || !cookedArtifactBase.is_absolute())
+            return {};
+        return (cookedArtifactBase / std::filesystem::path(std::string(cookedRoot)) / "meshes"
+            / (std::to_string(asset) + ".spiralmesh")).lexically_normal();
+    }
+
     std::string_view GetDefaultSceneMeshSourcePath()
     {
         return kDefaultSceneMeshSourcePath;
@@ -561,8 +574,16 @@ namespace Engine
             return false;
         }
 
+        const std::filesystem::path artifactPath = GetCookedMeshArtifactPath(
+            asset, metadata->CookedRoot, registry.GetCookedArtifactBasePath());
+        if (artifactPath.empty())
+        {
+            outError = "mesh registry metadata has an invalid cooked root";
+            return false;
+        }
+
         MeshArtifact candidate;
-        if (!LoadMeshArtifact(GetCookedMeshArtifactPath(asset), candidate, outError))
+        if (!LoadMeshArtifact(artifactPath, candidate, outError))
             return false;
         if (candidate.Asset != asset || candidate.SourcePath != metadata->SourcePath)
         {

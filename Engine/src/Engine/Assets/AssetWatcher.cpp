@@ -28,13 +28,17 @@ namespace Engine
             {
                 return std::find_if(assets.begin(), assets.end(), [&record](const AssetMetadata& metadata)
                 {
-                    return metadata.Handle == record.Handle;
+                    return metadata.Handle == record.Handle
+                        && metadata.SourcePolicy == AssetSourcePolicy::PhysicalFile;
                 }) == assets.end();
             }),
             m_Records.end());
 
         for (const AssetMetadata& metadata : assets)
         {
+            if (metadata.SourcePolicy != AssetSourcePolicy::PhysicalFile)
+                continue;
+
             Record* record = FindRecord(metadata.Handle);
             if (!record)
             {

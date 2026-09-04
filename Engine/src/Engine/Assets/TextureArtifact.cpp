@@ -439,6 +439,37 @@ namespace Engine
             / (std::to_string(asset) + "." + suffix + ".spiraltexture");
     }
 
+    std::filesystem::path GetCookedTextureArtifactPath(AssetHandle asset,
+        std::string_view cookedRoot, const std::filesystem::path& cookedArtifactBase)
+    {
+        if (asset == kInvalidAssetHandle || !AssetRegistry::IsValidCookedRoot(cookedRoot))
+            return {};
+        if (cookedRoot.empty())
+            return GetCookedTextureArtifactPath(asset);
+        if (cookedArtifactBase.empty() || !cookedArtifactBase.is_absolute())
+            return {};
+        return (cookedArtifactBase / std::filesystem::path(std::string(cookedRoot)) / "textures"
+            / (std::to_string(asset) + ".spiraltexture")).lexically_normal();
+    }
+
+    std::filesystem::path GetCookedTextureArtifactPath(
+        AssetHandle asset, TextureTargetProfile target, std::string_view cookedRoot,
+        const std::filesystem::path& cookedArtifactBase)
+    {
+        if (cookedRoot.empty())
+            return GetCookedTextureArtifactPath(asset, target);
+        if (asset == kInvalidAssetHandle || !AssetRegistry::IsValidCookedRoot(cookedRoot))
+            return {};
+        if (cookedArtifactBase.empty() || !cookedArtifactBase.is_absolute())
+            return {};
+
+        const std::filesystem::path legacyPath = GetCookedTextureArtifactPath(asset, target);
+        if (legacyPath.empty())
+            return {};
+        return (cookedArtifactBase / std::filesystem::path(std::string(cookedRoot))
+            / "textures" / legacyPath.filename()).lexically_normal();
+    }
+
     bool ValidateTextureArtifact(const TextureArtifact& artifact, std::string& outError)
     {
         if (artifact.Asset == kInvalidAssetHandle || artifact.SourcePath.empty()) { outError = "texture artifact has invalid provenance"; return false; }
@@ -527,9 +558,11 @@ namespace Engine
         }
 
         TextureTargetLoadResult LoadTextureTarget(const AssetMetadata& metadata,
-            TextureTargetProfile target, TextureArtifact& outArtifact, std::string& outError)
+            const std::filesystem::path& cookedArtifactBase, TextureTargetProfile target,
+            TextureArtifact& outArtifact, std::string& outError)
         {
-            const std::filesystem::path variantPath = GetCookedTextureArtifactPath(metadata.Handle, target);
+            const std::filesystem::path variantPath = GetCookedTextureArtifactPath(
+                metadata.Handle, target, metadata.CookedRoot, cookedArtifactBase);
             if (variantPath.empty())
             {
                 outError = "requested texture artifact target profile is invalid";
@@ -557,7 +590,14 @@ namespace Engine
                 return TextureTargetLoadResult::Success;
             }
 
-            const std::filesystem::path legacyPath = GetCookedTextureArtifactPath(metadata.Handle);
+            // Generation roots are schema-2 immutable catalogs. They never
+            // inherit the pre-variant filename fallback from the mutable
+            // legacy output tree.
+            if (!metadata.CookedRoot.empty())
+                return TextureTargetLoadResult::Missing;
+
+            const std::filesystem::path legacyPath = GetCookedTextureArtifactPath(
+                metadata.Handle, metadata.CookedRoot, cookedArtifactBase);
             const bool legacyExists = std::filesystem::exists(legacyPath, filesystemError);
             if (filesystemError)
             {
@@ -609,7 +649,8 @@ namespace Engine
         const AssetMetadata* metadata = GetTextureMetadata(registry, asset, outError);
         if (!metadata) return false;
         TextureArtifact candidate;
-        const TextureTargetLoadResult result = LoadTextureTarget(*metadata, target, candidate, outError);
+        const TextureTargetLoadResult result = LoadTextureTarget(*metadata,
+            registry.GetCookedArtifactBasePath(), target, candidate, outError);
         if (result != TextureTargetLoadResult::Success)
         {
             if (result == TextureTargetLoadResult::Missing)
@@ -632,7 +673,8 @@ namespace Engine
         for (TextureTargetProfile target : order)
         {
             TextureArtifact candidate;
-            const TextureTargetLoadResult result = LoadTextureTarget(*metadata, target, candidate, outError);
+            const TextureTargetLoadResult result = LoadTextureTarget(*metadata,
+                registry.GetCookedArtifactBasePath(), target, candidate, outError);
             if (result == TextureTargetLoadResult::Failure) return false;
             if (result == TextureTargetLoadResult::Success)
             {
@@ -652,7 +694,8 @@ namespace Engine
         if (!metadata) return false;
         TextureArtifactVariantSet candidate;
         const TextureTargetLoadResult preferredResult = LoadTextureTarget(
-            *metadata, preferredTarget, candidate.Preferred, outError);
+            *metadata, registry.GetCookedArtifactBasePath(), preferredTarget,
+            candidate.Preferred, outError);
         if (preferredResult != TextureTargetLoadResult::Success)
         {
             if (preferredResult == TextureTargetLoadResult::Missing)
@@ -663,7 +706,8 @@ namespace Engine
         {
             TextureArtifact fallback;
             const TextureTargetLoadResult fallbackResult = LoadTextureTarget(
-                *metadata, TextureTargetProfile::RGBAFallback, fallback, outError);
+                *metadata, registry.GetCookedArtifactBasePath(),
+                TextureTargetProfile::RGBAFallback, fallback, outError);
             if (fallbackResult == TextureTargetLoadResult::Failure)
                 return false;
             if (fallbackResult == TextureTargetLoadResult::Success)

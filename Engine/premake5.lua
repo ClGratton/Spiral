@@ -94,7 +94,7 @@ project "Engine"
     filter "system:windows"
         includedirs { "%{wks.location}/" .. slang_root .. "/windows-x86_64/include" }
         libdirs { "%{wks.location}/" .. slang_root .. "/windows-x86_64/lib" }
-        links { "slang" }
+        links { "slang", "Shell32" }
 
     filter "system:linux"
         includedirs { "%{wks.location}/" .. slang_root .. "/linux-x86_64/include" }
