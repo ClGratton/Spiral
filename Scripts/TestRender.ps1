@@ -42,7 +42,7 @@ foreach ($Path in @($ResolvedCapturePath) + $SceneOriginCapturePaths) {
     }
 }
 
-$RenderResult = Invoke-BoundedProcess -FilePath $Editor -Arguments @("--capture-viewport", "--smoke-test", "--frame-lifecycle-telemetry-smoke", "--renderer-capability-smoke", "--color-pipeline-settings-smoke", "--scene-origin-raster-smoke", "--scene-raster-preparation-smoke", "--scene-viewport-render-graph-smoke", "--rhi-buffer-transition-smoke", "--rhi-completion-smoke", "--rhi-timestamp-query-smoke", "--rhi-queue-dependency-smoke", "--rhi-buffer-ownership-smoke", "--rhi-texture-ownership-smoke", "--rhi-resource-ownership-smoke", "--rhi-resource-state-smoke", "--rhi-texture-readback-smoke", "--rhi-texture-upload-smoke", "--rhi-sampled-table-smoke", "--render-graph-execution-smoke") -Label "Editor render smoke" -TimeoutSeconds $ChildTimeoutSeconds
+$RenderResult = Invoke-BoundedProcess -FilePath $Editor -Arguments @("--capture-viewport", "--smoke-test", "--frame-lifecycle-telemetry-smoke", "--renderer-capability-smoke", "--color-pipeline-settings-smoke", "--scene-origin-raster-smoke", "--scene-raster-preparation-smoke", "--scene-viewport-render-graph-smoke", "--rhi-buffer-transition-smoke", "--rhi-completion-smoke", "--rhi-timestamp-query-smoke", "--rhi-queue-dependency-smoke", "--rhi-buffer-ownership-smoke", "--rhi-texture-ownership-smoke", "--rhi-resource-ownership-smoke", "--rhi-resource-state-smoke", "--rhi-texture-readback-smoke", "--rhi-texture-upload-smoke", "--rhi-sampled-table-smoke", "--rhi-fixed-structured-buffer-smoke", "--render-graph-execution-smoke") -Label "Editor render smoke" -TimeoutSeconds $ChildTimeoutSeconds
 $Output = $RenderLog = $RenderResult.Output
 if ($RenderResult.TimedOut) {
     throw "Editor render smoke timed out after $ChildTimeoutSeconds seconds."
@@ -119,6 +119,7 @@ $RequiredMarkers = @(
     "RHIResourceStateSmokeV1 backend=D3D12, initial=pass, pending=hidden, invalid=rejected, submission=pass, final=pass, result=pass"
     "RHITextureReadbackSmokeV1 backend=D3D12, invalidState=rejected, unsupportedFormat=rejected, submit=pass, readback=pass, layout=tight, result=pass"
     "RHITextureUploadSmokeV2 backend=D3D12, mips=4, bc5Bytes=pass, bc7Bytes=pass, bc7SrgbBytes=pass, finalState=ShaderResource, result=pass"
+    "RHIFixedStructuredBufferV1 backend=D3D12 declaration=exact pixel=t0-space3-uint4 stride=16 malformedReflection=rejected malformedBuffer=rejected missing=rejected wrongUsage=rejected pipelineInvalidation=rejected-stale coexistence=sampled-table-preserved readback=33,82,154,255 expected=33,82,154,255 result=pass"
     "TextureGpuResourceCacheSmokeV1 backend=D3D12, preferred=pass, reuse=exact, replacement=pass, fallback=RGBA8, shaderResource=pass, cacheCleared=pass, retained=pass, result=pass"
     "TextureRuntimePublicationSmokeV1 backend=D3D12, catalog=pass, upload=pass, table=pass, replacement=exact-token-pass, removal=exact-token-pass, failure=error-resource, idleRelease=pass, result=pass"
     "SceneMaterialTextureShaderReadbackV1 backend=D3D12 roles=exact-pass colorSpace=sRGB-linear-pass samplers=declared-pass mip1=pass missing=semantic-defaults-pass invalid=error-resource-pass retention=exact-token-pass result=pass"

@@ -72,6 +72,26 @@ namespace Engine::RHI
         ResourceState InitialState = ResourceState::Common;
     };
 
+    constexpr u32 kFixedReadOnlyStructuredBufferStrideBytes = 16;
+
+    // This is deliberately the validation for the one currently admitted
+    // StructuredBuffer<uint4> graphics input, not a general structured-buffer
+    // description policy. Only copy flags may accompany the immutable GPU use;
+    // all other roles and CPU-visible allocations are outside this contract.
+    inline bool IsFixedReadOnlyStructuredBufferDescription(const BufferDescription& description)
+    {
+        constexpr u32 structured = static_cast<u32>(BufferUsage::Structured);
+        constexpr u32 admittedUsage = structured
+            | static_cast<u32>(BufferUsage::CopySource)
+            | static_cast<u32>(BufferUsage::CopyDest);
+        const u32 usage = static_cast<u32>(description.Usage);
+        return description.SizeBytes != 0
+            && description.SizeBytes % kFixedReadOnlyStructuredBufferStrideBytes == 0
+            && description.StrideBytes == kFixedReadOnlyStructuredBufferStrideBytes
+            && (usage & structured) != 0 && (usage & ~admittedUsage) == 0
+            && description.CpuAccess == BufferCpuAccess::None;
+    }
+
     class Buffer
     {
     public:

@@ -21,7 +21,7 @@ if (!(Test-Path $Executable)) {
     throw "Vulkan smoke executable was not found: $Executable"
 }
 
-$VulkanResult = Invoke-BoundedProcess -FilePath $Executable -Arguments @("--vulkan-render-smoke", "--frame-lifecycle-telemetry-smoke", "--renderer-capability-smoke", "--color-pipeline-settings-smoke", "--scene-raster-preparation-smoke", "--scene-viewport-render-graph-smoke", "--vulkan-rhi-core-smoke", "--vulkan-rhi-indexed-draw-smoke", "--vulkan-scene-viewport-raster-smoke", "--rhi-buffer-transition-smoke", "--rhi-completion-smoke", "--rhi-timestamp-query-smoke", "--rhi-queue-dependency-smoke", "--rhi-buffer-ownership-smoke", "--rhi-texture-ownership-smoke", "--rhi-resource-ownership-smoke", "--rhi-resource-state-smoke", "--rhi-texture-upload-smoke", "--rhi-sampled-table-smoke", "--render-graph-execution-smoke") -Label "Editor Vulkan render smoke" -TimeoutSeconds $ChildTimeoutSeconds
+$VulkanResult = Invoke-BoundedProcess -FilePath $Executable -Arguments @("--vulkan-render-smoke", "--frame-lifecycle-telemetry-smoke", "--renderer-capability-smoke", "--color-pipeline-settings-smoke", "--scene-raster-preparation-smoke", "--scene-viewport-render-graph-smoke", "--vulkan-rhi-core-smoke", "--vulkan-rhi-indexed-draw-smoke", "--vulkan-scene-viewport-raster-smoke", "--rhi-buffer-transition-smoke", "--rhi-completion-smoke", "--rhi-timestamp-query-smoke", "--rhi-queue-dependency-smoke", "--rhi-buffer-ownership-smoke", "--rhi-texture-ownership-smoke", "--rhi-resource-ownership-smoke", "--rhi-resource-state-smoke", "--rhi-texture-upload-smoke", "--rhi-sampled-table-smoke", "--rhi-fixed-structured-buffer-smoke", "--render-graph-execution-smoke") -Label "Editor Vulkan render smoke" -TimeoutSeconds $ChildTimeoutSeconds
 $Output = $VulkanLog = $VulkanResult.Output
 if ($VulkanResult.TimedOut) {
     throw "Vulkan render smoke timed out after $ChildTimeoutSeconds seconds."
@@ -112,6 +112,7 @@ $RequiredMarkers = @(
     "lifecycle=pass, cpuMapNone=pass, markers=executed-balanced",
     "VulkanRHIIndexedDrawV1 package=pass reflection=pass pipeline=pass constants=pass draw=pass submit=pass readback=pass interior=pass background=pass"
     "RHIVertexStrideV1 backend=Vulkan attributes=4 stride=44 fetch=exact result=pass"
+    "RHIFixedStructuredBufferV1 backend=Vulkan declaration=exact pixel=t0-space3-uint4 stride=16 malformedReflection=rejected malformedBuffer=rejected missing=rejected wrongUsage=rejected pipelineInvalidation=rejected-stale coexistence=sampled-table-preserved readback=33,82,154,255 expected=33,82,154,255 result=pass"
     "VulkanCompletionHistoryV1 issued="
     "VulkanSceneViewportRasterV1 snapshot=pass artifact=pass pipeline=pass raster=pass readback=pass geometry=pass background=pass resize=pass"
     "VulkanSceneOutputCaptureV1 outputGeneration="

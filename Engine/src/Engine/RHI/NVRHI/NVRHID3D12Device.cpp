@@ -659,6 +659,12 @@ namespace Engine::RHI
                     + (m_Description.SampledTextureTable ? 2u : 0u);
             }
             u32 GetFixedSamplerRootParameterIndex() const { return GetFixedTextureRootParameterIndex() + 1; }
+            u32 GetFixedStructuredBufferRootParameterIndex() const
+            {
+                return static_cast<u32>(m_Description.ConstantBufferBindings.size())
+                    + (m_Description.SampledTextureTable ? 2u : 0u)
+                    + (m_Description.FixedSampledTexture ? 2u : 0u);
+            }
 
         private:
             bool CreateRootSignature(ID3D12Device* device)
@@ -666,7 +672,8 @@ namespace Engine::RHI
                 std::vector<D3D12_ROOT_PARAMETER> rootParameters;
                 rootParameters.reserve(m_Description.ConstantBufferBindings.size()
                     + (m_Description.SampledTextureTable ? 2u : 0u)
-                    + (m_Description.FixedSampledTexture ? 2u : 0u));
+                    + (m_Description.FixedSampledTexture ? 2u : 0u)
+                    + (m_Description.FixedReadOnlyStructuredBuffer ? 1u : 0u));
                 for (const RootConstantBufferBinding& binding : m_Description.ConstantBufferBindings)
                 {
                     D3D12_ROOT_PARAMETER rootParameter {};
@@ -726,6 +733,18 @@ namespace Engine::RHI
                     sampler.DescriptorTable = { 1, &tableRanges[3] };
                     sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
                     rootParameters.push_back(sampler);
+                }
+
+                if (m_Description.FixedReadOnlyStructuredBuffer)
+                {
+                    D3D12_ROOT_PARAMETER structuredBuffer {};
+                    structuredBuffer.ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
+                    structuredBuffer.Descriptor.ShaderRegister =
+                        m_Description.FixedReadOnlyStructuredBuffer->ShaderRegister;
+                    structuredBuffer.Descriptor.RegisterSpace =
+                        m_Description.FixedReadOnlyStructuredBuffer->RegisterSpace;
+                    structuredBuffer.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+                    rootParameters.push_back(structuredBuffer);
                 }
 
                 D3D12_ROOT_SIGNATURE_DESC rootSignatureDesc {};
@@ -996,6 +1015,10 @@ namespace Engine::RHI
                 m_TableBindingActive = false;
                 m_FixedBindingActive = false;
                 m_FixedBindingUsedThisRecording = false;
+                m_StructuredBufferResource.Reset();
+                m_RetainedStructuredBufferResources.clear();
+                m_BoundStructuredBuffer = nullptr;
+                m_StructuredBufferBindingActive = false;
                 m_BoundColorRtv = {};
                 m_BoundDepthDsv = {};
                 return true;
@@ -1325,6 +1348,13 @@ namespace Engine::RHI
                 if (!m_CommandList)
                     return;
 
+                // A bind is scoped to one successfully selected pipeline. Clear
+                // it before validation so even a rejected pipeline change cannot
+                // leave an earlier root SRV eligible for a later draw.
+                m_StructuredBufferResource.Reset();
+                m_BoundStructuredBuffer = nullptr;
+                m_StructuredBufferBindingActive = false;
+
                 auto* nativePipeline = dynamic_cast<NVRHID3D12Pipeline*>(&pipeline);
                 if (!nativePipeline || !nativePipeline->GetRootSignature() || !nativePipeline->GetPipelineState())
                 {
@@ -1495,6 +1525,42 @@ namespace Engine::RHI
                 return true;
             }
 
+            bool BindGraphicsReadOnlyStructuredBuffer(Buffer& buffer) override
+            {
+                // Invalidate first so valid->invalid cannot draw through the
+                // previous root SRV. Retained resources keep earlier draws live.
+                m_StructuredBufferResource.Reset();
+                m_BoundStructuredBuffer = nullptr;
+                m_StructuredBufferBindingActive = false;
+                auto* native = dynamic_cast<NVRHID3D12Buffer*>(&buffer);
+                if (m_State != State::Recording || !m_CommandList || !m_OwnerDevice
+                    || !m_ActivePipeline || !native || !native->GetResource()
+                    || !m_ActivePipeline->GetDescription().FixedReadOnlyStructuredBuffer
+                    || !IsValidFixedReadOnlyStructuredBufferPipeline(
+                        m_ActivePipeline->GetDescription())
+                    || !m_OwnerDevice->OwnsResource(&buffer) || !m_OwnershipTracker
+                    || !m_OwnershipTracker->CanUse(&buffer)
+                    || GetBufferState(*native) != ConvertResourceState(ResourceState::ShaderResource)
+                    || !IsFixedReadOnlyStructuredBufferDescription(buffer.GetDescription()))
+                    return false;
+
+                m_CommandList->SetGraphicsRootShaderResourceView(
+                    m_ActivePipeline->GetFixedStructuredBufferRootParameterIndex(),
+                    native->GetResource()->GetGPUVirtualAddress());
+                m_StructuredBufferResource = native->GetResource();
+                if (std::none_of(m_RetainedStructuredBufferResources.begin(),
+                        m_RetainedStructuredBufferResources.end(), [&](const auto& retained)
+                        {
+                            return retained.Get() == native->GetResource();
+                        }))
+                    m_RetainedStructuredBufferResources.push_back(native->GetResource());
+                m_BoundStructuredBuffer = native;
+                m_StructuredBufferBindingActive = true;
+                if (std::find(m_UsedBuffers.begin(), m_UsedBuffers.end(), &buffer) == m_UsedBuffers.end())
+                    m_UsedBuffers.push_back(&buffer);
+                return true;
+            }
+
             void SetViewport(const Viewport& viewport) override
             {
                 if (!m_CommandList)
@@ -1631,12 +1697,15 @@ namespace Engine::RHI
 
             void DrawIndexed(u32 indexCount, u32 instanceCount, u32 startIndex, int baseVertex, u32 startInstance) override
             {
-                if (m_CommandList && m_ActivePipeline
+                if (m_State == State::Recording && m_CommandList && m_ActivePipeline
                     && m_VertexBufferBindingValid
                     && (!m_ActivePipeline->GetDescription().SampledTextureTable
                         || (m_TableBindingActive && m_SrvHeap && m_SamplerHeap))
                     && (!m_ActivePipeline->GetDescription().FixedSampledTexture
-                        || (m_FixedBindingActive && m_FixedSrvHeap && m_FixedSamplerHeap && m_BoundFixedTexture)))
+                        || (m_FixedBindingActive && m_FixedSrvHeap && m_FixedSamplerHeap && m_BoundFixedTexture))
+                    && (!m_ActivePipeline->GetDescription().FixedReadOnlyStructuredBuffer
+                        || (m_StructuredBufferBindingActive && m_StructuredBufferResource
+                            && m_BoundStructuredBuffer))
                     m_CommandList->DrawIndexedInstanced(indexCount, instanceCount, startIndex, baseVertex, startInstance);
             }
 
@@ -1802,10 +1871,14 @@ namespace Engine::RHI
             ComPtr<ID3D12DescriptorHeap> m_FixedSrvHeap;
             ComPtr<ID3D12DescriptorHeap> m_FixedSamplerHeap;
             ComPtr<ID3D12Resource> m_FixedTextureResource;
+            ComPtr<ID3D12Resource> m_StructuredBufferResource;
+            std::vector<ComPtr<ID3D12Resource>> m_RetainedStructuredBufferResources;
             std::vector<Ref<Texture>> m_BoundTableTextures;
             NVRHID3D12Texture* m_BoundFixedTexture = nullptr;
+            NVRHID3D12Buffer* m_BoundStructuredBuffer = nullptr;
             bool m_TableBindingActive = false;
             bool m_FixedBindingActive = false;
+            bool m_StructuredBufferBindingActive = false;
             bool m_FixedBindingUsedThisRecording = false;
             D3D12_CPU_DESCRIPTOR_HANDLE m_BoundColorRtv {};
             D3D12_CPU_DESCRIPTOR_HANDLE m_BoundDepthDsv {};
@@ -1912,6 +1985,9 @@ namespace Engine::RHI
 
             Scope<Buffer> CreateBuffer(const BufferDescription& description) override
             {
+                if (HasBufferUsage(description.Usage, BufferUsage::Structured)
+                    && !IsFixedReadOnlyStructuredBufferDescription(description))
+                    return nullptr;
                 Scope<NVRHID3D12Buffer> buffer = CreateScope<NVRHID3D12Buffer>(description, m_ResourceOwnerId);
                 if (!buffer->Initialize(m_Device.Get())
                     || !m_BufferOwnership.Register(*buffer, QueueType::Graphics, buffer->GetTrackedState()))
@@ -2002,6 +2078,7 @@ namespace Engine::RHI
                 if (!IsValidVertexInputLayout(description)) return nullptr;
                 if (description.SampledTextureTable && !IsValidSampledTextureTablePipeline(description)) return nullptr;
                 if (description.FixedSampledTexture && !IsValidFixedSampledTexturePipeline(description)) return nullptr;
+                if (!IsValidFixedReadOnlyStructuredBufferPipelineContract(description)) return nullptr;
                 Scope<NVRHID3D12Pipeline> pipeline = CreateScope<NVRHID3D12Pipeline>(description);
                 if (!pipeline->Initialize(m_Device.Get()))
                     return nullptr;

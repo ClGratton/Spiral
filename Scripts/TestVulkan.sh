@@ -97,6 +97,7 @@ REQUIRED_MARKERS=(
     "lifecycle=pass, cpuMapNone=pass, markers=executed-balanced"
     "VulkanRHIIndexedDrawV1 package=pass reflection=pass pipeline=pass constants=pass draw=pass submit=pass readback=pass interior=pass background=pass"
     "RHIVertexStrideV1 backend=Vulkan attributes=4 stride=44 fetch=exact result=pass"
+    "RHIFixedStructuredBufferV1 backend=Vulkan declaration=exact pixel=t0-space3-uint4 stride=16 malformedReflection=rejected malformedBuffer=rejected missing=rejected wrongUsage=rejected pipelineInvalidation=rejected-stale coexistence=sampled-table-preserved readback=33,82,154,255 expected=33,82,154,255 result=pass"
     "VulkanSceneOutputCaptureV1 outputGeneration="
     "VulkanSceneOutputHandoffV1 producer=pass"
     "ScenePhotometricLightPublicationV1 backend=Vulkan directional=1 local=1 directionalUnit=lux localUnit=lm snapshot=typed grid=typed effectiveExposureEV100=0 exposureScale=1 shaderConsumption=no result=pass"
@@ -163,7 +164,7 @@ for ((ATTEMPT = 1; ATTEMPT <= ITERATIONS; ++ATTEMPT)); do
         my $status = $?;
         exit(128 + ($status & 127)) if $status & 127;
         exit($status >> 8);
-    ' "$CHILD_TIMEOUT_SECONDS" "$EDITOR" --vulkan-render-smoke --renderer-capability-smoke --color-pipeline-settings-smoke --scene-viewport-render-graph-smoke --vulkan-rhi-core-smoke --vulkan-rhi-indexed-draw-smoke --vulkan-scene-viewport-raster-smoke --rhi-buffer-transition-smoke --rhi-completion-smoke --rhi-queue-dependency-smoke --rhi-buffer-ownership-smoke --rhi-texture-ownership-smoke --rhi-resource-ownership-smoke --rhi-resource-state-smoke --rhi-texture-upload-smoke --rhi-sampled-table-smoke --render-graph-execution-smoke) 2>&1 | tee "$LOG_FILE"
+    ' "$CHILD_TIMEOUT_SECONDS" "$EDITOR" --vulkan-render-smoke --renderer-capability-smoke --color-pipeline-settings-smoke --scene-viewport-render-graph-smoke --vulkan-rhi-core-smoke --vulkan-rhi-indexed-draw-smoke --vulkan-scene-viewport-raster-smoke --rhi-buffer-transition-smoke --rhi-completion-smoke --rhi-queue-dependency-smoke --rhi-buffer-ownership-smoke --rhi-texture-ownership-smoke --rhi-resource-ownership-smoke --rhi-resource-state-smoke --rhi-texture-upload-smoke --rhi-sampled-table-smoke --rhi-fixed-structured-buffer-smoke --render-graph-execution-smoke) 2>&1 | tee "$LOG_FILE"
     STATUS=${PIPESTATUS[0]}
     set -e
     if [[ $STATUS -ne 0 ]]; then

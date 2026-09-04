@@ -8619,7 +8619,7 @@ float4 main(VertexInput input) : SV_Position
     public:
         explicit SampledTextureTableTestCommandList(Engine::RHI::Device& device) : m_Device(device) {}
         Engine::RHI::QueueType GetQueueType() const override { return Engine::RHI::QueueType::Graphics; }
-        bool Begin() override { if (m_Recording) return false; m_Recording = true; m_Closed = false; m_Pipeline = nullptr; m_Table = nullptr; m_VertexBound = false; return true; }
+        bool Begin() override { if (m_Recording) return false; m_Recording = true; m_Closed = false; m_Pipeline = nullptr; m_Table = nullptr; m_StructuredBuffer = nullptr; m_RetainedStructuredBuffers.clear(); m_VertexBound = false; return true; }
         bool End() override { if (!m_Recording) return false; m_Recording = false; m_Closed = true; return true; }
         void BeginDebugMarker(std::string_view) override {}
         void EndDebugMarker() override {}
@@ -8631,6 +8631,7 @@ float4 main(VertexInput input) : SV_Position
         {
             m_Pipeline = m_Recording && Engine::RHI::IsValidVertexInputLayout(pipeline.GetDescription()) ? &pipeline : nullptr;
             m_Table = nullptr;
+            m_StructuredBuffer = nullptr;
             m_VertexBound = m_Pipeline && m_Pipeline->GetDescription().VertexInputs.empty();
         }
         void SetGraphicsConstantBuffer(Engine::u32, Engine::RHI::Buffer&) override {}
@@ -8644,6 +8645,27 @@ float4 main(VertexInput input) : SV_Position
                 || m_Pipeline->GetDescription().SampledTextureTable->Capacity != table.GetCapacity()
                 || !table.IsOwnedBy(m_Device)) return false;
             m_Table = &table;
+            return true;
+        }
+        bool BindGraphicsReadOnlyStructuredBuffer(Engine::RHI::Buffer& buffer) override
+        {
+            m_StructuredBuffer = nullptr;
+            Engine::RHI::ResourceState state = Engine::RHI::ResourceState::Unknown;
+            if (!m_Recording || !m_Pipeline
+                || !m_Pipeline->GetDescription().FixedReadOnlyStructuredBuffer
+                || !Engine::RHI::IsValidFixedReadOnlyStructuredBufferPipeline(
+                    m_Pipeline->GetDescription())
+                || !m_Device.OwnsResource(&buffer)
+                || !m_Device.QueryResourceState(&buffer, state)
+                || state != Engine::RHI::ResourceState::ShaderResource
+                || !Engine::RHI::IsFixedReadOnlyStructuredBufferDescription(
+                    buffer.GetDescription()))
+                return false;
+            m_StructuredBuffer = &buffer;
+            if (std::find(m_RetainedStructuredBuffers.begin(),
+                    m_RetainedStructuredBuffers.end(), &buffer)
+                == m_RetainedStructuredBuffers.end())
+                m_RetainedStructuredBuffers.push_back(&buffer);
             return true;
         }
         void SetViewport(const Engine::RHI::Viewport&) override {}
@@ -8660,13 +8682,16 @@ float4 main(VertexInput input) : SV_Position
         void DrawIndexed(Engine::u32, Engine::u32, Engine::u32, int, Engine::u32) override
         {
             if (m_Recording && m_Pipeline && m_VertexBound
-                && (!m_Pipeline->GetDescription().SampledTextureTable || m_Table)) ++DrawCount;
+                && (!m_Pipeline->GetDescription().SampledTextureTable || m_Table)
+                && (!m_Pipeline->GetDescription().FixedReadOnlyStructuredBuffer
+                    || m_StructuredBuffer)) ++DrawCount;
         }
         bool ResetQueryPool(Engine::RHI::QueryPool&, Engine::u32, Engine::u32) override { return false; }
         bool WriteTimestamp(Engine::RHI::QueryPool&, Engine::u32) override { return false; }
         bool ResolveQueryPool(Engine::RHI::QueryPool&, Engine::u32, Engine::u32) override { return false; }
         Engine::u32 DrawCount = 0;
         Engine::u32 VertexBindingCount = 0;
+        size_t RetainedStructuredBufferCount() const { return m_RetainedStructuredBuffers.size(); }
         bool Ready() const { return m_Closed; }
     private:
         Engine::RHI::Device& m_Device;
@@ -8675,6 +8700,8 @@ float4 main(VertexInput input) : SV_Position
         bool m_VertexBound = false;
         Engine::RHI::Pipeline* m_Pipeline = nullptr;
         Engine::RHI::TextureBindingTable* m_Table = nullptr;
+        Engine::RHI::Buffer* m_StructuredBuffer = nullptr;
+        std::vector<Engine::RHI::Buffer*> m_RetainedStructuredBuffers;
     };
 
     class SampledTextureTableTestDevice final : public OwnershipTestDevice
@@ -8684,7 +8711,10 @@ float4 main(VertexInput input) : SV_Position
         Engine::Scope<Engine::RHI::Pipeline> CreatePipeline(const Engine::RHI::PipelineDescription& description) override
         {
             if (!Engine::RHI::IsValidVertexInputLayout(description)
-                || !Engine::RHI::IsValidSampledTextureTablePipeline(description)) return nullptr;
+                || (description.SampledTextureTable
+                    && !Engine::RHI::IsValidSampledTextureTablePipeline(description))
+                || !Engine::RHI::IsValidFixedReadOnlyStructuredBufferPipelineContract(description))
+                return nullptr;
             ++NativePipelineCreationCount;
             return Engine::CreateScope<SampledTextureTableTestPipeline>(description);
         }
@@ -9152,6 +9182,226 @@ float4 main(VertexInput input) : SV_Position
                 "pipeline creation rejects invalid capacities and missing or mismatched reflected texture/sampler arrays")
             && Expect(bindingFlow,
                 "recording rejects absent-pipeline, foreign-table, and capacity-mismatched binds before exact declared-table consumption");
+    }
+
+    bool TestFixedReadOnlyStructuredBufferBindingContract()
+    {
+        using namespace Engine::RHI;
+
+        ShaderDescription vertexDescription;
+        vertexDescription.Stage = ShaderStage::Vertex;
+        ShaderDescription pixelDescription;
+        pixelDescription.Stage = ShaderStage::Pixel;
+        pixelDescription.Reflection = {
+            { "FixedWords", 't', 0, 3, ShaderStage::Pixel, "StructuredBuffer",
+                "uint32x4", 1, 0, 1, 4 }
+        };
+        SampledTextureTableTestShader vertex(vertexDescription), pixel(pixelDescription);
+
+        PipelineDescription declaration;
+        declaration.VertexShader = &vertex;
+        declaration.PixelShader = &pixel;
+        declaration.ConstantBufferBindings = {{ 0, 0, ShaderStage::AllGraphics }};
+        declaration.FixedReadOnlyStructuredBuffer = FixedReadOnlyStructuredBufferBinding {};
+
+        const auto withReflectionMutation = [&](const std::function<void(ShaderReflectionBinding&)>& mutate)
+        {
+            ShaderDescription changedDescription = pixelDescription;
+            mutate(changedDescription.Reflection[0]);
+            return changedDescription;
+        };
+        ShaderDescription wrongRegisterDescription = withReflectionMutation(
+            [](auto& binding) { binding.Register = 1; });
+        ShaderDescription wrongSpaceDescription = withReflectionMutation(
+            [](auto& binding) { binding.Space = 2; });
+        ShaderDescription wrongTypeDescription = withReflectionMutation(
+            [](auto& binding) { binding.TypeShape = "uint32x3"; binding.Columns = 3; });
+        ShaderDescription wrongCountDescription = withReflectionMutation(
+            [](auto& binding) { binding.Count = 2; });
+        ShaderDescription wrongKindDescription = withReflectionMutation(
+            [](auto& binding) { binding.Kind = 'u'; binding.ResourceKind = "RWStructuredBuffer"; });
+        ShaderDescription wrongStageDescription = withReflectionMutation(
+            [](auto& binding) { binding.Stages = ShaderStage::Vertex; });
+        ShaderDescription duplicateDescription = pixelDescription;
+        duplicateDescription.Reflection.push_back(pixelDescription.Reflection[0]);
+        ShaderDescription missingDescription = pixelDescription;
+        missingDescription.Reflection.clear();
+        SampledTextureTableTestShader wrongRegister(wrongRegisterDescription), wrongSpace(wrongSpaceDescription),
+            wrongType(wrongTypeDescription), wrongCount(wrongCountDescription), wrongKind(wrongKindDescription),
+            wrongStage(wrongStageDescription), duplicate(duplicateDescription), missing(missingDescription);
+
+        const auto withPixel = [&](SampledTextureTableTestShader& shader)
+        {
+            PipelineDescription changed = declaration;
+            changed.PixelShader = &shader;
+            return changed;
+        };
+        PipelineDescription wrongBindingRegister = declaration;
+        wrongBindingRegister.FixedReadOnlyStructuredBuffer->ShaderRegister = 1;
+        PipelineDescription wrongBindingSpace = declaration;
+        wrongBindingSpace.FixedReadOnlyStructuredBuffer->RegisterSpace = 2;
+        PipelineDescription wrongBindingStride = declaration;
+        wrongBindingStride.FixedReadOnlyStructuredBuffer->ElementStrideBytes = 8;
+        PipelineDescription undeclared = declaration;
+        undeclared.FixedReadOnlyStructuredBuffer.reset();
+        PipelineDescription noStructured = undeclared;
+        noStructured.PixelShader = &missing;
+
+        SampledTextureTableTestDevice device(301), foreignDevice(302);
+        Engine::Scope<Pipeline> pipeline = device.CreatePipeline(declaration);
+        Engine::Scope<Pipeline> ordinaryPipeline = device.CreatePipeline(noStructured);
+        const bool malformedRejected = !device.CreatePipeline(wrongBindingRegister)
+            && !device.CreatePipeline(wrongBindingSpace) && !device.CreatePipeline(wrongBindingStride)
+            && !device.CreatePipeline(withPixel(wrongRegister))
+            && !device.CreatePipeline(withPixel(wrongSpace))
+            && !device.CreatePipeline(withPixel(wrongType))
+            && !device.CreatePipeline(withPixel(wrongCount))
+            && !device.CreatePipeline(withPixel(wrongKind))
+            && !device.CreatePipeline(withPixel(wrongStage))
+            && !device.CreatePipeline(withPixel(duplicate))
+            && !device.CreatePipeline(withPixel(missing))
+            && !device.CreatePipeline(undeclared);
+
+        BufferDescription validDescription;
+        validDescription.SizeBytes = 32;
+        validDescription.StrideBytes = 16;
+        validDescription.Usage = static_cast<BufferUsage>(
+            static_cast<Engine::u32>(BufferUsage::Structured)
+            | static_cast<Engine::u32>(BufferUsage::CopyDest));
+        BufferDescription wrongUsageDescription = validDescription;
+        wrongUsageDescription.Usage = BufferUsage::CopyDest;
+        const auto withExtraUsage = [](BufferDescription description, BufferUsage extra)
+        {
+            description.Usage = static_cast<BufferUsage>(
+                static_cast<Engine::u32>(description.Usage)
+                | static_cast<Engine::u32>(extra));
+            return description;
+        };
+        BufferDescription copySourceDescription = validDescription;
+        copySourceDescription.Usage = static_cast<BufferUsage>(
+            static_cast<Engine::u32>(BufferUsage::Structured)
+            | static_cast<Engine::u32>(BufferUsage::CopySource));
+        BufferDescription bothCopyDescription = withExtraUsage(
+            copySourceDescription, BufferUsage::CopyDest);
+        const BufferDescription vertexUsageDescription = withExtraUsage(
+            validDescription, BufferUsage::Vertex);
+        const BufferDescription indexDescription = withExtraUsage(validDescription, BufferUsage::Index);
+        const BufferDescription constantDescription = withExtraUsage(validDescription, BufferUsage::Constant);
+        const BufferDescription indirectDescription = withExtraUsage(validDescription, BufferUsage::IndirectArgs);
+        const BufferDescription accelerationDescription = withExtraUsage(
+            validDescription, BufferUsage::AccelerationStructure);
+        BufferDescription unknownUsageDescription = validDescription;
+        unknownUsageDescription.Usage = static_cast<BufferUsage>(
+            static_cast<Engine::u32>(validDescription.Usage) | (1u << 31u));
+        BufferDescription wrongStrideDescription = validDescription;
+        wrongStrideDescription.StrideBytes = 8;
+        BufferDescription wrongShapeDescription = validDescription;
+        wrongShapeDescription.SizeBytes = 20;
+        BufferDescription writableDescription = validDescription;
+        writableDescription.Usage = static_cast<BufferUsage>(
+            static_cast<Engine::u32>(validDescription.Usage)
+            | static_cast<Engine::u32>(BufferUsage::Storage));
+        BufferDescription cpuVisibleDescription = validDescription;
+        cpuVisibleDescription.CpuAccess = BufferCpuAccess::Write;
+        BufferDescription cpuReadableDescription = validDescription;
+        cpuReadableDescription.CpuAccess = BufferCpuAccess::Read;
+        OwnershipTestBuffer valid(301, ResourceState::ShaderResource, validDescription);
+        OwnershipTestBuffer validB(301, ResourceState::ShaderResource, validDescription);
+        OwnershipTestBuffer foreign(302, ResourceState::ShaderResource, validDescription);
+        OwnershipTestBuffer wrongUsage(301, ResourceState::ShaderResource, wrongUsageDescription);
+        OwnershipTestBuffer vertexUsage(301, ResourceState::ShaderResource, vertexUsageDescription);
+        OwnershipTestBuffer indexUsage(301, ResourceState::ShaderResource, indexDescription);
+        OwnershipTestBuffer constantUsage(301, ResourceState::ShaderResource, constantDescription);
+        OwnershipTestBuffer indirectUsage(301, ResourceState::ShaderResource, indirectDescription);
+        OwnershipTestBuffer accelerationUsage(301, ResourceState::ShaderResource, accelerationDescription);
+        OwnershipTestBuffer unknownUsage(301, ResourceState::ShaderResource, unknownUsageDescription);
+        OwnershipTestBuffer wrongStride(301, ResourceState::ShaderResource, wrongStrideDescription);
+        OwnershipTestBuffer wrongShape(301, ResourceState::ShaderResource, wrongShapeDescription);
+        OwnershipTestBuffer writable(301, ResourceState::ShaderResource, writableDescription);
+        OwnershipTestBuffer cpuVisible(301, ResourceState::ShaderResource, cpuVisibleDescription);
+        OwnershipTestBuffer wrongState(301, ResourceState::CopyDest, validDescription);
+
+        Engine::Scope<CommandList> list = device.CreateCommandList(
+            QueueType::Graphics, "fixed-structured-buffer-contract");
+        auto* recording = dynamic_cast<SampledTextureTableTestCommandList*>(list.get());
+        bool lifecycle = false;
+        if (list && recording && pipeline && ordinaryPipeline && list->Begin())
+        {
+            const bool beforePipelineRejected = !list->BindGraphicsReadOnlyStructuredBuffer(valid);
+            list->SetGraphicsPipeline(*pipeline);
+            list->DrawIndexed(3, 1, 0, 0, 0);
+            const bool missingRejected = recording->DrawCount == 0;
+            const bool invalidBuffersRejected = !list->BindGraphicsReadOnlyStructuredBuffer(foreign)
+                && !list->BindGraphicsReadOnlyStructuredBuffer(wrongUsage)
+                && !list->BindGraphicsReadOnlyStructuredBuffer(vertexUsage)
+                && !list->BindGraphicsReadOnlyStructuredBuffer(indexUsage)
+                && !list->BindGraphicsReadOnlyStructuredBuffer(constantUsage)
+                && !list->BindGraphicsReadOnlyStructuredBuffer(indirectUsage)
+                && !list->BindGraphicsReadOnlyStructuredBuffer(accelerationUsage)
+                && !list->BindGraphicsReadOnlyStructuredBuffer(unknownUsage)
+                && !list->BindGraphicsReadOnlyStructuredBuffer(wrongStride)
+                && !list->BindGraphicsReadOnlyStructuredBuffer(wrongShape)
+                && !list->BindGraphicsReadOnlyStructuredBuffer(writable)
+                && !list->BindGraphicsReadOnlyStructuredBuffer(cpuVisible)
+                && !list->BindGraphicsReadOnlyStructuredBuffer(wrongState);
+            const bool validBound = list->BindGraphicsReadOnlyStructuredBuffer(valid);
+            list->DrawIndexed(3, 1, 0, 0, 0);
+            const bool declaringDraw = recording->DrawCount == 1;
+            const bool invalidAfterValid = !list->BindGraphicsReadOnlyStructuredBuffer(wrongUsage);
+            list->DrawIndexed(3, 1, 0, 0, 0);
+            const bool invalidClearedActive = recording->DrawCount == 1
+                && recording->RetainedStructuredBufferCount() == 1;
+            const bool reboundA = list->BindGraphicsReadOnlyStructuredBuffer(valid);
+            list->DrawIndexed(3, 1, 0, 0, 0);
+            const bool reboundADraw = recording->DrawCount == 2;
+            const bool validBBound = list->BindGraphicsReadOnlyStructuredBuffer(validB);
+            list->DrawIndexed(3, 1, 0, 0, 0);
+            const bool reboundBDraw = recording->DrawCount == 3
+                && recording->RetainedStructuredBufferCount() == 2;
+            list->SetGraphicsPipeline(*ordinaryPipeline);
+            const bool ordinaryRejectsBind = !list->BindGraphicsReadOnlyStructuredBuffer(valid);
+            list->DrawIndexed(3, 1, 0, 0, 0);
+            const bool ordinaryDraw = recording->DrawCount == 4;
+            list->SetGraphicsPipeline(*pipeline);
+            list->DrawIndexed(3, 1, 0, 0, 0);
+            const bool staleRejected = recording->DrawCount == 4;
+            const bool finalRebound = list->BindGraphicsReadOnlyStructuredBuffer(valid);
+            list->DrawIndexed(3, 1, 0, 0, 0);
+            const bool ended = list->End();
+            const bool afterEndBindRejected = !list->BindGraphicsReadOnlyStructuredBuffer(valid);
+            list->DrawIndexed(3, 1, 0, 0, 0);
+            const bool afterEndDrawRejected = recording->DrawCount == 5;
+            const bool nextRecordingClearsRetention = list->Begin()
+                && recording->RetainedStructuredBufferCount() == 0 && list->End();
+            lifecycle = beforePipelineRejected && missingRejected && invalidBuffersRejected
+                && validBound && declaringDraw && invalidAfterValid && invalidClearedActive
+                && reboundA && reboundADraw && validBBound && reboundBDraw
+                && ordinaryRejectsBind && ordinaryDraw && staleRejected && finalRebound
+                && ended && afterEndBindRejected && afterEndDrawRejected
+                && nextRecordingClearsRetention;
+        }
+
+        const bool bufferDescriptions = IsFixedReadOnlyStructuredBufferDescription(validDescription)
+            && IsFixedReadOnlyStructuredBufferDescription(copySourceDescription)
+            && IsFixedReadOnlyStructuredBufferDescription(bothCopyDescription)
+            && !IsFixedReadOnlyStructuredBufferDescription(wrongUsageDescription)
+            && !IsFixedReadOnlyStructuredBufferDescription(vertexUsageDescription)
+            && !IsFixedReadOnlyStructuredBufferDescription(indexDescription)
+            && !IsFixedReadOnlyStructuredBufferDescription(constantDescription)
+            && !IsFixedReadOnlyStructuredBufferDescription(indirectDescription)
+            && !IsFixedReadOnlyStructuredBufferDescription(accelerationDescription)
+            && !IsFixedReadOnlyStructuredBufferDescription(unknownUsageDescription)
+            && !IsFixedReadOnlyStructuredBufferDescription(wrongStrideDescription)
+            && !IsFixedReadOnlyStructuredBufferDescription(wrongShapeDescription)
+            && !IsFixedReadOnlyStructuredBufferDescription(writableDescription)
+            && !IsFixedReadOnlyStructuredBufferDescription(cpuVisibleDescription)
+            && !IsFixedReadOnlyStructuredBufferDescription(cpuReadableDescription);
+        return Expect(pipeline && ordinaryPipeline && malformedRejected,
+                   "fixed structured-buffer pipelines require one exact pixel t0 space3 StructuredBuffer<uint4> declaration")
+            && Expect(bufferDescriptions,
+                "fixed structured buffers require nonempty stride-16 immutable exact-shape descriptions")
+            && Expect(!foreignDevice.OwnsResource(&valid) && lifecycle,
+                "binding rejects foreign malformed missing and stale buffers while ordinary and rebound draws remain valid");
     }
 
     bool TestRhiSingleSlotVertexStrideContract()
@@ -9749,6 +9999,7 @@ int main(int argc, char** argv)
         FAST_TEST("RHI read-only texture upload validates the full-subresource contract", TestReadOnlyTextureUploadContract),
         FAST_TEST("RHI single-slot vertex stride validates layout and binding transactionally", TestRhiSingleSlotVertexStrideContract),
         FAST_TEST("RHI sampled texture-table binding validates pipeline space offsets and exact ownership", TestSampledTextureTableBindingContract),
+        FAST_TEST("RHI fixed read-only structured-buffer binding validates declaration shape ownership and lifecycle", TestFixedReadOnlyStructuredBufferBindingContract),
         FAST_TEST("RHI buffer ownership lifecycle publishes only accepted exact-token pairs", TestRhiBufferOwnershipLifecycleContract),
         FAST_TEST("RHI buffer ownership recovery and adapter seams preserve fallback semantics", TestRhiBufferOwnershipRecoveryAndAdapterSeams),
         FAST_TEST("RHI texture ownership tracker preserves accepted-token pending publication", TestRhiTextureOwnershipLifecycleContract),

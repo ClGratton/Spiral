@@ -143,6 +143,9 @@ namespace Engine
                 && (!RunRHISampledTextureTableSmoke(*m_VulkanContext->GetRHIDevice(), "Vulkan")
                     || !RunRHIMaterialTextureShaderSmoke(*m_VulkanContext->GetRHIDevice(), "Vulkan")))
             { Log::Error("Vulkan RHI sampled-table smoke failed"); m_VulkanContext->Shutdown(); m_VulkanContext.reset(); return false; }
+            if (args.HasFlag("--rhi-fixed-structured-buffer-smoke")
+                && !RunRHIFixedStructuredBufferSmoke(*m_VulkanContext->GetRHIDevice(), "Vulkan"))
+            { Log::Error("Vulkan RHI fixed structured-buffer smoke failed"); m_VulkanContext->Shutdown(); m_VulkanContext.reset(); return false; }
             if (args.HasFlag("--render-graph-execution-smoke") && !RunRenderGraphExecutionSmoke(*m_VulkanContext->GetRHIDevice(), "Vulkan"))
             {
                 Log::Error("Vulkan render-graph execution smoke failed"); m_VulkanContext->Shutdown(); m_VulkanContext.reset(); return false;
@@ -241,6 +244,9 @@ namespace Engine
                 && (!RunRHISampledTextureTableSmoke(*m_Device, "D3D12")
                     || !RunRHIMaterialTextureShaderSmoke(*m_Device, "D3D12")))
             { Log::Error("D3D12 RHI sampled-table smoke failed"); m_Device.reset(); return false; }
+            if (args.HasFlag("--rhi-fixed-structured-buffer-smoke")
+                && !RunRHIFixedStructuredBufferSmoke(*m_Device, "D3D12"))
+            { Log::Error("D3D12 RHI fixed structured-buffer smoke failed"); m_Device.reset(); return false; }
             if (args.HasFlag("--render-graph-execution-smoke") && !RunRenderGraphExecutionSmoke(*m_Device, "D3D12"))
             {
                 Log::Error("D3D12 render-graph execution smoke failed"); return false;
@@ -1613,6 +1619,364 @@ float4 PSMain(PixelInput input) : SV_Target { return ReadOnlyTextures[1].SampleL
         const bool sampled = read && readback.Data.size() >= center + 4 && std::abs(static_cast<int>(readback.Data[center]) - 51) <= 2 && std::abs(static_cast<int>(readback.Data[center + 1]) - 102) <= 2 && std::abs(static_cast<int>(readback.Data[center + 2]) - 204) <= 2 && readback.Data[center + 3] == 255;
         Log::Info("RHIReadOnlySampledTableSmokeV1 backend=", backendName, ", package=", packages ? "pass" : "fail", ", pipeline=", pipeline ? "pass" : "fail", ", capacity=", tableCapacity, ", bind=", bound ? "pass" : "fail", ", submit=", submitted ? "pass" : "fail", ", readback=", read ? "pass" : "fail", ", sampledPixel=", sampled ? "pass" : "fail", ", actual=", static_cast<u32>(actual[0]), ",", static_cast<u32>(actual[1]), ",", static_cast<u32>(actual[2]), ",", static_cast<u32>(actual[3]), ", result=", sampled ? "pass" : "fail", ", validation=", validationError);
         return sampled;
+    }
+
+    bool NVRHIRenderBackend::RunRHIFixedStructuredBufferSmoke(
+        RHI::Device& device, std::string_view backendName)
+    {
+        constexpr u32 width = 32, height = 24, tableCapacity = 2;
+        const bool vulkan = device.GetCapabilities().ActiveBackend == RHI::Backend::NVRHIVulkan;
+        struct Vertex { float Position[3]; };
+        struct Constants { float ViewProjection[16]; };
+        const std::array<Vertex, 3> vertices {{
+            {{ -0.7f, -0.6f, 0.5f }}, {{ 0.7f, -0.6f, 0.5f }}, {{ 0.0f, 0.7f, 0.5f }}
+        }};
+        const std::array<u16, 3> indices {{ 0, 1, 2 }};
+        const Constants constants {{
+            1.0f, 0.0f, 0.0f, 0.0f,
+            0.0f, 1.0f, 0.0f, 0.0f,
+            0.0f, 0.0f, 1.0f, 0.0f,
+            0.0f, 0.0f, 0.0f, 1.0f
+        }};
+        const std::array<std::array<u32, 4>, 2> words {{
+            {{ 0u, 0u, 0u, 0u }}, {{ 18u, 52u, 86u, 120u }}
+        }};
+        const std::array<u8, 4> expectedPixel {{ 33, 82, 154, 255 }};
+        const std::string vertexSource = R"(
+cbuffer ViewportConstants : register(b0, space0) { row_major float4x4 ViewProjection; };
+struct VertexInput { float3 Position : POSITION; };
+struct PixelInput { float4 Position : SV_Position; };
+PixelInput VSMain(VertexInput input) { PixelInput output; output.Position = mul(float4(input.Position, 1.0), ViewProjection); return output; }
+)";
+        const std::string pixelSource = R"(
+Texture2D ReadOnlyTextures[2] : register(t0, space1);
+SamplerState ReadOnlySamplers[2] : register(s0, space1);
+StructuredBuffer<uint4> FixedWords : register(t0, space3);
+struct PixelInput { float4 Position : SV_Position; };
+float4 PSMain(PixelInput input) : SV_Target
+{
+    float3 sampled = ReadOnlyTextures[1].SampleLevel(ReadOnlySamplers[1], float2(0.5, 0.5), 0.0).rgb;
+    uint3 sampledBytes = uint3(round(saturate(sampled) * 255.0));
+    uint3 resultBytes = sampledBytes ^ FixedWords[1].xyz;
+    return float4(float3(resultBytes) / 255.0, 1.0);
+}
+)";
+        auto makeRequest = [](const std::string& source, const char* sourceName,
+                               RHI::ShaderStage stage, const char* entry)
+        {
+            PortableShaderRequest request;
+            request.SourceName = sourceName;
+            request.Source = source;
+            request.EntryPoint = entry;
+            request.Stage = stage;
+#ifdef _WIN32
+            request.Targets = { PortableShaderTarget::Dxil, PortableShaderTarget::Spirv };
+            request.DownstreamCompilerPackageHash = GE_DXC_PACKAGE_SHA256;
+#else
+            request.Targets = { PortableShaderTarget::Spirv };
+#endif
+            request.CompilerIdentity = "Slang";
+            request.CompilerVersion = "2026.13.1";
+            request.CompilerPackageHash = GE_SLANG_PACKAGE_SHA256;
+            return request;
+        };
+        PortableShaderRequest vertexRequest = makeRequest(vertexSource,
+            "RHIFixedStructuredBufferV1.vs.slang", RHI::ShaderStage::Vertex, "VSMain");
+        vertexRequest.ExpectedLayout = {
+            { "ViewportConstants", 'b', 0, 0, RHI::ShaderStage::Vertex,
+                "ConstantBuffer", "struct{ViewProjection:float32x4x4:row-major@0}", 1, 64, 0, 0 }
+        };
+        vertexRequest.ExpectedVertexInputs = {
+            { "Position", "POSITION", 0, 0, "float32x3", 12, 1, 3 }
+        };
+        PortableShaderRequest pixelRequest = makeRequest(pixelSource,
+            "RHIFixedStructuredBufferV1.ps.slang", RHI::ShaderStage::Pixel, "PSMain");
+        pixelRequest.ExpectedLayout = {
+            { "ReadOnlySamplers", 's', 0, 1, RHI::ShaderStage::Pixel,
+                "SamplerState", "sampler", tableCapacity, 0, 0, 0 },
+            { "ReadOnlyTextures", 't', 0, 1, RHI::ShaderStage::Pixel,
+                "Texture2D", "float32x4", tableCapacity, 0, 1, 4 },
+            { "FixedWords", 't', 0, 3, RHI::ShaderStage::Pixel,
+                "StructuredBuffer", "uint32x4", 1, 0, 1, 4 }
+        };
+
+        SlangShaderCompiler compiler(std::filesystem::path("output") / "cache" / "shaders");
+        const PortableShaderPackage vertexPackage = compiler.Compile(vertexRequest);
+        const PortableShaderPackage pixelPackage = compiler.Compile(pixelRequest);
+        for (const PortableShaderDiagnostic& diagnostic : vertexPackage.Diagnostics)
+            Log::Error("RHIFixedStructuredBufferV1 vertex diagnostic: ",
+                diagnostic.Target, ": ", diagnostic.Message);
+        for (const PortableShaderDiagnostic& diagnostic : pixelPackage.Diagnostics)
+            Log::Error("RHIFixedStructuredBufferV1 pixel diagnostic: ",
+                diagnostic.Target, ": ", diagnostic.Message);
+        std::string validationError;
+        const bool packages = PortableShaderContract::ValidatePackage(
+                vertexRequest, vertexPackage, validationError)
+            && PortableShaderContract::ValidatePackage(
+                pixelRequest, pixelPackage, validationError);
+
+        RHI::ShaderDescription vs;
+        vs.DebugName = "RHIFixedStructuredBufferV1 VS";
+        vs.SourceName = vertexRequest.SourceName;
+        vs.EntryPoint = vulkan ? "main" : "VSMain";
+        vs.Stage = RHI::ShaderStage::Vertex;
+        vs.BinaryFormat = vulkan ? RHI::ShaderBinaryFormat::Spirv : RHI::ShaderBinaryFormat::Dxil;
+        vs.Binary = vulkan ? vertexPackage.Spirv : vertexPackage.Dxil;
+        vs.Reflection = vertexPackage.Reflection;
+        RHI::ShaderDescription ps;
+        ps.DebugName = "RHIFixedStructuredBufferV1 PS";
+        ps.SourceName = pixelRequest.SourceName;
+        ps.EntryPoint = vulkan ? "main" : "PSMain";
+        ps.Stage = RHI::ShaderStage::Pixel;
+        ps.BinaryFormat = vulkan ? RHI::ShaderBinaryFormat::Spirv : RHI::ShaderBinaryFormat::Dxil;
+        ps.Binary = vulkan ? pixelPackage.Spirv : pixelPackage.Dxil;
+        ps.Reflection = pixelPackage.Reflection;
+        Scope<RHI::Shader> vertexShader = packages ? device.CreateShader(vs) : nullptr;
+        Scope<RHI::Shader> pixelShader = packages ? device.CreateShader(ps) : nullptr;
+
+        RHI::PipelineDescription pipelineDescription;
+        pipelineDescription.DebugName = "RHIFixedStructuredBufferV1 Pipeline";
+        pipelineDescription.VertexShader = vertexShader.get();
+        pipelineDescription.PixelShader = pixelShader.get();
+        pipelineDescription.VertexInputs = {
+            { "POSITION", 0, RHI::Format::R32G32B32Float, 0, offsetof(Vertex, Position) }
+        };
+        pipelineDescription.VertexStrideBytes = sizeof(Vertex);
+        pipelineDescription.ConstantBufferBindings = {
+            { 0, 0, RHI::ShaderStage::AllGraphics }
+        };
+        pipelineDescription.SampledTextureTable = RHI::SampledTextureTableBinding { tableCapacity };
+        pipelineDescription.FixedReadOnlyStructuredBuffer =
+            RHI::FixedReadOnlyStructuredBufferBinding {};
+        pipelineDescription.ColorFormat = RHI::Format::R8G8B8A8Unorm;
+        pipelineDescription.DepthFormat = RHI::Format::Unknown;
+        pipelineDescription.DepthTestEnable = false;
+        pipelineDescription.DepthWriteEnable = false;
+        pipelineDescription.RasterCullMode = RHI::CullMode::None;
+        Scope<RHI::Pipeline> pipeline = vertexShader && pixelShader
+            ? device.CreatePipeline(pipelineDescription) : nullptr;
+
+        RHI::ShaderDescription malformedPs = ps;
+        const auto malformedBinding = std::find_if(malformedPs.Reflection.begin(),
+            malformedPs.Reflection.end(), [](const auto& binding)
+            {
+                return binding.ResourceKind == "StructuredBuffer";
+            });
+        if (malformedBinding != malformedPs.Reflection.end())
+        {
+            malformedBinding->TypeShape = "uint32x3";
+            malformedBinding->Columns = 3;
+        }
+        Scope<RHI::Shader> malformedPixelShader = packages
+            ? device.CreateShader(malformedPs) : nullptr;
+        RHI::PipelineDescription malformedPipelineDescription = pipelineDescription;
+        malformedPipelineDescription.PixelShader = malformedPixelShader.get();
+        Scope<RHI::Pipeline> malformedPipeline = malformedPixelShader
+            ? device.CreatePipeline(malformedPipelineDescription) : nullptr;
+        const bool malformedReflectionRejected = malformedPixelShader && !malformedPipeline;
+
+        auto createBuffer = [&device](const char* name, u64 size, u32 stride,
+                                RHI::BufferUsage usage, RHI::ResourceState initialState)
+        {
+            RHI::BufferDescription description;
+            description.DebugName = name;
+            description.SizeBytes = size;
+            description.StrideBytes = stride;
+            description.Usage = usage;
+            description.InitialState = initialState;
+            return device.CreateBuffer(description);
+        };
+        const auto copyDestinationUsage = [](RHI::BufferUsage usage)
+        {
+            return static_cast<RHI::BufferUsage>(static_cast<u32>(usage)
+                | static_cast<u32>(RHI::BufferUsage::CopyDest));
+        };
+        Scope<RHI::Buffer> vertexBuffer = createBuffer("RHIFixedStructuredBufferV1 Vertices",
+            sizeof(vertices), sizeof(Vertex), copyDestinationUsage(RHI::BufferUsage::Vertex),
+            RHI::ResourceState::Common);
+        Scope<RHI::Buffer> indexBuffer = createBuffer("RHIFixedStructuredBufferV1 Indices",
+            sizeof(indices), sizeof(u16), copyDestinationUsage(RHI::BufferUsage::Index),
+            RHI::ResourceState::Common);
+        Scope<RHI::Buffer> constantBuffer = createBuffer("RHIFixedStructuredBufferV1 Constants",
+            sizeof(constants), 0, copyDestinationUsage(RHI::BufferUsage::Constant),
+            RHI::ResourceState::Common);
+        Scope<RHI::Buffer> structuredBuffer = createBuffer("RHIFixedStructuredBufferV1 Words",
+            sizeof(words), RHI::kFixedReadOnlyStructuredBufferStrideBytes,
+            copyDestinationUsage(RHI::BufferUsage::Structured), RHI::ResourceState::CopyDest);
+        Scope<RHI::Buffer> wrongUsageBuffer = createBuffer("RHIFixedStructuredBufferV1 Wrong Usage",
+            sizeof(words), RHI::kFixedReadOnlyStructuredBufferStrideBytes,
+            RHI::BufferUsage::CopyDest, RHI::ResourceState::ShaderResource);
+        Scope<RHI::Buffer> wrongStrideBuffer = createBuffer("RHIFixedStructuredBufferV1 Wrong Stride",
+            sizeof(words), 8, copyDestinationUsage(RHI::BufferUsage::Structured),
+            RHI::ResourceState::CopyDest);
+        Scope<RHI::Buffer> wrongShapeBuffer = createBuffer("RHIFixedStructuredBufferV1 Wrong Shape",
+            20, RHI::kFixedReadOnlyStructuredBufferStrideBytes,
+            copyDestinationUsage(RHI::BufferUsage::Structured), RHI::ResourceState::CopyDest);
+        const bool malformedBuffersRejected = !wrongStrideBuffer && !wrongShapeBuffer;
+
+        auto createSampledTexture = [&device](const char* name,
+                                        const std::array<u8, 4>& pixel) -> Ref<RHI::Texture>
+        {
+            RHI::TextureDescription description;
+            description.DebugName = name;
+            description.Extent = { 1, 1 };
+            description.TextureFormat = RHI::Format::R8G8B8A8Unorm;
+            description.Usage = static_cast<RHI::TextureUsage>(
+                static_cast<u32>(RHI::TextureUsage::CopyDest)
+                | static_cast<u32>(RHI::TextureUsage::ShaderResource));
+            description.InitialState = RHI::ResourceState::CopyDest;
+            Scope<RHI::Texture> texture = device.CreateTexture(description);
+            if (!texture) return nullptr;
+            const Ref<std::vector<u8>> bytes = CreateRef<std::vector<u8>>(
+                pixel.begin(), pixel.end());
+            if (!device.UploadTexture(*texture,
+                    { { 1, 1 }, RHI::Format::R8G8B8A8Unorm, 4, bytes }))
+                return nullptr;
+            return Ref<RHI::Texture>(texture.release());
+        };
+        const Ref<RHI::Texture> errorTexture = createSampledTexture(
+            "RHIFixedStructuredBufferV1 Error", {{ 255, 0, 255, 255 }});
+        const Ref<RHI::Texture> sampledTexture = createSampledTexture(
+            "RHIFixedStructuredBufferV1 Sample", {{ 51, 102, 204, 255 }});
+        Scope<RHI::TextureBindingTable> table = errorTexture
+            ? RHI::TextureBindingTable::Create(device,
+                { tableCapacity, errorTexture, RHI::TextureSampler::PointClamp })
+            : nullptr;
+        const RHI::TextureBindingHandle sampledHandle = table && sampledTexture
+            ? table->Allocate(sampledTexture, RHI::TextureSampler::LinearClamp)
+            : RHI::TextureBindingHandle {};
+        const bool uploaded = vertexBuffer && indexBuffer && constantBuffer && structuredBuffer
+            && wrongUsageBuffer && sampledHandle.Index == 1
+            && device.UploadBuffer(*vertexBuffer, vertices.data(), sizeof(vertices))
+            && device.UploadBuffer(*indexBuffer, indices.data(), sizeof(indices))
+            && device.UploadBuffer(*constantBuffer, &constants, sizeof(constants))
+            && device.UploadBuffer(*structuredBuffer, words.data(), sizeof(words));
+        Scope<RHI::CommandList> transitionList = uploaded
+            ? device.CreateCommandList(RHI::QueueType::Graphics,
+                "RHIFixedStructuredBufferV1 Transition")
+            : nullptr;
+        const bool transitioned = transitionList && transitionList->Begin()
+            && transitionList->TransitionBuffer(
+                *structuredBuffer, RHI::ResourceState::ShaderResource)
+            && transitionList->End() && device.SubmitAndWait(*transitionList);
+
+        enum class DrawMode { Missing, Stale, Valid };
+        std::array<u8, 4> validActual {};
+        bool beforePipelineRejected = false;
+        bool wrongUsageRejected = false;
+        bool tableCoexistence = true;
+        auto runDraw = [&](DrawMode mode)
+        {
+            RHI::TextureDescription colorDescription;
+            colorDescription.DebugName = "RHIFixedStructuredBufferV1 Color";
+            colorDescription.Extent = { width, height };
+            colorDescription.TextureFormat = RHI::Format::R8G8B8A8Unorm;
+            colorDescription.Usage = static_cast<RHI::TextureUsage>(
+                static_cast<u32>(RHI::TextureUsage::RenderTarget)
+                | static_cast<u32>(RHI::TextureUsage::CopySource));
+            Scope<RHI::Texture> color = device.CreateTexture(colorDescription);
+            Scope<RHI::CommandList> list = color && pipeline && table
+                ? device.CreateCommandList(RHI::QueueType::Graphics,
+                    "RHIFixedStructuredBufferV1 Draw")
+                : nullptr;
+            RHI::ViewportClear clear;
+            // Zero is exactly representable through both float clear and UNORM
+            // readback, so a rejected draw has one backend-independent oracle.
+            clear.Color[0] = 0.0f;
+            clear.Color[1] = 0.0f;
+            clear.Color[2] = 0.0f;
+            clear.Color[3] = 1.0f;
+            clear.ClearDepth = false;
+            const bool recording = list && list->Begin()
+                && list->BindViewportOutputs(*color, nullptr)
+                && list->TransitionTexture(*color, RHI::ResourceState::RenderTarget)
+                && list->ClearViewportOutputs(clear);
+            if (!recording) return false;
+            if (mode == DrawMode::Missing)
+                beforePipelineRejected = !list->BindGraphicsReadOnlyStructuredBuffer(
+                    *structuredBuffer);
+            const auto bindCommon = [&]()
+            {
+                list->SetGraphicsPipeline(*pipeline);
+                list->SetViewport({ 0.0f, 0.0f, static_cast<float>(width),
+                    static_cast<float>(height), 0.0f, 1.0f });
+                list->SetScissorRect({ 0, 0, static_cast<int>(width),
+                    static_cast<int>(height) });
+                list->SetVertexBuffer(0, *vertexBuffer);
+                list->SetIndexBuffer(*indexBuffer, RHI::IndexFormat::Uint16);
+                list->SetGraphicsConstantBuffer(0, *constantBuffer);
+                const bool tableBound = list->BindGraphicsSampledTextureTable(*table);
+                tableCoexistence = tableCoexistence && tableBound;
+                return tableBound;
+            };
+            bool bindings = bindCommon();
+            if (mode == DrawMode::Stale)
+            {
+                bindings = bindings
+                    && list->BindGraphicsReadOnlyStructuredBuffer(*structuredBuffer)
+                    && bindCommon();
+            }
+            else if (mode == DrawMode::Valid)
+            {
+                wrongUsageRejected = !list->BindGraphicsReadOnlyStructuredBuffer(
+                    *wrongUsageBuffer);
+                bindings = bindings && wrongUsageRejected
+                    && list->BindGraphicsReadOnlyStructuredBuffer(*structuredBuffer);
+            }
+            if (bindings)
+                list->DrawIndexed(3, 1, 0, 0, 0);
+            const bool submitted = bindings
+                && list->TransitionTexture(*color, RHI::ResourceState::CopySource)
+                && list->End() && device.SubmitAndWait(*list);
+            RHI::TextureReadback readback;
+            const bool read = submitted && device.ReadbackTexture(*color, readback);
+            const bool readbackShape = read
+                && readback.Extent.Width == width && readback.Extent.Height == height
+                && readback.TextureFormat == RHI::Format::R8G8B8A8Unorm
+                && readback.RowPitchBytes == width * 4u
+                && readback.Data.size() == static_cast<size_t>(readback.RowPitchBytes) * height;
+            const size_t center = readbackShape
+                ? static_cast<size_t>(height / 2) * readback.RowPitchBytes
+                    + static_cast<size_t>(width / 2) * 4
+                : 0;
+            if (!readbackShape || readback.Data.size() < center + 4) return false;
+            const std::array<u8, 4> actual {{
+                readback.Data[center], readback.Data[center + 1],
+                readback.Data[center + 2], readback.Data[center + 3]
+            }};
+            if (mode == DrawMode::Valid)
+            {
+                validActual = actual;
+                return std::equal(actual.begin(), actual.end(), expectedPixel.begin());
+            }
+            const std::array<u8, 4> expectedClear {{
+                static_cast<u8>(std::lround(clear.Color[0] * 255.0f)),
+                static_cast<u8>(std::lround(clear.Color[1] * 255.0f)),
+                static_cast<u8>(std::lround(clear.Color[2] * 255.0f)),
+                255
+            }};
+            return std::equal(actual.begin(), actual.end(), expectedClear.begin());
+        };
+
+        const bool missingRejected = transitioned && runDraw(DrawMode::Missing);
+        const bool staleRejected = missingRejected && runDraw(DrawMode::Stale);
+        const bool readbackPassed = staleRejected && runDraw(DrawMode::Valid);
+        const bool passed = packages && pipeline && malformedReflectionRejected
+            && malformedBuffersRejected && beforePipelineRejected && wrongUsageRejected
+            && missingRejected && staleRejected && tableCoexistence && readbackPassed;
+        Log::Info("RHIFixedStructuredBufferV1 backend=", backendName,
+            " declaration=exact pixel=t0-space3-uint4 stride=16",
+            " malformedReflection=", malformedReflectionRejected ? "rejected" : "accepted",
+            " malformedBuffer=", malformedBuffersRejected ? "rejected" : "accepted",
+            " missing=", missingRejected && beforePipelineRejected ? "rejected" : "accepted",
+            " wrongUsage=", wrongUsageRejected ? "rejected" : "accepted",
+            " pipelineInvalidation=", staleRejected ? "rejected-stale" : "failed",
+            " coexistence=", tableCoexistence ? "sampled-table-preserved" : "failed",
+            " readback=", static_cast<u32>(validActual[0]), ",",
+            static_cast<u32>(validActual[1]), ",", static_cast<u32>(validActual[2]), ",",
+            static_cast<u32>(validActual[3]), " expected=33,82,154,255 result=",
+            passed ? "pass" : "fail", " validation=", validationError);
+        return passed;
     }
 
     bool NVRHIRenderBackend::RunRHIMaterialTextureShaderSmoke(

@@ -3,6 +3,7 @@
 #include "Engine/RHI/RHICommon.h"
 #include "Engine/RHI/Shader.h"
 
+#include <algorithm>
 #include <limits>
 #include <optional>
 #include <string>
@@ -83,6 +84,16 @@ namespace Engine::RHI
         u32 VulkanSamplerBindingOffset = 300;
     };
 
+    // The first read-only structured-buffer consumer is fixed rather than a
+    // general SRV table: one uint4 element shape in t0,space3, visible only to
+    // the pixel stage. The stride is part of pipeline/resource compatibility.
+    struct FixedReadOnlyStructuredBufferBinding
+    {
+        u32 ShaderRegister = 0;
+        u32 RegisterSpace = 3;
+        u32 ElementStrideBytes = 16;
+    };
+
     struct PipelineDescription;
 
     inline bool IsValidSampledTextureTableBinding(const SampledTextureTableBinding& binding,
@@ -153,6 +164,76 @@ namespace Engine::RHI
 
     inline bool IsValidFixedSampledTexturePipeline(const PipelineDescription& description);
 
+    inline bool IsValidFixedReadOnlyStructuredBufferBinding(
+        const FixedReadOnlyStructuredBufferBinding& binding,
+        const std::vector<RootConstantBufferBinding>& constantBuffers)
+    {
+        if (binding.ShaderRegister != 0 || binding.RegisterSpace != 3
+            || binding.ElementStrideBytes != 16)
+            return false;
+        for (const RootConstantBufferBinding& constantBuffer : constantBuffers)
+            if (constantBuffer.RegisterSpace == binding.RegisterSpace) return false;
+        return true;
+    }
+
+    inline bool IsFixedStructuredBufferReflectionCandidate(const ShaderReflectionBinding& reflected)
+    {
+        return reflected.Space == 3
+            || reflected.ResourceKind.find("StructuredBuffer") != std::string::npos;
+    }
+
+    inline bool IsExactFixedReadOnlyStructuredBufferReflection(
+        const ShaderReflectionBinding& reflected)
+    {
+        return reflected.Kind == 't' && reflected.Register == 0 && reflected.Space == 3
+            && reflected.Stages == ShaderStage::Pixel
+            && reflected.ResourceKind == "StructuredBuffer"
+            && reflected.TypeShape == "uint32x4" && reflected.Count == 1
+            && reflected.ByteSize == 0 && reflected.Rows == 1 && reflected.Columns == 4;
+    }
+
+    inline bool HasValidFixedReadOnlyStructuredBufferReflection(
+        const Shader* vertexShader, const Shader* pixelShader)
+    {
+        if (!vertexShader || !pixelShader
+            || vertexShader->GetDescription().Stage != ShaderStage::Vertex
+            || pixelShader->GetDescription().Stage != ShaderStage::Pixel)
+            return false;
+
+        u32 candidateCount = 0;
+        for (const ShaderReflectionBinding& reflected : vertexShader->GetDescription().Reflection)
+        {
+            if (!IsFixedStructuredBufferReflectionCandidate(reflected)) continue;
+            ++candidateCount;
+            if (!IsExactFixedReadOnlyStructuredBufferReflection(reflected)) return false;
+            // Even forged stage metadata cannot make a vertex-owned declaration
+            // satisfy the fixed pixel-only contract.
+            return false;
+        }
+        for (const ShaderReflectionBinding& reflected : pixelShader->GetDescription().Reflection)
+        {
+            if (!IsFixedStructuredBufferReflectionCandidate(reflected)) continue;
+            ++candidateCount;
+            if (!IsExactFixedReadOnlyStructuredBufferReflection(reflected)) return false;
+        }
+        return candidateCount == 1;
+    }
+
+    inline bool HasFixedStructuredBufferReflectionCandidate(
+        const Shader* vertexShader, const Shader* pixelShader)
+    {
+        const auto containsCandidate = [](const Shader* shader)
+        {
+            return shader && std::any_of(shader->GetDescription().Reflection.begin(),
+                shader->GetDescription().Reflection.end(), IsFixedStructuredBufferReflectionCandidate);
+        };
+        return containsCandidate(vertexShader) || containsCandidate(pixelShader);
+    }
+
+    inline bool IsValidFixedReadOnlyStructuredBufferPipeline(const PipelineDescription& description);
+
+    inline bool IsValidFixedReadOnlyStructuredBufferPipelineContract(const PipelineDescription& description);
+
     struct PipelineDescription
     {
         std::string DebugName;
@@ -167,6 +248,7 @@ namespace Engine::RHI
         std::vector<RootConstantBufferBinding> ConstantBufferBindings;
         std::optional<SampledTextureTableBinding> SampledTextureTable;
         std::optional<FixedSampledTextureBinding> FixedSampledTexture;
+        std::optional<FixedReadOnlyStructuredBufferBinding> FixedReadOnlyStructuredBuffer;
         PrimitiveTopology Topology = PrimitiveTopology::TriangleList;
         CullMode RasterCullMode = CullMode::Back;
         Format ColorFormat = Format::R8G8B8A8Unorm;
@@ -225,6 +307,24 @@ namespace Engine::RHI
             && IsValidFixedSampledTextureBinding(*description.FixedSampledTexture,
                 description.ConstantBufferBindings)
             && HasValidFixedSampledTextureReflection(*description.FixedSampledTexture,
+                description.VertexShader, description.PixelShader);
+    }
+
+    inline bool IsValidFixedReadOnlyStructuredBufferPipeline(const PipelineDescription& description)
+    {
+        return description.FixedReadOnlyStructuredBuffer
+            && IsValidFixedReadOnlyStructuredBufferBinding(
+                *description.FixedReadOnlyStructuredBuffer, description.ConstantBufferBindings)
+            && HasValidFixedReadOnlyStructuredBufferReflection(
+                description.VertexShader, description.PixelShader);
+    }
+
+    inline bool IsValidFixedReadOnlyStructuredBufferPipelineContract(
+        const PipelineDescription& description)
+    {
+        return description.FixedReadOnlyStructuredBuffer
+            ? IsValidFixedReadOnlyStructuredBufferPipeline(description)
+            : !HasFixedStructuredBufferReflectionCandidate(
                 description.VertexShader, description.PixelShader);
     }
 

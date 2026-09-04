@@ -105,6 +105,14 @@ namespace Engine::RHI
             (void)texture;
             return false;
         }
+        // Binds the one optional pixel-stage StructuredBuffer<uint4> declared
+        // at t0,space3 by the active pipeline. This fixed call intentionally
+        // exposes no register, space, array, or writable-buffer controls.
+        virtual bool BindGraphicsReadOnlyStructuredBuffer(Buffer& buffer)
+        {
+            (void)buffer;
+            return false;
+        }
         virtual void SetViewport(const Viewport& viewport) = 0;
         virtual void SetScissorRect(const ScissorRect& rect) = 0;
         virtual void SetVertexBuffer(u32 slot, Buffer& buffer) = 0;

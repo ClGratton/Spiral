@@ -218,15 +218,19 @@ namespace Engine::RHI
         public:
             VulkanPipeline(PipelineDescription description, nvrhi::InputLayoutHandle inputLayout,
                 nvrhi::BindingLayoutHandle bindings, nvrhi::BindingLayoutHandle tableBindings,
-                nvrhi::BindingLayoutHandle fixedBindings, nvrhi::ShaderHandle vertex, nvrhi::ShaderHandle pixel)
+                nvrhi::BindingLayoutHandle fixedBindings, nvrhi::BindingLayoutHandle structuredBindings,
+                nvrhi::ShaderHandle vertex, nvrhi::ShaderHandle pixel)
                 : m_Description(std::move(description)), m_InputLayout(std::move(inputLayout)),
                   m_Bindings(std::move(bindings)), m_TableBindings(std::move(tableBindings)),
-                  m_FixedBindings(std::move(fixedBindings)), m_Vertex(std::move(vertex)), m_Pixel(std::move(pixel)) {}
+                  m_FixedBindings(std::move(fixedBindings)),
+                  m_StructuredBindings(std::move(structuredBindings)),
+                  m_Vertex(std::move(vertex)), m_Pixel(std::move(pixel)) {}
             const PipelineDescription& GetDescription() const override { return m_Description; }
             nvrhi::IInputLayout* InputLayout() const { return m_InputLayout; }
             nvrhi::IBindingLayout* Bindings() const { return m_Bindings; }
             nvrhi::IBindingLayout* TableBindings() const { return m_TableBindings; }
             nvrhi::IBindingLayout* FixedBindings() const { return m_FixedBindings; }
+            nvrhi::IBindingLayout* StructuredBindings() const { return m_StructuredBindings; }
             Ref<VulkanSampledTextureTableState> FindSampledTextureTableState(
                 u64 identity, u64 revision) const
             {
@@ -257,6 +261,7 @@ namespace Engine::RHI
                     .setVertexShader(m_Vertex).setPixelShader(m_Pixel).addBindingLayout(m_Bindings);
                 if (m_TableBindings) pipeline.addBindingLayout(m_TableBindings);
                 if (m_FixedBindings) pipeline.addBindingLayout(m_FixedBindings);
+                if (m_StructuredBindings) pipeline.addBindingLayout(m_StructuredBindings);
                 pipeline.renderState.rasterState.setCullNone().setFrontCounterClockwise(false);
                 pipeline.renderState.depthStencilState.depthTestEnable = m_Description.DepthTestEnable;
                 pipeline.renderState.depthStencilState.depthWriteEnable = m_Description.DepthWriteEnable;
@@ -273,6 +278,7 @@ namespace Engine::RHI
             nvrhi::BindingLayoutHandle m_Bindings;
             nvrhi::BindingLayoutHandle m_TableBindings;
             nvrhi::BindingLayoutHandle m_FixedBindings;
+            nvrhi::BindingLayoutHandle m_StructuredBindings;
             nvrhi::ShaderHandle m_Vertex;
             nvrhi::ShaderHandle m_Pixel;
             nvrhi::GraphicsPipelineHandle m_NativePipeline;
@@ -354,8 +360,11 @@ namespace Engine::RHI
                 m_BindingSet = nullptr;
                 m_TableBindingState.reset();
                 m_FixedBindingSet = nullptr;
+                m_StructuredBindingSet = nullptr;
+                m_RetainedStructuredBindingSets.clear();
                 m_FixedSampler = nullptr;
                 m_FixedTextureUsedThisRecording = nullptr;
+                m_BoundStructuredBuffer = nullptr;
                 m_ConstantBuffer = nullptr;
                 m_TextureTable = nullptr;
                 m_State = State::Recording;
@@ -519,9 +528,11 @@ namespace Engine::RHI
                 m_BindingSet = nullptr;
                 m_TableBindingState.reset();
                 m_FixedBindingSet = nullptr;
+                m_StructuredBindingSet = nullptr;
                 m_FixedSampler = nullptr;
                 m_ConstantBuffer = nullptr;
                 m_TextureTable = nullptr;
+                m_BoundStructuredBuffer = nullptr;
             }
             void SetGraphicsConstantBuffer(u32 rootParameterIndex, Buffer& buffer) override
             {
@@ -638,6 +649,34 @@ namespace Engine::RHI
                 m_FixedTextureUsedThisRecording = native->Native();
                 return m_FixedBindingSet != nullptr;
             }
+            bool BindGraphicsReadOnlyStructuredBuffer(Buffer& buffer) override
+            {
+                // A failed rebind must not leave the prior set eligible for a
+                // later draw. Already-recorded draws retain their sets below.
+                m_StructuredBindingSet = nullptr;
+                m_BoundStructuredBuffer = nullptr;
+                auto* native = dynamic_cast<VulkanBuffer*>(&buffer);
+                if (m_State != State::Recording || !m_Pipeline || !native
+                    || !m_Pipeline->GetDescription().FixedReadOnlyStructuredBuffer
+                    || !IsValidFixedReadOnlyStructuredBufferPipeline(m_Pipeline->GetDescription())
+                    || !m_Pipeline->StructuredBindings() || !CanUseBuffer(&buffer)
+                    || GetBufferState(*native) != ResourceState::ShaderResource
+                    || !IsFixedReadOnlyStructuredBufferDescription(buffer.GetDescription()))
+                    return false;
+
+                nvrhi::BindingSetDesc bindings;
+                bindings.bindings.push_back(
+                    nvrhi::BindingSetItem::StructuredBuffer_SRV(0, native->Native()));
+                nvrhi::BindingSetHandle bindingSet = m_Device->createBindingSet(
+                    bindings, m_Pipeline->StructuredBindings());
+                if (!bindingSet) return false;
+                m_RetainedStructuredBindingSets.push_back(bindingSet);
+                m_StructuredBindingSet = std::move(bindingSet);
+                m_BoundStructuredBuffer = native;
+                if (std::find(m_UsedBuffers.begin(), m_UsedBuffers.end(), &buffer) == m_UsedBuffers.end())
+                    m_UsedBuffers.push_back(&buffer);
+                return true;
+            }
             void SetViewport(const Viewport& viewport) override { m_Viewport = viewport; }
             void SetScissorRect(const ScissorRect& rect) override { m_Scissor = rect; }
             void SetVertexBuffer(u32 slot, Buffer& buffer) override
@@ -683,8 +722,11 @@ namespace Engine::RHI
                     state.addVertexBuffer(nvrhi::VertexBufferBinding().setBuffer(m_Vertex->Native()).setSlot(0).setOffset(0));
                 if (m_Pipeline->GetDescription().SampledTextureTable && !m_TableBindingState) return;
                 if (m_Pipeline->GetDescription().FixedSampledTexture && !m_FixedBindingSet) return;
+                if (m_Pipeline->GetDescription().FixedReadOnlyStructuredBuffer
+                    && (!m_StructuredBindingSet || !m_BoundStructuredBuffer)) return;
                 if (m_TableBindingState) state.addBindingSet(m_TableBindingState->BindingSet);
                 if (m_FixedBindingSet) state.addBindingSet(m_FixedBindingSet);
+                if (m_StructuredBindingSet) state.addBindingSet(m_StructuredBindingSet);
                 m_List->setGraphicsState(state);
                 m_List->drawIndexed(nvrhi::DrawArguments().setVertexCount(indexCount).setInstanceCount(instanceCount).setStartIndexLocation(startIndex).setStartVertexLocation(0).setStartInstanceLocation(startInstance));
             }
@@ -913,6 +955,8 @@ namespace Engine::RHI
             nvrhi::BindingSetHandle m_BindingSet;
             Ref<VulkanSampledTextureTableState> m_TableBindingState;
             nvrhi::BindingSetHandle m_FixedBindingSet;
+            nvrhi::BindingSetHandle m_StructuredBindingSet;
+            std::vector<nvrhi::BindingSetHandle> m_RetainedStructuredBindingSets;
             nvrhi::SamplerHandle m_FixedSampler;
             nvrhi::BindingSetHandle m_CachedFixedBindingSet;
             nvrhi::SamplerHandle m_CachedFixedSampler;
@@ -921,6 +965,7 @@ namespace Engine::RHI
             nvrhi::ITexture* m_FixedTextureUsedThisRecording = nullptr;
             VulkanBuffer* m_ConstantBuffer = nullptr;
             TextureBindingTable* m_TextureTable = nullptr;
+            VulkanBuffer* m_BoundStructuredBuffer = nullptr;
             Device* m_OwnerDevice = nullptr;
             VulkanTexture* m_Color = nullptr;
             VulkanTexture* m_Depth = nullptr;
@@ -976,12 +1021,17 @@ namespace Engine::RHI
             bool CanQueuesShareResources(QueueType source, QueueType destination) const override { return CanShareResource(source, destination); }
             Scope<Buffer> CreateBuffer(const BufferDescription& description) override
             {
-                if (!m_Device || !description.SizeBytes) return nullptr;
+                if (!m_Device || !description.SizeBytes
+                    || (HasBufferUsage(description.Usage, BufferUsage::Structured)
+                        && !IsFixedReadOnlyStructuredBufferDescription(description))) return nullptr;
                 nvrhi::ResourceStates initialState = ConvertState(description.InitialState);
                 if (initialState == nvrhi::ResourceStates::Common || initialState == nvrhi::ResourceStates::Unknown)
                     initialState = HasBufferUsage(description.Usage, BufferUsage::CopyDest)
                         ? nvrhi::ResourceStates::CopyDest : nvrhi::ResourceStates::Common;
-                nvrhi::BufferDesc d; d.setByteSize(description.SizeBytes).setStructStride(description.StrideBytes).setDebugName(description.DebugName).enableAutomaticStateTracking(initialState);
+                nvrhi::BufferDesc d; d.setByteSize(description.SizeBytes)
+                    .setStructStride(HasBufferUsage(description.Usage, BufferUsage::Structured)
+                        ? description.StrideBytes : 0)
+                    .setDebugName(description.DebugName).enableAutomaticStateTracking(initialState);
                 d.setIsVertexBuffer(HasBufferUsage(description.Usage, BufferUsage::Vertex)).setIsIndexBuffer(HasBufferUsage(description.Usage, BufferUsage::Index)).setIsConstantBuffer(HasBufferUsage(description.Usage, BufferUsage::Constant)).setCanHaveUAVs(HasBufferUsage(description.Usage, BufferUsage::Storage));
                 d.setCpuAccess(description.CpuAccess == BufferCpuAccess::Read ? nvrhi::CpuAccessMode::Read : description.CpuAccess == BufferCpuAccess::Write ? nvrhi::CpuAccessMode::Write : nvrhi::CpuAccessMode::None);
                 nvrhi::BufferHandle native = m_Device->createBuffer(d); if (!native) return nullptr;
@@ -1094,6 +1144,8 @@ namespace Engine::RHI
                 { Log::Error("Vulkan sampled-table pipeline rejected by portable declaration/reflection validation"); return nullptr; }
                 if (description.FixedSampledTexture && !IsValidFixedSampledTexturePipeline(description))
                 { Log::Error("Vulkan fixed-texture pipeline rejected by portable declaration/reflection validation"); return nullptr; }
+                if (!IsValidFixedReadOnlyStructuredBufferPipelineContract(description))
+                { Log::Error("Vulkan fixed structured-buffer pipeline rejected by portable declaration/reflection validation"); return nullptr; }
                 auto* vertex = dynamic_cast<VulkanShader*>(description.VertexShader);
                 auto* pixel = dynamic_cast<VulkanShader*>(description.PixelShader);
                 if (!m_Device || description.Type != PipelineType::Graphics || !vertex || !pixel || description.ConstantBufferBindings.size() != 1
@@ -1148,16 +1200,32 @@ namespace Engine::RHI
                         .addItem(nvrhi::BindingLayoutItem::Sampler(description.FixedSampledTexture->SamplerRegister));
                     fixedBindings = m_Device->createBindingLayout(fixedLayout);
                 }
+                nvrhi::BindingLayoutHandle structuredBindings;
+                if (description.FixedReadOnlyStructuredBuffer)
+                {
+                    nvrhi::VulkanBindingOffsets structuredOffsets;
+                    structuredOffsets.setShaderResourceOffset(100);
+                    nvrhi::BindingLayoutDesc structuredLayout;
+                    structuredLayout.setVisibility(nvrhi::ShaderType::Pixel)
+                        .setRegisterSpaceAndDescriptorSet(
+                            description.FixedReadOnlyStructuredBuffer->RegisterSpace)
+                        .setBindingOffsets(structuredOffsets)
+                        .addItem(nvrhi::BindingLayoutItem::StructuredBuffer_SRV(
+                            description.FixedReadOnlyStructuredBuffer->ShaderRegister));
+                    structuredBindings = m_Device->createBindingLayout(structuredLayout);
+                }
                 if ((!attributes.empty() && !inputLayout) || !bindings || (description.SampledTextureTable && !tableBindings)
-                    || (description.FixedSampledTexture && !fixedBindings))
+                    || (description.FixedSampledTexture && !fixedBindings)
+                    || (description.FixedReadOnlyStructuredBuffer && !structuredBindings))
                 {
                     Log::Error("Vulkan sampled-table native layout creation failed: input=", inputLayout ? "yes" : "no",
                         ", constants=", bindings ? "yes" : "no", ", table=", tableBindings ? "yes" : "no",
-                        ", fixed=", fixedBindings ? "yes" : "no");
+                        ", fixed=", fixedBindings ? "yes" : "no",
+                        ", structured=", structuredBindings ? "yes" : "no");
                     return nullptr;
                 }
                 return CreateScope<VulkanPipeline>(description, inputLayout, bindings, tableBindings,
-                    fixedBindings, vertex->NativeHandle(), pixel->NativeHandle());
+                    fixedBindings, structuredBindings, vertex->NativeHandle(), pixel->NativeHandle());
             }
             Scope<QueryPool> CreateQueryPool(const QueryPoolDescription& description) override
             {

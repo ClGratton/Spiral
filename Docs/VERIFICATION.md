@@ -781,3 +781,23 @@ python3 Scripts/EditorMaterialControl.py \
 ```
 
 Headed acceptance requires the actual current Editor and claimed native backend, verified monitor/workspace placement, a successful inspect, a visibly distinct typed patch, receipt-confirmed real selection/pivot/readback/history effects, an exact typed restoration, visual inspection of all captures, and clean window-manager shutdown. Mouse, virtual-pointer, and other synthetic UI input are forbidden for this gate. The 2026-09-04 Linux acceptance on DP-3/workspace 2 used native NVRHI Vulkan on the RTX 3080 Ti, visibly changed the default cube from blue/orange to green, restored the original surface exactly, and closed normally after 20,857 frames. This qualifies only the narrow Editor control and Linux/Vulkan headed result; it does not qualify a generic automation framework, persistent save, external service, D3D12, or MoltenVK.
+
+## Phase 3E Fixed Graphics Structured-Buffer SRV
+
+After one coherent Debug build, run the focused contract, complete Integration registry, and native Vulkan harness:
+
+```bash
+bin/Debug-linux-x86_64-gmake/EngineTests/EngineTests --test "RHI fixed read-only structured-buffer binding validates declaration shape ownership and lifecycle"
+bin/Debug-linux-x86_64-gmake/EngineTests/EngineTests --tier integration
+bash Scripts/TestVulkan.sh Debug gmake --skip-build
+```
+
+The focused oracle requires one exact pixel-stage `StructuredBuffer<uint4>` declaration at `t0,space3`, exact 16-byte stride, one reflected resource, exact-device ownership, `ShaderResource` state, GPU-only access, and exactly `Structured` plus optional `CopySource`/`CopyDest`. It rejects every unrelated or unknown usage bit, missing/duplicate/wrong reflection, foreign buffers, invalid sizes/strides/states, failed-bind stale reuse, pipeline-change stale reuse, and post-`End` draw. A valid A-to-B rebind must draw both times while retaining both native objects through the recording; the next accepted `Begin` clears that retention.
+
+The Vulkan harness compiles the real Slang declaration, binds the existing sampled texture table and the fixed set-3 structured SRV together, XORs independently selected texture bytes and structured words, and reads back exact RGBA `33,82,154,255`. Missing, wrong-usage, and pipeline-invalidated paths clear to exact zero and must record no draw. It must emit:
+
+```text
+RHIFixedStructuredBufferV1 backend=Vulkan declaration=exact pixel=t0-space3-uint4 stride=16 malformedReflection=rejected malformedBuffer=rejected missing=rejected wrongUsage=rejected pipelineInvalidation=rejected-stale coexistence=sampled-table-preserved readback=33,82,154,255 expected=33,82,154,255 result=pass
+```
+
+The 2026-09-04 acceptance passed a warning-free Debug GMake build, the focused test, 109/109 Integration tests, style/diff/script gates, and the complete native RTX 3080 Ti Vulkan harness. The first native attempt exposed a non-byte-exact negative clear in the fixture; exact zero replaced it and the full harness passed without changing production validation. Shared D3D12 root-SRV source and its required harness marker are present but not runtime-qualified on Linux. This does not prove light packing/evaluation, writable or host-visible structured binding, arbitrary descriptors, D3D12 execution, or MoltenVK execution.
