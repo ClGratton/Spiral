@@ -636,6 +636,12 @@ The accepted analytical-light equations are GGX distribution, height-correlated 
 
 The original material-ID closure used one renderer-owned neutral preview so its BRDF oracle did not depend on a then-future light payload. That preview is now retired from production Scene permutations: V3 Scene-light records drive the same GGX/height-correlated-Smith/Schlick/Burley path. Directional lux is consumed directly after Rec.709 luminance normalization; point lumens are normalized over `4*pi`; spot lumens are normalized by the exact integral of a squared cosine ramp; and locals use inverse-square falloff with a smooth finite-range window. The old preview remains only in shader-tool permutations compiled without a Scene payload. Tangent-space normal mapping, Callisto/Proxima controls, two-sided shading policy, shadows, indirect lighting, D3D12 execution, and MoltenVK execution remain later or separately gated mechanisms.
 
+## Phase 3 Debug Visualization Baseline
+
+The first renderer-owned debug surface has four frame-coherent modes: normal Lit output, stable persistent-material identity color, transformed geometric normal, and primary-shadow caster classification. The material color derives from the persistent asset handle rather than the sorted frame-local row; row zero remains the existing error state. Mode, selected entity, and bounds visibility are captured with the immutable prepared Scene frame, so a live toggle cannot reinterpret work already being recorded.
+
+Selected entity bounds are a post-tone-map overlay generated from the resolved mesh AABB and prepared model-view-projection. Homogeneous frustum clipping precedes division, and a missing/hidden selection emits no segment. The overlay uses a distinct RGBA8 intermediate and is a conditional eighth RenderGraph pass; ordinary frames remain the established seven-pass graph. A camera with zero visible meshes remains a valid sky frame. These debug modes expose current raster/material/shadow state only; they are not visibility-buffer IDs, picking, general gizmos, physics/navmesh visualization, overdraw, or capture-tool qualification.
+
 ## Sources
 
 - NVRHI GitHub: https://github.com/NVIDIA-RTX/NVRHI

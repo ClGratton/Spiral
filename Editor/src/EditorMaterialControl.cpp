@@ -32,9 +32,9 @@
 
 namespace
 {
-    constexpr std::string_view kRequestHeader = "SpiralEditorControlRequest 2";
-    constexpr std::string_view kReceiptHeader = "SpiralEditorControlReceipt 2";
-    constexpr std::string_view kSessionHeader = "SpiralEditorControlSession 2";
+    constexpr std::string_view kRequestHeader = "SpiralEditorControlRequest 3";
+    constexpr std::string_view kReceiptHeader = "SpiralEditorControlReceipt 3";
+    constexpr std::string_view kSessionHeader = "SpiralEditorControlSession 3";
 
     const char* ToString(EditorMaterialControlAction action)
     {
@@ -50,6 +50,10 @@ namespace
             case EditorMaterialControlAction::SetTypedLight: return "SetTypedLight";
             case EditorMaterialControlAction::SetProjectColorPipeline: return "SetProjectColorPipeline";
             case EditorMaterialControlAction::SetViewportMainCameraPose: return "SetViewportMainCameraPose";
+            case EditorMaterialControlAction::SetSceneDebugVisualization:
+                return "SetSceneDebugVisualization";
+            case EditorMaterialControlAction::SetMeshRendererFlags:
+                return "SetMeshRendererFlags";
         }
         return "Unknown";
     }
@@ -179,6 +183,39 @@ namespace
             >> settings.CameraApertureFNumber >> settings.CameraShutterSeconds >> settings.CameraISO)
             && AtEnd(stream) && Engine::ParseRendererExposureMode(mode, settings.ExposureMode)
             && Engine::IsValidRendererColorPipelineSettings(settings);
+    }
+
+    bool ParseDebugVisualization(std::istringstream& stream,
+        Engine::SceneDebugView& view, bool& showSelectedBounds)
+    {
+        std::string viewText;
+        std::string boundsText;
+        if (!(stream >> viewText >> boundsText) || !AtEnd(stream)
+            || !Engine::TryParseSceneDebugView(viewText, view))
+            return false;
+        if (boundsText == "yes")
+            showSelectedBounds = true;
+        else if (boundsText == "no")
+            showSelectedBounds = false;
+        else
+            return false;
+        return true;
+    }
+
+    bool ParseMeshRendererFlags(std::istringstream& stream,
+        bool& visible, bool& castsShadows)
+    {
+        std::string visibleText;
+        std::string shadowsText;
+        if (!(stream >> visibleText >> shadowsText) || !AtEnd(stream))
+            return false;
+        if (visibleText == "yes") visible = true;
+        else if (visibleText == "no") visible = false;
+        else return false;
+        if (shadowsText == "yes") castsShadows = true;
+        else if (shadowsText == "no") castsShadows = false;
+        else return false;
+        return true;
     }
 
     [[maybe_unused]] bool HasOwnerOnlyPermissions(std::filesystem::perms permissions)
@@ -545,6 +582,13 @@ namespace
                    << settings.CameraApertureFNumber << ' ' << settings.CameraShutterSeconds << ' '
                    << settings.CameraISO << '\n';
         };
+        const auto writeDebugVisualization = [](std::ostringstream& stream,
+            std::string_view label, Engine::SceneDebugView view,
+            bool showSelectedBounds)
+        {
+            stream << label << ' ' << Engine::ToString(view) << ' '
+                   << (showSelectedBounds ? "yes" : "no") << '\n';
+        };
 
         std::ostringstream stream;
         stream << std::setprecision(std::numeric_limits<double>::max_digits10)
@@ -588,6 +632,10 @@ namespace
         writeMeshRenderer(stream, "AfterMeshRenderer", receipt.AfterMeshRenderer);
         writeColorPipeline(stream, "BeforeColorPipeline", receipt.BeforeColorPipeline);
         writeColorPipeline(stream, "AfterColorPipeline", receipt.AfterColorPipeline);
+        writeDebugVisualization(stream, "BeforeDebugVisualization",
+            receipt.BeforeDebugView, receipt.BeforeShowSelectedBounds);
+        writeDebugVisualization(stream, "AfterDebugVisualization",
+            receipt.AfterDebugView, receipt.AfterShowSelectedBounds);
         stream << "AffectedEntityCount " << receipt.AffectedEntityCount << '\n'
                << "AffectedEntitySampleCount " << receipt.AffectedEntityIds.size() << '\n'
                << "AffectedEntityIds";
@@ -597,6 +645,8 @@ namespace
                << "AffectedEntityIdsTruncated "
                << (receipt.AffectedEntityIdsTruncated ? "yes" : "no") << '\n'
                << "RendererGeneration " << receipt.RendererGeneration << '\n'
+               << "DebugVisualizationGeneration "
+               << receipt.DebugVisualizationGeneration << '\n'
                << "UndoDepthBefore " << receipt.UndoDepthBefore << '\n'
                << "UndoDepthAfter " << receipt.UndoDepthAfter << '\n'
                << "RedoDepthBefore " << receipt.RedoDepthBefore << '\n'
@@ -620,7 +670,7 @@ namespace
         std::string line;
         if (!std::getline(input, line) || line != kRequestHeader)
         {
-            error = "unsupported_schema";
+            error = "unsupported_schema_expected_v3";
             return false;
         }
 
@@ -642,7 +692,11 @@ namespace
             NewLight = 1u << 13,
             ExpectedColorPipeline = 1u << 14,
             NewColorPipeline = 1u << 15,
-            ExpectedSelectedEntityId = 1u << 16
+            ExpectedSelectedEntityId = 1u << 16,
+            ExpectedDebugVisualization = 1u << 17,
+            NewDebugVisualization = 1u << 18,
+            ExpectedMeshRendererFlags = 1u << 19,
+            NewMeshRendererFlags = 1u << 20
         };
         unsigned int seen = 0;
         const auto claim = [&seen](Field field)
@@ -709,6 +763,8 @@ namespace
                 else if (action == "SetTypedLight") request.Action = EditorMaterialControlAction::SetTypedLight;
                 else if (action == "SetProjectColorPipeline") request.Action = EditorMaterialControlAction::SetProjectColorPipeline;
                 else if (action == "SetViewportMainCameraPose") request.Action = EditorMaterialControlAction::SetViewportMainCameraPose;
+                else if (action == "SetSceneDebugVisualization") request.Action = EditorMaterialControlAction::SetSceneDebugVisualization;
+                else if (action == "SetMeshRendererFlags") request.Action = EditorMaterialControlAction::SetMeshRendererFlags;
                 else
                 {
                     error = "unsupported_action";
@@ -819,6 +875,53 @@ namespace
                 }
                 request.HasExpectedSelectedEntityId = true;
             }
+            else if (key == "ExpectedDebugVisualization")
+            {
+                if (!claim(Field::ExpectedDebugVisualization)
+                    || !ParseDebugVisualization(fieldStream,
+                        request.ExpectedDebugView,
+                        request.ExpectedShowSelectedBounds))
+                {
+                    error = "invalid_expected_debug_visualization";
+                    return false;
+                }
+                request.HasExpectedDebugVisualization = true;
+            }
+            else if (key == "NewDebugVisualization")
+            {
+                if (!claim(Field::NewDebugVisualization)
+                    || !ParseDebugVisualization(fieldStream,
+                        request.NewDebugView, request.NewShowSelectedBounds))
+                {
+                    error = "invalid_new_debug_visualization";
+                    return false;
+                }
+                request.HasNewDebugVisualization = true;
+            }
+            else if (key == "ExpectedMeshRendererFlags")
+            {
+                if (!claim(Field::ExpectedMeshRendererFlags)
+                    || !ParseMeshRendererFlags(fieldStream,
+                        request.ExpectedMeshVisible,
+                        request.ExpectedMeshCastsShadows))
+                {
+                    error = "invalid_expected_mesh_renderer_flags";
+                    return false;
+                }
+                request.HasExpectedMeshRendererFlags = true;
+            }
+            else if (key == "NewMeshRendererFlags")
+            {
+                if (!claim(Field::NewMeshRendererFlags)
+                    || !ParseMeshRendererFlags(fieldStream,
+                        request.NewMeshVisible,
+                        request.NewMeshCastsShadows))
+                {
+                    error = "invalid_new_mesh_renderer_flags";
+                    return false;
+                }
+                request.HasNewMeshRendererFlags = true;
+            }
             else
             {
                 error = "unknown_field";
@@ -843,7 +946,10 @@ namespace
             error = "invalid_identity";
             return false;
         }
-        const bool needsEntity = request.Action != EditorMaterialControlAction::SetProjectColorPipeline;
+        const bool needsEntity = request.Action
+                != EditorMaterialControlAction::SetProjectColorPipeline
+            && request.Action
+                != EditorMaterialControlAction::SetSceneDebugVisualization;
         if (needsEntity && (request.EntityId == Engine::kInvalidEntityId
             || request.ExpectedEntityName.empty() || request.ExpectedEntityName.size() > 256))
         { error = "invalid_entity_identity"; return false; }
@@ -879,6 +985,15 @@ namespace
                 break;
             case EditorMaterialControlAction::SetProjectColorPipeline:
                 exactFields |= Field::ExpectedColorPipeline | Field::NewColorPipeline;
+                break;
+            case EditorMaterialControlAction::SetSceneDebugVisualization:
+                exactFields |= Field::ExpectedSelectedEntityId
+                    | Field::ExpectedDebugVisualization
+                    | Field::NewDebugVisualization;
+                break;
+            case EditorMaterialControlAction::SetMeshRendererFlags:
+                exactFields |= entityIdentity | Field::ExpectedMeshRendererFlags
+                    | Field::NewMeshRendererFlags;
                 break;
         }
         if (seen != exactFields)
@@ -972,7 +1087,7 @@ bool EditorMaterialControlMailbox::Initialize(const std::filesystem::path& root,
     }
     if (m_DurabilityDegradationCount != 0)
         TransitionToClosed("ready_manifest_parent_sync_failed");
-    Engine::Log::Info("EditorMaterialControlV2 state=ready session=", m_SessionId,
+    Engine::Log::Info("EditorMaterialControlV3 state=ready session=", m_SessionId,
         " path=", m_Root.string(), " maxBytes=", MaximumRequestBytes,
         " maxPerFrame=", MaximumRequestsPerFrame,
         " maxRetained=", MaximumTerminalRequests);
@@ -1007,7 +1122,7 @@ void EditorMaterialControlMailbox::Close()
     if (!IsOpen())
         return;
     TransitionToClosed("editor_detach");
-    Engine::Log::Info("EditorMaterialControlV2 state=closed session=", m_SessionId,
+    Engine::Log::Info("EditorMaterialControlV3 state=closed session=", m_SessionId,
         " terminal=", m_Terminals.size(), " collisions=", m_ResponseCollisionCount);
 }
 
@@ -1036,8 +1151,8 @@ bool EditorMaterialControlMailbox::PublishSessionFile(
              << "State " << state << '\n'
              << "ProcessId " << m_ProcessId << '\n'
              << "ProjectPath " << std::quoted(m_ProjectPath) << '\n'
-             << "RequestSchema 2\nReceiptSchema 2\n"
-             << "Actions InspectMaterialSurface,SelectEntityPatchMaterialSurface,InspectEntity,SelectEntity,SetEntityTransform,SetTypedLight,SetProjectColorPipeline,SetViewportMainCameraPose\n"
+             << "RequestSchema 3\nReceiptSchema 3\n"
+             << "Actions InspectMaterialSurface,SelectEntityPatchMaterialSurface,InspectEntity,SelectEntity,SetEntityTransform,SetTypedLight,SetProjectColorPipeline,SetViewportMainCameraPose,SetSceneDebugVisualization,SetMeshRendererFlags\n"
              << "MaximumRequestBytes " << MaximumRequestBytes << '\n'
              << "MaximumRequestsPerFrame " << MaximumRequestsPerFrame << '\n'
              << "MaximumTerminalRequests " << MaximumTerminalRequests << '\n'
@@ -1065,7 +1180,7 @@ void EditorMaterialControlMailbox::TransitionToClosed(std::string_view reason)
         Engine::Log::Error(
             "Editor material-control close is visible but not confirmed crash-durable: ",
             error);
-    Engine::Log::Info("EditorMaterialControlV2 accepting=no reason=", reason,
+    Engine::Log::Info("EditorMaterialControlV3 accepting=no reason=", reason,
         " retained=", m_Terminals.size());
 }
 
@@ -1517,6 +1632,8 @@ void EditorMaterialControlMailbox::ProcessRequest(const std::filesystem::path& p
         receipt.AfterMeshRendererPresent = receipt.BeforeMeshRendererPresent;
         receipt.AfterMeshRenderer = receipt.BeforeMeshRenderer;
         receipt.AfterColorPipeline = receipt.BeforeColorPipeline;
+        receipt.AfterDebugView = receipt.BeforeDebugView;
+        receipt.AfterShowSelectedBounds = receipt.BeforeShowSelectedBounds;
         receipt.SelectedEntityIdAfter = receipt.SelectedEntityIdBefore;
         receipt.SelectionCommitted = false;
         receipt.PivotRetargeted = false;

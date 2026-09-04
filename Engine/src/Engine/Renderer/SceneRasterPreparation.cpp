@@ -37,6 +37,10 @@ namespace Engine
     {
         SceneRasterFrame frame;
         frame.SnapshotFrameIndex = snapshot.FrameIndex;
+        const SceneDebugVisualizationPublication debugVisualization =
+            Renderer::GetSceneDebugVisualization();
+        frame.DebugVisualization = debugVisualization.Settings;
+        frame.DebugVisualizationGeneration = debugVisualization.Generation;
         if (viewIndex >= snapshot.Views.size() || !snapshot.Views[viewIndex].Camera.Valid)
             return frame;
 

@@ -421,6 +421,9 @@ namespace Engine
         static RendererPresentationPolicyDiagnostics GetPresentationPolicyDiagnostics();
         static bool SetColorPipelineSettings(const RendererColorPipelineSettings& settings);
         static RendererColorPipelineSettings GetColorPipelineSettings();
+        static bool SetSceneDebugVisualization(
+            const SceneDebugVisualizationSettings& settings);
+        static SceneDebugVisualizationPublication GetSceneDebugVisualization();
         static bool RecordInputEvent(u64 applicationFrameIndex, RendererInputEventKind kind,
             int code, bool repeated = false);
         static std::optional<RendererInputSample> RecordInputSample(u64 applicationFrameIndex);

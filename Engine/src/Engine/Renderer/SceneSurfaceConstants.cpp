@@ -1,6 +1,7 @@
 #include "Engine/Renderer/SceneSurfaceConstants.h"
 
 #include "Engine/Renderer/SceneRasterPreparation.h"
+#include "Engine/Renderer/SceneDebugVisualization.h"
 #include "Engine/Renderer/SceneShadowMap.h"
 #include "Engine/Renderer/SceneSkyAtmosphere.h"
 #include "Engine/Renderer/TextureRuntimePublication.h"
@@ -19,6 +20,12 @@ namespace Engine
                 if (!std::isfinite(value))
                     return false;
             return true;
+        }
+
+        u32 FoldPersistentMaterialHandle(AssetHandle handle)
+        {
+            return static_cast<u32>(handle)
+                ^ static_cast<u32>(handle >> 32u);
         }
 
     }
@@ -132,6 +139,21 @@ namespace Engine
             candidate.SkyIrradianceLower[1] = sky.LowerDiffuseIrradiance.Y;
             candidate.SkyIrradianceLower[2] = sky.LowerDiffuseIrradiance.Z;
         }
+        inOutConstants = candidate;
+        return true;
+    }
+
+    bool TryApplySceneDebugVisualizationConstants(
+        const SceneRasterInstance& instance,
+        const SceneDebugVisualizationSettings& settings,
+        SceneSurfaceConstants& inOutConstants)
+    {
+        if (!IsValidSceneDebugVisualizationSettings(settings))
+            return false;
+        SceneSurfaceConstants candidate = inOutConstants;
+        candidate.MaterialState[2] = static_cast<u32>(settings.View);
+        candidate.MaterialState[3] = FoldPersistentMaterialHandle(
+            instance.MaterialAsset);
         inOutConstants = candidate;
         return true;
     }

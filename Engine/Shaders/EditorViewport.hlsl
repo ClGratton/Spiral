@@ -187,6 +187,30 @@ float3 NormalizeOrFallback(float3 value, float3 fallback)
         ? scaled * rsqrt(lengthSquared) : fallback;
 }
 
+float3 SceneDebugMaterialIdColor(uint persistentMaterialHash)
+{
+    // MaterialState.w is the deterministic fold of the persistent 64-bit
+    // MaterialAsset handle. Avalanche that stable input rather than the
+    // frame-local material-row index in MaterialState.x so unrelated visibility
+    // changes cannot recolor an unchanged material.
+    uint value = persistentMaterialHash * 0x9e3779b9u + 0x7f4a7c15u;
+    value ^= value >> 16u;
+    value *= 0x85ebca6bu;
+    value ^= value >> 13u;
+    value *= 0xc2b2ae35u;
+    value ^= value >> 16u;
+    return float3(
+        0.15f + 0.5f * ((value & 255u) / 255.0f),
+        0.15f + 0.5f * (((value >> 8u) & 255u) / 255.0f),
+        0.15f + 0.5f * (((value >> 16u) & 255u) / 255.0f));
+}
+
+float4 StoreSceneDebugColor(float3 displayLinear, float preExposure)
+{
+    return StoreSceneLinearHdr(displayLinear / preExposure,
+        1.0f, preExposure);
+}
+
 #if GE_SCENE_LIGHT_PAYLOAD
 struct SceneLightHeader
 {
@@ -491,6 +515,8 @@ float4 PSMain(VSOutput input) : SV_Target0
         return float4(4.0f, 0.0f, 4.0f, 1.0f);
     preExposure = lightHeader.PreExposure;
 #endif
+    if (MaterialState.z > 3u)
+        return float4(4.0f, 0.0f, 4.0f, 1.0f);
 #if GE_SCENE_SHADOW_MAP
     if (!ValidateSceneShadowState())
         return float4(4.0f, 0.0f, 4.0f, 1.0f);
@@ -529,6 +555,29 @@ float4 PSMain(VSOutput input) : SV_Target0
     const float alpha = saturate(baseSample.a * opacitySample);
     if (TextureState.z == 1u)
         clip(alpha - BaseColorAndAlphaCutoff.a);
+    if (MaterialState.z == 1u)
+        return StoreSceneDebugColor(
+            SceneDebugMaterialIdColor(MaterialState.w), preExposure);
+    if (MaterialState.z == 2u)
+    {
+        const float3 debugNormal = NormalizeOrFallback(input.GeometricNormal,
+            float3(0.0f, 1.0f, 0.0f));
+        return StoreSceneDebugColor(0.35f * (debugNormal + 1.0f),
+            preExposure);
+    }
+    if (MaterialState.z == 3u)
+    {
+        float3 casterColor = float3(0.12f, 0.12f, 0.12f);
+        if (ShadowState.w == 0u)
+            casterColor = float3(0.12f, 0.62f, 0.26f);
+        else if (ShadowState.w == 1u)
+            casterColor = float3(0.68f, 0.42f, 0.08f);
+        else if (ShadowState.w == 2u)
+            casterColor = float3(0.68f, 0.0f, 0.68f);
+        else if (ShadowState.w != 3u)
+            return float4(4.0f, 0.0f, 4.0f, 1.0f);
+        return StoreSceneDebugColor(casterColor, preExposure);
+    }
     const float3 emissive = max(EmissiveAndStrength.rgb, 0.0f)
         * max(EmissiveAndStrength.a, 0.0f) * emissiveSample;
     if (TextureState.w == 1u)

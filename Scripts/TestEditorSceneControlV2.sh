@@ -35,7 +35,7 @@ if [[ -n "$capture_dir" ]]; then
     install -d -m 700 -- "$capture_dir"
 fi
 editor_timeout_seconds="$(awk -v initial="$headed_observation_seconds" \
-    -v step="$step_observation_seconds" 'BEGIN { print 60 + initial + step * 5 }')"
+    -v step="$step_observation_seconds" 'BEGIN { print 60 + initial + step * 7 }')"
 
 if [[ ! -x "$editor" ]]; then
     echo "Editor executable is missing or not executable: $editor" >&2
@@ -51,7 +51,7 @@ cleanup() {
         wait "$live_process" 2>/dev/null || true
     fi
     if [[ "${SPIRAL_KEEP_SMOKE_ARTIFACTS:-0}" == "1" ]]; then
-        echo "Preserved scene-control V2 smoke artifacts: $smoke_root" >&2
+        echo "Preserved scene-control V3 smoke artifacts: $smoke_root" >&2
     else
         rm -rf -- "$smoke_root"
     fi
@@ -86,7 +86,7 @@ run_sequence() {
 
     timeout "${editor_timeout_seconds}s" "$editor" "$@" \
         "--editor-control-dir=$control_dir" \
-        --editor-control-scene-v2-helper-smoke >"$log_path" 2>&1 &
+        --editor-control-scene-v3-helper-smoke >"$log_path" 2>&1 &
     live_process=$!
     for _ in $(seq 1 500); do
         if [[ -f "$target" ]]; then
@@ -94,14 +94,14 @@ run_sequence() {
         fi
         if ! kill -0 "$live_process" 2>/dev/null; then
             cat "$log_path" >&2
-            echo "Editor exited before publishing the V2 target ($label)" >&2
+            echo "Editor exited before publishing the V3 target ($label)" >&2
             exit 1
         fi
         sleep 0.02
     done
     if [[ ! -f "$target" ]]; then
         cat "$log_path" >&2
-        echo "Timed out waiting for the V2 target ($label)" >&2
+        echo "Timed out waiting for the V3 target ($label)" >&2
         exit 1
     fi
 
@@ -141,7 +141,7 @@ run_sequence() {
             echo "Headed Editor placement mismatch: expected $headed_monitor/workspace $headed_workspace, got $actual_monitor/workspace $actual_workspace" >&2
             exit 1
         fi
-        echo "EditorSceneControlV2Placement address=$address monitor=$actual_monitor workspace=$actual_workspace result=pass"
+        echo "EditorSceneControlV3Placement address=$address monitor=$actual_monitor workspace=$actual_workspace result=pass"
         if [[ -n "$capture_dir" ]]; then
             sleep 0.1
             grim -o "$headed_monitor" "$capture_dir/$label-initial.png"
@@ -151,13 +151,13 @@ run_sequence() {
         sleep "$headed_observation_seconds"
     fi
 
-    grep -Fxq -- "SpiralEditorSceneControlTarget 2" <(head -n 1 "$target")
+    grep -Fxq -- "SpiralEditorSceneControlTarget 3" <(head -n 1 "$target")
     grep -Fq -- "PrototypeEntityName \"Prototype Mesh\"" "$target"
     grep -Fq -- "LightEntityName \"Directional Light\"" "$target"
     grep -Fq -- "MainCameraEntityName \"Main Camera\"" "$target"
-    grep -Fq -- "ExpectedDocumentMutations 8" "$target"
-    grep -Fq -- "ExpectedTypedRequests 20" "$target"
-    grep -Fq -- "ExpectedServerRejectedFixtures 3" "$target"
+    grep -Fq -- "ExpectedDocumentMutations 10" "$target"
+    grep -Fq -- "ExpectedTypedRequests 30" "$target"
+    grep -Fq -- "ExpectedServerRejectedFixtures 4" "$target"
 
     local initial_selected prototype_id light_id camera_id
     initial_selected="$(awk '$1 == "InitialSelectedEntityId" { print $2 }' "$target")"
@@ -168,6 +168,7 @@ run_sequence() {
 
     local -a prototype_before prototype_after light_before light_after
     local -a camera_before camera_after color_before color_after
+    local -a debug_before debug_after mesh_before mesh_after
     read -r -a prototype_before <<<"$(sed -n 's/^PrototypeTransformBefore //p' "$target")"
     read -r -a prototype_after <<<"$(sed -n 's/^PrototypeTransformAfter //p' "$target")"
     read -r -a light_before <<<"$(sed -n 's/^LightBefore //p' "$target")"
@@ -176,10 +177,16 @@ run_sequence() {
     read -r -a camera_after <<<"$(sed -n 's/^MainCameraTransformAfter //p' "$target")"
     read -r -a color_before <<<"$(sed -n 's/^ColorPipelineBefore //p' "$target")"
     read -r -a color_after <<<"$(sed -n 's/^ColorPipelineAfter //p' "$target")"
+    read -r -a debug_before <<<"$(sed -n 's/^DebugVisualizationBefore //p' "$target")"
+    read -r -a debug_after <<<"$(sed -n 's/^DebugVisualizationAfter //p' "$target")"
+    read -r -a mesh_before <<<"$(sed -n 's/^PrototypeMeshRendererFlagsBefore //p' "$target")"
+    read -r -a mesh_after <<<"$(sed -n 's/^PrototypeMeshRendererFlagsAfter //p' "$target")"
     [[ "${#prototype_before[@]}" -eq 12 && "${#prototype_after[@]}" -eq 12 ]]
     [[ "${#light_before[@]}" -eq 10 && "${#light_after[@]}" -eq 10 ]]
     [[ "${#camera_before[@]}" -eq 12 && "${#camera_after[@]}" -eq 12 ]]
     [[ "${#color_before[@]}" -eq 7 && "${#color_after[@]}" -eq 7 ]]
+    [[ "${#debug_before[@]}" -eq 2 && "${#debug_after[@]}" -eq 2 ]]
+    [[ "${#mesh_before[@]}" -eq 2 && "${#mesh_after[@]}" -eq 2 ]]
 
     invoke() {
         local request_id="$1"
@@ -194,7 +201,7 @@ run_sequence() {
             grim -o "$headed_monitor" "$capture_dir/$label-$1.png"
         fi
         if [[ "$label" == "vulkan" && "$step_observation_seconds" != "0" ]]; then
-            echo "EditorSceneControlV2Observation step=$1 seconds=$step_observation_seconds"
+            echo "EditorSceneControlV3Observation step=$1 seconds=$step_observation_seconds"
             sleep "$step_observation_seconds"
         fi
     }
@@ -317,6 +324,77 @@ run_sequence() {
         exit 1
     fi
 
+    invoke v2-20-select-prototype-debug select-entity \
+        --entity-id "$prototype_id" --expected-name "Prototype Mesh" \
+        --expected-selected-entity-id "$camera_id" >"$smoke_root/$label-20.json"
+    invoke v2-21-debug-set set-scene-debug-visualization \
+        --expected-selected-entity-id "$prototype_id" \
+        --expected-view "${debug_before[0]}" --expected-selected-bounds "${debug_before[1]}" \
+        --new-view "${debug_after[0]}" --new-selected-bounds "${debug_after[1]}" \
+        >"$smoke_root/$label-21.json"
+    observe_step debug-visualization-set
+
+    set +e
+    invoke v2-22-stale-debug-state set-scene-debug-visualization \
+        --expected-selected-entity-id "$prototype_id" \
+        --expected-view "${debug_before[0]}" --expected-selected-bounds "${debug_before[1]}" \
+        --new-view "${debug_after[0]}" --new-selected-bounds "${debug_after[1]}" \
+        >"$smoke_root/$label-22.json"
+    local stale_debug_state_status=$?
+    set -e
+    [[ "$stale_debug_state_status" -eq 2 ]]
+
+    set +e
+    invoke v2-23-stale-debug-selection set-scene-debug-visualization \
+        --expected-selected-entity-id "$camera_id" \
+        --expected-view "${debug_after[0]}" --expected-selected-bounds "${debug_after[1]}" \
+        --new-view "${debug_before[0]}" --new-selected-bounds "${debug_before[1]}" \
+        >"$smoke_root/$label-23.json"
+    local stale_debug_selection_status=$?
+    set -e
+    [[ "$stale_debug_selection_status" -eq 2 ]]
+
+    set +e
+    invoke v2-24-debug-forced-rollback set-scene-debug-visualization \
+        --expected-selected-entity-id "$prototype_id" \
+        --expected-view "${debug_after[0]}" --expected-selected-bounds "${debug_after[1]}" \
+        --new-view "${debug_before[0]}" --new-selected-bounds "${debug_before[1]}" \
+        >"$smoke_root/$label-24.json"
+    local debug_rollback_status=$?
+    set -e
+    [[ "$debug_rollback_status" -eq 2 ]]
+
+    invoke v2-25-debug-restore set-scene-debug-visualization \
+        --expected-selected-entity-id "$prototype_id" \
+        --expected-view "${debug_after[0]}" --expected-selected-bounds "${debug_after[1]}" \
+        --new-view "${debug_before[0]}" --new-selected-bounds "${debug_before[1]}" \
+        >"$smoke_root/$label-25.json"
+    invoke v2-26-mesh-set set-mesh-renderer-flags \
+        --entity-id "$prototype_id" --expected-name "Prototype Mesh" \
+        --expected-visible "${mesh_before[0]}" --expected-casts-shadows "${mesh_before[1]}" \
+        --new-visible "${mesh_after[0]}" --new-casts-shadows "${mesh_after[1]}" \
+        >"$smoke_root/$label-26.json"
+    observe_step mesh-flags-set
+
+    set +e
+    invoke v2-27-stale-mesh set-mesh-renderer-flags \
+        --entity-id "$prototype_id" --expected-name "Prototype Mesh" \
+        --expected-visible "${mesh_before[0]}" --expected-casts-shadows "${mesh_before[1]}" \
+        --new-visible "${mesh_after[0]}" --new-casts-shadows "${mesh_after[1]}" \
+        >"$smoke_root/$label-27.json"
+    local stale_mesh_status=$?
+    set -e
+    [[ "$stale_mesh_status" -eq 2 ]]
+
+    invoke v2-28-mesh-restore set-mesh-renderer-flags \
+        --entity-id "$prototype_id" --expected-name "Prototype Mesh" \
+        --expected-visible "${mesh_after[0]}" --expected-casts-shadows "${mesh_after[1]}" \
+        --new-visible "${mesh_before[0]}" --new-casts-shadows "${mesh_before[1]}" \
+        >"$smoke_root/$label-28.json"
+    invoke v2-29-select-camera-restore select-entity \
+        --entity-id "$camera_id" --expected-name "Main Camera" \
+        --expected-selected-entity-id "$prototype_id" >"$smoke_root/$label-29.json"
+
     python3 - "$smoke_root" "$label" <<'PY'
 import json
 from pathlib import Path
@@ -332,10 +410,14 @@ expected = {
     15: ("compare_and_swap_state_mismatch", "None", False),
     16: ("main_camera_pose_action_required", "None", False),
     19: ("compare_and_swap_state_mismatch", "None", False),
+    22: ("compare_and_swap_state_mismatch", "None", False),
+    23: ("compare_and_swap_state_mismatch", "None", False),
+    24: ("injected_postcondition_failure_rolled_back", "RolledBack", True),
+    27: ("compare_and_swap_state_mismatch", "None", False),
 }
 for index, (reason, effect, rolled_back) in expected.items():
     receipt = json.load((root / f"{label}-{index:02}.json").open(encoding="utf-8"))
-    assert receipt["schema"] == 2 and receipt["status"] == "Rejected"
+    assert receipt["schema"] == 3 and receipt["status"] == "Rejected"
     assert receipt["reason"] == reason and receipt["effect"] == effect
     assert receipt["recovery"] == "None" and not receipt["postconditionVerified"]
     assert receipt["rollbackVerified"] == rolled_back
@@ -362,30 +444,32 @@ PY
         "$smoke_root/$label-invalid-camera.error"
     test ! -e "$control_dir/requests/v2-invalid-camera-scale.request"
 
-    invoke v2-20-final-inspect inspect-entity \
+    invoke v2-30-final-inspect inspect-entity \
         --entity-id "$camera_id" --expected-name "Main Camera" \
-        >"$smoke_root/$label-20.json"
+        >"$smoke_root/$label-30.json"
     observe_step final-restored
 
     if ! wait "$live_process"; then
         live_process=""
         cat "$log_path" >&2
-        echo "Editor scene-control V2 process failed ($label)" >&2
+        echo "Editor scene-control V3 process failed ($label)" >&2
         exit 1
     fi
     live_process=""
-    grep -Fq -- "EditorSceneControlV2 producer=external-python" "$log_path"
+    grep -Fq -- "EditorSceneControlV3 producer=external-python" "$log_path"
     grep -Fq -- "backend=$expected_backend result=pass" "$log_path"
     grep -Fq -- "Renderer initialized with backend: $expected_backend" "$log_path"
     test -f "$control_dir/session.closed"
     test "$(stat -c '%a' "$control_dir/session.info")" = "600"
-    test "$(stat -c '%a' "$control_dir/responses/v2-20-final-inspect.response")" = "600"
+    test "$(stat -c '%a' "$control_dir/responses/v2-30-final-inspect.response")" = "600"
     grep -Fq -- 'Reason "wrong_project"' \
         "$control_dir/responses/v2-project-wrong.response"
     grep -Fq -- 'Reason "missing_or_unexpected_action_field"' \
         "$control_dir/responses/v2-mask-unexpected.response"
     grep -Fq -- 'Reason "invalid_or_duplicate_entity_id"' \
         "$control_dir/responses/v2-mask-duplicate.response"
+    grep -Fq -- 'Reason "unsupported_schema_expected_v3"' \
+        "$control_dir/responses/v2-schema-stale.response"
 
     python3 - "$smoke_root" "$label" "$project" <<'PY'
 import json
@@ -397,13 +481,25 @@ label = sys.argv[2]
 project = sys.argv[3]
 receipts = [json.load(path.open(encoding="utf-8"))
             for path in sorted(root.glob(f"{label}-[0-9][0-9].json"))]
-assert len(receipts) == 20
-assert all(value["schema"] == 2 for value in receipts)
+assert len(receipts) == 30
+assert all(value["schema"] == 3 for value in receipts)
 assert all(value["projectPath"] == project for value in receipts)
 assert all(value["editorProcessId"] > 0 for value in receipts)
-assert sum(value["status"] == "Succeeded" for value in receipts) == 13
-assert sum(value["status"] == "Rejected" for value in receipts) == 7
-assert sum(bool(value["rollbackVerified"]) for value in receipts) == 1
+assert sum(value["status"] == "Succeeded" for value in receipts) == 19
+assert sum(value["status"] == "Rejected" for value in receipts) == 11
+assert sum(bool(value["rollbackVerified"]) for value in receipts) == 2
+debug_set, debug_rollback, debug_restore = receipts[20], receipts[23], receipts[24]
+assert debug_set["selectedEntityIdBefore"] == debug_set["selectedEntityIdAfter"]
+assert debug_rollback["beforeDebugVisualization"] == debug_set["afterDebugVisualization"]
+assert debug_rollback["afterDebugVisualization"] == debug_set["afterDebugVisualization"]
+assert debug_rollback["selectedEntityIdBefore"] == debug_set["selectedEntityIdAfter"]
+assert debug_rollback["selectedEntityIdAfter"] == debug_set["selectedEntityIdAfter"]
+assert debug_rollback["rendererReadbackVerified"] and debug_rollback["rollbackVerified"]
+assert debug_restore["afterDebugVisualization"] == debug_set["beforeDebugVisualization"]
+mesh_set, mesh_restore = receipts[25], receipts[27]
+assert mesh_set["undoDepthAfter"] == mesh_set["undoDepthBefore"] + 1
+assert mesh_restore["undoDepthAfter"] == mesh_restore["undoDepthBefore"] + 1
+assert mesh_restore["afterMeshRenderer"] == mesh_set["beforeMeshRenderer"]
 PY
 }
 
@@ -417,8 +513,8 @@ after_fingerprint="$(fingerprint)"
 if [[ "$after_fingerprint" != "$before_fingerprint" ]]; then
     diff -u <(printf '%s\n' "$before_fingerprint") \
         <(printf '%s\n' "$after_fingerprint") >&2 || true
-    echo "Scene-control V2 changed persistent project bytes" >&2
+    echo "Scene-control V3 changed persistent project bytes" >&2
     exit 1
 fi
 
-echo "EditorSceneControlV2Test helper=typed schema=2 headless=pass vulkan=$([[ "$run_vulkan" == "--vulkan" ]] && echo pass || echo skipped) security=project-mask-duplicate-rejected cas=selection-transform-light-color-camera stale=rejected mainCameraAuthority=dedicated invalid-camera=client-rejected rollback=verified history=one-per-document-action restore=exact save=not-invoked persistentBytes=unchanged input=no-ui-synthesis result=pass"
+echo "EditorSceneControlV3Test helper=typed schema=3 requests=30 succeeded=19 rejected=11 headless=pass vulkan=$([[ "$run_vulkan" == "--vulkan" ]] && echo pass || echo skipped) security=project-mask-duplicate-rejected cas=selection-transform-light-color-camera-debug-mesh stale=rejected selectedIdentity=bound mainCameraAuthority=dedicated invalid-camera=client-rejected rollbacks=2-verified history=one-per-document-action restore=exact save=not-invoked persistentBytes=unchanged input=no-ui-synthesis result=pass"

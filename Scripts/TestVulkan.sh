@@ -374,6 +374,44 @@ for ((ATTEMPT = 1; ATTEMPT <= ITERATIONS; ++ATTEMPT)); do
         exit 1
     fi
 
+    DEBUG_VISUALIZATION_LOG="$LOG_BASE-debug-visualization-attempt-$ATTEMPT.log"
+    set +e
+    (cd "$ROOT" && perl -e '
+        my $timeout = shift;
+        my $child = fork();
+        die "fork failed: $!\n" unless defined $child;
+        if ($child == 0) {
+            setpgrp(0, 0) or die "setpgrp failed: $!\n";
+            exec @ARGV or die "exec failed: $!\n";
+        }
+        $SIG{ALRM} = sub {
+            warn "Vulkan debug-visualization child timed out after ${timeout}s; terminating process group\n";
+            kill "TERM", -$child;
+            sleep 1;
+            kill "KILL", -$child;
+            waitpid($child, 0);
+            exit 124;
+        };
+        alarm $timeout;
+        waitpid($child, 0);
+        alarm 0;
+        my $status = $?;
+        exit(128 + ($status & 127)) if $status & 127;
+        exit($status >> 8);
+    ' "$CHILD_TIMEOUT_SECONDS" "$EDITOR" --vulkan-render-smoke --vulkan-scene-viewport-raster-smoke --scene-debug-visualization-smoke --scene-viewport-render-graph-smoke) 2>&1 | tee "$DEBUG_VISUALIZATION_LOG"
+    DEBUG_VISUALIZATION_STATUS=${PIPESTATUS[0]}
+    set -e
+    if [[ $DEBUG_VISUALIZATION_STATUS -ne 0 ]]; then
+        echo "Dedicated Vulkan debug-visualization smoke failed with exit code $DEBUG_VISUALIZATION_STATUS on attempt $ATTEMPT/$ITERATIONS." >&2
+        exit "$DEBUG_VISUALIZATION_STATUS"
+    fi
+    if ! grep -Eq 'SceneDebugVisualizationV1 backend=Vulkan modes=Lit,MaterialId,GeometricNormal,ShadowCaster settings=immutable-prepared readback=exact-diagnostic selectedBounds=post-tone-map overlayPixels=[1-9][0-9]* fullOpacityBlendPixels=[1-9][0-9]* graphPasses=8-on,7-off emptyVisibleMeshes=sky-retained result=pass' "$DEBUG_VISUALIZATION_LOG" \
+        || ! grep -Fq 'SceneViewportRenderGraphV1 backend=Vulkan passes=8 labels=light-payload-copy,primary-directional-shadow-map,clear,sky-atmosphere,raster,tone-map,debug-overlay,output-handoff execution=pass reference=direct comparator=exact-byte-pass' "$DEBUG_VISUALIZATION_LOG" \
+        || ! grep -Fq 'SceneViewportRenderGraphV1 backend=Vulkan passes=7 labels=light-payload-copy,primary-directional-shadow-map,clear,sky-atmosphere,raster,tone-map,output-handoff execution=pass reference=direct comparator=exact-byte-pass' "$DEBUG_VISUALIZATION_LOG"; then
+        echo "Dedicated Vulkan debug-visualization smoke did not prove immutable mode state, post-tone-map selected bounds, conditional graph topology, and sky retention with zero visible meshes." >&2
+        exit 1
+    fi
+
     PAYLOAD_LOG="$LOG_BASE-light-payload-attempt-$ATTEMPT.log"
     set +e
     (cd "$ROOT" && perl -e '
@@ -436,7 +474,16 @@ for ((ATTEMPT = 1; ATTEMPT <= ITERATIONS; ++ATTEMPT)); do
         echo "Vulkan render smoke did not prove completion-gated raw timestamp scopes across consecutive frames on attempt $ATTEMPT/$ITERATIONS." >&2
         exit 1
     fi
-    GPU_TIMING_COUNT=$(grep -Ec 'RendererGpuTimingV1 backend=NVRHI Vulkan frame=[0-9]+ passes=7 wholeMs=[0-9]+([.][0-9]+)? status=Ready capability=GpuTimestamps result=pass' "$LOG_FILE" || true)
+    GPU_TIMING_COUNT=0
+    while IFS= read -r GPU_TIMING_LINE; do
+        if [[ "$GPU_TIMING_LINE" =~ frame=([0-9]+)[[:space:]]passes=(7|8)[[:space:]]wholeMs=[0-9]+([.][0-9]+)?[[:space:]]status=Ready[[:space:]]capability=GpuTimestamps[[:space:]]result=pass ]]; then
+            GPU_TIMING_FRAME="${BASH_REMATCH[1]}"
+            GPU_TIMING_PASSES="${BASH_REMATCH[2]}"
+            if grep -Eq "RenderGraphTimestampScopesV1 backend=Vulkan frame=${GPU_TIMING_FRAME} scopes=${GPU_TIMING_PASSES} raw=ready cpuWaitBetween=no result=pass" "$LOG_FILE"; then
+                ((GPU_TIMING_COUNT += 1))
+            fi
+        fi
+    done < <(grep -F 'RendererGpuTimingV1 backend=NVRHI Vulkan' "$LOG_FILE" || true)
     if [[ "$GPU_TIMING_COUNT" -lt 1 ]]; then
         echo "Vulkan render smoke did not publish exact-frame GPU durations and promote the exercised capability path on attempt $ATTEMPT/$ITERATIONS." >&2
         exit 1

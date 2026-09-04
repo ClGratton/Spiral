@@ -63,6 +63,8 @@ private:
     void PublishFramePacingPolicy();
     void PublishPresentationPolicy();
     void PublishColorPipelineSettings();
+    Engine::EntityId GetSceneDebugSelectedEntityId() const;
+    bool PublishSceneDebugVisualization();
     bool PublishProjectColorPipelineSettings(
         const Engine::RendererColorPipelineSettings& settings);
     bool ApplyProjectColorPipelineSettings(const Engine::RendererColorPipelineSettings& settings,
@@ -223,6 +225,8 @@ private:
     Engine::Entity m_SceneOriginRasterMeshEntity;
     Engine::Entity m_EditorMaterialControlSharedPeer;
     Engine::Entity m_SelectedEntity;
+    Engine::SceneDebugView m_SceneDebugView = Engine::SceneDebugView::Lit;
+    bool m_ShowSelectedBounds = true;
     Engine::EditorCamera m_EditorCamera;
     Engine::CameraViewOriginTracker m_ViewportOriginTracker;
     bool m_ViewportDiscontinuousRelocationPending = true;
@@ -293,6 +297,14 @@ private:
     Engine::LightComponent m_EditorSceneControlV2LightAfter;
     Engine::RendererColorPipelineSettings m_EditorSceneControlV2ColorBefore;
     Engine::RendererColorPipelineSettings m_EditorSceneControlV2ColorAfter;
+    Engine::MeshRendererComponent m_EditorSceneControlV2MeshBefore;
+    Engine::MeshRendererComponent m_EditorSceneControlV2MeshAfter;
+    Engine::SceneDebugView m_EditorSceneControlV2DebugViewBefore =
+        Engine::SceneDebugView::Lit;
+    Engine::SceneDebugView m_EditorSceneControlV2DebugViewAfter =
+        Engine::SceneDebugView::MaterialId;
+    bool m_EditorSceneControlV2BoundsBefore = true;
+    bool m_EditorSceneControlV2BoundsAfter = false;
 
     struct HistoryState
     {

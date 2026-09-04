@@ -29,7 +29,7 @@ timeout 20s "$editor" --headless \
     "--editor-control-dir=$control_dir" \
     --editor-control-mailbox-smoke 2>&1 | tee "$log_path"
 
-grep -Fq -- "EditorMaterialControlMailboxV2 interface=private-filesystem" "$log_path"
+grep -Fq -- "EditorMaterialControlMailboxV3 interface=private-filesystem" "$log_path"
 grep -Fq -- "input=mailbox-no-ui-synthesis pollCadenceMs=16" "$log_path"
 grep -Fq -- "result=pass" "$log_path"
 test -f "$control_dir/session.info"
@@ -149,7 +149,7 @@ python3 "$script_dir/EditorMaterialControl.py" \
     >"$smoke_root/live-set.json"
 wait "$live_process"
 live_process=""
-grep -Fq -- "EditorMaterialControlLiveHelperV2 producer=external-python requests=fresh" "$live_log"
+grep -Fq -- "EditorMaterialControlLiveHelperV3 producer=external-python requests=fresh" "$live_log"
 grep -Fq -- "result=pass" "$live_log"
 python3 - "$smoke_root/live-inspect.json" "$smoke_root/live-set.json" \
     "$live_entity_id" "$live_material_handle" \
@@ -198,7 +198,7 @@ durability_log="$smoke_root/durability-editor.log"
 timeout 20s "$editor" --headless \
     "--editor-control-dir=$durability_control_dir" \
     --editor-control-durability-smoke >"$durability_log" 2>&1
-grep -Fq -- "EditorMaterialControlDurabilityV2 visibility=rename-authoritative parentSync=injected-failure committed=preserved rollback=no acceptance=closed crashDurability=degraded result=pass" "$durability_log"
+grep -Fq -- "EditorMaterialControlDurabilityV3 visibility=rename-authoritative parentSync=injected-failure committed=preserved rollback=no acceptance=closed crashDurability=degraded result=pass" "$durability_log"
 grep -Fq -- "publication is visible but not confirmed crash-durable" "$durability_log"
 test -f "$durability_control_dir/session.closed"
 durability_response="$durability_control_dir/responses/durability-visible-success.response"
@@ -242,9 +242,9 @@ for rollback_mode in commit postcommit; do
     timeout 20s "$editor" --headless \
         "--editor-control-dir=$rollback_control_dir" \
         "$rollback_flag" >"$rollback_log" 2>&1
-    grep -Fq -- "EditorMaterialControlV2 accepting=no reason=$rollback_reason" \
+    grep -Fq -- "EditorMaterialControlV3 accepting=no reason=$rollback_reason" \
         "$rollback_log"
-    grep -Fq -- "EditorMaterialControlRollbackFailureV2 path=$rollback_path closeReason=$rollback_reason" \
+    grep -Fq -- "EditorMaterialControlRollbackFailureV3 path=$rollback_path closeReason=$rollback_reason" \
         "$rollback_log"
     grep -Fq -- "rolledBackClaim=no requestRequeued=no session=closed result=pass" \
         "$rollback_log"
@@ -310,7 +310,7 @@ capacity_log="$smoke_root/capacity-editor.log"
 timeout 20s "$editor" --headless \
     "--editor-control-dir=$capacity_control_dir" \
     --editor-control-capacity-smoke >"$capacity_log" 2>&1
-grep -Fq -- "EditorMaterialControlCapacityV2 retained=256 accepting=no pendingUnclaimed=1 response=absent session=closed affectedTotal=42 affectedSample=32 truncated=yes result=pass" "$capacity_log"
+grep -Fq -- "EditorMaterialControlCapacityV3 retained=256 accepting=no pendingUnclaimed=1 response=absent session=closed affectedTotal=42 affectedSample=32 truncated=yes result=pass" "$capacity_log"
 test -f "$capacity_control_dir/requests/capacity-0256.request"
 test ! -e "$capacity_control_dir/responses/capacity-0256.response"
 capacity_response="$capacity_control_dir/responses/capacity-0000.response"
@@ -347,4 +347,4 @@ if python3 "$script_dir/EditorMaterialControl.py" \
 fi
 grep -Fq -- "editor-control session is closed" "$smoke_root/capacity-helper.error"
 
-echo "EditorMaterialControlTestV2 internal=pass conflicts=A-B-C-consumed liveHelper=fresh-inspect-set durability=visible-success-preserved rollbackFailure=closed-no-replay commit-and-postcommit=pass capacity=retained private=pass cleanup=bounded result=pass"
+echo "EditorMaterialControlTestV3 internal=pass conflicts=A-B-C-consumed liveHelper=fresh-inspect-set durability=visible-success-preserved rollbackFailure=closed-no-replay commit-and-postcommit=pass capacity=retained private=pass cleanup=bounded result=pass"

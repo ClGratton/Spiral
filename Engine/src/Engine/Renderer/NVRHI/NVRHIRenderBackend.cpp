@@ -5,6 +5,7 @@
 #include "Engine/Renderer/TextureGpuResourceCache.h"
 #include "Engine/Renderer/TextureRuntimePublication.h"
 #include "Engine/Renderer/Renderer.h"
+#include "Engine/Renderer/SceneDebugVisualization.h"
 #include "Engine/Renderer/SceneSurfaceConstants.h"
 
 #include "Engine/Core/Log.h"
@@ -2626,12 +2627,15 @@ float4 PSVertexStrideSmoke(RHIVertexStrideOutput input) : SV_Target0
             "--scene-shadow-map-smoke");
         const bool skyAtmosphereProbeRequested = Application::Get().GetSpecification().CommandLineArgs.HasFlag(
             "--scene-sky-atmosphere-smoke");
+        const bool debugVisualizationProbeRequested = Application::Get().GetSpecification().CommandLineArgs.HasFlag(
+            "--scene-debug-visualization-smoke");
         const u32 dedicatedProbeCount = static_cast<u32>(surfaceProbeRequested)
             + static_cast<u32>(pbrProbeRequested)
             + static_cast<u32>(lightPayloadProbeRequested)
             + static_cast<u32>(directLightingProbeRequested)
             + static_cast<u32>(shadowMapProbeRequested)
-            + static_cast<u32>(skyAtmosphereProbeRequested);
+            + static_cast<u32>(skyAtmosphereProbeRequested)
+            + static_cast<u32>(debugVisualizationProbeRequested);
         if (dedicatedProbeCount > 1)
             return false;
         m_VulkanSceneRenderer = CreateScope<NVRHIVulkanViewportSceneRenderer>();
@@ -2641,6 +2645,22 @@ float4 PSVertexStrideSmoke(RHIVertexStrideOutput input) : SV_Target0
                 ? m_VulkanSceneRenderer->InitializeLightPayloadProbe(device)
                 : m_VulkanSceneRenderer->Initialize(device);
         if (!rendererInitialized)
+            return false;
+
+        const SceneDebugVisualizationPublication previousDebugVisualization =
+            Renderer::GetSceneDebugVisualization();
+        struct ScopedDebugVisualizationRestore
+        {
+            SceneDebugVisualizationSettings Settings;
+            ~ScopedDebugVisualizationRestore()
+            {
+                Renderer::SetSceneDebugVisualization(Settings);
+            }
+        } debugVisualizationRestore { previousDebugVisualization.Settings };
+        // Smoke fixtures are renderer-owned and must not inherit Editor startup
+        // selection. This keeps the ordinary comparator at exactly seven passes.
+        if (!Renderer::SetSceneDebugVisualization({ SceneDebugView::Lit,
+                kInvalidEntityId, false }))
             return false;
 
         AssetRegistry smokeRegistry;
@@ -2922,13 +2942,13 @@ float4 PSVertexStrideSmoke(RHIVertexStrideOutput input) : SV_Target0
             directionalLight.CastsShadows = true;
             snapshot.Lights = { directionalLight };
         }
-        else if (skyAtmosphereProbeRequested)
+        else if (skyAtmosphereProbeRequested || debugVisualizationProbeRequested)
         {
             directionalLight.SourceEntity = 51;
             directionalLight.Color = { 1.0f, 1.0f, 1.0f };
             directionalLight.PhotometricValue = 100000.0;
             directionalLight.Transform.RotationDegrees = { 25.0f, 180.0f, 0.0f };
-            directionalLight.CastsShadows = false;
+            directionalLight.CastsShadows = debugVisualizationProbeRequested;
             snapshot.Lights = { directionalLight };
         }
         else
@@ -2986,9 +3006,26 @@ float4 PSVertexStrideSmoke(RHIVertexStrideOutput input) : SV_Target0
             }
             snapshot.Meshes.push_back(mesh);
         }
+        if (debugVisualizationProbeRequested
+            && !Renderer::SetSceneDebugVisualization({
+                SceneDebugView::MaterialId, 1, true }))
+            return false;
         Renderer::PublishSceneRenderSnapshot(snapshot);
         if (!Renderer::PrepareCurrentSceneRasterFrame())
             return false;
+        const std::shared_ptr<const SceneRasterFrame> retainedDebugFrame =
+            debugVisualizationProbeRequested
+            ? Renderer::GetPreparedSceneRasterFrame() : nullptr;
+        SceneDebugVisualizationPublication liveDebugVisualization;
+        if (debugVisualizationProbeRequested)
+        {
+            // The already-prepared frame must retain bounds-on even though the
+            // live publication is changed before either GPU submission.
+            if (!Renderer::SetSceneDebugVisualization({
+                    SceneDebugView::MaterialId, 1, false }))
+                return false;
+            liveDebugVisualization = Renderer::GetSceneDebugVisualization();
+        }
         bool liveCatalogPublished = dedicatedProbeCount != 0;
         u64 retainedCatalogGeneration = 0;
         u64 liveCatalogGeneration = 0;
@@ -3014,15 +3051,26 @@ float4 PSVertexStrideSmoke(RHIVertexStrideOutput input) : SV_Target0
             }
         }
         const RendererColorPipelineSettings previousColorSettings = Renderer::GetColorPipelineSettings();
+        struct ScopedColorPipelineRestore
+        {
+            RendererColorPipelineSettings Settings;
+            ~ScopedColorPipelineRestore()
+            {
+                Renderer::SetColorPipelineSettings(Settings);
+            }
+        } colorPipelineRestore { previousColorSettings };
         if (!Renderer::SetColorPipelineSettings({
-            skyAtmosphereProbeRequested ? 11.0 : 0.0 }))
+            (skyAtmosphereProbeRequested || debugVisualizationProbeRequested)
+                ? 11.0 : 0.0 }))
             return false;
         const ClearColor background { 0.04f, 0.05f, 0.06f, 1.0f };
         const u32 firstWidth = skyAtmosphereProbeRequested ? 256u : 48u;
         const u32 firstHeight = skyAtmosphereProbeRequested ? 144u
+            : debugVisualizationProbeRequested ? 36u
             : pbrProbeRequested ? 24u : directLightingProbeRequested ? 48u : 36u;
         const u32 secondWidth = skyAtmosphereProbeRequested ? 320u : 64u;
         const u32 secondHeight = skyAtmosphereProbeRequested ? 180u
+            : debugVisualizationProbeRequested ? 48u
             : pbrProbeRequested ? 32u : directLightingProbeRequested ? 64u : 48u;
         const bool firstRaster = m_VulkanSceneRenderer->RenderCurrentSnapshot(
             firstWidth, firstHeight, background);
@@ -3031,7 +3079,7 @@ float4 PSVertexStrideSmoke(RHIVertexStrideOutput input) : SV_Target0
         const bool firstDedicatedRetired = !(
             surfaceProbeRequested || pbrProbeRequested || lightPayloadProbeRequested
                 || directLightingProbeRequested || shadowMapProbeRequested
-                || skyAtmosphereProbeRequested)
+                || skyAtmosphereProbeRequested || debugVisualizationProbeRequested)
             || (firstRaster && m_VulkanSceneRenderer->ReadbackColor(firstDedicatedReadback));
         const bool resizedRaster = firstRaster && firstDedicatedRetired
             && m_VulkanSceneRenderer->RenderCurrentSnapshot(
@@ -3072,6 +3120,258 @@ float4 PSVertexStrideSmoke(RHIVertexStrideOutput input) : SV_Target0
                 retainedCatalogGeneration, " liveGeneration=",
                 liveCatalogGeneration, " result=",
                 liveCatalogContinuity ? "pass" : "fail");
+        }
+        if (debugVisualizationProbeRequested)
+        {
+            const RHI::TextureReadback materialIdWithBounds = readback;
+            const auto validColorReadback = [secondWidth, secondHeight](
+                const RHI::TextureReadback& value)
+            {
+                return value.Extent.Width == secondWidth
+                    && value.Extent.Height == secondHeight
+                    && value.RowPitchBytes >= secondWidth * 4u
+                    && value.Data.size() >= static_cast<size_t>(
+                        value.RowPitchBytes) * secondHeight;
+            };
+            const auto pixel = [](const RHI::TextureReadback& value,
+                u32 x, u32 y)
+            {
+                return &value.Data[static_cast<size_t>(y)
+                    * value.RowPitchBytes + static_cast<size_t>(x) * 4u];
+            };
+            const auto colorDiffers = [](const u8* first, const u8* second,
+                u32 threshold)
+            {
+                for (u32 channel = 0; channel < 3; ++channel)
+                    if (std::abs(static_cast<int>(first[channel])
+                            - static_cast<int>(second[channel]))
+                        > static_cast<int>(threshold))
+                        return true;
+                return false;
+            };
+            const auto renderDebugView = [&](u64 frameIndex,
+                SceneDebugView debugView, EntityId selectedEntity,
+                bool showSelectedBounds, RHI::TextureReadback& outReadback,
+                std::shared_ptr<const SceneRasterFrame>& outFrame)
+            {
+                if (!Renderer::SetSceneDebugVisualization({ debugView,
+                        selectedEntity, showSelectedBounds }))
+                    return false;
+                snapshot.FrameIndex = frameIndex;
+                Renderer::PublishSceneRenderSnapshot(snapshot);
+                if (!Renderer::PrepareCurrentSceneRasterFrame())
+                    return false;
+                outFrame = Renderer::GetPreparedSceneRasterFrame();
+                return m_VulkanSceneRenderer->RenderCurrentSnapshot(
+                        secondWidth, secondHeight, background)
+                    && m_VulkanSceneRenderer->ReadbackColor(outReadback);
+            };
+
+            RHI::TextureReadback materialIdWithoutBounds;
+            RHI::TextureReadback geometricNormal;
+            RHI::TextureReadback shadowCaster;
+            RHI::TextureReadback lit;
+            std::shared_ptr<const SceneRasterFrame> materialIdWithoutBoundsFrame;
+            std::shared_ptr<const SceneRasterFrame> geometricNormalFrame;
+            std::shared_ptr<const SceneRasterFrame> shadowCasterFrame;
+            std::shared_ptr<const SceneRasterFrame> litFrame;
+            const bool viewsRendered = readbackOk
+                && renderDebugView(2, SceneDebugView::MaterialId, 1, false,
+                    materialIdWithoutBounds, materialIdWithoutBoundsFrame)
+                && renderDebugView(3, SceneDebugView::GeometricNormal, 1, false,
+                    geometricNormal, geometricNormalFrame)
+                && renderDebugView(4, SceneDebugView::ShadowCaster, 1, false,
+                    shadowCaster, shadowCasterFrame)
+                && renderDebugView(5, SceneDebugView::Lit, kInvalidEntityId,
+                    false, lit, litFrame);
+            const bool shapesValid = viewsRendered
+                && validColorReadback(materialIdWithBounds)
+                && validColorReadback(materialIdWithoutBounds)
+                && validColorReadback(geometricNormal)
+                && validColorReadback(shadowCaster)
+                && validColorReadback(lit);
+
+            u32 changedOverlayPixels = 0;
+            u32 fullOpacityBlendPixels = 0;
+            if (shapesValid)
+            {
+                constexpr std::array<u32, 3> overlayBytes { 69u, 133u, 179u };
+                constexpr double overlayOpacity = 0.92;
+                for (u32 y = 0; y < secondHeight; ++y)
+                {
+                    for (u32 x = 0; x < secondWidth; ++x)
+                    {
+                        const u8* withBounds = pixel(materialIdWithBounds, x, y);
+                        const u8* withoutBounds = pixel(materialIdWithoutBounds, x, y);
+                        if (!colorDiffers(withBounds, withoutBounds, 2u))
+                            continue;
+                        ++changedOverlayPixels;
+                        bool fullOpacityBlend = withBounds[3] == 255u
+                            && withoutBounds[3] == 255u;
+                        for (u32 channel = 0; fullOpacityBlend && channel < 3; ++channel)
+                        {
+                            const int expected = static_cast<int>(std::lround(
+                                static_cast<double>(withoutBounds[channel])
+                                    * (1.0 - overlayOpacity)
+                                + static_cast<double>(overlayBytes[channel])
+                                    * overlayOpacity));
+                            fullOpacityBlend = std::abs(
+                                static_cast<int>(withBounds[channel]) - expected) <= 2;
+                        }
+                        if (fullOpacityBlend)
+                            ++fullOpacityBlendPixels;
+                    }
+                }
+            }
+            const u8* materialCenter = shapesValid
+                ? pixel(materialIdWithoutBounds, secondWidth / 2u,
+                    secondHeight / 2u) : nullptr;
+            const u8* normalCenter = shapesValid
+                ? pixel(geometricNormal, secondWidth / 2u,
+                    secondHeight / 2u) : nullptr;
+            const u8* shadowCenter = shapesValid
+                ? pixel(shadowCaster, secondWidth / 2u,
+                    secondHeight / 2u) : nullptr;
+            const u8* litCenter = shapesValid
+                ? pixel(lit, secondWidth / 2u, secondHeight / 2u) : nullptr;
+            using DebugColor = std::array<double, 3>;
+            const auto encodeDebugColor = [](DebugColor color)
+            {
+                for (double& channel : color)
+                    channel = std::min(channel, 6.25);
+                const double minimum = std::min(color[0],
+                    std::min(color[1], color[2]));
+                const double offset = minimum < 0.08
+                    ? minimum - 6.25 * minimum * minimum : 0.04;
+                for (double& channel : color)
+                    channel -= offset;
+                const double peak = std::max(color[0],
+                    std::max(color[1], color[2]));
+                if (peak >= 0.76)
+                {
+                    constexpr double distance = 0.24;
+                    const double newPeak = 1.0 - distance * distance
+                        / (peak + distance - 0.76);
+                    for (double& channel : color)
+                        channel *= newPeak / peak;
+                    const double amount = 1.0
+                        - 1.0 / (0.15 * (peak - newPeak) + 1.0);
+                    for (double& channel : color)
+                        channel += (newPeak - channel) * amount;
+                }
+                std::array<u8, 3> encoded {};
+                for (size_t channel = 0; channel < encoded.size(); ++channel)
+                {
+                    const double value = std::clamp(color[channel], 0.0, 1.0);
+                    const double srgb = value <= 0.0031308 ? value * 12.92
+                        : 1.055 * std::pow(value, 1.0 / 2.4) - 0.055;
+                    encoded[channel] = static_cast<u8>(std::clamp(
+                        static_cast<int>(std::lround(srgb * 255.0)), 0, 255));
+                }
+                return encoded;
+            };
+            const auto debugPixelMatches = [](const u8* actual,
+                const std::array<u8, 3>& expected)
+            {
+                if (!actual || actual[3] != 255u)
+                    return false;
+                for (size_t channel = 0; channel < expected.size(); ++channel)
+                    if (std::abs(static_cast<int>(actual[channel])
+                            - static_cast<int>(expected[channel])) > 4)
+                        return false;
+                return true;
+            };
+            u32 persistentMaterialHash = static_cast<u32>(smokeMaterial)
+                ^ static_cast<u32>(smokeMaterial >> 32u);
+            u32 materialColorHash = persistentMaterialHash * 0x9e3779b9u
+                + 0x7f4a7c15u;
+            materialColorHash ^= materialColorHash >> 16u;
+            materialColorHash *= 0x85ebca6bu;
+            materialColorHash ^= materialColorHash >> 13u;
+            materialColorHash *= 0xc2b2ae35u;
+            materialColorHash ^= materialColorHash >> 16u;
+            const std::array<u8, 3> expectedMaterialId = encodeDebugColor({
+                0.15 + 0.5 * static_cast<double>(materialColorHash & 255u) / 255.0,
+                0.15 + 0.5 * static_cast<double>((materialColorHash >> 8u) & 255u) / 255.0,
+                0.15 + 0.5 * static_cast<double>((materialColorHash >> 16u) & 255u) / 255.0
+            });
+            const std::array<u8, 3> expectedGeometricNormal =
+                encodeDebugColor({ 0.35, 0.35, 0.70 });
+            const std::array<u8, 3> expectedShadowCaster =
+                encodeDebugColor({ 0.12, 0.62, 0.26 });
+            const bool exactDiagnosticPixels = shapesValid
+                && debugPixelMatches(materialCenter, expectedMaterialId)
+                && debugPixelMatches(normalCenter, expectedGeometricNormal)
+                && debugPixelMatches(shadowCenter, expectedShadowCaster);
+            const bool centerUnaffectedByBounds = shapesValid
+                && !colorDiffers(pixel(materialIdWithBounds, secondWidth / 2u,
+                        secondHeight / 2u), materialCenter, 1u);
+            const bool debugModesDistinct = shapesValid
+                && colorDiffers(materialCenter, normalCenter, 8u)
+                && colorDiffers(materialCenter, shadowCenter, 8u)
+                && colorDiffers(materialCenter, litCenter, 8u)
+                && colorDiffers(normalCenter, shadowCenter, 8u)
+                && colorDiffers(normalCenter, litCenter, 8u)
+                && colorDiffers(shadowCenter, litCenter, 8u);
+
+            const bool retainedFrameCoherent = retainedDebugFrame
+                && retainedDebugFrame->DebugVisualization.View
+                    == SceneDebugView::MaterialId
+                && retainedDebugFrame->DebugVisualization.SelectedEntity == 1
+                && retainedDebugFrame->DebugVisualization.ShowSelectedBounds
+                && retainedDebugFrame->DebugVisualizationGeneration
+                    < liveDebugVisualization.Generation;
+            const bool nextFrameAdopted = materialIdWithoutBoundsFrame
+                && materialIdWithoutBoundsFrame->DebugVisualization.View
+                    == SceneDebugView::MaterialId
+                && materialIdWithoutBoundsFrame->DebugVisualization.SelectedEntity == 1
+                && !materialIdWithoutBoundsFrame->DebugVisualization.ShowSelectedBounds
+                && materialIdWithoutBoundsFrame->DebugVisualizationGeneration
+                    == liveDebugVisualization.Generation;
+            const bool postToneMapOverlay = changedOverlayPixels >= 32u
+                && fullOpacityBlendPixels >= 8u && centerUnaffectedByBounds;
+
+            snapshot.FrameIndex = 6;
+            snapshot.Meshes.clear();
+            Renderer::PublishSceneRenderSnapshot(snapshot);
+            RHI::TextureReadback emptyVisibleMeshReadback;
+            const bool emptyFramePrepared = Renderer::SetSceneDebugVisualization({
+                    SceneDebugView::Lit, kInvalidEntityId, false })
+                && Renderer::PrepareCurrentSceneRasterFrame();
+            const std::shared_ptr<const SceneRasterFrame> emptyFrame =
+                emptyFramePrepared ? Renderer::GetPreparedSceneRasterFrame() : nullptr;
+            const bool emptyFrameRendered = emptyFramePrepared
+                && m_VulkanSceneRenderer->RenderCurrentSnapshot(
+                    secondWidth, secondHeight, background)
+                && m_VulkanSceneRenderer->ReadbackColor(emptyVisibleMeshReadback);
+            const bool emptyShape = emptyFrameRendered
+                && validColorReadback(emptyVisibleMeshReadback);
+            const u8* emptyUpper = emptyShape
+                ? pixel(emptyVisibleMeshReadback, secondWidth / 8u,
+                    secondHeight / 8u) : nullptr;
+            const u8* emptyGround = emptyShape
+                ? pixel(emptyVisibleMeshReadback, secondWidth / 8u,
+                    secondHeight * 7u / 8u) : nullptr;
+            const bool emptySkyRetained = emptyFrame
+                && emptyFrame->HasValidView && emptyFrame->Instances.empty()
+                && emptyFrame->SkyAtmosphere.Enabled
+                && emptyFrame->DebugVisualization.View == SceneDebugView::Lit
+                && emptyUpper && emptyGround && emptyUpper[3] == 255u
+                && emptyGround[3] == 255u
+                && colorDiffers(emptyUpper, emptyGround, 4u);
+
+            const bool debugVisualizationOracle = shapesValid
+                && debugModesDistinct && exactDiagnosticPixels
+                && retainedFrameCoherent
+                && nextFrameAdopted && postToneMapOverlay
+                && emptyFrameRendered && emptySkyRetained;
+            Renderer::SetColorPipelineSettings(previousColorSettings);
+            Log::Info("SceneDebugVisualizationV1 backend=Vulkan modes=Lit,MaterialId,GeometricNormal,ShadowCaster settings=immutable-prepared readback=exact-diagnostic selectedBounds=post-tone-map overlayPixels=",
+                changedOverlayPixels, " fullOpacityBlendPixels=",
+                fullOpacityBlendPixels,
+                " graphPasses=8-on,7-off emptyVisibleMeshes=sky-retained result=",
+                debugVisualizationOracle ? "pass" : "fail");
+            return debugVisualizationOracle;
         }
         bool finalRaster = resizedRaster;
         if (lightPayloadProbeRequested)

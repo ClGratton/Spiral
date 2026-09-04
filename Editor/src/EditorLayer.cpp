@@ -601,7 +601,7 @@ void EditorLayer::OnAttach()
     m_EditorMaterialControlLiveHelperSmokeRequested =
         args.HasFlag("--editor-control-live-helper-smoke");
     m_EditorSceneControlV2HelperSmokeRequested =
-        args.HasFlag("--editor-control-scene-v2-helper-smoke");
+        args.HasFlag("--editor-control-scene-v3-helper-smoke");
     m_EditorMaterialControlCapacitySmokeRequested =
         args.HasFlag("--editor-control-capacity-smoke");
     m_EditorMaterialControlDurabilitySmokeRequested =
@@ -754,6 +754,8 @@ void EditorLayer::OnUpdate(Engine::Timestep timestep)
     RunEditorMaterialControlCapacitySmokeAfterDrain();
     RunEditorMaterialControlDurabilitySmokeAfterDrain();
     RunEditorMaterialControlRollbackFailureSmokeAfterDrain();
+    if (!PublishSceneDebugVisualization())
+        Engine::Log::Error("Rejected invalid Scene debug visualization settings");
 
     Engine::TrackedCameraViewRequest viewportViewRequest;
     viewportViewRequest.StableViewId = 1;
@@ -877,9 +879,10 @@ void EditorLayer::InitializeEditorMaterialControl()
             m_ActiveScene.TryGetTransform(mainCamera);
         const Engine::LightComponent* light =
             m_ActiveScene.TryGetLightComponent(m_DirectionalLightEntity);
-        if (!prototype || !directional || !cameraTransform || !light || !mainCamera)
+        if (!prototype || !prototype->MeshRenderer || !directional
+            || !cameraTransform || !light || !mainCamera)
             throw std::runtime_error(
-                "editor scene-control V2 smoke requires prototype, main camera, and light");
+                "editor scene-control V3 smoke requires prototype mesh, main camera, and light");
 
         m_SelectedEntity = mainCamera;
         ResetFusionNavigationPivotFromSelectionOrScene();
@@ -888,6 +891,19 @@ void EditorLayer::InitializeEditorMaterialControl()
         m_EditorSceneControlV2CameraBefore = *cameraTransform;
         m_EditorSceneControlV2LightBefore = *light;
         m_EditorSceneControlV2ColorBefore = m_ProjectColorPipelineSettings;
+        m_EditorSceneControlV2MeshBefore = *prototype->MeshRenderer;
+        m_EditorSceneControlV2MeshAfter = m_EditorSceneControlV2MeshBefore;
+        m_EditorSceneControlV2MeshAfter.Visible =
+            !m_EditorSceneControlV2MeshBefore.Visible;
+        m_EditorSceneControlV2MeshAfter.CastsShadows =
+            !m_EditorSceneControlV2MeshBefore.CastsShadows;
+        m_EditorSceneControlV2DebugViewBefore = m_SceneDebugView;
+        m_EditorSceneControlV2DebugViewAfter =
+            m_SceneDebugView == Engine::SceneDebugView::MaterialId
+                ? Engine::SceneDebugView::GeometricNormal
+                : Engine::SceneDebugView::MaterialId;
+        m_EditorSceneControlV2BoundsBefore = m_ShowSelectedBounds;
+        m_EditorSceneControlV2BoundsAfter = !m_ShowSelectedBounds;
 
         const auto shiftedPosition = [this](const Engine::Math::SectorLocalPosition& before,
                                          double xOffset, double yOffset, double zOffset)
@@ -959,7 +975,7 @@ void EditorLayer::InitializeEditorMaterialControl()
                 m_EditorSceneControlV2ColorAfter))
         {
             throw std::runtime_error(
-                "could not construct valid editor scene-control V2 smoke values");
+                "could not construct valid editor scene-control V3 smoke values");
         }
     }
 
@@ -983,7 +999,7 @@ void EditorLayer::InitializeEditorMaterialControl()
         const Engine::Entity mainCamera = m_ActiveScene.GetMainCameraEntity();
         const Engine::SceneEntity* camera = m_ActiveScene.TryGetEntity(mainCamera);
         if (!prototype || !directional || !camera)
-            throw std::runtime_error("editor scene-control V2 smoke target disappeared");
+            throw std::runtime_error("editor scene-control V3 smoke target disappeared");
         const std::string& session = m_EditorMaterialControl.GetSessionId();
         const std::string wrongProject =
             EditorMaterialControlMailbox::FormatInspectEntityRequest(
@@ -999,15 +1015,23 @@ void EditorLayer::InitializeEditorMaterialControl()
                 "v2-mask-duplicate", session, m_ProjectPath,
                 m_PrototypeMeshEntity.Id, prototype->Name);
         duplicateField += "EntityId " + std::to_string(m_PrototypeMeshEntity.Id) + '\n';
+        std::string staleSchema =
+            EditorMaterialControlMailbox::FormatInspectEntityRequest(
+                "v2-schema-stale", session, m_ProjectPath,
+                m_PrototypeMeshEntity.Id, prototype->Name);
+        staleSchema.replace(0, staleSchema.find('\n'),
+            "SpiralEditorControlRequest 2");
         if (!m_EditorMaterialControl.PublishRequestForSmoke(
                 "v2-project-wrong", wrongProject, error)
             || !m_EditorMaterialControl.PublishRequestForSmoke(
                 "v2-mask-unexpected", unexpectedField, error)
             || !m_EditorMaterialControl.PublishRequestForSmoke(
-                "v2-mask-duplicate", duplicateField, error))
+                "v2-mask-duplicate", duplicateField, error)
+            || !m_EditorMaterialControl.PublishRequestForSmoke(
+                "v2-schema-stale", staleSchema, error))
         {
             throw std::runtime_error(
-                "could not publish editor scene-control V2 rejection fixtures: " + error);
+                "could not publish editor scene-control V3 rejection fixtures: " + error);
         }
         const auto writeTransform = [](std::ostringstream& stream, std::string_view label,
                                         const Engine::Math::SectorLocalPosition& position,
@@ -1039,7 +1063,7 @@ void EditorLayer::InitializeEditorMaterialControl()
         };
         std::ostringstream target;
         target << std::setprecision(std::numeric_limits<double>::max_digits10)
-               << "SpiralEditorSceneControlTarget 2\n"
+               << "SpiralEditorSceneControlTarget 3\n"
                << "SessionId " << std::quoted(m_EditorMaterialControl.GetSessionId()) << '\n'
                << "InitialSelectedEntityId " << m_EditorSceneControlV2InitialSelection.Id << '\n'
                << "PrototypeEntityId " << m_PrototypeMeshEntity.Id << '\n'
@@ -1068,13 +1092,25 @@ void EditorLayer::InitializeEditorMaterialControl()
             { 1.0f, 1.0f, 1.0f });
         writeColor(target, "ColorPipelineBefore", m_EditorSceneControlV2ColorBefore);
         writeColor(target, "ColorPipelineAfter", m_EditorSceneControlV2ColorAfter);
-        target << "ExpectedDocumentMutations 8\n"
-               << "ExpectedTypedRequests 20\n"
-               << "ExpectedServerRejectedFixtures 3\n";
+        target << "DebugVisualizationBefore "
+               << Engine::ToString(m_EditorSceneControlV2DebugViewBefore) << ' '
+               << (m_EditorSceneControlV2BoundsBefore ? "yes" : "no") << '\n'
+               << "DebugVisualizationAfter "
+               << Engine::ToString(m_EditorSceneControlV2DebugViewAfter) << ' '
+               << (m_EditorSceneControlV2BoundsAfter ? "yes" : "no") << '\n'
+               << "PrototypeMeshRendererFlagsBefore "
+               << (m_EditorSceneControlV2MeshBefore.Visible ? "yes" : "no") << ' '
+               << (m_EditorSceneControlV2MeshBefore.CastsShadows ? "yes" : "no") << '\n'
+               << "PrototypeMeshRendererFlagsAfter "
+               << (m_EditorSceneControlV2MeshAfter.Visible ? "yes" : "no") << ' '
+               << (m_EditorSceneControlV2MeshAfter.CastsShadows ? "yes" : "no") << '\n'
+               << "ExpectedDocumentMutations 10\n"
+               << "ExpectedTypedRequests 30\n"
+               << "ExpectedServerRejectedFixtures 4\n";
         if (!m_EditorMaterialControl.PublishSceneControlTargetForSmoke(
                 target.str(), error))
             throw std::runtime_error(
-                "could not publish editor scene-control V2 target: " + error);
+                "could not publish editor scene-control V3 target: " + error);
     }
 }
 
@@ -1176,9 +1212,15 @@ EditorMaterialControlTransaction EditorLayer::ExecuteEditorMaterialControlReques
         }
         return verified;
     };
-    const auto injectCommitFailure = [this](std::string& error)
+    const auto injectCommitFailure = [this, requestId = request.RequestId](
+                                         std::string& error)
     {
-        if (!m_EditorMaterialControlForceCommitFailureOnce)
+        const bool sceneControlForcedFailure =
+            m_EditorSceneControlV2HelperSmokeRequested
+            && (requestId == "v2-09-transform-forced-rollback"
+                || requestId == "v2-24-debug-forced-rollback");
+        if (!m_EditorMaterialControlForceCommitFailureOnce
+            && !sceneControlForcedFailure)
             return false;
         m_EditorMaterialControlForceCommitFailureOnce = false;
         error = "injected_postcondition_failure";
@@ -1202,13 +1244,107 @@ EditorMaterialControlTransaction EditorLayer::ExecuteEditorMaterialControlReques
     };
 
     receipt.MainCameraEntityId = m_ActiveScene.GetMainCameraEntity().Id;
-    receipt.SelectedEntityIdBefore = m_SelectedEntity.Id;
-    receipt.SelectedEntityIdAfter = m_SelectedEntity.Id;
+    const Engine::EntityId selectedEntityId = GetSceneDebugSelectedEntityId();
+    receipt.SelectedEntityIdBefore = selectedEntityId;
+    receipt.SelectedEntityIdAfter = selectedEntityId;
     receipt.BeforeColorPipeline = m_ProjectColorPipelineSettings;
     receipt.AfterColorPipeline = m_ProjectColorPipelineSettings;
+    receipt.BeforeDebugView = m_SceneDebugView;
+    receipt.AfterDebugView = m_SceneDebugView;
+    receipt.BeforeShowSelectedBounds = m_ShowSelectedBounds;
+    receipt.AfterShowSelectedBounds = m_ShowSelectedBounds;
+    receipt.DebugVisualizationGeneration =
+        Engine::Renderer::GetSceneDebugVisualization().Generation;
+
+    if (request.Action
+        == EditorMaterialControlAction::SetSceneDebugVisualization)
+    {
+        if (!request.HasExpectedSelectedEntityId
+            || request.ExpectedSelectedEntityId != selectedEntityId
+            || !request.HasExpectedDebugVisualization
+            || !request.HasNewDebugVisualization
+            || !Engine::IsValidSceneDebugVisualizationSettings({
+                request.NewDebugView, selectedEntityId,
+                request.NewShowSelectedBounds })
+            || request.ExpectedDebugView != m_SceneDebugView
+            || request.ExpectedShowSelectedBounds != m_ShowSelectedBounds)
+            return reject("compare_and_swap_state_mismatch");
+        if (request.NewDebugView == request.ExpectedDebugView
+            && request.NewShowSelectedBounds
+                == request.ExpectedShowSelectedBounds)
+            return reject("no_change");
+
+        const Engine::SceneDebugView previousView = m_SceneDebugView;
+        const bool previousBounds = m_ShowSelectedBounds;
+        receipt.Succeeded = true;
+        receipt.Reason = "ok";
+        receipt.Effect = "SceneDebugVisualizationSet";
+        receipt.Recovery = "RestorePreviousDebugVisualization";
+        receipt.AfterDebugView = request.NewDebugView;
+        receipt.AfterShowSelectedBounds = request.NewShowSelectedBounds;
+        receipt.DebugVisualizationGeneration += 1;
+        receipt.RendererReadbackVerified = true;
+        receipt.PostconditionVerified = true;
+        transaction.Mutating = true;
+        transaction.Commit = [this, request, selectedEntityId, injectCommitFailure,
+                                  finishSmokeInjections,
+                                  expectedGeneration = receipt.DebugVisualizationGeneration](
+                                  std::string& error)
+        {
+            if (m_SceneDebugView != request.ExpectedDebugView
+                || m_ShowSelectedBounds
+                    != request.ExpectedShowSelectedBounds
+                || GetSceneDebugSelectedEntityId() != selectedEntityId)
+            {
+                error = "state_changed_before_commit";
+                return false;
+            }
+            m_SceneDebugView = request.NewDebugView;
+            m_ShowSelectedBounds = request.NewShowSelectedBounds;
+            if (!PublishSceneDebugVisualization())
+            {
+                error = "renderer_publication_failed";
+                return false;
+            }
+            if (injectCommitFailure(error))
+                return false;
+            const Engine::SceneDebugVisualizationPublication publication =
+                Engine::Renderer::GetSceneDebugVisualization();
+            if (publication.Generation != expectedGeneration
+                || publication.Settings.View != request.NewDebugView
+                || publication.Settings.ShowSelectedBounds
+                    != request.NewShowSelectedBounds
+                || publication.Settings.SelectedEntity != selectedEntityId)
+            {
+                error = "renderer_postcondition_mismatch";
+                return false;
+            }
+            return finishSmokeInjections(error);
+        };
+        transaction.Rollback = [this, previousView, previousBounds, selectedEntityId](
+            EditorMaterialControlReceipt& rolledBack)
+        {
+            m_SceneDebugView = previousView;
+            m_ShowSelectedBounds = previousBounds;
+            const bool restored = PublishSceneDebugVisualization();
+            const Engine::SceneDebugVisualizationPublication publication =
+                Engine::Renderer::GetSceneDebugVisualization();
+            rolledBack.AfterDebugView = m_SceneDebugView;
+            rolledBack.AfterShowSelectedBounds = m_ShowSelectedBounds;
+            rolledBack.DebugVisualizationGeneration = publication.Generation;
+            rolledBack.SelectedEntityIdAfter = GetSceneDebugSelectedEntityId();
+            rolledBack.RendererReadbackVerified = restored
+                && publication.Settings.View == previousView
+                && publication.Settings.ShowSelectedBounds == previousBounds
+                && rolledBack.SelectedEntityIdAfter == selectedEntityId
+                && publication.Settings.SelectedEntity == selectedEntityId;
+            return rolledBack.RendererReadbackVerified;
+        };
+        return transaction;
+    }
 
     // Project settings intentionally have no entity/material identity. Keep this
-    // branch ahead of the material path so a fixed V2 action cannot fall through
+    // branch ahead of the material path so a fixed V3 action cannot fall through
     // into an unrelated component authority.
     if (request.Action == EditorMaterialControlAction::SetProjectColorPipeline)
     {
@@ -1366,6 +1502,82 @@ EditorMaterialControlTransaction EditorLayer::ExecuteEditorMaterialControlReques
             rolledBack.SelectionCommitted = false;
             rolledBack.PivotRetargeted = false;
             return restored;
+        };
+        return transaction;
+    }
+
+    if (request.Action == EditorMaterialControlAction::SetMeshRendererFlags)
+    {
+        if (!entity->MeshRenderer || !request.HasExpectedMeshRendererFlags
+            || !request.HasNewMeshRendererFlags
+            || entity->MeshRenderer->Visible != request.ExpectedMeshVisible
+            || entity->MeshRenderer->CastsShadows
+                != request.ExpectedMeshCastsShadows)
+            return reject("compare_and_swap_state_mismatch");
+        if (request.NewMeshVisible == request.ExpectedMeshVisible
+            && request.NewMeshCastsShadows
+                == request.ExpectedMeshCastsShadows)
+            return reject("no_change");
+        const std::shared_ptr<ControlRollbackState> rollback = captureRollbackState();
+        receipt.AfterMeshRenderer = *entity->MeshRenderer;
+        receipt.AfterMeshRenderer.Visible = request.NewMeshVisible;
+        receipt.AfterMeshRenderer.CastsShadows = request.NewMeshCastsShadows;
+        receipt.Succeeded = true;
+        receipt.Reason = "ok";
+        receipt.Effect = "MeshRendererFlagsSet";
+        receipt.Recovery = "UndoRedo";
+        receipt.UndoDepthAfter = std::min<std::size_t>(
+            rollback->UndoHistory.size() + 1, 128);
+        receipt.RedoDepthAfter = 0;
+        receipt.PostconditionVerified = true;
+        transaction.Mutating = true;
+        transaction.Commit = [this, request, entityHandle, rollback,
+                                  injectCommitFailure,
+                                  finishSmokeInjections](std::string& error)
+        {
+            Engine::SceneEntity* currentEntity =
+                m_ActiveScene.TryGetEntity(entityHandle);
+            if (!currentEntity || currentEntity->Name != request.ExpectedEntityName
+                || !currentEntity->MeshRenderer
+                || currentEntity->MeshRenderer->Visible
+                    != request.ExpectedMeshVisible
+                || currentEntity->MeshRenderer->CastsShadows
+                    != request.ExpectedMeshCastsShadows)
+            {
+                error = "state_changed_before_commit";
+                return false;
+            }
+            rollback->MutationStarted = true;
+            currentEntity->MeshRenderer->Visible = request.NewMeshVisible;
+            currentEntity->MeshRenderer->CastsShadows =
+                request.NewMeshCastsShadows;
+            if (injectCommitFailure(error))
+                return false;
+            RecordHistory("Agent set mesh renderer flags", rollback->State);
+            const Engine::MeshRendererComponent* current =
+                m_ActiveScene.TryGetMeshRendererComponent(entityHandle);
+            if (!current || current->Visible != request.NewMeshVisible
+                || current->CastsShadows != request.NewMeshCastsShadows
+                || m_UndoHistory.size()
+                    != std::min<std::size_t>(rollback->UndoHistory.size() + 1, 128)
+                || !m_RedoHistory.empty())
+            {
+                error = "mesh_renderer_or_history_postcondition_mismatch";
+                return false;
+            }
+            return finishSmokeInjections(error);
+        };
+        transaction.Rollback = [this, restoreRollbackState, rollback,
+                                   entityHandle](
+                                   EditorMaterialControlReceipt& rolledBack)
+        {
+            const bool restored = restoreRollbackState(rollback, rolledBack);
+            const Engine::MeshRendererComponent* current =
+                m_ActiveScene.TryGetMeshRendererComponent(entityHandle);
+            return restored && current
+                && current->Visible == rolledBack.BeforeMeshRenderer.Visible
+                && current->CastsShadows
+                    == rolledBack.BeforeMeshRenderer.CastsShadows;
         };
         return transaction;
     }
@@ -2081,8 +2293,8 @@ void EditorLayer::RunEditorMaterialControlSmokeAfterDrain()
             throw std::runtime_error("editor material-control project guard smoke failed");
 
         Engine::Log::Info(
-            "EditorMaterialControlMailboxV2 interface=private-filesystem "
-            "actions=material-and-typed-scene session=exact schema=2 "
+            "EditorMaterialControlMailboxV3 interface=private-filesystem "
+            "actions=material-and-typed-scene session=exact schema=3 "
             "mainThread=before-scene-snapshot invalid=transactional-pass "
             "rollback=readback-and-receipt-pass inspect=pass commit=pass "
             "idempotency=exact-bytes conflicts=A-B-C-consumed "
@@ -2150,7 +2362,7 @@ void EditorLayer::RunEditorMaterialControlLiveHelperSmokeAfterDrain()
         throw std::runtime_error("live external editor material-control helper smoke failed");
 
     Engine::Log::Info(
-        "EditorMaterialControlLiveHelperV2 producer=external-python requests=fresh "
+        "EditorMaterialControlLiveHelperV3 producer=external-python requests=fresh "
         "inspect=semantic-pass set=semantic-pass close=editor-condition "
         "identity=session-pid-project affected=bounded-exact "
         "pollCadenceMs=16 idleSkips=", m_EditorMaterialControl.GetCadenceSkipCount(),
@@ -2170,20 +2382,15 @@ void EditorLayer::RunEditorSceneControlV2HelperSmokeAfterDrain()
     {
         return m_EditorMaterialControl.FindTerminalReceipt(requestId);
     };
-    if (receipt("v2-08-transform-set")
-        && !receipt("v2-09-transform-forced-rollback"))
-    {
-        m_EditorMaterialControlForceCommitFailureOnce = true;
-        return;
-    }
     const EditorMaterialControlReceipt* finalInspect =
-        receipt("v2-20-final-inspect");
+        receipt("v2-30-final-inspect");
     if (!finalInspect)
         return;
 
     const EditorMaterialControlReceipt* wrongProject = receipt("v2-project-wrong");
     const EditorMaterialControlReceipt* unexpectedField = receipt("v2-mask-unexpected");
     const EditorMaterialControlReceipt* duplicateField = receipt("v2-mask-duplicate");
+    const EditorMaterialControlReceipt* staleSchema = receipt("v2-schema-stale");
     const EditorMaterialControlReceipt* inspect = receipt("v2-01-inspect");
     const EditorMaterialControlReceipt* selectLight = receipt("v2-02-select-light");
     const EditorMaterialControlReceipt* staleSelect = receipt("v2-03-stale-selection");
@@ -2208,17 +2415,34 @@ void EditorLayer::RunEditorSceneControlV2HelperSmokeAfterDrain()
     const EditorMaterialControlReceipt* cameraRestore = receipt("v2-18-camera-restore");
     const EditorMaterialControlReceipt* staleTransform =
         receipt("v2-19-stale-transform");
-    const std::array<const EditorMaterialControlReceipt*, 23> receipts = {
-        wrongProject, unexpectedField, duplicateField, inspect, selectLight,
+    const EditorMaterialControlReceipt* selectPrototypeDebug =
+        receipt("v2-20-select-prototype-debug");
+    const EditorMaterialControlReceipt* debugSet = receipt("v2-21-debug-set");
+    const EditorMaterialControlReceipt* staleDebugState =
+        receipt("v2-22-stale-debug-state");
+    const EditorMaterialControlReceipt* staleDebugSelection =
+        receipt("v2-23-stale-debug-selection");
+    const EditorMaterialControlReceipt* debugRollback =
+        receipt("v2-24-debug-forced-rollback");
+    const EditorMaterialControlReceipt* debugRestore = receipt("v2-25-debug-restore");
+    const EditorMaterialControlReceipt* meshSet = receipt("v2-26-mesh-set");
+    const EditorMaterialControlReceipt* staleMesh = receipt("v2-27-stale-mesh");
+    const EditorMaterialControlReceipt* meshRestore = receipt("v2-28-mesh-restore");
+    const EditorMaterialControlReceipt* selectCameraRestore =
+        receipt("v2-29-select-camera-restore");
+    const std::array<const EditorMaterialControlReceipt*, 34> receipts = {
+        wrongProject, unexpectedField, duplicateField, staleSchema, inspect, selectLight,
         staleSelect, lightSet, staleLight, lightRestore, selectPrototype,
         transformSet, transformRollback, transformRestore, colorSet,
         staleColor, colorRestore, selectCamera, staleCamera,
         genericCameraTransform, cameraSet, cameraRestore, staleTransform,
+        selectPrototypeDebug, debugSet, staleDebugState, staleDebugSelection,
+        debugRollback, debugRestore, meshSet, staleMesh, meshRestore, selectCameraRestore,
         finalInspect
     };
     if (std::any_of(receipts.begin(), receipts.end(), [](const auto* value)
         { return value == nullptr; }))
-        throw std::runtime_error("editor scene-control V2 receipt sequence is incomplete");
+        throw std::runtime_error("editor scene-control V3 receipt sequence is incomplete");
 
     const auto sameTransform = [](const Engine::TransformComponent& value,
         const Engine::Math::SectorLocalPosition& position,
@@ -2307,9 +2531,13 @@ void EditorLayer::RunEditorSceneControlV2HelperSmokeAfterDrain()
         m_ActiveScene.TryGetTransform(mainCamera);
     const Engine::LightComponent* light =
         m_ActiveScene.TryGetLightComponent(m_DirectionalLightEntity);
+    const Engine::MeshRendererComponent* prototypeMesh =
+        m_ActiveScene.TryGetMeshRendererComponent(m_PrototypeMeshEntity);
+    const Engine::SceneDebugVisualizationPublication debugPublication =
+        Engine::Renderer::GetSceneDebugVisualization();
     Engine::Math::DVec3 cameraPosition;
     Engine::Math::DVec3 prototypePosition;
-    const bool finalState = prototypeTransform && cameraTransform && light
+    const bool finalState = prototypeTransform && cameraTransform && light && prototypeMesh
         && sameTransform(*prototypeTransform,
             m_EditorSceneControlV2PrototypeBefore.GetPosition(),
             m_EditorSceneControlV2PrototypeBefore.RotationDegrees,
@@ -2322,6 +2550,15 @@ void EditorLayer::RunEditorSceneControlV2HelperSmokeAfterDrain()
         && m_ProjectColorPipelineSettings == m_EditorSceneControlV2ColorBefore
         && Engine::Renderer::GetColorPipelineSettings()
             == m_EditorSceneControlV2ColorBefore
+        && prototypeMesh->Visible == m_EditorSceneControlV2MeshBefore.Visible
+        && prototypeMesh->CastsShadows
+            == m_EditorSceneControlV2MeshBefore.CastsShadows
+        && m_SceneDebugView == m_EditorSceneControlV2DebugViewBefore
+        && m_ShowSelectedBounds == m_EditorSceneControlV2BoundsBefore
+        && debugPublication.Settings.View == m_EditorSceneControlV2DebugViewBefore
+        && debugPublication.Settings.ShowSelectedBounds
+            == m_EditorSceneControlV2BoundsBefore
+        && debugPublication.Settings.SelectedEntity == mainCamera.Id
         && m_SelectedEntity == m_EditorSceneControlV2InitialSelection
         && m_ActiveScene.TryGetEntityApproximateWorldPosition(mainCamera, cameraPosition)
         && m_ActiveScene.TryGetEntityApproximateWorldPosition(
@@ -2341,9 +2578,9 @@ void EditorLayer::RunEditorSceneControlV2HelperSmokeAfterDrain()
             == m_EditorSceneControlV2CameraBefore.RotationDegrees.Z;
 
     const std::size_t baseUndo = m_EditorMaterialControlSmokeInitialUndoDepth;
-    const std::array<const EditorMaterialControlReceipt*, 8> documentMutations = {
+    const std::array<const EditorMaterialControlReceipt*, 10> documentMutations = {
         lightSet, lightRestore, transformSet, transformRestore,
-        colorSet, colorRestore, cameraSet, cameraRestore
+        colorSet, colorRestore, cameraSet, cameraRestore, meshSet, meshRestore
     };
     bool historyReceipts = true;
     for (std::size_t index = 0; index < documentMutations.size(); ++index)
@@ -2353,11 +2590,12 @@ void EditorLayer::RunEditorSceneControlV2HelperSmokeAfterDrain()
             && documentMutations[index]->UndoDepthAfter == baseUndo + index + 1
             && oneHistoryEntry(documentMutations[index]);
     }
-    const std::array<std::string_view, 8> historyLabels = {
+    const std::array<std::string_view, 10> historyLabels = {
         "Agent set typed light", "Agent set typed light",
         "Agent set entity transform", "Agent set entity transform",
         "Agent set project color pipeline", "Agent set project color pipeline",
-        "Agent set viewport main camera pose", "Agent set viewport main camera pose"
+        "Agent set viewport main camera pose", "Agent set viewport main camera pose",
+        "Agent set mesh renderer flags", "Agent set mesh renderer flags"
     };
     bool labelsValid = m_UndoHistory.size() == baseUndo + historyLabels.size();
     for (std::size_t index = 0; labelsValid && index < historyLabels.size(); ++index)
@@ -2368,6 +2606,7 @@ void EditorLayer::RunEditorSceneControlV2HelperSmokeAfterDrain()
         && parserRejected(wrongProject, "wrong_project")
         && parserRejected(unexpectedField, "missing_or_unexpected_action_field")
         && parserRejected(duplicateField, "invalid_or_duplicate_entity_id")
+        && parserRejected(staleSchema, "unsupported_schema_expected_v3")
         && successful(inspect, EditorMaterialControlAction::InspectEntity,
             "ReadOnly", "None")
         && inspect->EntityId == m_PrototypeMeshEntity.Id && historyUnchanged(inspect)
@@ -2474,19 +2713,107 @@ void EditorLayer::RunEditorSceneControlV2HelperSmokeAfterDrain()
             m_EditorSceneControlV2CameraBefore.Scale)
         && rejected(staleTransform, EditorMaterialControlAction::SetEntityTransform,
             "compare_and_swap_state_mismatch", baseUndo + 8)
+        && successful(selectPrototypeDebug, EditorMaterialControlAction::SelectEntity,
+            "EntitySelected", "SelectPreviousEntity")
+        && selectPrototypeDebug->SelectedEntityIdBefore == mainCamera.Id
+        && selectPrototypeDebug->SelectedEntityIdAfter == m_PrototypeMeshEntity.Id
+        && selectPrototypeDebug->SelectionCommitted
+        && selectPrototypeDebug->PivotRetargeted
+        && historyUnchanged(selectPrototypeDebug)
+        && exactAffected(selectPrototypeDebug, m_PrototypeMeshEntity)
+        && successful(debugSet,
+            EditorMaterialControlAction::SetSceneDebugVisualization,
+            "SceneDebugVisualizationSet", "RestorePreviousDebugVisualization")
+        && debugSet->EntityId == Engine::kInvalidEntityId
+        && debugSet->BeforeDebugView == m_EditorSceneControlV2DebugViewBefore
+        && debugSet->BeforeShowSelectedBounds == m_EditorSceneControlV2BoundsBefore
+        && debugSet->AfterDebugView == m_EditorSceneControlV2DebugViewAfter
+        && debugSet->AfterShowSelectedBounds == m_EditorSceneControlV2BoundsAfter
+        && debugSet->SelectedEntityIdBefore == m_PrototypeMeshEntity.Id
+        && debugSet->SelectedEntityIdAfter == m_PrototypeMeshEntity.Id
+        && debugSet->RendererReadbackVerified && historyUnchanged(debugSet)
+        && rejected(staleDebugState,
+            EditorMaterialControlAction::SetSceneDebugVisualization,
+            "compare_and_swap_state_mismatch", baseUndo + 8)
+        && staleDebugState->BeforeDebugView == m_EditorSceneControlV2DebugViewAfter
+        && staleDebugState->SelectedEntityIdBefore == m_PrototypeMeshEntity.Id
+        && rejected(staleDebugSelection,
+            EditorMaterialControlAction::SetSceneDebugVisualization,
+            "compare_and_swap_state_mismatch", baseUndo + 8)
+        && staleDebugSelection->BeforeDebugView == m_EditorSceneControlV2DebugViewAfter
+        && staleDebugSelection->SelectedEntityIdBefore == m_PrototypeMeshEntity.Id
+        && !debugRollback->Succeeded && debugRollback->ActionKnown
+        && debugRollback->Action
+            == EditorMaterialControlAction::SetSceneDebugVisualization
+        && debugRollback->Reason == "injected_postcondition_failure_rolled_back"
+        && debugRollback->Effect == "RolledBack"
+        && debugRollback->Recovery == "None"
+        && debugRollback->Persistence == "SessionOnly" && !debugRollback->Saved
+        && !debugRollback->PostconditionVerified && debugRollback->RollbackVerified
+        && debugRollback->RendererReadbackVerified
+        && !debugRollback->SelectionCommitted && !debugRollback->PivotRetargeted
+        && !debugRollback->EditorCameraSynchronized
+        && historyUnchanged(debugRollback)
+        && debugRollback->UndoDepthBefore == baseUndo + 8
+        && debugRollback->BeforeDebugView == m_EditorSceneControlV2DebugViewAfter
+        && debugRollback->AfterDebugView == m_EditorSceneControlV2DebugViewAfter
+        && debugRollback->BeforeShowSelectedBounds == m_EditorSceneControlV2BoundsAfter
+        && debugRollback->AfterShowSelectedBounds == m_EditorSceneControlV2BoundsAfter
+        && debugRollback->SelectedEntityIdBefore == m_PrototypeMeshEntity.Id
+        && debugRollback->SelectedEntityIdAfter == m_PrototypeMeshEntity.Id
+        && debugRollback->DebugVisualizationGeneration
+            > debugSet->DebugVisualizationGeneration
+        && successful(debugRestore,
+            EditorMaterialControlAction::SetSceneDebugVisualization,
+            "SceneDebugVisualizationSet", "RestorePreviousDebugVisualization")
+        && debugRestore->AfterDebugView == m_EditorSceneControlV2DebugViewBefore
+        && debugRestore->AfterShowSelectedBounds == m_EditorSceneControlV2BoundsBefore
+        && debugRestore->SelectedEntityIdBefore == m_PrototypeMeshEntity.Id
+        && debugRestore->SelectedEntityIdAfter == m_PrototypeMeshEntity.Id
+        && debugRestore->RendererReadbackVerified && historyUnchanged(debugRestore)
+        && successful(meshSet, EditorMaterialControlAction::SetMeshRendererFlags,
+            "MeshRendererFlagsSet", "UndoRedo")
+        && meshSet->BeforeMeshRenderer.Visible == m_EditorSceneControlV2MeshBefore.Visible
+        && meshSet->BeforeMeshRenderer.CastsShadows
+            == m_EditorSceneControlV2MeshBefore.CastsShadows
+        && meshSet->AfterMeshRenderer.Visible == m_EditorSceneControlV2MeshAfter.Visible
+        && meshSet->AfterMeshRenderer.CastsShadows
+            == m_EditorSceneControlV2MeshAfter.CastsShadows
+        && exactAffected(meshSet, m_PrototypeMeshEntity)
+        && rejected(staleMesh, EditorMaterialControlAction::SetMeshRendererFlags,
+            "compare_and_swap_state_mismatch", baseUndo + 9)
+        && staleMesh->BeforeMeshRenderer.Visible == m_EditorSceneControlV2MeshAfter.Visible
+        && staleMesh->BeforeMeshRenderer.CastsShadows
+            == m_EditorSceneControlV2MeshAfter.CastsShadows
+        && exactAffected(staleMesh, m_PrototypeMeshEntity)
+        && successful(meshRestore, EditorMaterialControlAction::SetMeshRendererFlags,
+            "MeshRendererFlagsSet", "UndoRedo")
+        && meshRestore->AfterMeshRenderer.Visible == m_EditorSceneControlV2MeshBefore.Visible
+        && meshRestore->AfterMeshRenderer.CastsShadows
+            == m_EditorSceneControlV2MeshBefore.CastsShadows
+        && exactAffected(meshRestore, m_PrototypeMeshEntity)
+        && successful(selectCameraRestore, EditorMaterialControlAction::SelectEntity,
+            "EntitySelected", "SelectPreviousEntity")
+        && selectCameraRestore->SelectedEntityIdBefore == m_PrototypeMeshEntity.Id
+        && selectCameraRestore->SelectedEntityIdAfter == mainCamera.Id
+        && selectCameraRestore->SelectionCommitted
+        && !selectCameraRestore->PivotRetargeted
+        && historyUnchanged(selectCameraRestore)
+        && exactAffected(selectCameraRestore, mainCamera)
         && successful(finalInspect, EditorMaterialControlAction::InspectEntity,
             "ReadOnly", "None")
         && finalInspect->EntityId == mainCamera.Id && finalInspect->IsMainCamera
         && historyUnchanged(finalInspect)
-        && finalInspect->UndoDepthBefore == baseUndo + 8
+        && finalInspect->UndoDepthBefore == baseUndo + 10
         && exactAffected(finalInspect, mainCamera);
     if (!valid)
-        throw std::runtime_error("external editor scene-control V2 helper smoke failed");
+        throw std::runtime_error("external editor scene-control V3 helper smoke failed");
 
     Engine::Log::Info(
-        "EditorSceneControlV2 producer=external-python actions=inspect-select-transform-"
-        "typed-light-project-color-main-camera cas=complete-values stale=rejected "
-        "history=one-per-document-action selection=session-only restore=exact "
+        "EditorSceneControlV3 producer=external-python actions=inspect-select-transform-"
+        "typed-light-project-color-main-camera-debug-mesh cas=complete-values-selection stale=rejected "
+        "rollbacks=transform-and-debug-verified history=one-per-document-action "
+        "selection=session-only restore=exact "
         "persistence=SessionOnly saved=no input=typed-mailbox-no-ui-synthesis backend=",
         Engine::Renderer::GetActiveBackendName(), " result=pass");
     m_EditorSceneControlV2HelperSmokeCompleted = true;
@@ -2555,7 +2882,7 @@ void EditorLayer::RunEditorMaterialControlCapacitySmokeAfterDrain()
     if (!valid)
         throw std::runtime_error("editor material-control capacity retention smoke failed");
     Engine::Log::Info(
-        "EditorMaterialControlCapacityV2 retained=256 accepting=no "
+        "EditorMaterialControlCapacityV3 retained=256 accepting=no "
         "pendingUnclaimed=1 response=absent session=closed "
         "affectedTotal=42 affectedSample=32 truncated=yes result=pass");
     m_EditorMaterialControlCapacitySmokeCompleted = true;
@@ -2620,7 +2947,7 @@ void EditorLayer::RunEditorMaterialControlDurabilitySmokeAfterDrain()
         throw std::runtime_error(
             "editor material-control visible-publication durability smoke failed");
     Engine::Log::Info(
-        "EditorMaterialControlDurabilityV2 visibility=rename-authoritative "
+        "EditorMaterialControlDurabilityV3 visibility=rename-authoritative "
         "parentSync=injected-failure committed=preserved rollback=no "
         "acceptance=closed crashDurability=degraded result=pass");
     m_EditorMaterialControlDurabilitySmokeCompleted = true;
@@ -2712,7 +3039,7 @@ void EditorLayer::RunEditorMaterialControlRollbackFailureSmokeAfterDrain()
     }
 
     Engine::Log::Info(
-        "EditorMaterialControlRollbackFailureV2 path=",
+        "EditorMaterialControlRollbackFailureV3 path=",
         postCommit ? "postcommit-publication" : "commit",
         " closeReason=",
         postCommit ? "postcommit_rollback_verification_failed"
@@ -3062,6 +3389,23 @@ void EditorLayer::DrawMainMenuBar()
     if (ImGui::BeginMenu("View"))
     {
         ImGui::MenuItem("ImGui Demo", nullptr, &m_ShowDemoWindow);
+        if (ImGui::BeginMenu("Scene Debug View"))
+        {
+            const Engine::SceneDebugView views[] = {
+                Engine::SceneDebugView::Lit,
+                Engine::SceneDebugView::MaterialId,
+                Engine::SceneDebugView::GeometricNormal,
+                Engine::SceneDebugView::ShadowCaster
+            };
+            for (Engine::SceneDebugView view : views)
+            {
+                const bool selected = m_SceneDebugView == view;
+                if (ImGui::MenuItem(Engine::ToString(view), nullptr, selected))
+                    m_SceneDebugView = view;
+            }
+            ImGui::EndMenu();
+        }
+        ImGui::MenuItem("Selected Mesh Bounds", nullptr, &m_ShowSelectedBounds);
         if (ImGui::MenuItem("Reset Layout"))
             m_ResetDockLayout = true;
         ImGui::EndMenu();
@@ -4886,6 +5230,21 @@ void EditorLayer::PublishColorPipelineSettings()
 {
     if (!Engine::Renderer::SetColorPipelineSettings(m_ProjectColorPipelineSettings))
         Engine::Log::Error("Rejected invalid project color pipeline settings");
+}
+
+bool EditorLayer::PublishSceneDebugVisualization()
+{
+    Engine::SceneDebugVisualizationSettings settings;
+    settings.View = m_SceneDebugView;
+    settings.SelectedEntity = GetSceneDebugSelectedEntityId();
+    settings.ShowSelectedBounds = m_ShowSelectedBounds;
+    return Engine::Renderer::SetSceneDebugVisualization(settings);
+}
+
+Engine::EntityId EditorLayer::GetSceneDebugSelectedEntityId() const
+{
+    return m_ActiveScene.IsEntityValid(m_SelectedEntity)
+        ? m_SelectedEntity.Id : Engine::kInvalidEntityId;
 }
 
 bool EditorLayer::PublishProjectColorPipelineSettings(

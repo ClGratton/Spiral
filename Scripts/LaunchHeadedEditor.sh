@@ -74,19 +74,23 @@ if [[ ! "$target_monitor_x" =~ ^-?[0-9]+$ \
 fi
 
 cd "$repo_root"
+calculate_source_fingerprint() {
+    {
+        git diff --binary HEAD --
+        while IFS= read -r -d '' untracked_path; do
+            printf '%s\0' "$untracked_path"
+            sha256sum -- "$untracked_path"
+        done < <(git ls-files --others --exclude-standard -z | sort -z)
+    } | sha256sum | awk '{print $1}'
+}
+
 source_head="$(git rev-parse --verify HEAD)"
 if [[ -n "$(git status --porcelain=v1 --untracked-files=normal)" ]]; then
     source_state="dirty"
 else
     source_state="clean"
 fi
-source_fingerprint="$({
-    git diff --binary HEAD --
-    while IFS= read -r -d '' untracked_path; do
-        printf '%s\0' "$untracked_path"
-        sha256sum -- "$untracked_path"
-    done < <(git ls-files --others --exclude-standard -z | sort -z)
-} | sha256sum | awk '{print $1}')"
+source_fingerprint="$(calculate_source_fingerprint)"
 echo "Headed Editor project refresh: $premake --file=$repo_root/premake5.lua gmake"
 "$premake" --file="$repo_root/premake5.lua" gmake
 echo "Headed Editor build gate: $editor"
@@ -95,8 +99,15 @@ if [[ ! -x "$editor" ]]; then
     echo "Debug Editor was not produced at the canonical path: $editor" >&2
     exit 1
 fi
+post_build_head="$(git rev-parse --verify HEAD)"
+post_build_fingerprint="$(calculate_source_fingerprint)"
+if [[ "$post_build_head" != "$source_head" || "$post_build_fingerprint" != "$source_fingerprint" ]]; then
+    echo "Source changed during the headed build transaction; refusing to launch: before=$source_head/$source_fingerprint after=$post_build_head/$post_build_fingerprint" >&2
+    exit 1
+fi
 expected_editor="$(realpath "$editor")"
 expected_cwd="$(realpath "$repo_root")"
+expected_editor_sha256="$(sha256sum -- "$expected_editor" | awk '{print $1}')"
 
 hyprctl dispatch "hl.dsp.focus({ workspace = '$target_workspace' })" | grep -Fxq ok
 focused_monitor="$(hyprctl -j monitors | jq -r '.[] | select(.focused) | .name')"
@@ -142,8 +153,10 @@ fi
 
 actual_editor="$(realpath "/proc/$editor_pid/exe")"
 actual_cwd="$(realpath "/proc/$editor_pid/cwd")"
-if [[ "$actual_editor" != "$expected_editor" || "$actual_cwd" != "$expected_cwd" ]]; then
-    echo "Editor provenance mismatch: executable=$actual_editor cwd=$actual_cwd" >&2
+actual_editor_sha256="$(sha256sum -- "/proc/$editor_pid/exe" | awk '{print $1}')"
+if [[ "$actual_editor" != "$expected_editor" || "$actual_cwd" != "$expected_cwd" \
+    || "$actual_editor_sha256" != "$expected_editor_sha256" ]]; then
+    echo "Editor provenance mismatch: executable=$actual_editor cwd=$actual_cwd expectedSha256=$expected_editor_sha256 actualSha256=$actual_editor_sha256" >&2
     exit 1
 fi
 
@@ -181,6 +194,15 @@ fi
 if grep -Eiq 'native viewport unavailable|renderer initialization failed|failed to initialize renderer' "$log_path"; then
     tail -n 120 "$log_path" >&2 || true
     echo "Editor log contains a renderer/viewport initialization failure" >&2
+    exit 1
+fi
+post_handoff_head="$(git rev-parse --verify HEAD)"
+post_handoff_fingerprint="$(calculate_source_fingerprint)"
+post_handoff_editor_sha256="$(sha256sum -- "/proc/$editor_pid/exe" | awk '{print $1}')"
+if [[ "$post_handoff_head" != "$source_head" \
+    || "$post_handoff_fingerprint" != "$source_fingerprint" \
+    || "$post_handoff_editor_sha256" != "$expected_editor_sha256" ]]; then
+    echo "Source or process image changed during native handoff; refusing headed evidence: source=$post_handoff_head/$post_handoff_fingerprint executableSha256=$post_handoff_editor_sha256" >&2
     exit 1
 fi
 
@@ -224,5 +246,5 @@ actual_monitor="$target_monitor"
 
 keep_editor=true
 trap - EXIT
-receipt="HeadedEditorLaunchV2 sourceRoot=$expected_cwd sourceHead=$source_head sourceState=$source_state sourceFingerprint=$source_fingerprint build=Debug-gmake-editor-only executable=$expected_editor pid=$editor_pid address=$editor_address backend=NVRHI-Vulkan monitor=$actual_monitor monitorId=$actual_monitor_id workspace=$actual_workspace stableSamples=$stable_samples sceneHandoff=pass controlDir=$control_dir log=$log_path result=pass"
+receipt="HeadedEditorLaunchV3 sourceRoot=$expected_cwd sourceHead=$source_head sourceState=$source_state sourceFingerprint=$source_fingerprint sourceStable=build-and-handoff executable=$expected_editor executableSha256=$expected_editor_sha256 processImageSha256=$post_handoff_editor_sha256 pid=$editor_pid address=$editor_address backend=NVRHI-Vulkan monitor=$actual_monitor monitorId=$actual_monitor_id workspace=$actual_workspace stableSamples=$stable_samples sceneHandoff=pass controlDir=$control_dir log=$log_path result=pass"
 printf '%s\n' "$receipt" | tee "$run_dir/launch-receipt.txt"

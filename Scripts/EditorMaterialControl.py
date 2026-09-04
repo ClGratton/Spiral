@@ -18,9 +18,9 @@ import time
 import uuid
 
 
-REQUEST_HEADER = "SpiralEditorControlRequest 2"
-RECEIPT_HEADER = "SpiralEditorControlReceipt 2"
-SESSION_HEADER = "SpiralEditorControlSession 2"
+REQUEST_HEADER = "SpiralEditorControlRequest 3"
+RECEIPT_HEADER = "SpiralEditorControlReceipt 3"
+SESSION_HEADER = "SpiralEditorControlSession 3"
 MAXIMUM_REQUEST_BYTES = 16 * 1024
 MAXIMUM_RECEIPT_BYTES = 64 * 1024
 
@@ -97,7 +97,8 @@ def _parse_tokens(line: str, key: str, count: int | None = None) -> list[str]:
 def _parse_session(control_dir: Path) -> dict[str, object]:
     lines = _read_private_regular(control_dir / "session.info", 4096).splitlines()
     if len(lines) != 12 or lines[0] != SESSION_HEADER:
-        raise ControlError("unsupported or malformed editor-control session manifest")
+        raise ControlError(
+            "editor-control schema 3 required; stale or malformed session manifest rejected")
     session_id = _parse_tokens(lines[1], "SessionId", 1)[0]
     state = _parse_tokens(lines[2], "State", 1)[0]
     process_id = int(_parse_tokens(lines[3], "ProcessId", 1)[0])
@@ -109,12 +110,13 @@ def _parse_session(control_dir: Path) -> dict[str, object]:
     maximum_per_frame = int(_parse_tokens(lines[9], "MaximumRequestsPerFrame", 1)[0])
     maximum_terminal = int(_parse_tokens(lines[10], "MaximumTerminalRequests", 1)[0])
     maximum_affected = int(_parse_tokens(lines[11], "MaximumAffectedEntityIds", 1)[0])
-    if (state != "Ready" or request_schema != 2 or receipt_schema != 2
-            or actions != "InspectMaterialSurface,SelectEntityPatchMaterialSurface,InspectEntity,SelectEntity,SetEntityTransform,SetTypedLight,SetProjectColorPipeline,SetViewportMainCameraPose"
+    if (state != "Ready" or request_schema != 3 or receipt_schema != 3
+            or actions != "InspectMaterialSurface,SelectEntityPatchMaterialSurface,InspectEntity,SelectEntity,SetEntityTransform,SetTypedLight,SetProjectColorPipeline,SetViewportMainCameraPose,SetSceneDebugVisualization,SetMeshRendererFlags"
             or maximum_request != MAXIMUM_REQUEST_BYTES
             or maximum_per_frame != 4 or maximum_terminal != 256
             or maximum_affected != 32 or process_id <= 0 or not project_path):
-        raise ControlError("editor-control session contract is not supported by this helper")
+        raise ControlError(
+            "editor-control schema 3 contract required; stale or unsupported session rejected")
     return {"session_id": session_id, "state": state,
             "process_id": process_id, "project_path": project_path}
 
@@ -357,8 +359,9 @@ def _parse_receipt(text: str, request_id: str, session_id: str,
                    project_path: str, digest: str, expected_action: str,
                    allow_request_id_conflict: bool = False) -> dict[str, object]:
     lines = text.splitlines()
-    if len(lines) != 53 or lines[0] != RECEIPT_HEADER:
-        raise ControlError("unsupported or malformed editor-control receipt")
+    if len(lines) != 56 or lines[0] != RECEIPT_HEADER:
+        raise ControlError(
+            "editor-control schema 3 required; stale or malformed receipt rejected")
     keys = [
         ("RequestId", 1), ("SessionId", 1), ("ProjectPath", 1),
         ("RequestDigest", 1), ("Action", 1), ("Status", 1), ("Reason", 1),
@@ -375,9 +378,11 @@ def _parse_receipt(text: str, request_id: str, session_id: str,
         ("BeforeMeshRendererPresent", 1), ("BeforeMeshRenderer", 5),
         ("AfterMeshRendererPresent", 1), ("AfterMeshRenderer", 5),
         ("BeforeColorPipeline", 7), ("AfterColorPipeline", 7),
+        ("BeforeDebugVisualization", 2), ("AfterDebugVisualization", 2),
         ("AffectedEntityCount", 1), ("AffectedEntitySampleCount", 1),
         ("AffectedEntityIds", None), ("AffectedEntityIdsTruncated", 1),
-        ("RendererGeneration", 1), ("UndoDepthBefore", 1), ("UndoDepthAfter", 1),
+        ("RendererGeneration", 1), ("DebugVisualizationGeneration", 1),
+        ("UndoDepthBefore", 1), ("UndoDepthAfter", 1),
         ("RedoDepthBefore", 1), ("RedoDepthAfter", 1),
         ("SelectionCommitted", 1), ("PivotRetargeted", 1),
         ("RendererReadbackVerified", 1), ("PostconditionVerified", 1),
@@ -436,8 +441,13 @@ def _parse_receipt(text: str, request_id: str, session_id: str,
                 tokens[2], _parse_bool(tokens[3], f"{label} visible"),
                 _parse_bool(tokens[4], f"{label} casts-shadows")]
 
+    def parse_debug_visualization(tokens: list[str], label: str) -> list[object]:
+        if tokens[0] not in ("Lit", "MaterialId", "GeometricNormal", "ShadowCaster"):
+            raise ControlError(f"invalid {label} debug view")
+        return [tokens[0], _parse_bool(tokens[1], f"{label} selected bounds")]
+
     receipt = {
-        "schema": 2,
+        "schema": 3,
         "requestId": request_id,
         "sessionId": session_id,
         "projectPath": project_path,
@@ -483,10 +493,16 @@ def _parse_receipt(text: str, request_id: str, session_id: str,
             values["BeforeColorPipeline"], "receipt before"),
         "afterColorPipeline": _parse_color_pipeline(
             values["AfterColorPipeline"], "receipt after"),
+        "beforeDebugVisualization": parse_debug_visualization(
+            values["BeforeDebugVisualization"], "receipt before"),
+        "afterDebugVisualization": parse_debug_visualization(
+            values["AfterDebugVisualization"], "receipt after"),
         "affectedEntityCount": affected_count,
         "affectedEntityIds": affected_ids,
         "affectedEntityIdsTruncated": affected_truncated,
         "rendererGeneration": int(values["RendererGeneration"][0]),
+        "debugVisualizationGeneration": int(
+            values["DebugVisualizationGeneration"][0]),
         "undoDepthBefore": int(values["UndoDepthBefore"][0]),
         "undoDepthAfter": int(values["UndoDepthAfter"][0]),
         "redoDepthBefore": int(values["RedoDepthBefore"][0]),
@@ -591,6 +607,21 @@ def _build_parser() -> argparse.ArgumentParser:
     action = subcommands.add_parser("set-project-color-pipeline")
     action.add_argument("--expected-color-pipeline", required=True, nargs=7)
     action.add_argument("--new-color-pipeline", required=True, nargs=7)
+    action = subcommands.add_parser("set-scene-debug-visualization")
+    action.add_argument("--expected-selected-entity-id", required=True, type=int)
+    action.add_argument("--expected-view", required=True,
+                        choices=("Lit", "MaterialId", "GeometricNormal", "ShadowCaster"))
+    action.add_argument("--expected-selected-bounds", required=True, choices=("yes", "no"))
+    action.add_argument("--new-view", required=True,
+                        choices=("Lit", "MaterialId", "GeometricNormal", "ShadowCaster"))
+    action.add_argument("--new-selected-bounds", required=True, choices=("yes", "no"))
+    action = subcommands.add_parser("set-mesh-renderer-flags")
+    action.add_argument("--entity-id", required=True, type=int)
+    action.add_argument("--expected-name", required=True)
+    action.add_argument("--expected-visible", required=True, choices=("yes", "no"))
+    action.add_argument("--expected-casts-shadows", required=True, choices=("yes", "no"))
+    action.add_argument("--new-visible", required=True, choices=("yes", "no"))
+    action.add_argument("--new-casts-shadows", required=True, choices=("yes", "no"))
     return parser
 
 
@@ -617,19 +648,22 @@ def main() -> int:
     request_id = _stable_id(args.request_id)
     project_path = str(session["project_path"])
     entity_actions = {"inspect", "set", "inspect-entity", "select-entity",
-                      "set-transform", "set-viewport-main-camera-pose", "set-typed-light"}
+                      "set-transform", "set-viewport-main-camera-pose", "set-typed-light",
+                      "set-mesh-renderer-flags"}
     if args.command in entity_actions and (args.entity_id <= 0 or args.entity_id > 0xFFFFFFFF):
         raise ControlError("entity ID must be a positive numeric ID")
     if args.command in ("inspect", "set") and (args.material_handle <= 0 or args.material_handle > 0xFFFFFFFFFFFFFFFF):
         raise ControlError("material handle must be a positive numeric ID")
-    if (args.command == "select-entity"
+    if (args.command in ("select-entity", "set-scene-debug-visualization")
             and not 0 <= args.expected_selected_entity_id <= 0xFFFFFFFF):
         raise ControlError("expected selected entity ID is outside the numeric ID range")
     action_names = {"inspect": "InspectMaterialSurface", "set": "SelectEntityPatchMaterialSurface",
                     "inspect-entity": "InspectEntity", "select-entity": "SelectEntity",
                     "set-transform": "SetEntityTransform", "set-typed-light": "SetTypedLight",
                     "set-project-color-pipeline": "SetProjectColorPipeline",
-                    "set-viewport-main-camera-pose": "SetViewportMainCameraPose"}
+                    "set-viewport-main-camera-pose": "SetViewportMainCameraPose",
+                    "set-scene-debug-visualization": "SetSceneDebugVisualization",
+                    "set-mesh-renderer-flags": "SetMeshRendererFlags"}
     action = action_names[args.command]
     lines = [
         REQUEST_HEADER,
@@ -650,6 +684,10 @@ def main() -> int:
     new_light: list[object] | None = None
     expected_color_pipeline: list[object] | None = None
     new_color_pipeline: list[object] | None = None
+    expected_debug_visualization: list[object] | None = None
+    new_debug_visualization: list[object] | None = None
+    expected_mesh_flags: list[bool] | None = None
+    new_mesh_flags: list[bool] | None = None
     if args.command == "set":
         labels = ["base R", "base G", "base B", "metallic", "roughness"]
         expected = [*args.expected_base, args.expected_metallic, args.expected_roughness]
@@ -681,6 +719,25 @@ def main() -> int:
             args.new_color_pipeline, "new")
         lines.extend(["ExpectedColorPipeline " + expected_text,
                       "NewColorPipeline " + new_text])
+    if args.command == "set-scene-debug-visualization":
+        expected_bounds = args.expected_selected_bounds == "yes"
+        new_bounds = args.new_selected_bounds == "yes"
+        expected_debug_visualization = [args.expected_view, expected_bounds]
+        new_debug_visualization = [args.new_view, new_bounds]
+        lines.extend([
+            f"ExpectedSelectedEntityId {args.expected_selected_entity_id}",
+            f"ExpectedDebugVisualization {args.expected_view} {args.expected_selected_bounds}",
+            f"NewDebugVisualization {args.new_view} {args.new_selected_bounds}",
+        ])
+    if args.command == "set-mesh-renderer-flags":
+        expected_mesh_flags = [args.expected_visible == "yes",
+                               args.expected_casts_shadows == "yes"]
+        new_mesh_flags = [args.new_visible == "yes",
+                          args.new_casts_shadows == "yes"]
+        lines.extend([
+            f"ExpectedMeshRendererFlags {args.expected_visible} {args.expected_casts_shadows}",
+            f"NewMeshRendererFlags {args.new_visible} {args.new_casts_shadows}",
+        ])
     contents = ("\n".join(lines) + "\n").encode("utf-8")
     if len(contents) > MAXIMUM_REQUEST_BYTES:
         raise ControlError("request exceeds the editor mailbox limit")
@@ -722,6 +779,10 @@ def main() -> int:
         common_valid = (receipt["action"] == action and receipt["reason"] == "ok"
             and receipt["rendererGeneration"] > 0
             and receipt["postconditionVerified"] and not receipt["rollbackVerified"])
+        if args.command != "set-scene-debug-visualization":
+            common_valid = (common_valid
+                and receipt["beforeDebugVisualization"]
+                    == receipt["afterDebugVisualization"])
         if args.command in entity_actions:
             common_valid = (common_valid
                 and receipt["entityId"] == args.entity_id
@@ -808,7 +869,22 @@ def main() -> int:
                 and receipt["selectedEntityIdAfter"] == receipt["selectedEntityIdBefore"]
                 and not receipt["rendererReadbackVerified"]
                 and not receipt["editorCameraSynchronized"])
-        else:
+        elif args.command == "set-mesh-renderer-flags":
+            semantic_valid = (receipt["effect"] == "MeshRendererFlagsSet"
+                and receipt["recovery"] == "UndoRedo" and one_history_entry
+                and receipt["beforeMeshRendererPresent"]
+                and receipt["afterMeshRendererPresent"]
+                and receipt["beforeMeshRenderer"][:3]
+                    == receipt["afterMeshRenderer"][:3]
+                and receipt["beforeMeshRenderer"][3:] == expected_mesh_flags
+                and receipt["afterMeshRenderer"][3:] == new_mesh_flags
+                and transform_unchanged and camera_unchanged and light_unchanged
+                and color_unchanged and not receipt["selectionCommitted"]
+                and not receipt["pivotRetargeted"]
+                and receipt["selectedEntityIdAfter"] == receipt["selectedEntityIdBefore"]
+                and not receipt["rendererReadbackVerified"]
+                and not receipt["editorCameraSynchronized"])
+        elif args.command == "set-project-color-pipeline":
             semantic_valid = (receipt["entityId"] == 0 and receipt["entityName"] == ""
                 and receipt["affectedEntityCount"] == 0
                 and receipt["affectedEntityIds"] == []
@@ -817,6 +893,23 @@ def main() -> int:
                 and receipt["beforeColorPipeline"] == expected_color_pipeline
                 and receipt["afterColorPipeline"] == new_color_pipeline
                 and receipt["selectedEntityIdAfter"] == receipt["selectedEntityIdBefore"]
+                and not receipt["selectionCommitted"] and not receipt["pivotRetargeted"]
+                and receipt["rendererReadbackVerified"]
+                and not receipt["editorCameraSynchronized"])
+        else:
+            semantic_valid = (receipt["entityId"] == 0 and receipt["entityName"] == ""
+                and receipt["affectedEntityCount"] == 0
+                and receipt["affectedEntityIds"] == []
+                and receipt["effect"] == "SceneDebugVisualizationSet"
+                and receipt["recovery"] == "RestorePreviousDebugVisualization"
+                and history_unchanged
+                and receipt["beforeDebugVisualization"] == expected_debug_visualization
+                and receipt["afterDebugVisualization"] == new_debug_visualization
+                and receipt["debugVisualizationGeneration"] > 0
+                and receipt["selectedEntityIdBefore"] == args.expected_selected_entity_id
+                and receipt["selectedEntityIdAfter"] == args.expected_selected_entity_id
+                and transform_unchanged and camera_unchanged and light_unchanged
+                and mesh_unchanged and color_unchanged
                 and not receipt["selectionCommitted"] and not receipt["pivotRetargeted"]
                 and receipt["rendererReadbackVerified"]
                 and not receipt["editorCameraSynchronized"])

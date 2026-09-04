@@ -3,6 +3,7 @@
 #include <Engine/Assets/MaterialAsset.h>
 #include <Engine/Core/Base.h>
 #include <Engine/Renderer/ColorPipelineSettings.h>
+#include <Engine/Renderer/SceneDebugVisualization.h>
 #include <Engine/Scene/Components.h>
 #include <Engine/Scene/Entity.h>
 
@@ -22,7 +23,9 @@ enum class EditorMaterialControlAction
     SetEntityTransform,
     SetTypedLight,
     SetProjectColorPipeline,
-    SetViewportMainCameraPose
+    SetViewportMainCameraPose,
+    SetSceneDebugVisualization,
+    SetMeshRendererFlags
 };
 
 struct EditorMaterialControlRequest
@@ -53,6 +56,18 @@ struct EditorMaterialControlRequest
     Engine::RendererColorPipelineSettings NewColorPipeline;
     bool HasExpectedColorPipeline = false;
     bool HasNewColorPipeline = false;
+    Engine::SceneDebugView ExpectedDebugView = Engine::SceneDebugView::Lit;
+    Engine::SceneDebugView NewDebugView = Engine::SceneDebugView::Lit;
+    bool ExpectedShowSelectedBounds = true;
+    bool NewShowSelectedBounds = true;
+    bool HasExpectedDebugVisualization = false;
+    bool HasNewDebugVisualization = false;
+    bool ExpectedMeshVisible = true;
+    bool ExpectedMeshCastsShadows = true;
+    bool NewMeshVisible = true;
+    bool NewMeshCastsShadows = true;
+    bool HasExpectedMeshRendererFlags = false;
+    bool HasNewMeshRendererFlags = false;
     Engine::EntityId ExpectedSelectedEntityId = Engine::kInvalidEntityId;
     bool HasExpectedSelectedEntityId = false;
 };
@@ -108,6 +123,11 @@ struct EditorMaterialControlReceipt
     Engine::MeshRendererComponent AfterMeshRenderer;
     Engine::RendererColorPipelineSettings BeforeColorPipeline;
     Engine::RendererColorPipelineSettings AfterColorPipeline;
+    Engine::SceneDebugView BeforeDebugView = Engine::SceneDebugView::Lit;
+    Engine::SceneDebugView AfterDebugView = Engine::SceneDebugView::Lit;
+    bool BeforeShowSelectedBounds = true;
+    bool AfterShowSelectedBounds = true;
+    Engine::u64 DebugVisualizationGeneration = 0;
     bool PostconditionVerified = false;
     bool RollbackVerified = false;
     bool EditorCameraSynchronized = false;

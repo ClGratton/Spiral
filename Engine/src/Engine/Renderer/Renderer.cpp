@@ -28,6 +28,11 @@
 #include <limits>
 #include <stdexcept>
 
+namespace Engine::Detail
+{
+    void ResetSceneDebugVisualizationPublication();
+}
+
 namespace Engine
 {
     namespace
@@ -487,6 +492,7 @@ namespace Engine
     void Renderer::Shutdown()
     {
         s_SceneRenderSnapshot.Store({});
+        Detail::ResetSceneDebugVisualizationPublication();
         ClearArtifactResolvers();
         s_PreparedSceneRasterFrame.Store({});
         s_SceneRasterFrame.Store({});

@@ -6,6 +6,7 @@ namespace Engine
 {
     struct MaterialTextureBindingSet;
     struct SceneRasterInstance;
+    struct SceneDebugVisualizationSettings;
     struct SceneSkyAtmosphereFrame;
     struct SceneShadowMapFrame;
     enum class SceneShadowCasterMode : u32;
@@ -24,8 +25,10 @@ namespace Engine
         u32 TextureIndices0[4] {};
         u32 TextureIndices1[4] {};
         u32 TextureState[4] {};
-        // x is the stable frame-local material row. y marks row zero as the
-        // deterministic default/error row; z/w are reserved and remain zero.
+        // x is the frame-local material row; y marks row zero as the
+        // deterministic default/error row; z is SceneDebugView; w is the
+        // deterministic 32-bit fold of the persistent MaterialAsset handle
+        // used as the stable material-identity visualization input.
         u32 MaterialState[4] {};
         float ModelView[16] {};
         float NormalViewTransform[16] {};
@@ -53,5 +56,9 @@ namespace Engine
         SceneSurfaceConstants& inOutConstants);
     bool TryApplySceneSkyIrradianceConstants(
         const SceneSkyAtmosphereFrame& sky,
+        SceneSurfaceConstants& inOutConstants);
+    bool TryApplySceneDebugVisualizationConstants(
+        const SceneRasterInstance& instance,
+        const SceneDebugVisualizationSettings& settings,
         SceneSurfaceConstants& inOutConstants);
 }

@@ -29,6 +29,7 @@
 #include "Engine/Renderer/FramePacingPolicy.h"
 #include "Engine/Renderer/FramePacingBenchmark.h"
 #include "Engine/Renderer/SceneRasterPreparation.h"
+#include "Engine/Renderer/SceneDebugVisualization.h"
 #include "Engine/Renderer/CapabilityDiagnostics.h"
 #include "Engine/Renderer/ClusteredLightGrid.h"
 #include "Engine/Renderer/ShaderLibrary.h"

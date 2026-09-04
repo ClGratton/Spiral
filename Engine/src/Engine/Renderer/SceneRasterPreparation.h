@@ -6,6 +6,7 @@
 #include "Engine/Math/Math.h"
 #include "Engine/Math/WorldGrid.h"
 #include "Engine/Renderer/ClusteredLightGrid.h"
+#include "Engine/Renderer/SceneDebugVisualization.h"
 #include "Engine/Renderer/SceneSkyAtmosphere.h"
 #include "Engine/Scene/Entity.h"
 #include "Engine/Scene/SceneRenderSnapshot.h"
@@ -64,6 +65,11 @@ namespace Engine
         std::string Diagnostic;
         ClusteredLightGrid LightGrid;
         SceneSkyAtmosphereFrame SkyAtmosphere;
+        // Editor/debug settings are one immutable preparation input just like
+        // the Scene and artifact catalog. A later live toggle affects only the
+        // next prepared frame.
+        SceneDebugVisualizationSettings DebugVisualization;
+        u64 DebugVisualizationGeneration = 0;
         // Exact immutable asset/material generation used by preparation and
         // every later GPU resolution for this frame.
         Ref<const ArtifactResolverSnapshot> ArtifactResolvers;

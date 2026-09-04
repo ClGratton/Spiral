@@ -23,6 +23,7 @@
 #include "Engine/Renderer/NVRHI/D3D12ViewportShaderReloadCoordinator.h"
 #include "Engine/Renderer/PortableShaderContract.h"
 #include "Engine/Renderer/SlangShaderCompiler.h"
+#include "Engine/Renderer/SceneDebugOverlayPass.h"
 #include "Engine/Renderer/SceneRasterPreparation.h"
 #include "Engine/Renderer/SceneSkyAtmosphere.h"
 #include "Engine/Renderer/SceneShadowMap.h"
@@ -2845,7 +2846,8 @@ namespace
         AssetRegistry productionIdentityRegistry;
         const AssetHandle productionDefault =
             productionIdentityRegistry.RegisterAsset(AssetType::Texture,
-                GetDefaultSceneTextureSourcePath(), "Production Default");
+                std::string(GetDefaultSceneTextureSourcePath()),
+                "Production Default");
         const bool fixtureIdentityIsolated = baseColor != kInvalidAssetHandle
             && productionDefault != kInvalidAssetHandle
             && baseColor != productionDefault
@@ -5109,6 +5111,48 @@ namespace
         SceneSurfaceConstants errorConstants;
         const bool errorConstantsBuilt = errorInstance != firstFrame.Instances.end()
             && TryBuildSceneSurfaceConstants(*errorInstance, errorBindings, true, errorConstants);
+        SceneRasterInstance stableDebugInstance = instance;
+        stableDebugInstance.MaterialAsset = 0x1122334455667788ull;
+        stableDebugInstance.MaterialId = 3;
+        SceneRasterInstance renumberedDebugInstance = stableDebugInstance;
+        renumberedDebugInstance.MaterialId = 91;
+        SceneDebugVisualizationSettings materialIdDebug;
+        materialIdDebug.View = SceneDebugView::MaterialId;
+        materialIdDebug.SelectedEntity = stableDebugInstance.SourceEntity;
+        SceneSurfaceConstants stableDebugConstants;
+        SceneSurfaceConstants renumberedDebugConstants;
+        const bool stableDebugBuilt = TryBuildSceneSurfaceConstants(
+                stableDebugInstance, bindings, false, stableDebugConstants)
+            && TryBuildSceneSurfaceConstants(renumberedDebugInstance, bindings,
+                false, renumberedDebugConstants)
+            && TryApplySceneDebugVisualizationConstants(stableDebugInstance,
+                materialIdDebug, stableDebugConstants)
+            && TryApplySceneDebugVisualizationConstants(renumberedDebugInstance,
+                materialIdDebug, renumberedDebugConstants);
+        constexpr u32 expectedPersistentMaterialFold = 0x444444ccu;
+        const bool stableDebugIdentity = stableDebugBuilt
+            && stableDebugConstants.MaterialState[0] == 3
+            && renumberedDebugConstants.MaterialState[0] == 91
+            && stableDebugConstants.MaterialState[2]
+                == static_cast<u32>(SceneDebugView::MaterialId)
+            && renumberedDebugConstants.MaterialState[2]
+                == static_cast<u32>(SceneDebugView::MaterialId)
+            && stableDebugConstants.MaterialState[3]
+                == expectedPersistentMaterialFold
+            && renumberedDebugConstants.MaterialState[3]
+                == expectedPersistentMaterialFold;
+        SceneDebugVisualizationSettings invalidDebug = materialIdDebug;
+        invalidDebug.View = static_cast<SceneDebugView>(99);
+        SceneSurfaceConstants preservedDebugConstants = stableDebugConstants;
+        const bool invalidDebugRejected =
+            !TryApplySceneDebugVisualizationConstants(stableDebugInstance,
+                invalidDebug, preservedDebugConstants)
+            && preservedDebugConstants.MaterialState[0]
+                == stableDebugConstants.MaterialState[0]
+            && preservedDebugConstants.MaterialState[2]
+                == stableDebugConstants.MaterialState[2]
+            && preservedDebugConstants.MaterialState[3]
+                == stableDebugConstants.MaterialState[3];
         SceneSurfaceConstants preservedConstants;
         preservedConstants.MaterialState[0] = 91;
         MaterialTextureBindingSet invalidBindings = bindings;
@@ -5150,6 +5194,7 @@ namespace
             && constants.MaterialState[0] == instance.MaterialId && constants.MaterialState[1] == 0
             && errorConstants.MaterialState[0] == 0 && errorConstants.MaterialState[1] == 1
             && errorConstants.MaterialState[2] == 0 && errorConstants.MaterialState[3] == 0
+            && stableDebugIdentity && invalidDebugRejected
             && nonfiniteRejected && invalidBaseColorRejected
             && invalidAlphaModeRejected && invalidShadingModelRejected;
         const bool singularWholeFrameRejected = !singularFrame.HasValidView
@@ -5161,7 +5206,287 @@ namespace
             && Expect(normalTransformValid && singularWholeFrameRejected,
                 "nonuniform scale publishes the row-vector inverse-transpose while any singular mesh rejects the complete prepared frame")
             && Expect(constantBoundary,
-                "the exact 512-byte Scene payload carries model/view, shadow, and sky data with bounded material rows and explicit error state");
+                "the exact 512-byte Scene payload carries model/view, shadow, sky, and stable persistent-material debug identity transactionally");
+    }
+
+    bool TestSceneDebugVisualizationPublicationIsFrameCoherent()
+    {
+        using namespace Engine;
+        const SceneDebugVisualizationPublication original =
+            Renderer::GetSceneDebugVisualization();
+        SceneDebugVisualizationSettings first;
+        first.View = SceneDebugView::MaterialId;
+        first.SelectedEntity = 701;
+        first.ShowSelectedBounds = true;
+        const bool firstAccepted = Renderer::SetSceneDebugVisualization(first);
+        const SceneDebugVisualizationPublication firstPublication =
+            Renderer::GetSceneDebugVisualization();
+        const bool noOpAccepted = Renderer::SetSceneDebugVisualization(first);
+        const SceneDebugVisualizationPublication noOpPublication =
+            Renderer::GetSceneDebugVisualization();
+
+        SceneRenderSnapshot snapshot;
+        snapshot.FrameIndex = 444;
+        const SceneRasterFrame retainedFrame = PrepareSceneRasterFrame(snapshot);
+
+        SceneDebugVisualizationSettings second = first;
+        second.View = SceneDebugView::GeometricNormal;
+        second.SelectedEntity = 702;
+        second.ShowSelectedBounds = false;
+        const bool secondAccepted = Renderer::SetSceneDebugVisualization(second);
+        const SceneDebugVisualizationPublication secondPublication =
+            Renderer::GetSceneDebugVisualization();
+        const SceneRasterFrame nextFrame = PrepareSceneRasterFrame(snapshot);
+
+        SceneDebugView parsed = SceneDebugView::ShadowCaster;
+        const bool parsesAll = TryParseSceneDebugView("Lit", parsed)
+            && parsed == SceneDebugView::Lit
+            && TryParseSceneDebugView("MaterialId", parsed)
+            && parsed == SceneDebugView::MaterialId
+            && TryParseSceneDebugView("GeometricNormal", parsed)
+            && parsed == SceneDebugView::GeometricNormal
+            && TryParseSceneDebugView("ShadowCaster", parsed)
+            && parsed == SceneDebugView::ShadowCaster
+            && std::string_view(ToString(SceneDebugView::Lit)) == "Lit"
+            && std::string_view(ToString(SceneDebugView::MaterialId)) == "MaterialId"
+            && std::string_view(ToString(SceneDebugView::GeometricNormal)) == "GeometricNormal"
+            && std::string_view(ToString(SceneDebugView::ShadowCaster)) == "ShadowCaster";
+        const SceneDebugView beforeUnknownParse = parsed;
+        const bool unknownRejected = !TryParseSceneDebugView("material-id", parsed)
+            && parsed == beforeUnknownParse;
+
+        SceneDebugVisualizationSettings invalid = second;
+        invalid.View = static_cast<SceneDebugView>(99);
+        const bool invalidRejected = !Renderer::SetSceneDebugVisualization(invalid)
+            && !IsValidSceneDebugVisualizationSettings(invalid)
+            && Renderer::GetSceneDebugVisualization().Settings == second
+            && Renderer::GetSceneDebugVisualization().Generation
+                == secondPublication.Generation;
+
+        constexpr u32 workerCount = 8;
+        constexpr u32 writesPerWorker = 128;
+        constexpr EntityId firstConcurrentEntity = 100000;
+        std::atomic<u32> readyWorkers { 0 };
+        std::atomic<bool> startWriters { false };
+        std::atomic<bool> concurrentWritesAccepted { true };
+        std::atomic<bool> observedGenerationsMonotonic { true };
+        std::vector<std::thread> writers;
+        writers.reserve(workerCount);
+        for (u32 worker = 0; worker < workerCount; ++worker)
+        {
+            writers.emplace_back([&, worker]
+            {
+                readyWorkers.fetch_add(1, std::memory_order_acq_rel);
+                while (!startWriters.load(std::memory_order_acquire))
+                    std::this_thread::yield();
+                u64 lastObservedGeneration = secondPublication.Generation;
+                for (u32 write = 0; write < writesPerWorker; ++write)
+                {
+                    SceneDebugVisualizationSettings concurrent;
+                    concurrent.View = static_cast<SceneDebugView>(
+                        (worker + write) % 4u);
+                    concurrent.SelectedEntity = firstConcurrentEntity
+                        + static_cast<EntityId>(worker) * writesPerWorker + write;
+                    concurrent.ShowSelectedBounds = (worker + write) % 2u == 0u;
+                    if (!Renderer::SetSceneDebugVisualization(concurrent))
+                        concurrentWritesAccepted.store(false,
+                            std::memory_order_release);
+                    const SceneDebugVisualizationPublication observed =
+                        Renderer::GetSceneDebugVisualization();
+                    if (observed.Generation < lastObservedGeneration)
+                        observedGenerationsMonotonic.store(false,
+                            std::memory_order_release);
+                    lastObservedGeneration = observed.Generation;
+                }
+            });
+        }
+        while (readyWorkers.load(std::memory_order_acquire) != workerCount)
+            std::this_thread::yield();
+        startWriters.store(true, std::memory_order_release);
+        for (std::thread& writer : writers)
+            writer.join();
+        const SceneDebugVisualizationPublication concurrentPublication =
+            Renderer::GetSceneDebugVisualization();
+        const u64 expectedConcurrentGeneration = secondPublication.Generation
+            + static_cast<u64>(workerCount) * writesPerWorker;
+        const bool finalEntityInRange =
+            concurrentPublication.Settings.SelectedEntity >= firstConcurrentEntity
+            && concurrentPublication.Settings.SelectedEntity
+                < firstConcurrentEntity
+                    + static_cast<EntityId>(workerCount) * writesPerWorker;
+        const EntityId concurrentOffset = finalEntityInRange
+            ? concurrentPublication.Settings.SelectedEntity - firstConcurrentEntity
+            : static_cast<EntityId>(workerCount) * writesPerWorker;
+        const u32 finalWorker = static_cast<u32>(
+            concurrentOffset / writesPerWorker);
+        const u32 finalWrite = static_cast<u32>(
+            concurrentOffset % writesPerWorker);
+        const bool finalPublicationExact = finalEntityInRange
+            && finalWorker < workerCount
+            && finalWrite < writesPerWorker
+            && concurrentPublication.Generation == expectedConcurrentGeneration
+            && concurrentPublication.Settings.View == static_cast<SceneDebugView>(
+                (finalWorker + finalWrite) % 4u)
+            && concurrentPublication.Settings.ShowSelectedBounds
+                == ((finalWorker + finalWrite) % 2u == 0u);
+
+        std::atomic<bool> concurrentNoOpsAccepted { true };
+        std::vector<std::thread> noOpWriters;
+        noOpWriters.reserve(workerCount);
+        for (u32 worker = 0; worker < workerCount; ++worker)
+        {
+            noOpWriters.emplace_back([&]
+            {
+                for (u32 write = 0; write < writesPerWorker; ++write)
+                    if (!Renderer::SetSceneDebugVisualization(
+                            concurrentPublication.Settings))
+                        concurrentNoOpsAccepted.store(false,
+                            std::memory_order_release);
+            });
+        }
+        for (std::thread& writer : noOpWriters)
+            writer.join();
+        const SceneDebugVisualizationPublication afterConcurrentNoOps =
+            Renderer::GetSceneDebugVisualization();
+        const bool concurrentPublicationExact =
+            concurrentWritesAccepted.load(std::memory_order_acquire)
+            && observedGenerationsMonotonic.load(std::memory_order_acquire)
+            && finalPublicationExact
+            && concurrentNoOpsAccepted.load(std::memory_order_acquire)
+            && afterConcurrentNoOps.Settings == concurrentPublication.Settings
+            && afterConcurrentNoOps.Generation == expectedConcurrentGeneration;
+        const bool restored = Renderer::SetSceneDebugVisualization(original.Settings);
+
+        const bool publication = firstAccepted && noOpAccepted && secondAccepted
+            && firstPublication.Settings == first
+            && firstPublication.Generation > original.Generation
+            && noOpPublication.Settings == first
+            && noOpPublication.Generation == firstPublication.Generation
+            && secondPublication.Settings == second
+            && secondPublication.Generation == firstPublication.Generation + 1;
+        const bool coherent = retainedFrame.SnapshotFrameIndex == snapshot.FrameIndex
+            && retainedFrame.DebugVisualization == first
+            && retainedFrame.DebugVisualizationGeneration == firstPublication.Generation
+            && nextFrame.DebugVisualization == second
+            && nextFrame.DebugVisualizationGeneration == secondPublication.Generation;
+
+        return Expect(parsesAll && unknownRejected,
+                "scene debug view names round-trip exactly and reject unknown spellings transactionally")
+            && Expect(publication && invalidRejected && restored,
+                "debug settings publish monotonic generations, preserve no-op generations, and reject invalid views")
+            && Expect(concurrentPublicationExact,
+                "bounded concurrent unique writes publish one exact monotonic generation each while concurrent no-ops preserve the final generation")
+            && Expect(coherent,
+                "each prepared raster frame retains the exact debug settings generation observed at preparation");
+    }
+
+    bool TestSceneDebugVisualizationOverlayClipsAndPacksTransactionally()
+    {
+        using namespace Engine;
+        SceneRasterFrame frame;
+        frame.HasValidView = true;
+        frame.DebugVisualization.View = SceneDebugView::ShadowCaster;
+        frame.DebugVisualization.SelectedEntity = 81;
+        frame.DebugVisualization.ShowSelectedBounds = true;
+        frame.DebugVisualizationGeneration = 17;
+        SceneRasterInstance selected;
+        selected.SourceEntity = 81;
+        selected.ModelViewProjection = Math::Mat4::Identity();
+        frame.Instances.push_back(selected);
+
+        std::string error;
+        SceneDebugOverlayFrame projected;
+        const std::vector<SceneObjectBounds> visibleBounds {
+            { { -0.5f, -0.25f, 0.25f }, { 0.5f, 0.75f, 0.75f } }
+        };
+        const bool projectedAccepted = TryPrepareSceneDebugOverlay(
+            frame, visibleBounds, 800, 600, projected, error);
+        const bool projectedShape = projectedAccepted && error.empty()
+            && projected.Settings == frame.DebugVisualization
+            && projected.SettingsGeneration == 17
+            && projected.ViewportWidth == 800 && projected.ViewportHeight == 600
+            && projected.SegmentCount == SceneDebugOverlayFrame::MaximumSegmentCount
+            && projected.HasPostToneMapOverlay();
+        bool projectedNormalized = projectedShape;
+        for (size_t segment = 0; segment < projected.SegmentCount; ++segment)
+            for (float value : projected.Segments[segment].Values)
+                projectedNormalized = projectedNormalized && std::isfinite(value)
+                    && value >= 0.0f && value <= 1.0f;
+
+        SceneDebugOverlayFrame nearClipped;
+        const std::vector<SceneObjectBounds> nearBounds {
+            { { -0.5f, -0.25f, -0.25f }, { 0.5f, 0.75f, 0.75f } }
+        };
+        const bool nearAccepted = TryPrepareSceneDebugOverlay(
+            frame, nearBounds, 800, 600, nearClipped, error);
+        bool nearFinite = nearAccepted && error.empty()
+            && nearClipped.SegmentCount == 8;
+        for (size_t segment = 0; segment < nearClipped.SegmentCount; ++segment)
+            for (float value : nearClipped.Segments[segment].Values)
+                nearFinite = nearFinite && std::isfinite(value)
+                    && value >= 0.0f && value <= 1.0f;
+
+        SceneRasterFrame missingSelection = frame;
+        missingSelection.DebugVisualization.SelectedEntity = 999;
+        SceneDebugOverlayFrame absent;
+        const bool missingAccepted = TryPrepareSceneDebugOverlay(
+                missingSelection, visibleBounds, 800, 600, absent, error)
+            && !absent.HasPostToneMapOverlay()
+            && absent.SettingsGeneration == frame.DebugVisualizationGeneration;
+        SceneRasterFrame disabledSelection = frame;
+        disabledSelection.DebugVisualization.ShowSelectedBounds = false;
+        const bool disabledAccepted = TryPrepareSceneDebugOverlay(
+                disabledSelection, visibleBounds, 800, 600, absent, error)
+            && !absent.HasPostToneMapOverlay();
+
+        SceneDebugOverlayGpuConstants gpu;
+        const bool gpuAccepted = TryBuildSceneDebugOverlayGpuConstants(
+                projected, gpu, error)
+            && error.empty()
+            && sizeof(SceneDebugOverlayGpuConstants) == 224
+            && gpu.OverlayState[0]
+                == static_cast<float>(SceneDebugOverlayFrame::MaximumSegmentCount)
+            && gpu.OverlayState[1] == 800.0f
+            && gpu.OverlayState[2] == 600.0f
+            && gpu.OverlayState[3] == 2.0f
+            && gpu.OverlayColorAndOpacity[0] == 69.0f / 255.0f
+            && gpu.OverlayColorAndOpacity[1] == 133.0f / 255.0f
+            && gpu.OverlayColorAndOpacity[2] == 179.0f / 255.0f
+            && gpu.OverlayColorAndOpacity[3] == 0.92f;
+
+        SceneDebugOverlayFrame preservedOverlay = projected;
+        preservedOverlay.SettingsGeneration = 991;
+        const std::vector<SceneObjectBounds> malformedBounds {
+            { { -0.5f, -0.25f, 0.25f },
+                { std::numeric_limits<float>::quiet_NaN(), 0.75f, 0.75f } }
+        };
+        const bool malformedRejected = !TryPrepareSceneDebugOverlay(
+                frame, malformedBounds, 800, 600, preservedOverlay, error)
+            && !error.empty() && preservedOverlay.SettingsGeneration == 991
+            && preservedOverlay.SegmentCount == projected.SegmentCount;
+        SceneDebugOverlayGpuConstants preservedGpu;
+        preservedGpu.OverlayState[0] = 991.0f;
+        SceneDebugOverlayFrame malformedGpu = projected;
+        malformedGpu.Segments[0].Values[0] = 1.01f;
+        const bool malformedGpuRejected = !TryBuildSceneDebugOverlayGpuConstants(
+                malformedGpu, preservedGpu, error)
+            && !error.empty() && preservedGpu.OverlayState[0] == 991.0f;
+        SceneDebugOverlayFrame empty = projected;
+        empty.SegmentCount = 0;
+        const bool emptyGpuRejected = !TryBuildSceneDebugOverlayGpuConstants(
+                empty, preservedGpu, error)
+            && preservedGpu.OverlayState[0] == 991.0f;
+
+        return Expect(projectedNormalized,
+                "a selected identity-space AABB projects all twelve normalized viewport edges")
+            && Expect(nearFinite,
+                "an AABB crossing the zero-to-one near plane clips to eight finite visible edges")
+            && Expect(missingAccepted && disabledAccepted,
+                "missing or disabled selection publishes an explicit overlay-free frame")
+            && Expect(gpuAccepted,
+                "overlay constants preserve every edge plus exact color, opacity, viewport, and thickness state")
+            && Expect(malformedRejected && malformedGpuRejected && emptyGpuRejected,
+                "malformed bounds and empty or out-of-range GPU inputs reject without replacing caller state");
     }
 
     bool TestSceneSkyAtmospherePreparationIsDeterministicAndBounded()
@@ -11297,6 +11622,8 @@ int main(int argc, char** argv)
         FAST_TEST("Per-view sector-snapped origin tracking", TestPerViewSectorSnappedOriginTracking),
         FAST_TEST("Scene raster origin epoch invariance", TestSceneRasterOriginEpochInvariance),
         FAST_TEST("Scene surface basis and material rows publish deterministically", TestSceneSurfaceBasisAndMaterialRows),
+        FAST_TEST("Scene debug visualization publication is monotonic and frame coherent", TestSceneDebugVisualizationPublicationIsFrameCoherent),
+        FAST_TEST("Scene debug visualization overlay clips and packs transactionally", TestSceneDebugVisualizationOverlayClipsAndPacksTransactionally),
         FAST_TEST("Scene sky atmosphere preparation is deterministic and bounded", TestSceneSkyAtmospherePreparationIsDeterministicAndBounded),
         FAST_TEST("Scene shadow map preparation is stabilized and classifies caster modes", TestSceneShadowMapPreparationIsStableAndExplicit),
         FAST_TEST("Basic PBR CPU reference uses accepted convention", TestBasicPbrCpuReferenceUsesAcceptedConvention),
