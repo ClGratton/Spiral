@@ -354,6 +354,16 @@ namespace Engine
         return sceneEntity && sceneEntity->Light ? &(*sceneEntity->Light) : nullptr;
     }
 
+    bool Scene::SetLightComponent(Entity entity, const LightComponent& light)
+    {
+        SceneEntity* sceneEntity = FindEntityStorage(entity);
+        if (!sceneEntity || !sceneEntity->Light || !IsValidLightComponent(light))
+            return false;
+
+        sceneEntity->Light = light;
+        return true;
+    }
+
     bool Scene::RemoveLightComponent(Entity entity)
     {
         SceneEntity* sceneEntity = FindEntityStorage(entity);

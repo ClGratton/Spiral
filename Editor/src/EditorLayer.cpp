@@ -600,6 +600,8 @@ void EditorLayer::OnAttach()
     m_EditorMaterialControlSmokeRequested = args.HasFlag("--editor-control-mailbox-smoke");
     m_EditorMaterialControlLiveHelperSmokeRequested =
         args.HasFlag("--editor-control-live-helper-smoke");
+    m_EditorSceneControlV2HelperSmokeRequested =
+        args.HasFlag("--editor-control-scene-v2-helper-smoke");
     m_EditorMaterialControlCapacitySmokeRequested =
         args.HasFlag("--editor-control-capacity-smoke");
     m_EditorMaterialControlDurabilitySmokeRequested =
@@ -611,6 +613,7 @@ void EditorLayer::OnAttach()
     const unsigned int controlSmokeCount =
         (m_EditorMaterialControlSmokeRequested ? 1u : 0u)
         + (m_EditorMaterialControlLiveHelperSmokeRequested ? 1u : 0u)
+        + (m_EditorSceneControlV2HelperSmokeRequested ? 1u : 0u)
         + (m_EditorMaterialControlCapacitySmokeRequested ? 1u : 0u)
         + (m_EditorMaterialControlDurabilitySmokeRequested ? 1u : 0u)
         + (m_EditorMaterialControlRollbackFailureSmokeRequested ? 1u : 0u)
@@ -629,6 +632,7 @@ void EditorLayer::OnAttach()
     Engine::Renderer::PublishArtifactResolvers(m_AssetRegistry, m_MaterialLibrary);
     if (m_EditorMaterialControlSmokeRequested
         || m_EditorMaterialControlLiveHelperSmokeRequested
+        || m_EditorSceneControlV2HelperSmokeRequested
         || m_EditorMaterialControlCapacitySmokeRequested
         || m_EditorMaterialControlDurabilitySmokeRequested
         || m_EditorMaterialControlRollbackFailureSmokeRequested
@@ -746,6 +750,7 @@ void EditorLayer::OnUpdate(Engine::Timestep timestep)
         });
     RunEditorMaterialControlSmokeAfterDrain();
     RunEditorMaterialControlLiveHelperSmokeAfterDrain();
+    RunEditorSceneControlV2HelperSmokeAfterDrain();
     RunEditorMaterialControlCapacitySmokeAfterDrain();
     RunEditorMaterialControlDurabilitySmokeAfterDrain();
     RunEditorMaterialControlRollbackFailureSmokeAfterDrain();
@@ -786,6 +791,7 @@ void EditorLayer::InitializeEditorMaterialControl()
     {
         if (m_EditorMaterialControlSmokeRequested
             || m_EditorMaterialControlLiveHelperSmokeRequested
+            || m_EditorSceneControlV2HelperSmokeRequested
             || m_EditorMaterialControlCapacitySmokeRequested
             || m_EditorMaterialControlDurabilitySmokeRequested
             || m_EditorMaterialControlRollbackFailureSmokeRequested
@@ -861,6 +867,102 @@ void EditorLayer::InitializeEditorMaterialControl()
         ResetFusionNavigationPivotFromSelectionOrScene();
     }
 
+    if (m_EditorSceneControlV2HelperSmokeRequested)
+    {
+        const Engine::Entity mainCamera = m_ActiveScene.GetMainCameraEntity();
+        const Engine::SceneEntity* prototype = m_ActiveScene.TryGetEntity(m_PrototypeMeshEntity);
+        const Engine::SceneEntity* directional =
+            m_ActiveScene.TryGetEntity(m_DirectionalLightEntity);
+        const Engine::TransformComponent* cameraTransform =
+            m_ActiveScene.TryGetTransform(mainCamera);
+        const Engine::LightComponent* light =
+            m_ActiveScene.TryGetLightComponent(m_DirectionalLightEntity);
+        if (!prototype || !directional || !cameraTransform || !light || !mainCamera)
+            throw std::runtime_error(
+                "editor scene-control V2 smoke requires prototype, main camera, and light");
+
+        m_SelectedEntity = mainCamera;
+        ResetFusionNavigationPivotFromSelectionOrScene();
+        m_EditorSceneControlV2InitialSelection = m_SelectedEntity;
+        m_EditorSceneControlV2PrototypeBefore = prototype->Transform;
+        m_EditorSceneControlV2CameraBefore = *cameraTransform;
+        m_EditorSceneControlV2LightBefore = *light;
+        m_EditorSceneControlV2ColorBefore = m_ProjectColorPipelineSettings;
+
+        const auto shiftedPosition = [this](const Engine::Math::SectorLocalPosition& before,
+                                         double xOffset, double yOffset, double zOffset)
+        {
+            Engine::Math::SectorLocalPosition after = before;
+            const double halfExtent = m_ActiveScene.GetWorldGridPolicy().SectorExtent * 0.5;
+            const auto shiftAxis = [halfExtent](double value, double offset)
+            {
+                return value + offset < halfExtent ? value + offset : value - offset;
+            };
+            after.Local.X = shiftAxis(after.Local.X, xOffset);
+            after.Local.Y = shiftAxis(after.Local.Y, yOffset);
+            after.Local.Z = shiftAxis(after.Local.Z, zOffset);
+            return after;
+        };
+        m_EditorSceneControlV2PrototypeAfterPosition = shiftedPosition(
+            prototype->Transform.GetPosition(), 1.25, 0.5, 0.75);
+        m_EditorSceneControlV2PrototypeAfterRotation = {
+            prototype->Transform.RotationDegrees.X + 3.0f,
+            prototype->Transform.RotationDegrees.Y + 5.0f,
+            prototype->Transform.RotationDegrees.Z + 2.0f
+        };
+        m_EditorSceneControlV2PrototypeAfterScale = {
+            prototype->Transform.Scale.X * 1.1f,
+            prototype->Transform.Scale.Y * 0.9f,
+            prototype->Transform.Scale.Z * 1.05f
+        };
+        m_EditorSceneControlV2CameraAfterPosition = shiftedPosition(
+            cameraTransform->GetPosition(), 1.0, 0.5, 1.0);
+        m_EditorSceneControlV2CameraAfterRotation = {
+            cameraTransform->RotationDegrees.X + 2.0f,
+            cameraTransform->RotationDegrees.Y + 5.0f,
+            cameraTransform->RotationDegrees.Z
+        };
+        m_EditorSceneControlV2LightAfter = {
+            Engine::LightType::Point,
+            { 0.8f, 0.65f, 0.5f },
+            1800.0,
+            Engine::LightPhotometricUnit::Lumens,
+            25.0f,
+            15.0f,
+            35.0f,
+            false
+        };
+        m_EditorSceneControlV2ColorAfter = m_EditorSceneControlV2ColorBefore;
+        m_EditorSceneControlV2ColorAfter.ManualExposureEV100 =
+            m_EditorSceneControlV2ColorBefore.ManualExposureEV100 <= 15.5
+                ? m_EditorSceneControlV2ColorBefore.ManualExposureEV100 + 0.5
+                : m_EditorSceneControlV2ColorBefore.ManualExposureEV100 - 0.5;
+        m_EditorSceneControlV2ColorAfter.PostToneMapSaturation =
+            m_EditorSceneControlV2ColorBefore.PostToneMapSaturation == 0.83 ? 0.91 : 0.83;
+        m_EditorSceneControlV2ColorAfter.PostToneMapContrast =
+            m_EditorSceneControlV2ColorBefore.PostToneMapContrast == 1.12 ? 0.94 : 1.12;
+        m_EditorSceneControlV2ColorAfter.ExposureMode =
+            Engine::RendererExposureMode::ManualEV100;
+
+        Engine::Scene validation = m_ActiveScene;
+        if (!validation.SetEntityTransform(m_PrototypeMeshEntity,
+                m_EditorSceneControlV2PrototypeAfterPosition,
+                m_EditorSceneControlV2PrototypeAfterRotation,
+                m_EditorSceneControlV2PrototypeAfterScale)
+            || !validation.SetEntityTransform(mainCamera,
+                m_EditorSceneControlV2CameraAfterPosition,
+                m_EditorSceneControlV2CameraAfterRotation,
+                { 1.0f, 1.0f, 1.0f })
+            || !validation.SetLightComponent(
+                m_DirectionalLightEntity, m_EditorSceneControlV2LightAfter)
+            || !Engine::IsValidRendererColorPipelineSettings(
+                m_EditorSceneControlV2ColorAfter))
+        {
+            throw std::runtime_error(
+                "could not construct valid editor scene-control V2 smoke values");
+        }
+    }
+
     std::string error;
     if (!m_EditorMaterialControl.Initialize(
         std::filesystem::path(std::string(controlDirectory)), m_ProjectPath, error))
@@ -873,6 +975,107 @@ void EditorLayer::InitializeEditorMaterialControl()
             m_EditorMaterialControlSmokeAfter, error))
         throw std::runtime_error(
             "could not publish live helper smoke target: " + error);
+    if (m_EditorSceneControlV2HelperSmokeRequested)
+    {
+        const Engine::SceneEntity* prototype = m_ActiveScene.TryGetEntity(m_PrototypeMeshEntity);
+        const Engine::SceneEntity* directional =
+            m_ActiveScene.TryGetEntity(m_DirectionalLightEntity);
+        const Engine::Entity mainCamera = m_ActiveScene.GetMainCameraEntity();
+        const Engine::SceneEntity* camera = m_ActiveScene.TryGetEntity(mainCamera);
+        if (!prototype || !directional || !camera)
+            throw std::runtime_error("editor scene-control V2 smoke target disappeared");
+        const std::string& session = m_EditorMaterialControl.GetSessionId();
+        const std::string wrongProject =
+            EditorMaterialControlMailbox::FormatInspectEntityRequest(
+                "v2-project-wrong", session, m_ProjectPath + ".wrong",
+                m_PrototypeMeshEntity.Id, prototype->Name);
+        std::string unexpectedField =
+            EditorMaterialControlMailbox::FormatInspectEntityRequest(
+                "v2-mask-unexpected", session, m_ProjectPath,
+                m_PrototypeMeshEntity.Id, prototype->Name);
+        unexpectedField += "MaterialHandle 1\n";
+        std::string duplicateField =
+            EditorMaterialControlMailbox::FormatInspectEntityRequest(
+                "v2-mask-duplicate", session, m_ProjectPath,
+                m_PrototypeMeshEntity.Id, prototype->Name);
+        duplicateField += "EntityId " + std::to_string(m_PrototypeMeshEntity.Id) + '\n';
+        if (!m_EditorMaterialControl.PublishRequestForSmoke(
+                "v2-project-wrong", wrongProject, error)
+            || !m_EditorMaterialControl.PublishRequestForSmoke(
+                "v2-mask-unexpected", unexpectedField, error)
+            || !m_EditorMaterialControl.PublishRequestForSmoke(
+                "v2-mask-duplicate", duplicateField, error))
+        {
+            throw std::runtime_error(
+                "could not publish editor scene-control V2 rejection fixtures: " + error);
+        }
+        const auto writeTransform = [](std::ostringstream& stream, std::string_view label,
+                                        const Engine::Math::SectorLocalPosition& position,
+                                        const Engine::Math::Vec3& rotation,
+                                        const Engine::Math::Vec3& scale)
+        {
+            stream << label << ' ' << position.Sector.X << ' ' << position.Sector.Y << ' '
+                   << position.Sector.Z << ' ' << position.Local.X << ' ' << position.Local.Y
+                   << ' ' << position.Local.Z << ' ' << rotation.X << ' ' << rotation.Y << ' '
+                   << rotation.Z << ' ' << scale.X << ' ' << scale.Y << ' ' << scale.Z << '\n';
+        };
+        const auto writeLight = [](std::ostringstream& stream, std::string_view label,
+                                    const Engine::LightComponent& value)
+        {
+            stream << label << ' ' << Engine::ToString(value.Type) << ' ' << value.Color.X << ' '
+                   << value.Color.Y << ' ' << value.Color.Z << ' ' << value.PhotometricValue
+                   << ' ' << Engine::ToString(value.PhotometricUnit) << ' ' << value.Range << ' '
+                   << value.InnerConeDegrees << ' ' << value.OuterConeDegrees << ' '
+                   << (value.CastsShadows ? "yes" : "no") << '\n';
+        };
+        const auto writeColor = [](std::ostringstream& stream, std::string_view label,
+                                    const Engine::RendererColorPipelineSettings& value)
+        {
+            stream << label << ' ' << value.ManualExposureEV100 << ' '
+                   << value.PostToneMapSaturation << ' ' << value.PostToneMapContrast << ' '
+                   << Engine::ToString(value.ExposureMode) << ' '
+                   << value.CameraApertureFNumber << ' ' << value.CameraShutterSeconds << ' '
+                   << value.CameraISO << '\n';
+        };
+        std::ostringstream target;
+        target << std::setprecision(std::numeric_limits<double>::max_digits10)
+               << "SpiralEditorSceneControlTarget 2\n"
+               << "SessionId " << std::quoted(m_EditorMaterialControl.GetSessionId()) << '\n'
+               << "InitialSelectedEntityId " << m_EditorSceneControlV2InitialSelection.Id << '\n'
+               << "PrototypeEntityId " << m_PrototypeMeshEntity.Id << '\n'
+               << "PrototypeEntityName " << std::quoted(prototype->Name) << '\n';
+        writeTransform(target, "PrototypeTransformBefore",
+            m_EditorSceneControlV2PrototypeBefore.GetPosition(),
+            m_EditorSceneControlV2PrototypeBefore.RotationDegrees,
+            m_EditorSceneControlV2PrototypeBefore.Scale);
+        writeTransform(target, "PrototypeTransformAfter",
+            m_EditorSceneControlV2PrototypeAfterPosition,
+            m_EditorSceneControlV2PrototypeAfterRotation,
+            m_EditorSceneControlV2PrototypeAfterScale);
+        target << "LightEntityId " << m_DirectionalLightEntity.Id << '\n'
+               << "LightEntityName " << std::quoted(directional->Name) << '\n';
+        writeLight(target, "LightBefore", m_EditorSceneControlV2LightBefore);
+        writeLight(target, "LightAfter", m_EditorSceneControlV2LightAfter);
+        target << "MainCameraEntityId " << mainCamera.Id << '\n'
+               << "MainCameraEntityName " << std::quoted(camera->Name) << '\n';
+        writeTransform(target, "MainCameraTransformBefore",
+            m_EditorSceneControlV2CameraBefore.GetPosition(),
+            m_EditorSceneControlV2CameraBefore.RotationDegrees,
+            m_EditorSceneControlV2CameraBefore.Scale);
+        writeTransform(target, "MainCameraTransformAfter",
+            m_EditorSceneControlV2CameraAfterPosition,
+            m_EditorSceneControlV2CameraAfterRotation,
+            { 1.0f, 1.0f, 1.0f });
+        writeColor(target, "ColorPipelineBefore", m_EditorSceneControlV2ColorBefore);
+        writeColor(target, "ColorPipelineAfter", m_EditorSceneControlV2ColorAfter);
+        target << "ExpectedDocumentMutations 8\n"
+               << "ExpectedTypedRequests 20\n"
+               << "ExpectedServerRejectedFixtures 3\n";
+        if (!m_EditorMaterialControl.PublishSceneControlTargetForSmoke(
+                target.str(), error))
+            throw std::runtime_error(
+                "could not publish editor scene-control V2 target: " + error);
+    }
 }
 
 EditorMaterialControlTransaction EditorLayer::ExecuteEditorMaterialControlRequest(
@@ -895,6 +1098,172 @@ EditorMaterialControlTransaction EditorLayer::ExecuteEditorMaterialControlReques
         receipt.Reason = std::move(reason);
         return transaction;
     };
+    const auto sameLight = [](const Engine::LightComponent& left,
+        const Engine::LightComponent& right)
+    {
+        return left.Type == right.Type && left.Color.X == right.Color.X
+            && left.Color.Y == right.Color.Y && left.Color.Z == right.Color.Z
+            && left.PhotometricValue == right.PhotometricValue
+            && left.PhotometricUnit == right.PhotometricUnit && left.Range == right.Range
+            && left.InnerConeDegrees == right.InnerConeDegrees
+            && left.OuterConeDegrees == right.OuterConeDegrees
+            && left.CastsShadows == right.CastsShadows;
+    };
+    const auto sameTransform = [](const Engine::TransformComponent& value,
+        const Engine::Math::SectorLocalPosition& position, const Engine::Math::Vec3& rotation,
+        const Engine::Math::Vec3& scale)
+    {
+        const Engine::Math::SectorLocalPosition& current = value.GetPosition();
+        return current.Sector == position.Sector && current.Local.X == position.Local.X
+            && current.Local.Y == position.Local.Y && current.Local.Z == position.Local.Z
+            && value.RotationDegrees.X == rotation.X && value.RotationDegrees.Y == rotation.Y
+            && value.RotationDegrees.Z == rotation.Z && value.Scale.X == scale.X
+            && value.Scale.Y == scale.Y && value.Scale.Z == scale.Z;
+    };
+    struct ControlRollbackState
+    {
+        HistoryState State;
+        std::vector<HistoryEntry> UndoHistory;
+        std::vector<HistoryEntry> RedoHistory;
+        bool FusionPivotValid = false;
+        Engine::Math::DVec3 FusionPivot;
+        bool ViewportDiscontinuousRelocationPending = false;
+        bool MutationStarted = false;
+    };
+    const auto captureRollbackState = [this]()
+    {
+        auto state = std::make_shared<ControlRollbackState>();
+        state->State = CaptureHistoryState();
+        state->UndoHistory = m_UndoHistory;
+        state->RedoHistory = m_RedoHistory;
+        state->FusionPivotValid = m_FusionNavigationPivotValid;
+        state->FusionPivot = m_FusionNavigationPivot;
+        state->ViewportDiscontinuousRelocationPending =
+            m_ViewportDiscontinuousRelocationPending;
+        return state;
+    };
+    const auto restoreRollbackState = [this](const std::shared_ptr<ControlRollbackState>& state,
+        EditorMaterialControlReceipt& rolledBack)
+    {
+        const bool restored = !state->MutationStarted || RestoreHistoryState(state->State);
+        m_UndoHistory = state->UndoHistory;
+        m_RedoHistory = state->RedoHistory;
+        m_FusionNavigationPivotValid = state->FusionPivotValid;
+        m_FusionNavigationPivot = state->FusionPivot;
+        m_ViewportDiscontinuousRelocationPending =
+            state->ViewportDiscontinuousRelocationPending;
+        rolledBack.UndoDepthAfter = m_UndoHistory.size();
+        rolledBack.RedoDepthAfter = m_RedoHistory.size();
+        rolledBack.SelectedEntityIdAfter = m_SelectedEntity.Id;
+        const bool verified = restored
+            && m_UndoHistory.size() == state->UndoHistory.size()
+            && m_RedoHistory.size() == state->RedoHistory.size()
+            && m_SelectedEntity == state->State.SelectedEntity
+            && m_ProjectColorPipelineSettings == state->State.ProjectColorPipelineSettings
+            && Engine::Renderer::GetColorPipelineSettings()
+                == state->State.ProjectColorPipelineSettings
+            && m_FusionNavigationPivotValid == state->FusionPivotValid
+            && (!state->FusionPivotValid
+                || (m_FusionNavigationPivot.X == state->FusionPivot.X
+                    && m_FusionNavigationPivot.Y == state->FusionPivot.Y
+                    && m_FusionNavigationPivot.Z == state->FusionPivot.Z))
+            && m_ViewportDiscontinuousRelocationPending
+                == state->ViewportDiscontinuousRelocationPending;
+        if (m_EditorMaterialControlForceRollbackVerificationFailureOnce)
+        {
+            m_EditorMaterialControlForceRollbackVerificationFailureOnce = false;
+            return false;
+        }
+        return verified;
+    };
+    const auto injectCommitFailure = [this](std::string& error)
+    {
+        if (!m_EditorMaterialControlForceCommitFailureOnce)
+            return false;
+        m_EditorMaterialControlForceCommitFailureOnce = false;
+        error = "injected_postcondition_failure";
+        return true;
+    };
+    const auto finishSmokeInjections = [this, requestId = request.RequestId](std::string& error)
+    {
+        if (m_EditorMaterialControlForceLateResponseCollisionOnce)
+        {
+            m_EditorMaterialControlForceLateResponseCollisionOnce = false;
+            if (!m_EditorMaterialControl.PublishRawResponseForSmoke(
+                    requestId, "late response collision\n", error))
+                return false;
+        }
+        if (m_EditorMaterialControlForceParentSyncFailureOnce)
+        {
+            m_EditorMaterialControlForceParentSyncFailureOnce = false;
+            m_EditorMaterialControl.InjectParentDirectorySyncFailureForSmoke();
+        }
+        return true;
+    };
+
+    receipt.MainCameraEntityId = m_ActiveScene.GetMainCameraEntity().Id;
+    receipt.SelectedEntityIdBefore = m_SelectedEntity.Id;
+    receipt.SelectedEntityIdAfter = m_SelectedEntity.Id;
+    receipt.BeforeColorPipeline = m_ProjectColorPipelineSettings;
+    receipt.AfterColorPipeline = m_ProjectColorPipelineSettings;
+
+    // Project settings intentionally have no entity/material identity. Keep this
+    // branch ahead of the material path so a fixed V2 action cannot fall through
+    // into an unrelated component authority.
+    if (request.Action == EditorMaterialControlAction::SetProjectColorPipeline)
+    {
+        if (!request.HasExpectedColorPipeline || !request.HasNewColorPipeline
+            || !Engine::IsValidRendererColorPipelineSettings(request.NewColorPipeline)
+            || request.ExpectedColorPipeline != receipt.BeforeColorPipeline)
+            return reject("compare_and_swap_state_mismatch");
+        if (request.NewColorPipeline == request.ExpectedColorPipeline)
+            return reject("no_change");
+        const std::shared_ptr<ControlRollbackState> rollback = captureRollbackState();
+        receipt.Succeeded = true;
+        receipt.Reason = "ok";
+        receipt.Effect = "ProjectColorPipelineSet";
+        receipt.Recovery = "UndoRedo";
+        receipt.AfterColorPipeline = request.NewColorPipeline;
+        receipt.UndoDepthAfter = std::min<std::size_t>(
+            rollback->UndoHistory.size() + 1, 128);
+        receipt.RedoDepthAfter = 0;
+        receipt.RendererReadbackVerified = true;
+        receipt.PostconditionVerified = true;
+        transaction.Mutating = true;
+        transaction.Commit = [this, request, rollback, injectCommitFailure,
+                                  finishSmokeInjections](std::string& error)
+        {
+            if (m_ProjectColorPipelineSettings != request.ExpectedColorPipeline
+                || !Engine::IsValidRendererColorPipelineSettings(request.NewColorPipeline))
+            {
+                error = "state_changed_before_commit";
+                return false;
+            }
+            rollback->MutationStarted = true;
+            if (!PublishProjectColorPipelineSettings(request.NewColorPipeline)
+                || injectCommitFailure(error))
+                return false;
+            RecordHistory("Agent set project color pipeline", rollback->State);
+            if (m_UndoHistory.size()
+                    != std::min<std::size_t>(rollback->UndoHistory.size() + 1, 128)
+                || !m_RedoHistory.empty()
+                || m_ProjectColorPipelineSettings != request.NewColorPipeline
+                || Engine::Renderer::GetColorPipelineSettings() != request.NewColorPipeline)
+            {
+                error = "history_or_renderer_postcondition_mismatch";
+                return false;
+            }
+            return finishSmokeInjections(error);
+        };
+        transaction.Rollback = [restoreRollbackState, rollback](
+            EditorMaterialControlReceipt& rolledBack)
+        {
+            const bool restored = restoreRollbackState(rollback, rolledBack);
+            rolledBack.RendererReadbackVerified = restored;
+            return restored;
+        };
+        return transaction;
+    }
 
     const Engine::Entity entityHandle { request.EntityId };
     const Engine::SceneEntity* entity = m_ActiveScene.TryGetEntity(entityHandle);
@@ -902,6 +1271,293 @@ EditorMaterialControlTransaction EditorLayer::ExecuteEditorMaterialControlReques
         return reject("stale_or_mismatched_entity_identity");
     receipt.EntityId = entity->EntityHandle.Id;
     receipt.EntityName = entity->Name;
+    receipt.IsMainCamera = entityHandle == m_ActiveScene.GetMainCameraEntity();
+    receipt.BeforeTransform = entity->Transform;
+    receipt.AfterTransform = entity->Transform;
+    receipt.BeforeCameraPresent = entity->Camera.has_value();
+    receipt.AfterCameraPresent = receipt.BeforeCameraPresent;
+    if (entity->Camera)
+        receipt.BeforeCamera = receipt.AfterCamera = *entity->Camera;
+    receipt.BeforeLightPresent = entity->Light.has_value();
+    receipt.AfterLightPresent = receipt.BeforeLightPresent;
+    if (entity->Light)
+        receipt.BeforeLight = receipt.AfterLight = *entity->Light;
+    receipt.BeforeMeshRendererPresent = entity->MeshRenderer.has_value();
+    receipt.AfterMeshRendererPresent = receipt.BeforeMeshRendererPresent;
+    if (entity->MeshRenderer)
+    {
+        receipt.BeforeMeshRenderer = receipt.AfterMeshRenderer = *entity->MeshRenderer;
+        receipt.MaterialHandle = entity->MeshRenderer->MaterialAsset;
+    }
+    receipt.AffectedEntityCount = 1;
+    receipt.AffectedEntityIds.push_back(entityHandle.Id);
+
+    if (request.Action == EditorMaterialControlAction::InspectEntity)
+    {
+        receipt.BeforeTransform = entity->Transform;
+        receipt.AfterTransform = entity->Transform;
+        receipt.Succeeded = true;
+        receipt.Reason = "ok";
+        receipt.Effect = "ReadOnly";
+        receipt.PostconditionVerified = true;
+        return transaction;
+    }
+
+    if (request.Action == EditorMaterialControlAction::SelectEntity)
+    {
+        if (!request.HasExpectedSelectedEntityId
+            || request.ExpectedSelectedEntityId != m_SelectedEntity.Id)
+            return reject("compare_and_swap_state_mismatch");
+        if (entityHandle == m_SelectedEntity)
+            return reject("no_change");
+        const bool retargetsPivot = entityHandle != m_ActiveScene.GetMainCameraEntity();
+        Engine::Math::DVec3 targetPivot;
+        if (retargetsPivot
+            && !m_ActiveScene.TryGetEntityApproximateWorldPosition(entityHandle, targetPivot))
+            return reject("entity_has_no_finite_world_position");
+        const std::shared_ptr<ControlRollbackState> rollback = captureRollbackState();
+        receipt.Succeeded = true;
+        receipt.Reason = "ok";
+        receipt.Effect = "EntitySelected";
+        receipt.Recovery = "SelectPreviousEntity";
+        receipt.SelectedEntityIdAfter = entityHandle.Id;
+        receipt.SelectionCommitted = true;
+        receipt.PivotRetargeted = retargetsPivot;
+        receipt.PostconditionVerified = true;
+        transaction.Mutating = true;
+        transaction.Commit = [this, request, entityHandle, retargetsPivot, targetPivot, rollback,
+                                  injectCommitFailure, finishSmokeInjections](std::string& error)
+        {
+            const Engine::SceneEntity* current = m_ActiveScene.TryGetEntity(entityHandle);
+            if (!current || current->Name != request.ExpectedEntityName
+                || m_SelectedEntity.Id != request.ExpectedSelectedEntityId)
+            {
+                error = "state_changed_before_commit";
+                return false;
+            }
+            rollback->MutationStarted = true;
+            m_SelectedEntity = entityHandle;
+            if ((retargetsPivot && !RetargetFusionNavigationPivotToSelectedEntity())
+                || injectCommitFailure(error)
+                || m_SelectedEntity != entityHandle
+                || (retargetsPivot && (!m_FusionNavigationPivotValid
+                    || m_FusionNavigationPivot.X != targetPivot.X
+                    || m_FusionNavigationPivot.Y != targetPivot.Y
+                    || m_FusionNavigationPivot.Z != targetPivot.Z))
+                || (!retargetsPivot
+                    && (m_FusionNavigationPivotValid != rollback->FusionPivotValid
+                        || (rollback->FusionPivotValid
+                            && (m_FusionNavigationPivot.X != rollback->FusionPivot.X
+                                || m_FusionNavigationPivot.Y != rollback->FusionPivot.Y
+                                || m_FusionNavigationPivot.Z != rollback->FusionPivot.Z))))
+                || m_UndoHistory.size() != rollback->UndoHistory.size()
+                || m_RedoHistory.size() != rollback->RedoHistory.size())
+            {
+                if (error.empty())
+                    error = "selection_postcondition_mismatch";
+                return false;
+            }
+            return finishSmokeInjections(error);
+        };
+        transaction.Rollback = [restoreRollbackState, rollback](
+            EditorMaterialControlReceipt& rolledBack)
+        {
+            const bool restored = restoreRollbackState(rollback, rolledBack);
+            rolledBack.SelectionCommitted = false;
+            rolledBack.PivotRetargeted = false;
+            return restored;
+        };
+        return transaction;
+    }
+
+    if (request.Action == EditorMaterialControlAction::SetTypedLight)
+    {
+        if (!entity->Light || !request.HasExpectedLight || !request.HasNewLight
+            || !sameLight(*entity->Light, request.ExpectedLight))
+            return reject("compare_and_swap_state_mismatch");
+        if (sameLight(request.ExpectedLight, request.NewLight))
+            return reject("no_change");
+        Engine::Scene stagedScene = m_ActiveScene;
+        if (!stagedScene.SetLightComponent(entityHandle, request.NewLight))
+            return reject("new_light_state_is_not_publishable");
+        const std::shared_ptr<ControlRollbackState> rollback = captureRollbackState();
+        receipt.AfterLight = request.NewLight;
+        receipt.AfterLightPresent = true;
+        receipt.Succeeded = true;
+        receipt.Reason = "ok";
+        receipt.Effect = "TypedLightSet";
+        receipt.Recovery = "UndoRedo";
+        receipt.UndoDepthAfter = std::min<std::size_t>(
+            rollback->UndoHistory.size() + 1, 128);
+        receipt.RedoDepthAfter = 0;
+        receipt.PostconditionVerified = true;
+        transaction.Mutating = true;
+        transaction.Commit = [this, entityHandle, request, rollback, sameLight,
+                                  injectCommitFailure, finishSmokeInjections](std::string& error)
+        {
+            const Engine::SceneEntity* currentEntity = m_ActiveScene.TryGetEntity(entityHandle);
+            const Engine::LightComponent* light = m_ActiveScene.TryGetLightComponent(entityHandle);
+            if (!currentEntity || currentEntity->Name != request.ExpectedEntityName
+                || !light || !sameLight(*light, request.ExpectedLight))
+            {
+                error = "state_changed_before_commit";
+                return false;
+            }
+            rollback->MutationStarted = true;
+            if (!m_ActiveScene.SetLightComponent(entityHandle, request.NewLight)
+                || injectCommitFailure(error))
+                return false;
+            RecordHistory("Agent set typed light", rollback->State);
+            light = m_ActiveScene.TryGetLightComponent(entityHandle);
+            if (!light || !sameLight(*light, request.NewLight)
+                || m_UndoHistory.size()
+                    != std::min<std::size_t>(rollback->UndoHistory.size() + 1, 128)
+                || !m_RedoHistory.empty())
+            {
+                error = "light_or_history_postcondition_mismatch";
+                return false;
+            }
+            return finishSmokeInjections(error);
+        };
+        transaction.Rollback = [this, restoreRollbackState, rollback, entityHandle,
+                                   sameLight](EditorMaterialControlReceipt& rolledBack)
+        {
+            const bool restored = restoreRollbackState(rollback, rolledBack);
+            const Engine::LightComponent* light = m_ActiveScene.TryGetLightComponent(entityHandle);
+            return restored && light && sameLight(*light, rolledBack.BeforeLight);
+        };
+        return transaction;
+    }
+
+    if (request.Action == EditorMaterialControlAction::SetEntityTransform
+        || request.Action == EditorMaterialControlAction::SetViewportMainCameraPose)
+    {
+        const bool mainCameraAction =
+            request.Action == EditorMaterialControlAction::SetViewportMainCameraPose;
+        if (mainCameraAction && entityHandle != m_ActiveScene.GetMainCameraEntity())
+            return reject("main_camera_identity_required");
+        if (!mainCameraAction && entityHandle == m_ActiveScene.GetMainCameraEntity())
+            return reject("main_camera_pose_action_required");
+        if (!request.HasExpectedTransform || !request.HasNewTransform
+            || !sameTransform(entity->Transform, request.ExpectedTransformPosition,
+                request.ExpectedTransform.RotationDegrees, request.ExpectedTransform.Scale))
+            return reject("compare_and_swap_state_mismatch");
+        if (sameTransform(entity->Transform, request.NewTransformPosition,
+                request.NewTransform.RotationDegrees, request.NewTransform.Scale))
+            return reject("no_change");
+        Engine::Scene stagedScene = m_ActiveScene;
+        if (!stagedScene.SetEntityTransform(entityHandle, request.NewTransformPosition,
+                request.NewTransform.RotationDegrees, request.NewTransform.Scale))
+            return reject("new_transform_state_is_not_publishable");
+        const Engine::TransformComponent* stagedTransform = stagedScene.TryGetTransform(entityHandle);
+        if (!stagedTransform)
+            return reject("new_transform_state_is_not_publishable");
+        const bool selectedTarget = entityHandle == m_SelectedEntity;
+        Engine::Math::DVec3 targetPivot;
+        if (selectedTarget
+            && !stagedScene.TryGetEntityApproximateWorldPosition(entityHandle, targetPivot))
+            return reject("selected_transform_has_no_finite_world_position");
+        Engine::Math::DVec3 stagedCameraPosition;
+        const bool synchronizesEditorCamera =
+            entityHandle == m_ActiveScene.GetMainCameraEntity();
+        const bool retargetsPivot = selectedTarget && !synchronizesEditorCamera;
+        if (synchronizesEditorCamera
+            && !stagedScene.TryGetEntityApproximateWorldPosition(
+                entityHandle, stagedCameraPosition))
+            return reject("main_camera_pose_has_no_finite_world_position");
+        const std::shared_ptr<ControlRollbackState> rollback = captureRollbackState();
+        receipt.AfterTransform = *stagedTransform;
+        receipt.Succeeded = true;
+        receipt.Reason = "ok";
+        receipt.Effect = mainCameraAction ? "ViewportMainCameraPoseSet" : "EntityTransformSet";
+        receipt.Recovery = "UndoRedo";
+        receipt.UndoDepthAfter = std::min<std::size_t>(
+            rollback->UndoHistory.size() + 1, 128);
+        receipt.RedoDepthAfter = 0;
+        receipt.PivotRetargeted = retargetsPivot;
+        receipt.EditorCameraSynchronized = synchronizesEditorCamera;
+        receipt.PostconditionVerified = true;
+        transaction.Mutating = true;
+        transaction.Commit = [this, request, entityHandle, rollback, mainCameraAction,
+                                  retargetsPivot, targetPivot, synchronizesEditorCamera,
+                                  stagedCameraPosition, sameTransform, injectCommitFailure,
+                                  finishSmokeInjections](std::string& error)
+        {
+            const Engine::SceneEntity* currentEntity = m_ActiveScene.TryGetEntity(entityHandle);
+            const Engine::TransformComponent* current = m_ActiveScene.TryGetTransform(entityHandle);
+            if (!currentEntity || currentEntity->Name != request.ExpectedEntityName
+                || !current || !sameTransform(*current, request.ExpectedTransformPosition,
+                    request.ExpectedTransform.RotationDegrees, request.ExpectedTransform.Scale)
+                || !m_ActiveScene.SetEntityTransform(entityHandle, request.NewTransformPosition,
+                    request.NewTransform.RotationDegrees, request.NewTransform.Scale))
+            {
+                error = "state_changed_before_commit";
+                return false;
+            }
+            rollback->MutationStarted = true;
+            if (retargetsPivot && !RetargetFusionNavigationPivotToSelectedEntity())
+            {
+                error = "pivot_retarget_failed";
+                return false;
+            }
+            if (synchronizesEditorCamera)
+                SyncEditorCameraStateFromMainCamera(true);
+            if (injectCommitFailure(error))
+                return false;
+            RecordHistory(mainCameraAction ? "Agent set viewport main camera pose"
+                                           : "Agent set entity transform", rollback->State);
+            current = m_ActiveScene.TryGetTransform(entityHandle);
+            const bool pivotValid = !retargetsPivot
+                || (m_FusionNavigationPivotValid
+                    && m_FusionNavigationPivot.X == targetPivot.X
+                    && m_FusionNavigationPivot.Y == targetPivot.Y
+                    && m_FusionNavigationPivot.Z == targetPivot.Z);
+            const bool cameraValid = !synchronizesEditorCamera
+                || (m_CameraPosition[0] == stagedCameraPosition.X
+                    && m_CameraPosition[1] == stagedCameraPosition.Y
+                    && m_CameraPosition[2] == stagedCameraPosition.Z
+                    && m_EditorCamera.GetPosition().X == stagedCameraPosition.X
+                    && m_EditorCamera.GetPosition().Y == stagedCameraPosition.Y
+                    && m_EditorCamera.GetPosition().Z == stagedCameraPosition.Z
+                    && m_CameraRotation[0] == request.NewTransform.RotationDegrees.X
+                    && m_CameraRotation[1] == request.NewTransform.RotationDegrees.Y
+                    && m_CameraRotation[2] == request.NewTransform.RotationDegrees.Z
+                    && m_EditorCamera.GetRotationDegrees().X
+                        == request.NewTransform.RotationDegrees.X
+                    && m_EditorCamera.GetRotationDegrees().Y
+                        == request.NewTransform.RotationDegrees.Y
+                    && m_EditorCamera.GetRotationDegrees().Z
+                        == request.NewTransform.RotationDegrees.Z);
+            if (!current || !sameTransform(*current, request.NewTransformPosition,
+                    request.NewTransform.RotationDegrees, request.NewTransform.Scale)
+                || !pivotValid || !cameraValid
+                || m_UndoHistory.size()
+                    != std::min<std::size_t>(rollback->UndoHistory.size() + 1, 128)
+                || !m_RedoHistory.empty())
+            {
+                error = "transform_or_history_postcondition_mismatch";
+                return false;
+            }
+            return finishSmokeInjections(error);
+        };
+        transaction.Rollback = [this, restoreRollbackState, rollback, entityHandle,
+                                   sameTransform](EditorMaterialControlReceipt& rolledBack)
+        {
+            const bool restored = restoreRollbackState(rollback, rolledBack);
+            const Engine::TransformComponent* current =
+                m_ActiveScene.TryGetTransform(entityHandle);
+            return restored && current
+                && sameTransform(*current, rolledBack.BeforeTransform.GetPosition(),
+                    rolledBack.BeforeTransform.RotationDegrees,
+                    rolledBack.BeforeTransform.Scale);
+        };
+        return transaction;
+    }
+    // Entity inspection above seeds one affected ID for the typed scene actions.
+    // Material actions report every entity sharing the material, so rebuild that
+    // bounded summary from scratch rather than double-counting the target.
+    receipt.AffectedEntityCount = 0;
+    receipt.AffectedEntityIds.clear();
     receipt.MaterialHandle = request.MaterialHandle;
     if (!entity->MeshRenderer
         || entity->MeshRenderer->MaterialAsset != request.MaterialHandle)
@@ -948,6 +1604,7 @@ EditorMaterialControlTransaction EditorLayer::ExecuteEditorMaterialControlReques
         receipt.Succeeded = true;
         receipt.Reason = "ok";
         receipt.Effect = "ReadOnly";
+        receipt.PostconditionVerified = true;
         return transaction;
     }
 
@@ -979,6 +1636,8 @@ EditorMaterialControlTransaction EditorLayer::ExecuteEditorMaterialControlReques
     receipt.SelectionCommitted = true;
     receipt.PivotRetargeted = true;
     receipt.RendererReadbackVerified = true;
+    receipt.SelectedEntityIdAfter = entityHandle.Id;
+    receipt.PostconditionVerified = true;
 
     struct RollbackState
     {
@@ -1126,7 +1785,8 @@ void EditorLayer::RunEditorMaterialControlSmokeBeforeDrain()
         throw std::runtime_error("editor material-control accepted a leading-dot request ID");
     error.clear();
     const std::string collisionRequest = EditorMaterialControlMailbox::FormatPatchRequest(
-        "smoke-01-response-collision", session, target->EntityHandle.Id, target->Name,
+        "smoke-01-response-collision", session, m_ProjectPath,
+        target->EntityHandle.Id, target->Name,
         m_EditorMaterialControlSmokeMaterial, m_EditorMaterialControlSmokeBefore,
         m_EditorMaterialControlSmokeAfter);
     if (!m_EditorMaterialControl.PublishRawResponseForSmoke(
@@ -1136,7 +1796,8 @@ void EditorLayer::RunEditorMaterialControlSmokeBeforeDrain()
         throw std::runtime_error("could not stage response-collision smoke: " + error);
 
     std::string unknownField = EditorMaterialControlMailbox::FormatPatchRequest(
-        "smoke-02-unknown-field", session, target->EntityHandle.Id, target->Name,
+        "smoke-02-unknown-field", session, m_ProjectPath,
+        target->EntityHandle.Id, target->Name,
         m_EditorMaterialControlSmokeMaterial, m_EditorMaterialControlSmokeBefore,
         m_EditorMaterialControlSmokeAfter);
     unknownField += "UnexpectedField 1\n";
@@ -1145,7 +1806,8 @@ void EditorLayer::RunEditorMaterialControlSmokeBeforeDrain()
         throw std::runtime_error("could not stage unknown-field smoke: " + error);
 
     const std::string wrongSession = EditorMaterialControlMailbox::FormatInspectRequest(
-        "smoke-03-wrong-session", "not-this-session", target->EntityHandle.Id,
+        "smoke-03-wrong-session", "not-this-session", m_ProjectPath,
+        target->EntityHandle.Id,
         target->Name, m_EditorMaterialControlSmokeMaterial);
     if (!m_EditorMaterialControl.PublishRequestForSmoke(
             "smoke-03-wrong-session", wrongSession, error))
@@ -1153,7 +1815,8 @@ void EditorLayer::RunEditorMaterialControlSmokeBeforeDrain()
 
     m_EditorMaterialControlForceCommitFailureOnce = true;
     const std::string rollback = EditorMaterialControlMailbox::FormatPatchRequest(
-        "smoke-04-rollback", session, target->EntityHandle.Id, target->Name,
+        "smoke-04-rollback", session, m_ProjectPath,
+        target->EntityHandle.Id, target->Name,
         m_EditorMaterialControlSmokeMaterial, m_EditorMaterialControlSmokeBefore,
         m_EditorMaterialControlSmokeAfter);
     if (!m_EditorMaterialControl.PublishRequestForSmoke(
@@ -1216,17 +1879,20 @@ void EditorLayer::RunEditorMaterialControlSmokeAfterDrain()
         const std::string& session = m_EditorMaterialControl.GetSessionId();
         std::string error;
         const std::string inspect = EditorMaterialControlMailbox::FormatInspectRequest(
-            "smoke-05-inspect", session, target->EntityHandle.Id, target->Name,
+            "smoke-05-inspect", session, m_ProjectPath,
+            target->EntityHandle.Id, target->Name,
             m_EditorMaterialControlSmokeMaterial);
         m_EditorMaterialControlForceLateResponseCollisionOnce = true;
         const std::string lateCollision = EditorMaterialControlMailbox::FormatPatchRequest(
-            "smoke-06-late-collision", session, target->EntityHandle.Id, target->Name,
+            "smoke-06-late-collision", session, m_ProjectPath,
+            target->EntityHandle.Id, target->Name,
             m_EditorMaterialControlSmokeMaterial,
             m_EditorMaterialControlSmokeBefore,
             m_EditorMaterialControlSmokeAfter);
         m_EditorMaterialControlSmokePatchRequest =
             EditorMaterialControlMailbox::FormatPatchRequest(
-                "smoke-07-patch", session, target->EntityHandle.Id, target->Name,
+                "smoke-07-patch", session, m_ProjectPath,
+                target->EntityHandle.Id, target->Name,
                 m_EditorMaterialControlSmokeMaterial,
                 m_EditorMaterialControlSmokeBefore,
                 m_EditorMaterialControlSmokeAfter);
@@ -1415,8 +2081,8 @@ void EditorLayer::RunEditorMaterialControlSmokeAfterDrain()
             throw std::runtime_error("editor material-control project guard smoke failed");
 
         Engine::Log::Info(
-            "EditorMaterialControlMailboxV1 interface=private-filesystem "
-            "actions=inspect,select-patch-shared session=exact schema=1 "
+            "EditorMaterialControlMailboxV2 interface=private-filesystem "
+            "actions=material-and-typed-scene session=exact schema=2 "
             "mainThread=before-scene-snapshot invalid=transactional-pass "
             "rollback=readback-and-receipt-pass inspect=pass commit=pass "
             "idempotency=exact-bytes conflicts=A-B-C-consumed "
@@ -1484,13 +2150,346 @@ void EditorLayer::RunEditorMaterialControlLiveHelperSmokeAfterDrain()
         throw std::runtime_error("live external editor material-control helper smoke failed");
 
     Engine::Log::Info(
-        "EditorMaterialControlLiveHelperV1 producer=external-python requests=fresh "
+        "EditorMaterialControlLiveHelperV2 producer=external-python requests=fresh "
         "inspect=semantic-pass set=semantic-pass close=editor-condition "
         "identity=session-pid-project affected=bounded-exact "
         "pollCadenceMs=16 idleSkips=", m_EditorMaterialControl.GetCadenceSkipCount(),
         " directoryPolls=", m_EditorMaterialControl.GetDirectoryPollCount(),
         " result=pass");
     m_EditorMaterialControlLiveHelperSmokeCompleted = true;
+    Engine::Application::Get().Close();
+}
+
+void EditorLayer::RunEditorSceneControlV2HelperSmokeAfterDrain()
+{
+    if (!m_EditorSceneControlV2HelperSmokeRequested
+        || m_EditorSceneControlV2HelperSmokeCompleted)
+        return;
+
+    const auto receipt = [this](std::string_view requestId)
+    {
+        return m_EditorMaterialControl.FindTerminalReceipt(requestId);
+    };
+    if (receipt("v2-08-transform-set")
+        && !receipt("v2-09-transform-forced-rollback"))
+    {
+        m_EditorMaterialControlForceCommitFailureOnce = true;
+        return;
+    }
+    const EditorMaterialControlReceipt* finalInspect =
+        receipt("v2-20-final-inspect");
+    if (!finalInspect)
+        return;
+
+    const EditorMaterialControlReceipt* wrongProject = receipt("v2-project-wrong");
+    const EditorMaterialControlReceipt* unexpectedField = receipt("v2-mask-unexpected");
+    const EditorMaterialControlReceipt* duplicateField = receipt("v2-mask-duplicate");
+    const EditorMaterialControlReceipt* inspect = receipt("v2-01-inspect");
+    const EditorMaterialControlReceipt* selectLight = receipt("v2-02-select-light");
+    const EditorMaterialControlReceipt* staleSelect = receipt("v2-03-stale-selection");
+    const EditorMaterialControlReceipt* lightSet = receipt("v2-04-light-set");
+    const EditorMaterialControlReceipt* staleLight = receipt("v2-05-stale-light");
+    const EditorMaterialControlReceipt* lightRestore = receipt("v2-06-light-restore");
+    const EditorMaterialControlReceipt* selectPrototype =
+        receipt("v2-07-select-prototype");
+    const EditorMaterialControlReceipt* transformSet = receipt("v2-08-transform-set");
+    const EditorMaterialControlReceipt* transformRollback =
+        receipt("v2-09-transform-forced-rollback");
+    const EditorMaterialControlReceipt* transformRestore =
+        receipt("v2-10-transform-restore");
+    const EditorMaterialControlReceipt* colorSet = receipt("v2-11-color-set");
+    const EditorMaterialControlReceipt* staleColor = receipt("v2-12-stale-color");
+    const EditorMaterialControlReceipt* colorRestore = receipt("v2-13-color-restore");
+    const EditorMaterialControlReceipt* selectCamera = receipt("v2-14-select-camera");
+    const EditorMaterialControlReceipt* staleCamera = receipt("v2-15-stale-camera");
+    const EditorMaterialControlReceipt* genericCameraTransform =
+        receipt("v2-16-generic-camera-transform");
+    const EditorMaterialControlReceipt* cameraSet = receipt("v2-17-camera-set");
+    const EditorMaterialControlReceipt* cameraRestore = receipt("v2-18-camera-restore");
+    const EditorMaterialControlReceipt* staleTransform =
+        receipt("v2-19-stale-transform");
+    const std::array<const EditorMaterialControlReceipt*, 23> receipts = {
+        wrongProject, unexpectedField, duplicateField, inspect, selectLight,
+        staleSelect, lightSet, staleLight, lightRestore, selectPrototype,
+        transformSet, transformRollback, transformRestore, colorSet,
+        staleColor, colorRestore, selectCamera, staleCamera,
+        genericCameraTransform, cameraSet, cameraRestore, staleTransform,
+        finalInspect
+    };
+    if (std::any_of(receipts.begin(), receipts.end(), [](const auto* value)
+        { return value == nullptr; }))
+        throw std::runtime_error("editor scene-control V2 receipt sequence is incomplete");
+
+    const auto sameTransform = [](const Engine::TransformComponent& value,
+        const Engine::Math::SectorLocalPosition& position,
+        const Engine::Math::Vec3& rotation, const Engine::Math::Vec3& scale)
+    {
+        const Engine::Math::SectorLocalPosition& current = value.GetPosition();
+        return current.Sector == position.Sector
+            && current.Local.X == position.Local.X
+            && current.Local.Y == position.Local.Y
+            && current.Local.Z == position.Local.Z
+            && value.RotationDegrees.X == rotation.X
+            && value.RotationDegrees.Y == rotation.Y
+            && value.RotationDegrees.Z == rotation.Z
+            && value.Scale.X == scale.X && value.Scale.Y == scale.Y
+            && value.Scale.Z == scale.Z;
+    };
+    const auto sameLight = [](const Engine::LightComponent& left,
+        const Engine::LightComponent& right)
+    {
+        return left.Type == right.Type && left.Color.X == right.Color.X
+            && left.Color.Y == right.Color.Y && left.Color.Z == right.Color.Z
+            && left.PhotometricValue == right.PhotometricValue
+            && left.PhotometricUnit == right.PhotometricUnit && left.Range == right.Range
+            && left.InnerConeDegrees == right.InnerConeDegrees
+            && left.OuterConeDegrees == right.OuterConeDegrees
+            && left.CastsShadows == right.CastsShadows;
+    };
+    const auto successful = [](const EditorMaterialControlReceipt* value,
+        EditorMaterialControlAction action, std::string_view effect,
+        std::string_view recovery)
+    {
+        return value->Succeeded && value->ActionKnown && value->Action == action
+            && value->Reason == "ok" && value->Effect == effect
+            && value->Recovery == recovery && value->Persistence == "SessionOnly"
+            && !value->Saved && value->PostconditionVerified
+            && !value->RollbackVerified;
+    };
+    const auto historyUnchanged = [](const EditorMaterialControlReceipt* value)
+    {
+        return value->UndoDepthAfter == value->UndoDepthBefore
+            && value->RedoDepthAfter == value->RedoDepthBefore;
+    };
+    const auto oneHistoryEntry = [](const EditorMaterialControlReceipt* value)
+    {
+        return value->UndoDepthAfter
+                == std::min<std::size_t>(value->UndoDepthBefore + 1, 128)
+            && value->RedoDepthAfter == 0;
+    };
+    const auto exactAffected = [](const EditorMaterialControlReceipt* value,
+        Engine::Entity entity)
+    {
+        return value->AffectedEntityCount == 1
+            && value->AffectedEntityIds.size() == 1
+            && value->AffectedEntityIds.front() == entity.Id
+            && !value->AffectedEntityIdsTruncated;
+    };
+    const auto rejected = [&historyUnchanged](const EditorMaterialControlReceipt* value,
+        EditorMaterialControlAction action, std::string_view reason,
+        std::size_t expectedUndoDepth)
+    {
+        return !value->Succeeded && value->ActionKnown && value->Action == action
+            && value->Reason == reason && value->Effect == "None"
+            && value->Recovery == "None" && value->Persistence == "SessionOnly"
+            && !value->Saved && !value->PostconditionVerified
+            && !value->RollbackVerified && !value->SelectionCommitted
+            && !value->PivotRetargeted && !value->EditorCameraSynchronized
+            && value->SelectedEntityIdAfter == value->SelectedEntityIdBefore
+            && historyUnchanged(value) && value->UndoDepthBefore == expectedUndoDepth;
+    };
+    const auto parserRejected = [](const EditorMaterialControlReceipt* value,
+        std::string_view reason)
+    {
+        return !value->Succeeded && !value->ActionKnown && value->Reason == reason
+            && value->Effect == "None" && value->Recovery == "None"
+            && value->Persistence == "SessionOnly" && !value->Saved
+            && !value->PostconditionVerified && !value->RollbackVerified
+            && !value->SelectionCommitted && !value->PivotRetargeted
+            && !value->EditorCameraSynchronized
+            && value->AffectedEntityCount == 0 && value->AffectedEntityIds.empty();
+    };
+
+    const Engine::Entity mainCamera = m_ActiveScene.GetMainCameraEntity();
+    const Engine::TransformComponent* prototypeTransform =
+        m_ActiveScene.TryGetTransform(m_PrototypeMeshEntity);
+    const Engine::TransformComponent* cameraTransform =
+        m_ActiveScene.TryGetTransform(mainCamera);
+    const Engine::LightComponent* light =
+        m_ActiveScene.TryGetLightComponent(m_DirectionalLightEntity);
+    Engine::Math::DVec3 cameraPosition;
+    Engine::Math::DVec3 prototypePosition;
+    const bool finalState = prototypeTransform && cameraTransform && light
+        && sameTransform(*prototypeTransform,
+            m_EditorSceneControlV2PrototypeBefore.GetPosition(),
+            m_EditorSceneControlV2PrototypeBefore.RotationDegrees,
+            m_EditorSceneControlV2PrototypeBefore.Scale)
+        && sameTransform(*cameraTransform,
+            m_EditorSceneControlV2CameraBefore.GetPosition(),
+            m_EditorSceneControlV2CameraBefore.RotationDegrees,
+            m_EditorSceneControlV2CameraBefore.Scale)
+        && sameLight(*light, m_EditorSceneControlV2LightBefore)
+        && m_ProjectColorPipelineSettings == m_EditorSceneControlV2ColorBefore
+        && Engine::Renderer::GetColorPipelineSettings()
+            == m_EditorSceneControlV2ColorBefore
+        && m_SelectedEntity == m_EditorSceneControlV2InitialSelection
+        && m_ActiveScene.TryGetEntityApproximateWorldPosition(mainCamera, cameraPosition)
+        && m_ActiveScene.TryGetEntityApproximateWorldPosition(
+            m_PrototypeMeshEntity, prototypePosition)
+        && m_FusionNavigationPivotValid
+        && m_FusionNavigationPivot.X == prototypePosition.X
+        && m_FusionNavigationPivot.Y == prototypePosition.Y
+        && m_FusionNavigationPivot.Z == prototypePosition.Z
+        && m_CameraPosition[0] == cameraPosition.X
+        && m_CameraPosition[1] == cameraPosition.Y
+        && m_CameraPosition[2] == cameraPosition.Z
+        && m_CameraRotation[0]
+            == m_EditorSceneControlV2CameraBefore.RotationDegrees.X
+        && m_CameraRotation[1]
+            == m_EditorSceneControlV2CameraBefore.RotationDegrees.Y
+        && m_CameraRotation[2]
+            == m_EditorSceneControlV2CameraBefore.RotationDegrees.Z;
+
+    const std::size_t baseUndo = m_EditorMaterialControlSmokeInitialUndoDepth;
+    const std::array<const EditorMaterialControlReceipt*, 8> documentMutations = {
+        lightSet, lightRestore, transformSet, transformRestore,
+        colorSet, colorRestore, cameraSet, cameraRestore
+    };
+    bool historyReceipts = true;
+    for (std::size_t index = 0; index < documentMutations.size(); ++index)
+    {
+        historyReceipts = historyReceipts
+            && documentMutations[index]->UndoDepthBefore == baseUndo + index
+            && documentMutations[index]->UndoDepthAfter == baseUndo + index + 1
+            && oneHistoryEntry(documentMutations[index]);
+    }
+    const std::array<std::string_view, 8> historyLabels = {
+        "Agent set typed light", "Agent set typed light",
+        "Agent set entity transform", "Agent set entity transform",
+        "Agent set project color pipeline", "Agent set project color pipeline",
+        "Agent set viewport main camera pose", "Agent set viewport main camera pose"
+    };
+    bool labelsValid = m_UndoHistory.size() == baseUndo + historyLabels.size();
+    for (std::size_t index = 0; labelsValid && index < historyLabels.size(); ++index)
+        labelsValid = m_UndoHistory[baseUndo + index].Label == historyLabels[index];
+
+    const bool valid = finalState && historyReceipts && labelsValid
+        && m_RedoHistory.empty()
+        && parserRejected(wrongProject, "wrong_project")
+        && parserRejected(unexpectedField, "missing_or_unexpected_action_field")
+        && parserRejected(duplicateField, "invalid_or_duplicate_entity_id")
+        && successful(inspect, EditorMaterialControlAction::InspectEntity,
+            "ReadOnly", "None")
+        && inspect->EntityId == m_PrototypeMeshEntity.Id && historyUnchanged(inspect)
+        && exactAffected(inspect, m_PrototypeMeshEntity)
+        && successful(selectLight, EditorMaterialControlAction::SelectEntity,
+            "EntitySelected", "SelectPreviousEntity")
+        && selectLight->SelectedEntityIdBefore == mainCamera.Id
+        && selectLight->SelectedEntityIdAfter == m_DirectionalLightEntity.Id
+        && selectLight->SelectionCommitted && selectLight->PivotRetargeted
+        && historyUnchanged(selectLight) && exactAffected(selectLight, m_DirectionalLightEntity)
+        && rejected(staleSelect, EditorMaterialControlAction::SelectEntity,
+            "compare_and_swap_state_mismatch", baseUndo)
+        && staleSelect->SelectedEntityIdBefore == m_DirectionalLightEntity.Id
+        && exactAffected(staleSelect, m_PrototypeMeshEntity)
+        && successful(selectPrototype, EditorMaterialControlAction::SelectEntity,
+            "EntitySelected", "SelectPreviousEntity")
+        && selectPrototype->SelectedEntityIdBefore == m_DirectionalLightEntity.Id
+        && selectPrototype->SelectedEntityIdAfter == m_PrototypeMeshEntity.Id
+        && historyUnchanged(selectPrototype) && exactAffected(selectPrototype, m_PrototypeMeshEntity)
+        && successful(transformSet, EditorMaterialControlAction::SetEntityTransform,
+            "EntityTransformSet", "UndoRedo")
+        && sameTransform(transformSet->BeforeTransform,
+            m_EditorSceneControlV2PrototypeBefore.GetPosition(),
+            m_EditorSceneControlV2PrototypeBefore.RotationDegrees,
+            m_EditorSceneControlV2PrototypeBefore.Scale)
+        && sameTransform(transformSet->AfterTransform,
+            m_EditorSceneControlV2PrototypeAfterPosition,
+            m_EditorSceneControlV2PrototypeAfterRotation,
+            m_EditorSceneControlV2PrototypeAfterScale)
+        && transformSet->PivotRetargeted && !transformSet->EditorCameraSynchronized
+        && !transformRollback->Succeeded && transformRollback->ActionKnown
+        && transformRollback->Action == EditorMaterialControlAction::SetEntityTransform
+        && transformRollback->Reason == "injected_postcondition_failure_rolled_back"
+        && transformRollback->Effect == "RolledBack"
+        && transformRollback->Recovery == "None"
+        && transformRollback->Persistence == "SessionOnly" && !transformRollback->Saved
+        && !transformRollback->PostconditionVerified && transformRollback->RollbackVerified
+        && !transformRollback->SelectionCommitted && !transformRollback->PivotRetargeted
+        && !transformRollback->EditorCameraSynchronized
+        && historyUnchanged(transformRollback)
+        && transformRollback->UndoDepthBefore == baseUndo + 3
+        && sameTransform(transformRollback->BeforeTransform,
+            m_EditorSceneControlV2PrototypeAfterPosition,
+            m_EditorSceneControlV2PrototypeAfterRotation,
+            m_EditorSceneControlV2PrototypeAfterScale)
+        && sameTransform(transformRollback->AfterTransform,
+            m_EditorSceneControlV2PrototypeAfterPosition,
+            m_EditorSceneControlV2PrototypeAfterRotation,
+            m_EditorSceneControlV2PrototypeAfterScale)
+        && successful(transformRestore, EditorMaterialControlAction::SetEntityTransform,
+            "EntityTransformSet", "UndoRedo")
+        && sameTransform(transformRestore->AfterTransform,
+            m_EditorSceneControlV2PrototypeBefore.GetPosition(),
+            m_EditorSceneControlV2PrototypeBefore.RotationDegrees,
+            m_EditorSceneControlV2PrototypeBefore.Scale)
+        && transformRestore->PivotRetargeted
+        && successful(lightSet, EditorMaterialControlAction::SetTypedLight,
+            "TypedLightSet", "UndoRedo")
+        && sameLight(lightSet->BeforeLight, m_EditorSceneControlV2LightBefore)
+        && sameLight(lightSet->AfterLight, m_EditorSceneControlV2LightAfter)
+        && rejected(staleLight, EditorMaterialControlAction::SetTypedLight,
+            "compare_and_swap_state_mismatch", baseUndo + 1)
+        && sameLight(staleLight->BeforeLight, m_EditorSceneControlV2LightAfter)
+        && successful(lightRestore, EditorMaterialControlAction::SetTypedLight,
+            "TypedLightSet", "UndoRedo")
+        && sameLight(lightRestore->AfterLight, m_EditorSceneControlV2LightBefore)
+        && successful(colorSet, EditorMaterialControlAction::SetProjectColorPipeline,
+            "ProjectColorPipelineSet", "UndoRedo")
+        && colorSet->BeforeColorPipeline == m_EditorSceneControlV2ColorBefore
+        && colorSet->AfterColorPipeline == m_EditorSceneControlV2ColorAfter
+        && colorSet->RendererReadbackVerified
+        && rejected(staleColor, EditorMaterialControlAction::SetProjectColorPipeline,
+            "compare_and_swap_state_mismatch", baseUndo + 5)
+        && staleColor->BeforeColorPipeline == m_EditorSceneControlV2ColorAfter
+        && successful(colorRestore, EditorMaterialControlAction::SetProjectColorPipeline,
+            "ProjectColorPipelineSet", "UndoRedo")
+        && colorRestore->AfterColorPipeline == m_EditorSceneControlV2ColorBefore
+        && colorRestore->RendererReadbackVerified
+        && successful(selectCamera, EditorMaterialControlAction::SelectEntity,
+            "EntitySelected", "SelectPreviousEntity")
+        && selectCamera->SelectedEntityIdBefore == m_PrototypeMeshEntity.Id
+        && selectCamera->SelectedEntityIdAfter == mainCamera.Id
+        && selectCamera->SelectionCommitted && !selectCamera->PivotRetargeted
+        && historyUnchanged(selectCamera) && exactAffected(selectCamera, mainCamera)
+        && rejected(staleCamera, EditorMaterialControlAction::SetViewportMainCameraPose,
+            "compare_and_swap_state_mismatch", baseUndo + 6)
+        && rejected(genericCameraTransform, EditorMaterialControlAction::SetEntityTransform,
+            "main_camera_pose_action_required", baseUndo + 6)
+        && successful(cameraSet, EditorMaterialControlAction::SetViewportMainCameraPose,
+            "ViewportMainCameraPoseSet", "UndoRedo")
+        && cameraSet->IsMainCamera && !cameraSet->PivotRetargeted
+        && cameraSet->EditorCameraSynchronized
+        && sameTransform(cameraSet->AfterTransform,
+            m_EditorSceneControlV2CameraAfterPosition,
+            m_EditorSceneControlV2CameraAfterRotation,
+            { 1.0f, 1.0f, 1.0f })
+        && successful(cameraRestore, EditorMaterialControlAction::SetViewportMainCameraPose,
+            "ViewportMainCameraPoseSet", "UndoRedo")
+        && cameraRestore->IsMainCamera && !cameraRestore->PivotRetargeted
+        && cameraRestore->EditorCameraSynchronized
+        && sameTransform(cameraRestore->AfterTransform,
+            m_EditorSceneControlV2CameraBefore.GetPosition(),
+            m_EditorSceneControlV2CameraBefore.RotationDegrees,
+            m_EditorSceneControlV2CameraBefore.Scale)
+        && rejected(staleTransform, EditorMaterialControlAction::SetEntityTransform,
+            "compare_and_swap_state_mismatch", baseUndo + 8)
+        && successful(finalInspect, EditorMaterialControlAction::InspectEntity,
+            "ReadOnly", "None")
+        && finalInspect->EntityId == mainCamera.Id && finalInspect->IsMainCamera
+        && historyUnchanged(finalInspect)
+        && finalInspect->UndoDepthBefore == baseUndo + 8
+        && exactAffected(finalInspect, mainCamera);
+    if (!valid)
+        throw std::runtime_error("external editor scene-control V2 helper smoke failed");
+
+    Engine::Log::Info(
+        "EditorSceneControlV2 producer=external-python actions=inspect-select-transform-"
+        "typed-light-project-color-main-camera cas=complete-values stale=rejected "
+        "history=one-per-document-action selection=session-only restore=exact "
+        "persistence=SessionOnly saved=no input=typed-mailbox-no-ui-synthesis backend=",
+        Engine::Renderer::GetActiveBackendName(), " result=pass");
+    m_EditorSceneControlV2HelperSmokeCompleted = true;
     Engine::Application::Get().Close();
 }
 
@@ -1510,6 +2509,7 @@ void EditorLayer::RunEditorMaterialControlCapacitySmokeBeforeDrain()
         requestId << "capacity-" << std::setfill('0') << std::setw(4) << index;
         const std::string request = EditorMaterialControlMailbox::FormatInspectRequest(
             requestId.str(), m_EditorMaterialControl.GetSessionId(),
+            m_ProjectPath,
             target->EntityHandle.Id, target->Name,
             m_EditorMaterialControlSmokeMaterial);
         std::string error;
@@ -1555,7 +2555,7 @@ void EditorLayer::RunEditorMaterialControlCapacitySmokeAfterDrain()
     if (!valid)
         throw std::runtime_error("editor material-control capacity retention smoke failed");
     Engine::Log::Info(
-        "EditorMaterialControlCapacityV1 retained=256 accepting=no "
+        "EditorMaterialControlCapacityV2 retained=256 accepting=no "
         "pendingUnclaimed=1 response=absent session=closed "
         "affectedTotal=42 affectedSample=32 truncated=yes result=pass");
     m_EditorMaterialControlCapacitySmokeCompleted = true;
@@ -1573,6 +2573,7 @@ void EditorLayer::RunEditorMaterialControlDurabilitySmokeBeforeDrain()
         throw std::runtime_error("editor material-control durability target disappeared");
     const std::string request = EditorMaterialControlMailbox::FormatPatchRequest(
         "durability-visible-success", m_EditorMaterialControl.GetSessionId(),
+        m_ProjectPath,
         target->EntityHandle.Id, target->Name, m_EditorMaterialControlSmokeMaterial,
         m_EditorMaterialControlSmokeBefore, m_EditorMaterialControlSmokeAfter);
     std::string error;
@@ -1619,7 +2620,7 @@ void EditorLayer::RunEditorMaterialControlDurabilitySmokeAfterDrain()
         throw std::runtime_error(
             "editor material-control visible-publication durability smoke failed");
     Engine::Log::Info(
-        "EditorMaterialControlDurabilityV1 visibility=rename-authoritative "
+        "EditorMaterialControlDurabilityV2 visibility=rename-authoritative "
         "parentSync=injected-failure committed=preserved rollback=no "
         "acceptance=closed crashDurability=degraded result=pass");
     m_EditorMaterialControlDurabilitySmokeCompleted = true;
@@ -1648,7 +2649,8 @@ void EditorLayer::RunEditorMaterialControlRollbackFailureSmokeBeforeDrain()
     m_EditorMaterialControlForceCommitFailureOnce = !postCommit;
     m_EditorMaterialControlForceLateResponseCollisionOnce = postCommit;
     const std::string request = EditorMaterialControlMailbox::FormatPatchRequest(
-        requestId, m_EditorMaterialControl.GetSessionId(), target->EntityHandle.Id,
+        requestId, m_EditorMaterialControl.GetSessionId(), m_ProjectPath,
+        target->EntityHandle.Id,
         target->Name, m_EditorMaterialControlSmokeMaterial,
         m_EditorMaterialControlSmokeBefore, m_EditorMaterialControlSmokeAfter);
     std::string error;
@@ -1710,7 +2712,7 @@ void EditorLayer::RunEditorMaterialControlRollbackFailureSmokeAfterDrain()
     }
 
     Engine::Log::Info(
-        "EditorMaterialControlRollbackFailureV1 path=",
+        "EditorMaterialControlRollbackFailureV2 path=",
         postCommit ? "postcommit-publication" : "commit",
         " closeReason=",
         postCommit ? "postcommit_rollback_verification_failed"

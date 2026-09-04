@@ -5339,6 +5339,38 @@ namespace
                 preservedEntity, invalidReplacement)
             && destination.TryGetLightComponent(preservedEntity)
             && destination.TryGetLightComponent(preservedEntity)->PhotometricValue == 12000.0;
+        LightComponent replacement = point;
+        replacement.Color = { 0.25f, 0.5f, 0.75f };
+        replacement.PhotometricValue = 2400.0;
+        replacement.Range = 42.0f;
+        replacement.InnerConeDegrees = 12.0f;
+        replacement.OuterConeDegrees = 38.0f;
+        replacement.CastsShadows = false;
+        const bool typedReplacementAccepted =
+            destination.SetLightComponent(preservedEntity, replacement);
+        const LightComponent* replaced = destination.TryGetLightComponent(preservedEntity);
+        LightComponent invalidTypedReplacement = replacement;
+        invalidTypedReplacement.PhotometricUnit = LightPhotometricUnit::Lux;
+        const bool replacementPublished = replaced
+            && replaced->Type == replacement.Type
+            && replaced->Color.X == replacement.Color.X
+            && replaced->Color.Y == replacement.Color.Y
+            && replaced->Color.Z == replacement.Color.Z
+            && replaced->PhotometricValue == replacement.PhotometricValue
+            && replaced->PhotometricUnit == replacement.PhotometricUnit
+            && replaced->Range == replacement.Range
+            && replaced->InnerConeDegrees == replacement.InnerConeDegrees
+            && replaced->OuterConeDegrees == replacement.OuterConeDegrees
+            && replaced->CastsShadows == replacement.CastsShadows;
+        const Entity noLight = destination.CreateEntity("No light component");
+        const bool typedReplacementTransactional = replacementPublished
+            && !destination.SetLightComponent(preservedEntity, invalidTypedReplacement)
+            && !destination.SetLightComponent(noLight, replacement)
+            && destination.TryGetLightComponent(preservedEntity)
+            && destination.TryGetLightComponent(preservedEntity)->PhotometricUnit
+                == replacement.PhotometricUnit
+            && destination.TryGetLightComponent(preservedEntity)->PhotometricValue
+                == replacement.PhotometricValue;
 
         std::error_code cleanupError;
         for (const std::filesystem::path& path : cleanupPaths)
@@ -5355,7 +5387,9 @@ namespace
             && Expect(rejectedWrongUnit && rejectedNonfinite && rejectedNegative
                     && rejectedOutOfRange && rejectedTrailingToken && rejectedDuplicate
                     && destinationPreserved && componentReplacementRejected,
-                "invalid photometric records and component replacements preserve the prior destination state");
+                "invalid photometric records and component attachments preserve the prior destination state")
+            && Expect(typedReplacementAccepted && typedReplacementTransactional,
+                "typed light replacement accepts one complete valid value and rejects invalid or absent-component targets transactionally");
     }
 
     bool TestSceneRenderSnapshotExtractionAndRetainedEpochs()

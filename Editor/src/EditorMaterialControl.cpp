@@ -32,9 +32,9 @@
 
 namespace
 {
-    constexpr std::string_view kRequestHeader = "SpiralEditorControlRequest 1";
-    constexpr std::string_view kReceiptHeader = "SpiralEditorControlReceipt 1";
-    constexpr std::string_view kSessionHeader = "SpiralEditorControlSession 1";
+    constexpr std::string_view kRequestHeader = "SpiralEditorControlRequest 2";
+    constexpr std::string_view kReceiptHeader = "SpiralEditorControlReceipt 2";
+    constexpr std::string_view kSessionHeader = "SpiralEditorControlSession 2";
 
     const char* ToString(EditorMaterialControlAction action)
     {
@@ -44,6 +44,12 @@ namespace
                 return "InspectMaterialSurface";
             case EditorMaterialControlAction::SelectEntityPatchMaterialSurface:
                 return "SelectEntityPatchMaterialSurface";
+            case EditorMaterialControlAction::InspectEntity: return "InspectEntity";
+            case EditorMaterialControlAction::SelectEntity: return "SelectEntity";
+            case EditorMaterialControlAction::SetEntityTransform: return "SetEntityTransform";
+            case EditorMaterialControlAction::SetTypedLight: return "SetTypedLight";
+            case EditorMaterialControlAction::SetProjectColorPipeline: return "SetProjectColorPipeline";
+            case EditorMaterialControlAction::SetViewportMainCameraPose: return "SetViewportMainCameraPose";
         }
         return "Unknown";
     }
@@ -139,6 +145,40 @@ namespace
         return static_cast<bool>(stream >> surface.BaseColor.X >> surface.BaseColor.Y
             >> surface.BaseColor.Z >> surface.Metallic >> surface.Roughness)
             && AtEnd(stream);
+    }
+
+    bool ParseTransform(std::istringstream& stream, Engine::Math::SectorLocalPosition& position,
+        Engine::Math::Vec3& rotation, Engine::Math::Vec3& scale)
+    {
+        return static_cast<bool>(stream >> position.Sector.X >> position.Sector.Y >> position.Sector.Z
+            >> position.Local.X >> position.Local.Y >> position.Local.Z
+            >> rotation.X >> rotation.Y >> rotation.Z
+            >> scale.X >> scale.Y >> scale.Z) && AtEnd(stream);
+    }
+
+    bool ParseLight(std::istringstream& stream, Engine::LightComponent& light)
+    {
+        std::string type, unit, shadows;
+        if (!(stream >> type >> light.Color.X >> light.Color.Y >> light.Color.Z
+                >> light.PhotometricValue >> unit >> light.Range >> light.InnerConeDegrees
+                >> light.OuterConeDegrees >> shadows) || !AtEnd(stream)
+            || !Engine::TryParseLightType(type, light.Type)
+            || !Engine::TryParseLightPhotometricUnit(unit, light.PhotometricUnit))
+            return false;
+        if (shadows == "yes") light.CastsShadows = true;
+        else if (shadows == "no") light.CastsShadows = false;
+        else return false;
+        return Engine::IsValidLightComponent(light);
+    }
+
+    bool ParseColorPipeline(std::istringstream& stream, Engine::RendererColorPipelineSettings& settings)
+    {
+        std::string mode;
+        return static_cast<bool>(stream >> settings.ManualExposureEV100
+            >> settings.PostToneMapSaturation >> settings.PostToneMapContrast >> mode
+            >> settings.CameraApertureFNumber >> settings.CameraShutterSeconds >> settings.CameraISO)
+            && AtEnd(stream) && Engine::ParseRendererExposureMode(mode, settings.ExposureMode)
+            && Engine::IsValidRendererColorPipelineSettings(settings);
     }
 
     [[maybe_unused]] bool HasOwnerOnlyPermissions(std::filesystem::perms permissions)
@@ -461,11 +501,57 @@ namespace
                    << surface.BaseColor.Z << ' ' << surface.Metallic << ' '
                    << surface.Roughness << '\n';
         };
+        const auto writeTransform = [](std::ostringstream& stream,
+            std::string_view label, const Engine::TransformComponent& transform)
+        {
+            const Engine::Math::SectorLocalPosition& position = transform.GetPosition();
+            stream << label << ' ' << position.Sector.X << ' ' << position.Sector.Y << ' '
+                   << position.Sector.Z << ' ' << position.Local.X << ' ' << position.Local.Y << ' '
+                   << position.Local.Z << ' ' << transform.RotationDegrees.X << ' '
+                   << transform.RotationDegrees.Y << ' ' << transform.RotationDegrees.Z << ' '
+                   << transform.Scale.X << ' ' << transform.Scale.Y << ' ' << transform.Scale.Z << '\n';
+        };
+        const auto writeCamera = [](std::ostringstream& stream,
+            std::string_view label, const Engine::CameraComponent& camera)
+        {
+            stream << label << ' ' << (camera.Primary ? "yes" : "no") << ' '
+                   << camera.Projection.VerticalFovDegrees << ' ' << camera.Projection.NearClip << ' '
+                   << camera.Projection.FarClip << ' ' << camera.BackgroundColor.X << ' '
+                   << camera.BackgroundColor.Y << ' ' << camera.BackgroundColor.Z << '\n';
+        };
+        const auto writeLight = [](std::ostringstream& stream,
+            std::string_view label, const Engine::LightComponent& light)
+        {
+            stream << label << ' ' << Engine::ToString(light.Type) << ' '
+                   << light.Color.X << ' ' << light.Color.Y << ' ' << light.Color.Z << ' '
+                   << light.PhotometricValue << ' ' << Engine::ToString(light.PhotometricUnit) << ' '
+                   << light.Range << ' ' << light.InnerConeDegrees << ' '
+                   << light.OuterConeDegrees << ' ' << (light.CastsShadows ? "yes" : "no") << '\n';
+        };
+        const auto writeMeshRenderer = [](std::ostringstream& stream,
+            std::string_view label, const Engine::MeshRendererComponent& meshRenderer)
+        {
+            stream << label << ' ' << meshRenderer.MeshAsset << ' ' << meshRenderer.MaterialAsset << ' '
+                   << std::quoted(meshRenderer.MeshName) << ' '
+                   << (meshRenderer.Visible ? "yes" : "no") << ' '
+                   << (meshRenderer.CastsShadows ? "yes" : "no") << '\n';
+        };
+        const auto writeColorPipeline = [](std::ostringstream& stream,
+            std::string_view label, const Engine::RendererColorPipelineSettings& settings)
+        {
+            stream << label << ' ' << settings.ManualExposureEV100 << ' '
+                   << settings.PostToneMapSaturation << ' ' << settings.PostToneMapContrast << ' '
+                   << Engine::ToString(settings.ExposureMode) << ' '
+                   << settings.CameraApertureFNumber << ' ' << settings.CameraShutterSeconds << ' '
+                   << settings.CameraISO << '\n';
+        };
 
         std::ostringstream stream;
-        stream << kReceiptHeader << '\n'
+        stream << std::setprecision(std::numeric_limits<double>::max_digits10)
+               << kReceiptHeader << '\n'
                << "RequestId " << std::quoted(receipt.RequestId) << '\n'
                << "SessionId " << std::quoted(receipt.SessionId) << '\n'
+               << "ProjectPath " << std::quoted(receipt.ProjectPath) << '\n'
                << "RequestDigest " << receipt.RequestDigest << '\n'
                << "Action " << (receipt.ActionKnown ? ToString(receipt.Action) : "Unknown") << '\n'
                << "Status " << (receipt.Succeeded ? "Succeeded" : "Rejected") << '\n'
@@ -473,11 +559,35 @@ namespace
                << "Frame " << receipt.Frame << '\n'
                << "Effect " << receipt.Effect << '\n'
                << "Recovery " << receipt.Recovery << '\n'
+               << "Persistence " << receipt.Persistence << '\n'
+               << "Saved " << (receipt.Saved ? "yes" : "no") << '\n'
                << "EntityId " << receipt.EntityId << '\n'
                << "EntityName " << std::quoted(receipt.EntityName) << '\n'
+               << "MainCameraEntityId " << receipt.MainCameraEntityId << '\n'
+               << "IsMainCamera " << (receipt.IsMainCamera ? "yes" : "no") << '\n'
+               << "SelectedEntityIdBefore " << receipt.SelectedEntityIdBefore << '\n'
+               << "SelectedEntityIdAfter " << receipt.SelectedEntityIdAfter << '\n'
                << "MaterialHandle " << receipt.MaterialHandle << '\n';
         writeSurface(stream, "BeforeSurface", receipt.Before);
         writeSurface(stream, "AfterSurface", receipt.After);
+        writeTransform(stream, "BeforeTransform", receipt.BeforeTransform);
+        writeTransform(stream, "AfterTransform", receipt.AfterTransform);
+        stream << "BeforeCameraPresent " << (receipt.BeforeCameraPresent ? "yes" : "no") << '\n';
+        writeCamera(stream, "BeforeCamera", receipt.BeforeCamera);
+        stream << "AfterCameraPresent " << (receipt.AfterCameraPresent ? "yes" : "no") << '\n';
+        writeCamera(stream, "AfterCamera", receipt.AfterCamera);
+        stream << "BeforeLightPresent " << (receipt.BeforeLightPresent ? "yes" : "no") << '\n';
+        writeLight(stream, "BeforeLight", receipt.BeforeLight);
+        stream << "AfterLightPresent " << (receipt.AfterLightPresent ? "yes" : "no") << '\n';
+        writeLight(stream, "AfterLight", receipt.AfterLight);
+        stream << "BeforeMeshRendererPresent "
+               << (receipt.BeforeMeshRendererPresent ? "yes" : "no") << '\n';
+        writeMeshRenderer(stream, "BeforeMeshRenderer", receipt.BeforeMeshRenderer);
+        stream << "AfterMeshRendererPresent "
+               << (receipt.AfterMeshRendererPresent ? "yes" : "no") << '\n';
+        writeMeshRenderer(stream, "AfterMeshRenderer", receipt.AfterMeshRenderer);
+        writeColorPipeline(stream, "BeforeColorPipeline", receipt.BeforeColorPipeline);
+        writeColorPipeline(stream, "AfterColorPipeline", receipt.AfterColorPipeline);
         stream << "AffectedEntityCount " << receipt.AffectedEntityCount << '\n'
                << "AffectedEntitySampleCount " << receipt.AffectedEntityIds.size() << '\n'
                << "AffectedEntityIds";
@@ -494,7 +604,12 @@ namespace
                << "SelectionCommitted " << (receipt.SelectionCommitted ? "yes" : "no") << '\n'
                << "PivotRetargeted " << (receipt.PivotRetargeted ? "yes" : "no") << '\n'
                << "RendererReadbackVerified "
-               << (receipt.RendererReadbackVerified ? "yes" : "no") << '\n';
+               << (receipt.RendererReadbackVerified ? "yes" : "no") << '\n'
+               << "PostconditionVerified "
+               << (receipt.PostconditionVerified ? "yes" : "no") << '\n'
+               << "RollbackVerified " << (receipt.RollbackVerified ? "yes" : "no") << '\n'
+               << "EditorCameraSynchronized "
+               << (receipt.EditorCameraSynchronized ? "yes" : "no") << '\n';
         return stream.str();
     }
 
@@ -513,13 +628,21 @@ namespace
         {
             RequestId = 1u << 0,
             SessionId = 1u << 1,
-            Action = 1u << 2,
-            EntityId = 1u << 3,
-            ExpectedEntityName = 1u << 4,
-            MaterialHandle = 1u << 5,
-            ExpectedSurface = 1u << 6,
-            NewSurface = 1u << 7,
-            Scope = 1u << 8
+            ProjectPath = 1u << 2,
+            Action = 1u << 3,
+            EntityId = 1u << 4,
+            ExpectedEntityName = 1u << 5,
+            MaterialHandle = 1u << 6,
+            ExpectedSurface = 1u << 7,
+            NewSurface = 1u << 8,
+            Scope = 1u << 9,
+            ExpectedTransform = 1u << 10,
+            NewTransform = 1u << 11,
+            ExpectedLight = 1u << 12,
+            NewLight = 1u << 13,
+            ExpectedColorPipeline = 1u << 14,
+            NewColorPipeline = 1u << 15,
+            ExpectedSelectedEntityId = 1u << 16
         };
         unsigned int seen = 0;
         const auto claim = [&seen](Field field)
@@ -560,6 +683,14 @@ namespace
                     return false;
                 }
             }
+            else if (key == "ProjectPath")
+            {
+                if (!claim(Field::ProjectPath) || !ParseQuoted(fieldStream, request.ProjectPath))
+                {
+                    error = "invalid_or_duplicate_project_path";
+                    return false;
+                }
+            }
             else if (key == "Action")
             {
                 std::string action;
@@ -572,6 +703,12 @@ namespace
                     request.Action = EditorMaterialControlAction::InspectMaterialSurface;
                 else if (action == "SelectEntityPatchMaterialSurface")
                     request.Action = EditorMaterialControlAction::SelectEntityPatchMaterialSurface;
+                else if (action == "InspectEntity") request.Action = EditorMaterialControlAction::InspectEntity;
+                else if (action == "SelectEntity") request.Action = EditorMaterialControlAction::SelectEntity;
+                else if (action == "SetEntityTransform") request.Action = EditorMaterialControlAction::SetEntityTransform;
+                else if (action == "SetTypedLight") request.Action = EditorMaterialControlAction::SetTypedLight;
+                else if (action == "SetProjectColorPipeline") request.Action = EditorMaterialControlAction::SetProjectColorPipeline;
+                else if (action == "SetViewportMainCameraPose") request.Action = EditorMaterialControlAction::SetViewportMainCameraPose;
                 else
                 {
                     error = "unsupported_action";
@@ -638,6 +775,50 @@ namespace
                     return false;
                 }
             }
+            else if (key == "ExpectedTransform")
+            {
+                if (!claim(Field::ExpectedTransform) || !ParseTransform(fieldStream,
+                        request.ExpectedTransformPosition, request.ExpectedTransform.RotationDegrees,
+                        request.ExpectedTransform.Scale)) { error = "invalid_expected_transform"; return false; }
+                request.HasExpectedTransform = true;
+            }
+            else if (key == "NewTransform")
+            {
+                if (!claim(Field::NewTransform) || !ParseTransform(fieldStream,
+                        request.NewTransformPosition, request.NewTransform.RotationDegrees,
+                        request.NewTransform.Scale)) { error = "invalid_new_transform"; return false; }
+                request.HasNewTransform = true;
+            }
+            else if (key == "ExpectedLight")
+            {
+                if (!claim(Field::ExpectedLight) || !ParseLight(fieldStream, request.ExpectedLight)) { error = "invalid_expected_light"; return false; }
+                request.HasExpectedLight = true;
+            }
+            else if (key == "NewLight")
+            {
+                if (!claim(Field::NewLight) || !ParseLight(fieldStream, request.NewLight)) { error = "invalid_new_light"; return false; }
+                request.HasNewLight = true;
+            }
+            else if (key == "ExpectedColorPipeline")
+            {
+                if (!claim(Field::ExpectedColorPipeline) || !ParseColorPipeline(fieldStream, request.ExpectedColorPipeline)) { error = "invalid_expected_color_pipeline"; return false; }
+                request.HasExpectedColorPipeline = true;
+            }
+            else if (key == "NewColorPipeline")
+            {
+                if (!claim(Field::NewColorPipeline) || !ParseColorPipeline(fieldStream, request.NewColorPipeline)) { error = "invalid_new_color_pipeline"; return false; }
+                request.HasNewColorPipeline = true;
+            }
+            else if (key == "ExpectedSelectedEntityId")
+            {
+                if (!claim(Field::ExpectedSelectedEntityId)
+                    || !ParseInteger(fieldStream, request.ExpectedSelectedEntityId))
+                {
+                    error = "invalid_or_duplicate_expected_selected_entity_id";
+                    return false;
+                }
+                request.HasExpectedSelectedEntityId = true;
+            }
             else
             {
                 error = "unknown_field";
@@ -645,8 +826,8 @@ namespace
             }
         }
 
-        constexpr unsigned int common = Field::RequestId | Field::SessionId | Field::Action
-            | Field::EntityId | Field::ExpectedEntityName | Field::MaterialHandle;
+        constexpr unsigned int common = Field::RequestId | Field::SessionId
+            | Field::ProjectPath | Field::Action;
         if ((seen & common) != common)
         {
             error = "missing_required_field";
@@ -657,31 +838,60 @@ namespace
             error = "request_id_mismatch";
             return false;
         }
-        if (request.EntityId == Engine::kInvalidEntityId
-            || request.ExpectedEntityName.empty() || request.ExpectedEntityName.size() > 256
-            || request.MaterialHandle == Engine::kInvalidAssetHandle)
+        if (request.ProjectPath.empty() || request.ProjectPath.size() > 4096)
         {
             error = "invalid_identity";
             return false;
         }
-        if (request.Action == EditorMaterialControlAction::InspectMaterialSurface)
+        const bool needsEntity = request.Action != EditorMaterialControlAction::SetProjectColorPipeline;
+        if (needsEntity && (request.EntityId == Engine::kInvalidEntityId
+            || request.ExpectedEntityName.empty() || request.ExpectedEntityName.size() > 256))
+        { error = "invalid_entity_identity"; return false; }
+        const unsigned int entityIdentity = Field::EntityId | Field::ExpectedEntityName;
+        unsigned int exactFields = common;
+        switch (request.Action)
         {
-            if ((seen & (Field::ExpectedSurface | Field::NewSurface | Field::Scope)) != 0)
-            {
-                error = "unexpected_action_field";
-                return false;
-            }
+            case EditorMaterialControlAction::InspectMaterialSurface:
+                exactFields |= entityIdentity | Field::MaterialHandle;
+                break;
+            case EditorMaterialControlAction::SelectEntityPatchMaterialSurface:
+                exactFields |= entityIdentity | Field::MaterialHandle | Field::ExpectedSurface
+                    | Field::NewSurface | Field::Scope;
+                if (!Engine::IsValidMaterialSurface(request.ExpectedSurface)
+                    || !Engine::IsValidMaterialSurface(request.NewSurface))
+                {
+                    error = "invalid_or_missing_surface";
+                    return false;
+                }
+                break;
+            case EditorMaterialControlAction::InspectEntity:
+                exactFields |= entityIdentity;
+                break;
+            case EditorMaterialControlAction::SelectEntity:
+                exactFields |= entityIdentity | Field::ExpectedSelectedEntityId;
+                break;
+            case EditorMaterialControlAction::SetEntityTransform:
+            case EditorMaterialControlAction::SetViewportMainCameraPose:
+                exactFields |= entityIdentity | Field::ExpectedTransform | Field::NewTransform;
+                break;
+            case EditorMaterialControlAction::SetTypedLight:
+                exactFields |= entityIdentity | Field::ExpectedLight | Field::NewLight;
+                break;
+            case EditorMaterialControlAction::SetProjectColorPipeline:
+                exactFields |= Field::ExpectedColorPipeline | Field::NewColorPipeline;
+                break;
         }
-        else
+        if (seen != exactFields)
         {
-            constexpr unsigned int patch = Field::ExpectedSurface | Field::NewSurface | Field::Scope;
-            if ((seen & patch) != patch
-                || !Engine::IsValidMaterialSurface(request.ExpectedSurface)
-                || !Engine::IsValidMaterialSurface(request.NewSurface))
-            {
-                error = "invalid_or_missing_surface";
-                return false;
-            }
+            error = "missing_or_unexpected_action_field";
+            return false;
+        }
+        if ((request.Action == EditorMaterialControlAction::InspectMaterialSurface
+                || request.Action == EditorMaterialControlAction::SelectEntityPatchMaterialSurface)
+            && request.MaterialHandle == Engine::kInvalidAssetHandle)
+        {
+            error = "invalid_material_identity";
+            return false;
         }
         return true;
     }
@@ -762,7 +972,7 @@ bool EditorMaterialControlMailbox::Initialize(const std::filesystem::path& root,
     }
     if (m_DurabilityDegradationCount != 0)
         TransitionToClosed("ready_manifest_parent_sync_failed");
-    Engine::Log::Info("EditorMaterialControlV1 state=ready session=", m_SessionId,
+    Engine::Log::Info("EditorMaterialControlV2 state=ready session=", m_SessionId,
         " path=", m_Root.string(), " maxBytes=", MaximumRequestBytes,
         " maxPerFrame=", MaximumRequestsPerFrame,
         " maxRetained=", MaximumTerminalRequests);
@@ -797,7 +1007,7 @@ void EditorMaterialControlMailbox::Close()
     if (!IsOpen())
         return;
     TransitionToClosed("editor_detach");
-    Engine::Log::Info("EditorMaterialControlV1 state=closed session=", m_SessionId,
+    Engine::Log::Info("EditorMaterialControlV2 state=closed session=", m_SessionId,
         " terminal=", m_Terminals.size(), " collisions=", m_ResponseCollisionCount);
 }
 
@@ -826,8 +1036,8 @@ bool EditorMaterialControlMailbox::PublishSessionFile(
              << "State " << state << '\n'
              << "ProcessId " << m_ProcessId << '\n'
              << "ProjectPath " << std::quoted(m_ProjectPath) << '\n'
-             << "RequestSchema 1\nReceiptSchema 1\n"
-             << "Actions InspectMaterialSurface,SelectEntityPatchMaterialSurface\n"
+             << "RequestSchema 2\nReceiptSchema 2\n"
+             << "Actions InspectMaterialSurface,SelectEntityPatchMaterialSurface,InspectEntity,SelectEntity,SetEntityTransform,SetTypedLight,SetProjectColorPipeline,SetViewportMainCameraPose\n"
              << "MaximumRequestBytes " << MaximumRequestBytes << '\n'
              << "MaximumRequestsPerFrame " << MaximumRequestsPerFrame << '\n'
              << "MaximumTerminalRequests " << MaximumTerminalRequests << '\n'
@@ -855,7 +1065,7 @@ void EditorMaterialControlMailbox::TransitionToClosed(std::string_view reason)
         Engine::Log::Error(
             "Editor material-control close is visible but not confirmed crash-durable: ",
             error);
-    Engine::Log::Info("EditorMaterialControlV1 accepting=no reason=", reason,
+    Engine::Log::Info("EditorMaterialControlV2 accepting=no reason=", reason,
         " retained=", m_Terminals.size());
 }
 
@@ -1006,6 +1216,7 @@ bool EditorMaterialControlMailbox::PublishCollisionReceipt(
     EditorMaterialControlReceipt receipt;
     receipt.RequestId = std::string(requestId);
     receipt.SessionId = m_SessionId;
+    receipt.ProjectPath = m_ProjectPath;
     receipt.RequestDigest = "not-applicable";
     receipt.Reason = "request_id_conflict";
     receipt.Frame = 0;
@@ -1172,6 +1383,8 @@ void EditorMaterialControlMailbox::ProcessRequest(const std::filesystem::path& p
         ParseRequest(contents, requestId, request, rejection);
     if (rejection.empty() && request.SessionId != m_SessionId)
         rejection = "wrong_session";
+    if (rejection.empty() && request.ProjectPath != m_ProjectPath)
+        rejection = "wrong_project";
 
     EditorMaterialControlTransaction transaction;
     if (rejection.empty())
@@ -1181,6 +1394,7 @@ void EditorMaterialControlMailbox::ProcessRequest(const std::filesystem::path& p
     EditorMaterialControlReceipt& receipt = transaction.Receipt;
     receipt.RequestId = requestId;
     receipt.SessionId = m_SessionId;
+    receipt.ProjectPath = m_ProjectPath;
     receipt.RequestDigest = digest;
     receipt.Frame = frame;
     if (rejection.empty())
@@ -1262,6 +1476,9 @@ void EditorMaterialControlMailbox::ProcessRequest(const std::filesystem::path& p
         receipt.Effect = "RecoveryRequired";
         receipt.Recovery = "RestartSession";
         receipt.RendererReadbackVerified = false;
+        receipt.PostconditionVerified = false;
+        receipt.RollbackVerified = false;
+        receipt.EditorCameraSynchronized = false;
         terminal.Receipt = receipt;
         terminal.Text = FormatReceipt(receipt);
         std::string recoveryReceiptError;
@@ -1292,6 +1509,20 @@ void EditorMaterialControlMailbox::ProcessRequest(const std::filesystem::path& p
         receipt.Effect = "RolledBack";
         receipt.Recovery = "None";
         receipt.After = receipt.Before;
+        receipt.AfterTransform = receipt.BeforeTransform;
+        receipt.AfterCameraPresent = receipt.BeforeCameraPresent;
+        receipt.AfterCamera = receipt.BeforeCamera;
+        receipt.AfterLightPresent = receipt.BeforeLightPresent;
+        receipt.AfterLight = receipt.BeforeLight;
+        receipt.AfterMeshRendererPresent = receipt.BeforeMeshRendererPresent;
+        receipt.AfterMeshRenderer = receipt.BeforeMeshRenderer;
+        receipt.AfterColorPipeline = receipt.BeforeColorPipeline;
+        receipt.SelectedEntityIdAfter = receipt.SelectedEntityIdBefore;
+        receipt.SelectionCommitted = false;
+        receipt.PivotRetargeted = false;
+        receipt.PostconditionVerified = false;
+        receipt.RollbackVerified = true;
+        receipt.EditorCameraSynchronized = false;
         terminal.Receipt = receipt;
         terminal.Text = FormatReceipt(receipt);
         Engine::Log::Error("Editor material-control commit rolled back: ", receipt.Reason);
@@ -1414,14 +1645,31 @@ bool EditorMaterialControlMailbox::PublishLiveTargetForSmoke(
             "live smoke target", true, error);
 }
 
+bool EditorMaterialControlMailbox::PublishSceneControlTargetForSmoke(
+    std::string_view contents, std::string& error)
+{
+    if (!IsOpen() || contents.empty() || contents.size() > MaximumResponseBytes)
+    {
+        error = "invalid_scene_control_smoke_target";
+        return false;
+    }
+    const std::filesystem::path temporary = m_Root
+        / (".scene-control-target." + std::to_string(++m_TemporarySequence) + ".tmp");
+    return WriteOwnerOnlyTemporary(temporary, contents, error)
+        && PublishFileNoReplace(temporary, m_Root / "scene-control-target.info",
+            "scene-control smoke target", true, error);
+}
+
 std::string EditorMaterialControlMailbox::FormatInspectRequest(std::string_view requestId,
-    std::string_view sessionId, Engine::EntityId entityId,
+    std::string_view sessionId, std::string_view projectPath, Engine::EntityId entityId,
     std::string_view expectedEntityName, Engine::AssetHandle materialHandle)
 {
+    const std::string canonicalProjectPath = CanonicalProjectPath(projectPath);
     std::ostringstream stream;
     stream << kRequestHeader << '\n'
            << "RequestId " << std::quoted(requestId) << '\n'
            << "SessionId " << std::quoted(sessionId) << '\n'
+           << "ProjectPath " << std::quoted(canonicalProjectPath) << '\n'
            << "Action InspectMaterialSurface\n"
            << "EntityId " << entityId << '\n'
            << "ExpectedEntityName " << std::quoted(expectedEntityName) << '\n'
@@ -1429,12 +1677,30 @@ std::string EditorMaterialControlMailbox::FormatInspectRequest(std::string_view 
     return stream.str();
 }
 
+std::string EditorMaterialControlMailbox::FormatInspectEntityRequest(
+    std::string_view requestId, std::string_view sessionId,
+    std::string_view projectPath, Engine::EntityId entityId,
+    std::string_view expectedEntityName)
+{
+    const std::string canonicalProjectPath = CanonicalProjectPath(projectPath);
+    std::ostringstream stream;
+    stream << kRequestHeader << '\n'
+           << "RequestId " << std::quoted(requestId) << '\n'
+           << "SessionId " << std::quoted(sessionId) << '\n'
+           << "ProjectPath " << std::quoted(canonicalProjectPath) << '\n'
+           << "Action InspectEntity\n"
+           << "EntityId " << entityId << '\n'
+           << "ExpectedEntityName " << std::quoted(expectedEntityName) << '\n';
+    return stream.str();
+}
+
 std::string EditorMaterialControlMailbox::FormatPatchRequest(std::string_view requestId,
-    std::string_view sessionId, Engine::EntityId entityId,
+    std::string_view sessionId, std::string_view projectPath, Engine::EntityId entityId,
     std::string_view expectedEntityName, Engine::AssetHandle materialHandle,
     const Engine::MaterialSurface& expectedSurface,
     const Engine::MaterialSurface& newSurface)
 {
+    const std::string canonicalProjectPath = CanonicalProjectPath(projectPath);
     const auto writeSurface = [](std::ostringstream& stream,
         std::string_view label, const Engine::MaterialSurface& surface)
     {
@@ -1447,6 +1713,7 @@ std::string EditorMaterialControlMailbox::FormatPatchRequest(std::string_view re
     stream << kRequestHeader << '\n'
            << "RequestId " << std::quoted(requestId) << '\n'
            << "SessionId " << std::quoted(sessionId) << '\n'
+           << "ProjectPath " << std::quoted(canonicalProjectPath) << '\n'
            << "Action SelectEntityPatchMaterialSurface\n"
            << "EntityId " << entityId << '\n'
            << "ExpectedEntityName " << std::quoted(expectedEntityName) << '\n'

@@ -60,6 +60,9 @@ namespace Engine
         LightComponent* AddLightComponent(Entity entity, const LightComponent& light = {});
         LightComponent* TryGetLightComponent(Entity entity);
         const LightComponent* TryGetLightComponent(Entity entity) const;
+        // Replaces an already-attached light only when the complete typed value
+        // is valid. This deliberately does not create or remove components.
+        bool SetLightComponent(Entity entity, const LightComponent& light);
         bool RemoveLightComponent(Entity entity);
         MeshRendererComponent* AddMeshRendererComponent(Entity entity, const MeshRendererComponent& meshRenderer = {});
         MeshRendererComponent* TryGetMeshRendererComponent(Entity entity);

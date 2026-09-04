@@ -2,6 +2,8 @@
 
 #include <Engine/Assets/MaterialAsset.h>
 #include <Engine/Core/Base.h>
+#include <Engine/Renderer/ColorPipelineSettings.h>
+#include <Engine/Scene/Components.h>
 #include <Engine/Scene/Entity.h>
 
 #include <chrono>
@@ -14,13 +16,20 @@
 enum class EditorMaterialControlAction
 {
     InspectMaterialSurface,
-    SelectEntityPatchMaterialSurface
+    SelectEntityPatchMaterialSurface,
+    InspectEntity,
+    SelectEntity,
+    SetEntityTransform,
+    SetTypedLight,
+    SetProjectColorPipeline,
+    SetViewportMainCameraPose
 };
 
 struct EditorMaterialControlRequest
 {
     std::string RequestId;
     std::string SessionId;
+    std::string ProjectPath;
     EditorMaterialControlAction Action = EditorMaterialControlAction::InspectMaterialSurface;
     Engine::EntityId EntityId = Engine::kInvalidEntityId;
     std::string ExpectedEntityName;
@@ -30,12 +39,29 @@ struct EditorMaterialControlRequest
     bool HasExpectedSurface = false;
     bool HasNewSurface = false;
     bool SharedMaterialScope = false;
+    Engine::TransformComponent ExpectedTransform;
+    Engine::TransformComponent NewTransform;
+    Engine::Math::SectorLocalPosition ExpectedTransformPosition;
+    Engine::Math::SectorLocalPosition NewTransformPosition;
+    bool HasExpectedTransform = false;
+    bool HasNewTransform = false;
+    Engine::LightComponent ExpectedLight;
+    Engine::LightComponent NewLight;
+    bool HasExpectedLight = false;
+    bool HasNewLight = false;
+    Engine::RendererColorPipelineSettings ExpectedColorPipeline;
+    Engine::RendererColorPipelineSettings NewColorPipeline;
+    bool HasExpectedColorPipeline = false;
+    bool HasNewColorPipeline = false;
+    Engine::EntityId ExpectedSelectedEntityId = Engine::kInvalidEntityId;
+    bool HasExpectedSelectedEntityId = false;
 };
 
 struct EditorMaterialControlReceipt
 {
     std::string RequestId;
     std::string SessionId;
+    std::string ProjectPath;
     std::string RequestDigest;
     EditorMaterialControlAction Action = EditorMaterialControlAction::InspectMaterialSurface;
     bool ActionKnown = false;
@@ -46,6 +72,10 @@ struct EditorMaterialControlReceipt
     std::string Recovery = "None";
     Engine::EntityId EntityId = Engine::kInvalidEntityId;
     std::string EntityName;
+    Engine::EntityId MainCameraEntityId = Engine::kInvalidEntityId;
+    bool IsMainCamera = false;
+    Engine::EntityId SelectedEntityIdBefore = Engine::kInvalidEntityId;
+    Engine::EntityId SelectedEntityIdAfter = Engine::kInvalidEntityId;
     Engine::AssetHandle MaterialHandle = Engine::kInvalidAssetHandle;
     Engine::MaterialSurface Before;
     Engine::MaterialSurface After;
@@ -60,6 +90,27 @@ struct EditorMaterialControlReceipt
     bool SelectionCommitted = false;
     bool PivotRetargeted = false;
     bool RendererReadbackVerified = false;
+    std::string Persistence = "SessionOnly";
+    bool Saved = false;
+    Engine::TransformComponent BeforeTransform;
+    Engine::TransformComponent AfterTransform;
+    bool BeforeCameraPresent = false;
+    bool AfterCameraPresent = false;
+    Engine::CameraComponent BeforeCamera;
+    Engine::CameraComponent AfterCamera;
+    bool BeforeLightPresent = false;
+    bool AfterLightPresent = false;
+    Engine::LightComponent BeforeLight;
+    Engine::LightComponent AfterLight;
+    bool BeforeMeshRendererPresent = false;
+    bool AfterMeshRendererPresent = false;
+    Engine::MeshRendererComponent BeforeMeshRenderer;
+    Engine::MeshRendererComponent AfterMeshRenderer;
+    Engine::RendererColorPipelineSettings BeforeColorPipeline;
+    Engine::RendererColorPipelineSettings AfterColorPipeline;
+    bool PostconditionVerified = false;
+    bool RollbackVerified = false;
+    bool EditorCameraSynchronized = false;
 };
 
 struct EditorMaterialControlTransaction
@@ -112,16 +163,22 @@ public:
         std::string_view entityName, Engine::AssetHandle materialHandle,
         const Engine::MaterialSurface& before,
         const Engine::MaterialSurface& after, std::string& error);
+    bool PublishSceneControlTargetForSmoke(std::string_view contents, std::string& error);
     void InjectParentDirectorySyncFailureForSmoke()
     {
         m_ForceParentDirectorySyncFailureOnce = true;
     }
 
     static std::string FormatInspectRequest(std::string_view requestId,
-        std::string_view sessionId, Engine::EntityId entityId,
+        std::string_view sessionId, std::string_view projectPath,
+        Engine::EntityId entityId,
         std::string_view expectedEntityName, Engine::AssetHandle materialHandle);
+    static std::string FormatInspectEntityRequest(std::string_view requestId,
+        std::string_view sessionId, std::string_view projectPath,
+        Engine::EntityId entityId, std::string_view expectedEntityName);
     static std::string FormatPatchRequest(std::string_view requestId,
-        std::string_view sessionId, Engine::EntityId entityId,
+        std::string_view sessionId, std::string_view projectPath,
+        Engine::EntityId entityId,
         std::string_view expectedEntityName, Engine::AssetHandle materialHandle,
         const Engine::MaterialSurface& expectedSurface,
         const Engine::MaterialSurface& newSurface);

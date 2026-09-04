@@ -818,6 +818,33 @@ bash Scripts/TestVulkan.sh Debug gmake --skip-build
 
 The Scene oracle requires one public complete-transform call to accept canonical finite non-camera state and reject noncanonical position, nonfinite rotation, nonpositive/nonfinite scale, non-unit camera attachment, and later non-unit camera mutation without changing the prior transform. Legacy loading must reject an explicitly invalid camera scale, retain entity-camera precedence, and continue accepting both light-only and explicitly empty camera-less scenes. The color smoke requires one authority-mediated C0-to-C1 edit, exact Undo to C0 and Redo to C1 in both Editor and Renderer, then a deliberately invalid history value that leaves both history depths and all representative Scene/assets/material/selection/camera/color/Renderer state unchanged. It exercises the callable settings authority, not ImGui activation/deactivation; physical-widget coalescing is not qualified by this no-mouse gate.
 
-The mailbox smoke additionally injects both commit-time and postcommit rollback-verification failures. Neither path may claim `RolledBack` or requeue: it must remove the claimed request, close the session, and publish an owner-only no-replace recovery receipt whose exact semantics are `Effect=RecoveryRequired` and `Recovery=RestartSession`; the helper must prioritize that response and exit with its documented recovery result. Required markers include `ColorPipelineSettingsSmokeV1 ... historyUndoRedo=pass restoreFailureAtomic=pass rendererPublication=pass ... result=pass` and `EditorMaterialControlTestV1 ... rollbackFailure=closed-no-replay commit-and-postcommit=pass ... result=pass`.
+The mailbox smoke additionally injects both commit-time and postcommit rollback-verification failures. Neither path may claim `RolledBack` or requeue: it must remove the claimed request, close the session, and publish an owner-only no-replace recovery receipt whose exact semantics are `Effect=RecoveryRequired` and `Recovery=RestartSession`; the helper must prioritize that response and exit with its documented recovery result. Required markers include `ColorPipelineSettingsSmokeV1 ... historyUndoRedo=pass restoreFailureAtomic=pass rendererPublication=pass ... result=pass` and `EditorMaterialControlTestV2 ... rollbackFailure=closed-no-replay commit-and-postcommit=pass ... result=pass`.
 
 The 2026-09-04 Linux acceptance passed a warning-free Debug GMake build, all focused regressions, the expanded helper smoke, 110/110 Integration tests, style/diff gates, and the complete native RTX 3080 Ti Vulkan harness. Evidence is ignored under `output/verification/typed-scene-authority-20260904`. This establishes the mutation/history prerequisite only; it does not expose the V2 scene-control actions, save state implicitly, prove a generic automation framework, consume Scene lights in shaders, qualify D3D12/MoltenVK execution, or claim renderer GPU readback for Editor history.
+
+## Typed Editor Scene Control V2
+
+After one coherent Debug build, run the legacy material-control regression and the schema-2 scene-control smoke headlessly. The headed command must name the current workstation target and an absolute fresh capture directory:
+
+```bash
+bash Scripts/TestEditorMaterialControl.sh
+bash Scripts/TestEditorSceneControlV2.sh
+
+SPIRAL_HEADED_MONITOR=DP-3 \
+SPIRAL_HEADED_WORKSPACE=2 \
+SPIRAL_SCENE_CONTROL_CAPTURE_DIR="$PWD/output/verification/typed-scene-control-v2/captures" \
+bash Scripts/TestEditorSceneControlV2.sh \
+  bin/Debug-linux-x86_64-gmake/Editor/Editor --vulkan
+```
+
+The helper executes 20 ordered requests covering entity inspection/selection, typed light mutation/restoration, complete mesh transform mutation/restoration, complete project color-pipeline mutation/restoration, and dedicated main-camera pose mutation/restoration. It must report 13 successes, 7 rejections, exactly 8 successful document mutations/history entries, one injected postcondition failure with verified full rollback, and final state equality. Stale compare-and-swap requests cover selection, light, transform, color pipeline, and camera pose. A generic transform targeting the main camera must fail with `main_camera_pose_action_required`; an invalid non-unit camera pose must be rejected by the client without creating a request. Raw owner-only fixtures separately prove server rejection of wrong-project, unexpected-field-mask, and duplicate-entity-field requests. Persistent project, scene, asset-registry, and material bytes must remain unchanged, and every receipt reports `SessionOnly` plus `Saved=no`.
+
+Headed acceptance additionally requires one unambiguous live Editor window, queried DP-3/workspace-2 placement, native `NVRHI Vulkan` Scene-output/handoff markers, and visual inspection of the automatically captured initial, light-set, transform-set, color-pipeline-set, camera-pose-set, and final-restored states. No mouse, keyboard, virtual pointer, or UI widget mutation is permitted. The 2026-09-04 RTX 3080 Ti run visibly showed the light Inspector switch to Point with color `204/166/128`, `1800 lm`, range `25`, and shadows off; moved/rotated/scaled the prototype mesh; produced a distinctly darkened color-pipeline frame; synchronized the viewport to main-camera position `1,0.5,-2.35` and rotation `2,5,0`; and returned the camera fields and scene framing to their initial values. The light edit does not visibly relight the cube because Scene lights are intentionally not consumed by the shader until the next light-payload/evaluation slices. Compositor transparency differs between some captures, so receipt/state equality and persistent-byte fingerprints—not whole-window PNG equality—are the exact restoration oracle.
+
+The required terminal marker is:
+
+```text
+EditorSceneControlV2Test helper=typed schema=2 headless=pass vulkan=pass security=project-mask-duplicate-rejected cas=selection-transform-light-color-camera stale=rejected mainCameraAuthority=dedicated invalid-camera=client-rejected rollback=verified history=one-per-document-action restore=exact save=not-invoked persistentBytes=unchanged input=no-ui-synthesis result=pass
+```
+
+This qualifies only the fixed Editor-owned schema-2 repository-verification surface on Linux/Vulkan. It does not qualify implicit save, arbitrary dispatch, entity/component lifecycle, secondary-camera view control, provider/model integration, generic Automation infrastructure, D3D12, or MoltenVK.

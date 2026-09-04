@@ -90,6 +90,7 @@ private:
     void RunEditorMaterialControlSmokeBeforeDrain();
     void RunEditorMaterialControlSmokeAfterDrain();
     void RunEditorMaterialControlLiveHelperSmokeAfterDrain();
+    void RunEditorSceneControlV2HelperSmokeAfterDrain();
     void RunEditorMaterialControlCapacitySmokeBeforeDrain();
     void RunEditorMaterialControlCapacitySmokeAfterDrain();
     void RunEditorMaterialControlDurabilitySmokeBeforeDrain();
@@ -175,6 +176,8 @@ private:
     bool m_EditorMaterialControlSmokeCompleted = false;
     bool m_EditorMaterialControlLiveHelperSmokeRequested = false;
     bool m_EditorMaterialControlLiveHelperSmokeCompleted = false;
+    bool m_EditorSceneControlV2HelperSmokeRequested = false;
+    bool m_EditorSceneControlV2HelperSmokeCompleted = false;
     bool m_EditorMaterialControlCapacitySmokeRequested = false;
     bool m_EditorMaterialControlCapacitySmokeCompleted = false;
     bool m_EditorMaterialControlDurabilitySmokeRequested = false;
@@ -278,6 +281,18 @@ private:
     std::size_t m_EditorMaterialControlSmokeInitialRedoDepth = 0;
     std::string m_EditorMaterialControlSmokePatchRequest;
     std::string m_EditorMaterialControlSmokePatchReceipt;
+    Engine::Entity m_EditorSceneControlV2InitialSelection;
+    Engine::TransformComponent m_EditorSceneControlV2PrototypeBefore;
+    Engine::Math::SectorLocalPosition m_EditorSceneControlV2PrototypeAfterPosition;
+    Engine::Math::Vec3 m_EditorSceneControlV2PrototypeAfterRotation;
+    Engine::Math::Vec3 m_EditorSceneControlV2PrototypeAfterScale;
+    Engine::TransformComponent m_EditorSceneControlV2CameraBefore;
+    Engine::Math::SectorLocalPosition m_EditorSceneControlV2CameraAfterPosition;
+    Engine::Math::Vec3 m_EditorSceneControlV2CameraAfterRotation;
+    Engine::LightComponent m_EditorSceneControlV2LightBefore;
+    Engine::LightComponent m_EditorSceneControlV2LightAfter;
+    Engine::RendererColorPipelineSettings m_EditorSceneControlV2ColorBefore;
+    Engine::RendererColorPipelineSettings m_EditorSceneControlV2ColorAfter;
 
     struct HistoryState
     {
