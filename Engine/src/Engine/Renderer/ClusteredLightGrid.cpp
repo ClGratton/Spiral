@@ -84,11 +84,17 @@ namespace Engine
             return true;
         }
 
-        u32 ClampTile(float value, u32 tileCount)
+        bool TryClampTile(float value, u32 tileCount, u32& outTile)
         {
+            if (!std::isfinite(value) || tileCount == 0)
+                return false;
             if (value <= 0.0f)
-                return 0;
-            return std::min(static_cast<u32>(value), tileCount - 1);
+                outTile = 0;
+            else if (value >= static_cast<float>(tileCount - 1u))
+                outTile = tileCount - 1u;
+            else
+                outTile = static_cast<u32>(value);
+            return true;
         }
     }
 
@@ -133,6 +139,14 @@ namespace Engine
         }
 
         const CameraView& view = snapshot.Views[viewIndex].Camera;
+        if (!std::isfinite(view.Projection.Values[0])
+            || !std::isfinite(view.Projection.Values[5])
+            || view.Projection.Values[0] <= 0.0f
+            || view.Projection.Values[5] <= 0.0f)
+        {
+            outError = "clustered light grid requires finite positive XY projection scales";
+            return false;
+        }
         Math::SectorLocalPosition translationOriginPosition;
         if (view.HasCanonicalTranslationOrigin)
         {
@@ -158,8 +172,18 @@ namespace Engine
             return false;
         }
 
-        const size_t clusterCount = candidate.GetClusterCount();
-        if (clusterCount == 0 || clusterCount > kMaximumClusterCount
+        const u64 tileCount = static_cast<u64>(candidate.TileCountX)
+            * static_cast<u64>(candidate.TileCountY);
+        if (tileCount == 0
+            || tileCount > std::numeric_limits<size_t>::max()
+                / candidate.DepthSliceCount)
+        {
+            outError = "clustered light grid dimensions overflow addressable storage";
+            return false;
+        }
+        const size_t clusterCount = static_cast<size_t>(
+            tileCount * candidate.DepthSliceCount);
+        if (clusterCount > kMaximumClusterCount
             || clusterCount > std::numeric_limits<u32>::max()
                 / candidate.MaximumLocalLightsPerCluster)
         {
@@ -221,19 +245,42 @@ namespace Engine
             light.InnerConeCosine = std::cos(Math::DegreesToRadians(source.InnerConeDegrees));
             light.OuterConeCosine = std::cos(Math::DegreesToRadians(source.OuterConeDegrees));
             light.CastsShadows = source.CastsShadows;
+            if (!IsFinite(light.ViewPosition)
+                || !IsFinite(light.WorldDirection)
+                || !IsFinite(light.ViewDirection)
+                || !std::isfinite(light.InnerConeCosine)
+                || !std::isfinite(light.OuterConeCosine))
+            {
+                outError = "clustered light grid rejected nonfinite derived light data";
+                return false;
+            }
             const u32 lightIndex = static_cast<u32>(candidate.Lights.size());
             candidate.Lights.push_back(light);
 
             if (source.Type == LightType::Directional)
             {
+                if (candidate.GlobalLightIndices.size()
+                    >= kMaximumDirectionalLightCount)
+                {
+                    outError = "clustered light grid exceeds the directional-light evaluation bound";
+                    return false;
+                }
                 candidate.GlobalLightIndices.push_back(lightIndex);
                 continue;
             }
             if (source.Range <= 0.0f || source.PhotometricValue <= 0.0)
                 continue;
 
-            const float minimumDepth = std::max(candidate.NearClip, light.ViewPosition.Z - source.Range);
-            const float maximumDepth = std::min(candidate.FarClip, light.ViewPosition.Z + source.Range);
+            const float lightMinimumDepth = light.ViewPosition.Z - source.Range;
+            const float lightMaximumDepth = light.ViewPosition.Z + source.Range;
+            if (!std::isfinite(lightMinimumDepth)
+                || !std::isfinite(lightMaximumDepth))
+            {
+                outError = "clustered light grid local-light depth bounds are nonfinite";
+                return false;
+            }
+            const float minimumDepth = std::max(candidate.NearClip, lightMinimumDepth);
+            const float maximumDepth = std::min(candidate.FarClip, lightMaximumDepth);
             if (maximumDepth < candidate.NearClip || minimumDepth > candidate.FarClip
                 || maximumDepth < minimumDepth)
             {
@@ -258,23 +305,43 @@ namespace Engine
                     / std::max(candidate.NearClip, light.ViewPosition.Z - source.Range);
                 const float radiusY = source.Range * std::abs(view.Projection.Values[5])
                     / std::max(candidate.NearClip, light.ViewPosition.Z - source.Range);
+                if (!std::isfinite(inverseDepth)
+                    || !std::isfinite(centerX) || !std::isfinite(centerY)
+                    || !std::isfinite(radiusX) || !std::isfinite(radiusY))
+                {
+                    outError = "clustered light grid local-light projection is nonfinite";
+                    return false;
+                }
                 const float minimumPixelX = (centerX - radiusX + 1.0f) * 0.5f * viewportWidth;
                 const float maximumPixelX = (centerX + radiusX + 1.0f) * 0.5f * viewportWidth;
-                const float minimumPixelY = (centerY - radiusY + 1.0f) * 0.5f * viewportHeight;
-                const float maximumPixelY = (centerY + radiusY + 1.0f) * 0.5f * viewportHeight;
+                // SV_Position and the NVRHI DX-coordinate Vulkan viewport both
+                // number tiles from the top. Flip projected NDC Y here so the
+                // CPU-built CSR addresses the same screen row as the shader.
+                const float minimumPixelY = (1.0f - centerY - radiusY) * 0.5f * viewportHeight;
+                const float maximumPixelY = (1.0f - centerY + radiusY) * 0.5f * viewportHeight;
+                if (!std::isfinite(minimumPixelX) || !std::isfinite(maximumPixelX)
+                    || !std::isfinite(minimumPixelY) || !std::isfinite(maximumPixelY))
+                {
+                    outError = "clustered light grid local-light screen bounds are nonfinite";
+                    return false;
+                }
                 if (maximumPixelX < 0.0f || minimumPixelX >= viewportWidth
                     || maximumPixelY < 0.0f || minimumPixelY >= viewportHeight)
                 {
                     continue;
                 }
-                bounds.MinimumTileX = ClampTile(std::max(0.0f, minimumPixelX)
-                    / config.TileSizePixels, candidate.TileCountX);
-                bounds.MaximumTileX = ClampTile(std::max(0.0f, maximumPixelX)
-                    / config.TileSizePixels, candidate.TileCountX);
-                bounds.MinimumTileY = ClampTile(std::max(0.0f, minimumPixelY)
-                    / config.TileSizePixels, candidate.TileCountY);
-                bounds.MaximumTileY = ClampTile(std::max(0.0f, maximumPixelY)
-                    / config.TileSizePixels, candidate.TileCountY);
+                if (!TryClampTile(std::max(0.0f, minimumPixelX)
+                        / config.TileSizePixels, candidate.TileCountX, bounds.MinimumTileX)
+                    || !TryClampTile(std::max(0.0f, maximumPixelX)
+                        / config.TileSizePixels, candidate.TileCountX, bounds.MaximumTileX)
+                    || !TryClampTile(std::max(0.0f, minimumPixelY)
+                        / config.TileSizePixels, candidate.TileCountY, bounds.MinimumTileY)
+                    || !TryClampTile(std::max(0.0f, maximumPixelY)
+                        / config.TileSizePixels, candidate.TileCountY, bounds.MaximumTileY))
+                {
+                    outError = "clustered light grid could not select finite screen tiles";
+                    return false;
+                }
             }
             localBounds.push_back(bounds);
         }

@@ -102,9 +102,9 @@ namespace Engine::RHI
     {
     public:
         // P3A retains SubmittedRenderGraphFrameOwner::Capacity (4) production
-        // frames, each bounded to three Graphics pass transactions: 4 * 3 = 12.
+        // frames, each bounded to five Graphics pass transactions: 4 * 5 = 20.
         // Keep this numeric RHI-local; RHI must not depend upward on RenderGraph.
-        static constexpr size_t kMaximumPendingRetirements = 12;
+        static constexpr size_t kMaximumPendingRetirements = 20;
 
         explicit TimestampQueryRetirementQueue(u64 ownerDeviceId) : m_OwnerDeviceId(ownerDeviceId) {}
 

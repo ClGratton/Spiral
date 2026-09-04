@@ -101,7 +101,7 @@ REQUIRED_MARKERS=(
     "VulkanSceneOutputCaptureV1 outputGeneration="
     "VulkanSceneOutputHandoffV1 producer=pass"
     "ScenePhotometricLightPublicationV1 backend=Vulkan directional=1 local=1 directionalUnit=lux localUnit=lm snapshot=typed grid=typed effectiveExposureEV100=0 exposureScale=1 shaderConsumption=no result=pass"
-    "SceneViewportRenderGraphV1 backend=Vulkan passes=4 labels=clear,raster,tone-map,output-handoff execution=pass reference=direct comparator=exact-byte-pass"
+    "SceneViewportRenderGraphV1 backend=Vulkan passes=5 labels=light-payload-copy,clear,raster,tone-map,output-handoff execution=pass reference=direct comparator=exact-byte-pass"
     "SceneColorPipelineV1 backend=Vulkan sceneLinear=RGBA16F manualExposureEV100=0"
     "SceneExposureControlV1 backend=Vulkan ev100=-2,0,+2 graph=exact-byte-pass monotonic=pass constants=immutable-retained-cached"
     "calibrated=camera-fnumber-shutter-iso-pass"
@@ -259,6 +259,42 @@ for ((ATTEMPT = 1; ATTEMPT <= ITERATIONS; ++ATTEMPT)); do
         exit 1
     fi
 
+    PAYLOAD_LOG="$LOG_BASE-light-payload-attempt-$ATTEMPT.log"
+    set +e
+    (cd "$ROOT" && perl -e '
+        my $timeout = shift;
+        my $child = fork();
+        die "fork failed: $!\n" unless defined $child;
+        if ($child == 0) {
+            setpgrp(0, 0) or die "setpgrp failed: $!\n";
+            exec @ARGV or die "exec failed: $!\n";
+        }
+        $SIG{ALRM} = sub {
+            warn "Vulkan light-payload child timed out after ${timeout}s; terminating process group\n";
+            kill "TERM", -$child;
+            sleep 1;
+            kill "KILL", -$child;
+            waitpid($child, 0);
+            exit 124;
+        };
+        alarm $timeout;
+        waitpid($child, 0);
+        alarm 0;
+        my $status = $?;
+        exit(128 + ($status & 127)) if $status & 127;
+        exit($status >> 8);
+    ' "$CHILD_TIMEOUT_SECONDS" "$EDITOR" --vulkan-render-smoke --vulkan-scene-viewport-raster-smoke --scene-light-payload-smoke) 2>&1 | tee "$PAYLOAD_LOG"
+    PAYLOAD_STATUS=${PIPESTATUS[0]}
+    set -e
+    if [[ $PAYLOAD_STATUS -ne 0 ]]; then
+        echo "Dedicated Vulkan light-payload smoke failed with exit code $PAYLOAD_STATUS on attempt $ATTEMPT/$ITERATIONS." >&2
+        exit "$PAYLOAD_STATUS"
+    fi
+    if ! grep -Fq 'SceneLightPayloadV1 backend=Vulkan layout=versioned-uint4 records=directional-point-spot tables=global-csr-local cpuGpu=exact-pass copy=graph staging=cpu-write gpu=structured-copydest slots=4 allocations=2 reuses=1 retention=exact-graph-token productionPSMain=preserved lightingEvaluation=no result=pass' "$PAYLOAD_LOG"; then
+        echo "Dedicated Vulkan light-payload smoke did not prove exact payload readback and graph-token slot reuse." >&2
+        exit 1
+    fi
+
     for MARKER in "${REQUIRED_MARKERS[@]}"; do
         if ! grep -Fq "$MARKER" "$LOG_FILE"; then
             echo "Vulkan render smoke did not emit required marker on attempt $ATTEMPT/$ITERATIONS: $MARKER" >&2
@@ -280,12 +316,12 @@ for ((ATTEMPT = 1; ATTEMPT <= ITERATIONS; ++ATTEMPT)); do
         echo "Vulkan render smoke did not publish VulkanCompletionHistoryV1 diagnostics on attempt $ATTEMPT/$ITERATIONS." >&2
         exit 1
     fi
-    TIMESTAMP_SCOPE_COUNT=$(grep -Ec 'RenderGraphTimestampScopesV1 backend=Vulkan frame=[0-9]+ scopes=4 raw=ready cpuWaitBetween=no result=pass' "$LOG_FILE" || true)
+    TIMESTAMP_SCOPE_COUNT=$(grep -Ec 'RenderGraphTimestampScopesV1 backend=Vulkan frame=[0-9]+ scopes=5 raw=ready cpuWaitBetween=no result=pass' "$LOG_FILE" || true)
     if [[ "$TIMESTAMP_SCOPE_COUNT" -lt 2 ]]; then
         echo "Vulkan render smoke did not prove completion-gated raw timestamp scopes across consecutive frames on attempt $ATTEMPT/$ITERATIONS." >&2
         exit 1
     fi
-    GPU_TIMING_COUNT=$(grep -Ec 'RendererGpuTimingV1 backend=NVRHI Vulkan frame=[0-9]+ passes=4 wholeMs=[0-9]+([.][0-9]+)? status=Ready capability=GpuTimestamps result=pass' "$LOG_FILE" || true)
+    GPU_TIMING_COUNT=$(grep -Ec 'RendererGpuTimingV1 backend=NVRHI Vulkan frame=[0-9]+ passes=5 wholeMs=[0-9]+([.][0-9]+)? status=Ready capability=GpuTimestamps result=pass' "$LOG_FILE" || true)
     if [[ "$GPU_TIMING_COUNT" -lt 1 ]]; then
         echo "Vulkan render smoke did not publish exact-frame GPU durations and promote the exercised capability path on attempt $ATTEMPT/$ITERATIONS." >&2
         exit 1

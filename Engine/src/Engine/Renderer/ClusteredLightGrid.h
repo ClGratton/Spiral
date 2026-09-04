@@ -12,6 +12,11 @@
 
 namespace Engine
 {
+    // Keeps the later global per-pixel loop explicitly bounded. Exceeding the
+    // cap rejects the complete candidate grid instead of silently dropping a
+    // light or publishing an unbounded shader workload.
+    inline constexpr u32 kMaximumDirectionalLightCount = 16;
+
     struct ClusteredLightGridConfig
     {
         u32 TileSizePixels = 64;
@@ -35,8 +40,8 @@ namespace Engine
         bool CastsShadows = false;
     };
 
-    // CPU reference/prototype for the production Forward+ grid. Directional
-    // lights stay in one compact global list; only bounded local-light
+    // CPU reference/prototype for the production Forward+ grid. A bounded
+    // directional set stays in one compact global list; only bounded local-light
     // references occupy the screen/depth cluster CSR arrays.
     struct ClusteredLightGrid
     {

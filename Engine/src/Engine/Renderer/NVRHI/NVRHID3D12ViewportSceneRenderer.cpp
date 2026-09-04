@@ -9,6 +9,7 @@
 #include "Engine/Renderer/AsyncShaderPackageService.h"
 #include "Engine/Renderer/MeshGpuResourceCache.h"
 #include "Engine/Renderer/SceneSurfaceConstants.h"
+#include "Engine/Renderer/SceneLightPayload.h"
 #include "Engine/Renderer/NVRHI/D3D12DebugMarkers.h"
 #include "Engine/Renderer/NVRHI/D3D12ViewportShaderReloadCoordinator.h"
 #include "Engine/Renderer/ShaderLibrary.h"
@@ -20,6 +21,7 @@
     #include <cstddef>
 #include <filesystem>
 #include <memory>
+    #include <optional>
     #include <string>
     #include <string_view>
 #endif
@@ -100,6 +102,8 @@ namespace Engine
 
     struct NVRHID3D12ViewportSceneRenderer::Impl
     {
+        static_assert(SceneLightPayloadPublication::Capacity
+            == SubmittedRenderGraphFrameOwner::Capacity);
         bool RecordBootstrapReference(
             RHI::Texture& hdrTexture,
             RHI::Texture& colorTexture,
@@ -110,6 +114,7 @@ namespace Engine
             const SceneRasterFrame& rasterFrame,
             const std::vector<ConstantBufferAllocation>* constantBuffers,
             const std::vector<SceneMeshDraw>& draws,
+            const Ref<SceneLightPayloadSlot>& lightPayload,
             const ToneMapPassConstants& toneMapConstants)
         {
             Scope<RHI::CommandList> commands = m_RHIDevice->CreateCommandList(RHI::QueueType::Graphics, "Scene Viewport Bootstrap Reference");
@@ -123,7 +128,9 @@ namespace Engine
             {
                 commands->SetGraphicsPipeline(*m_Pipeline);
                 if (!m_TextureRuntime || !m_TextureRuntime->GetBindingTable()
-                    || !commands->BindGraphicsSampledTextureTable(*m_TextureRuntime->GetBindingTable()))
+                    || !lightPayload || !lightPayload->Gpu
+                    || !commands->BindGraphicsSampledTextureTable(*m_TextureRuntime->GetBindingTable())
+                    || !commands->BindGraphicsReadOnlyStructuredBuffer(*lightPayload->Gpu))
                     return false;
                 commands->SetViewport({ 0.0f, 0.0f, static_cast<float>(width), static_cast<float>(height), 0.0f, 1.0f });
                 commands->SetScissorRect({ 0, 0, static_cast<int>(width), static_cast<int>(height) });
@@ -180,6 +187,7 @@ namespace Engine
                 m_TextureRuntime->ReleaseAfterDeviceIdle();
             m_TextureRuntime.reset();
             m_SubmittedGraphFrames.ReleaseAfterDeviceIdle();
+            m_LightPayloadPublication.ClearAfterDeviceIdle();
             m_MeshResourceCache.Clear();
             m_FrameConstantBuffers.clear();
             m_ToneMap.Shutdown();
@@ -309,6 +317,7 @@ namespace Engine
             std::vector<ConstantBufferAllocation>* constantBuffers = nullptr;
             std::vector<SceneMeshDraw> draws;
             std::vector<RHI::TextureBindingHandle> usedTextureHandles;
+            Ref<SceneLightPayloadSlot> lightPayload;
             const std::shared_ptr<const SceneRenderSnapshot> snapshot = Renderer::GetSceneRenderSnapshot();
             const std::shared_ptr<const SceneRasterFrame> prepared = Renderer::GetPreparedSceneRasterFrame();
             if (snapshot)
@@ -321,6 +330,15 @@ namespace Engine
                     *snapshot, 0, width, height, {}, rasterFrame.LightGrid, lightGridError))
                 {
                     Log::Error("D3D12 Scene viewport could not build clustered light grid: ", lightGridError);
+                    return false;
+                }
+                std::string lightPayloadError;
+                if (rasterFrame.HasValidView && !m_LightPayloadPublication.Acquire(*m_RHIDevice,
+                    *snapshot, 0, rasterFrame.LightGrid,
+                    m_LightPayloadPublication.GetLastAcceptedGeneration() + 1,
+                    lightPayload, lightPayloadError))
+                {
+                    Log::Error("D3D12 Scene viewport could not publish scene light payload: ", lightPayloadError);
                     return false;
                 }
             }
@@ -440,6 +458,36 @@ namespace Engine
             const RenderGraph::ResourceHandle hdrColor = graph->AddTexture(hdrColorDescription, RenderGraph::ResourceLifetimeKind::Imported);
             const RenderGraph::ResourceHandle color = graph->AddTexture(colorDescription, RenderGraph::ResourceLifetimeKind::Imported);
             const RenderGraph::ResourceHandle depth = graph->AddTexture(depthDescription, RenderGraph::ResourceLifetimeKind::Imported);
+            RenderGraph::ResourceHandle lightStaging;
+            RenderGraph::ResourceHandle lightGpu;
+            if (lightPayload)
+            {
+                RHI::ResourceState lightStagingState = RHI::ResourceState::Unknown;
+                RHI::ResourceState lightGpuState = RHI::ResourceState::Unknown;
+                if (!m_RHIDevice->QueryResourceState(lightPayload->Staging.get(), lightStagingState)
+                    || !m_RHIDevice->QueryResourceState(lightPayload->Gpu.get(), lightGpuState))
+                    return false;
+                RHI::BufferDescription lightStagingDescription = lightPayload->Staging->GetDescription();
+                lightStagingDescription.InitialState = lightStagingState;
+                RHI::BufferDescription lightGpuDescription = lightPayload->Gpu->GetDescription();
+                lightGpuDescription.InitialState = lightGpuState;
+                lightStaging = graph->AddBuffer(lightStagingDescription,
+                    RenderGraph::ResourceLifetimeKind::Imported);
+                lightGpu = graph->AddBuffer(lightGpuDescription,
+                    RenderGraph::ResourceLifetimeKind::Imported);
+                const RenderGraph::PassHandle lightCopyPass = graph->AddPass(
+                    "Scene Light Payload Copy", RHI::QueueType::Graphics);
+                graph->AddRead(lightCopyPass, lightStaging, RHI::ResourceState::CopySource);
+                graph->AddWrite(lightCopyPass, lightGpu, RHI::ResourceState::CopyDest);
+                graph->SetPassCallback(lightCopyPass,
+                    [lightStaging, lightGpu](RenderGraph::ExecutionContext& context)
+                    {
+                        RHI::Buffer* staging = context.GetBuffer(lightStaging);
+                        RHI::Buffer* gpu = context.GetBuffer(lightGpu);
+                        return staging && gpu && context.GetCommandList().CopyBuffer(
+                            *gpu, 0, *staging, 0, gpu->GetDescription().SizeBytes);
+                    });
+            }
             const RenderGraph::PassHandle clearPass = graph->AddPass("Scene Viewport Graph Clear", RHI::QueueType::Graphics);
             graph->AddWrite(clearPass, hdrColor, RHI::ResourceState::RenderTarget);
             graph->AddWrite(clearPass, depth, RHI::ResourceState::DepthWrite);
@@ -454,17 +502,24 @@ namespace Engine
             const RenderGraph::PassHandle rasterPass = graph->AddPass("Scene Viewport Graph Raster", RHI::QueueType::Graphics);
             graph->AddWrite(rasterPass, hdrColor, RHI::ResourceState::RenderTarget);
             graph->AddWrite(rasterPass, depth, RHI::ResourceState::DepthWrite);
+            if (lightPayload)
+                graph->AddRead(rasterPass, lightGpu, RHI::ResourceState::ShaderResource,
+                    RHI::ShaderStage::Pixel);
             const Ref<RHI::Pipeline> activePipeline = m_Pipeline;
             RHI::TextureBindingTable* textureTable = m_TextureRuntime->GetBindingTable();
-            graph->SetPassCallback(rasterPass, [activePipeline, textureTable, width, height, &rasterFrame, constantBuffers, draws](RenderGraph::ExecutionContext& context)
+            graph->SetPassCallback(rasterPass, [activePipeline, textureTable, lightPayload,
+                lightGpu, width, height, &rasterFrame, constantBuffers, draws](RenderGraph::ExecutionContext& context)
             {
                 RHI::Texture* graphColor = context.GetTexture({ 0 });
                 RHI::Texture* graphDepth = context.GetTexture({ 2 });
                 RHI::CommandList& commands = context.GetCommandList();
                 if (!graphColor || !graphDepth || !commands.BindViewportOutputs(*graphColor, graphDepth)) return false;
                 if (!activePipeline || !rasterFrame.HasValidView || rasterFrame.Instances.empty()) return true;
+                RHI::Buffer* graphLightPayload = lightPayload
+                    ? context.GetBuffer(lightGpu) : nullptr;
                 commands.SetGraphicsPipeline(*activePipeline);
-                if (!textureTable || !commands.BindGraphicsSampledTextureTable(*textureTable)) return false;
+                if (!textureTable || !graphLightPayload || !commands.BindGraphicsSampledTextureTable(*textureTable)
+                    || !commands.BindGraphicsReadOnlyStructuredBuffer(*graphLightPayload)) return false;
                 commands.SetViewport({ 0.0f, 0.0f, static_cast<float>(width), static_cast<float>(height), 0.0f, 1.0f });
                 commands.SetScissorRect({ 0, 0, static_cast<int>(width), static_cast<int>(height) });
                 for (const SceneMeshDraw& draw : draws)
@@ -501,18 +556,36 @@ namespace Engine
             executeOptions.EnableTimestampScopes = timestampCaptureRequested
                 && !args.HasFlag("--renderer-disable-gpu-timestamps")
                 && m_RHIDevice->GetCapabilities().GetFeature(RHI::DeviceFeature::Timestamps).IsUsable();
-            const RenderGraph::ExecuteResult executed = graph->BindTexture(hdrColor, *m_HdrColor)
-                && graph->BindTexture(color, colorTexture) && graph->BindTexture(depth, depthTexture)
-                ? graph->Execute(*m_RHIDevice, compiled, executeOptions) : RenderGraph::ExecuteResult {};
+            const bool resourcesBound = graph->BindTexture(hdrColor, *m_HdrColor)
+                && graph->BindTexture(color, colorTexture)
+                && graph->BindTexture(depth, depthTexture)
+                && (!lightPayload || (graph->BindBuffer(lightStaging, *lightPayload->Staging)
+                    && graph->BindBuffer(lightGpu, *lightPayload->Gpu)));
+            const RenderGraph::ExecuteResult executed = resourcesBound
+                ? graph->Execute(*m_RHIDevice, compiled, executeOptions)
+                : RenderGraph::ExecuteResult {};
             recordStage("D3D12 Viewport Graph Execute");
             if (Application::Get().GetSpecification().CommandLineArgs.HasFlag("--scene-viewport-render-graph-smoke")) Log::Info("RenderGraphRecordingV1 backend=D3D12 mode=", executeOptions.RecordingMode == FrameTaskExecutionMode::Parallel ? "worker" : "inline", " workerPasses=", executed.WorkerRecordedPassCount, " overlap=", executed.WorkerRecordingOverlapObserved ? "yes" : "no", " submitted=", executed.AcceptedPassCount, " result=", executed.Success ? "pass" : "fail");
+            std::optional<RHI::CompletionToken> materialTextureToken;
+            const auto compiledRaster = std::find_if(compiled.Passes.begin(), compiled.Passes.end(),
+                [rasterPass](const RenderGraph::CompiledPass& pass)
+                {
+                    return pass.Pass.Index == rasterPass.Index;
+                });
+            if (compiledRaster != compiled.Passes.end())
+            {
+                const size_t rasterIndex = static_cast<size_t>(
+                    std::distance(compiled.Passes.begin(), compiledRaster));
+                if (rasterIndex < executed.Completions.size())
+                    materialTextureToken = executed.Completions[rasterIndex];
+            }
             if (!executed.Completions.empty())
             {
-                if (executed.Completions.size() > 1 && !usedTextureHandles.empty())
+                if (materialTextureToken && !usedTextureHandles.empty())
                 {
                     std::string textureRetentionError;
                     if (!m_TextureRuntime->RetainAcceptedFrame(
-                        executed.Completions[1], usedTextureHandles, textureRetentionError))
+                        *materialTextureToken, usedTextureHandles, textureRetentionError))
                     {
                         Log::Error("D3D12 Scene viewport could not retain material textures: ", textureRetentionError);
                         m_RHIDevice->WaitIdle();
@@ -523,6 +596,8 @@ namespace Engine
                 if (constantBufferSet)
                     payloads.emplace_back(constantBufferSet);
                 payloads.emplace_back(toneMapConstants);
+                if (lightPayload)
+                    payloads.emplace_back(lightPayload);
                 // The graph may be retired asynchronously. Keep the exact pipeline
                 // selected while recording alive until its accepted GPU work retires.
                 if (activePipeline)
@@ -535,11 +610,12 @@ namespace Engine
                 {
                     Log::Error("D3D12 Scene viewport could not retain an accepted RenderGraph submission: ", retentionError);
                     m_RHIDevice->WaitIdle();
-                    if (executed.Completions.size() > 1 && m_TextureRuntime
-                        && m_TextureRuntime->HasRetainedFrame(executed.Completions[1]))
+                    if (materialTextureToken && m_TextureRuntime
+                        && m_TextureRuntime->HasRetainedFrame(*materialTextureToken))
                     {
                         std::string ignoredTextureRetirementError;
-                        m_TextureRuntime->Retire(executed.Completions[1], ignoredTextureRetirementError);
+                        m_TextureRuntime->Retire(
+                            *materialTextureToken, ignoredTextureRetirementError);
                     }
                     return false;
                 }
@@ -577,14 +653,14 @@ namespace Engine
                 Scope<RHI::Texture> referenceDepth = m_RHIDevice->CreateTexture(referenceDepthDescription);
                 RHI::TextureReadback graphReadback, referenceReadback;
                 const bool referenceRendered = referenceHdr && referenceColor && referenceDepth && RecordBootstrapReference(
-                    *referenceHdr, *referenceColor, *referenceDepth, width, height, clear, rasterFrame, constantBuffers, draws, *toneMapConstants);
+                    *referenceHdr, *referenceColor, *referenceDepth, width, height, clear, rasterFrame, constantBuffers, draws, lightPayload, *toneMapConstants);
                 const bool readBack = referenceRendered && ReadbackGraphOutput(colorTexture, graphReadback)
                     && m_RHIDevice->ReadbackTexture(*referenceColor, referenceReadback);
                 const bool equivalent = readBack && graphReadback.Extent.Width == referenceReadback.Extent.Width
                     && graphReadback.Extent.Height == referenceReadback.Extent.Height
                     && graphReadback.RowPitchBytes == referenceReadback.RowPitchBytes
                     && graphReadback.Data == referenceReadback.Data;
-                Log::Info("SceneViewportRenderGraphV1 backend=D3D12 passes=4 labels=clear,raster,tone-map,output-handoff execution=pass reference=direct comparator=exact-byte-",
+                Log::Info("SceneViewportRenderGraphV1 backend=D3D12 passes=5 labels=light-payload-copy,clear,raster,tone-map,output-handoff execution=pass reference=direct comparator=exact-byte-",
                     equivalent ? "pass" : "fail", " size=", width, "x", height, " bytes=", graphReadback.Data.size());
                 Log::Info("SceneColorPipelineV1 backend=D3D12 sceneLinear=RGBA16F manualExposureEV100=", colorSettings.ManualExposureEV100,
                     " exposureMode=", ToString(colorSettings.ExposureMode),
@@ -594,6 +670,14 @@ namespace Engine
                     " postToneMapContrast=", colorSettings.PostToneMapContrast,
                     " output=sRGB-encoded-RGBA8 result=", equivalent ? "pass" : "fail");
                 if (!equivalent) return false;
+            }
+            std::string lightPayloadCommitError;
+            if (lightPayload
+                && !m_LightPayloadPublication.Commit(lightPayload, lightPayloadCommitError))
+            {
+                Log::Error("D3D12 Scene viewport could not commit its accepted light payload: ",
+                    lightPayloadCommitError);
+                return false;
             }
             Renderer::PublishSceneRasterFrame(std::move(rasterFrame));
             if (!comparisonRequested && args.HasFlag("--renderer-frame-trace") && !args.HasFlag("--frame-pacing-benchmark"))
@@ -633,12 +717,13 @@ namespace Engine
             request.CompilerVersion = "2026.13.1";
             request.CompilerPackageHash = GE_SLANG_PACKAGE_SHA256;
             request.DownstreamCompilerPackageHash = GE_DXC_PACKAGE_SHA256;
-            request.Defines = { "GE_READ_ONLY_TEXTURE_CAPACITY=" + std::to_string(m_TextureTableCapacity) };
+            request.Defines = { "GE_READ_ONLY_TEXTURE_CAPACITY=" + std::to_string(m_TextureTableCapacity), "GE_SCENE_LIGHT_PAYLOAD=" + std::to_string(stage == RHI::ShaderStage::Pixel ? 1 : 0) };
             request.ExpectedLayout = {
                 { "ViewportConstants", 'b', 0, 0, stage, "ConstantBuffer", "struct{ViewProjection:float32x4x4:row-major@0,NormalTransform:float32x4x4:row-major@64,BaseColorAndAlphaCutoff:float32x4@128,EmissiveAndStrength:float32x4@144,SurfaceFactors:float32x4@160,CallistoFactors:float32x4@176,TextureIndices0:uint32x4@192,TextureIndices1:uint32x4@208,TextureState:uint32x4@224,MaterialState:uint32x4@240,ModelView:float32x4x4:row-major@256,NormalViewTransform:float32x4x4:row-major@320}", 1, 384, 0, 0 },
                 { "ReadOnlySamplers", 's', 0, 1, stage, "SamplerState", "sampler", m_TextureTableCapacity, 0, 0, 0 },
                 { "ReadOnlyTextures", 't', 0, 1, stage, "Texture2D", "float32x4", m_TextureTableCapacity, 0, 1, 4 }
             };
+            if (stage == RHI::ShaderStage::Pixel) request.ExpectedLayout.push_back({ "SceneLightPayload", 't', 0, 3, RHI::ShaderStage::Pixel, "StructuredBuffer", "uint32x4", 1, 0, 1, 4 });
             if (stage == RHI::ShaderStage::Vertex)
             {
                 request.ExpectedVertexInputs = {
@@ -821,6 +906,7 @@ namespace Engine
             };
             pipelineDesc.SampledTextureTable = RHI::SampledTextureTableBinding {
                 m_TextureTableCapacity };
+            pipelineDesc.FixedReadOnlyStructuredBuffer = RHI::FixedReadOnlyStructuredBufferBinding {};
             pipelineDesc.Topology = RHI::PrimitiveTopology::TriangleList;
             pipelineDesc.RasterCullMode = RHI::CullMode::None;
             pipelineDesc.ColorFormat = RHI::Format::R16G16B16A16Float;
@@ -951,6 +1037,7 @@ namespace Engine
         Ref<RHI::Shader> m_PixelShader;
         std::vector<Ref<ConstantBufferSet>> m_FrameConstantBuffers;
         SubmittedRenderGraphFrameOwner m_SubmittedGraphFrames;
+        SceneLightPayloadPublication m_LightPayloadPublication;
         ShaderSourceFile m_ShaderSource;
         Scope<AsyncShaderPackageService> m_ShaderPackages;
         ShaderPackageRequestHandle m_VertexRequest;

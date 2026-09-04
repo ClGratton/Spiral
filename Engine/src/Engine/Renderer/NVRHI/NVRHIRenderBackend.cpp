@@ -17,6 +17,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cmath>
 #include <cstring>
 #include <filesystem>
@@ -2617,22 +2618,34 @@ float4 PSVertexStrideSmoke(RHIVertexStrideOutput input) : SV_Target0
             "--scene-surface-basis-material-id-smoke");
         const bool pbrProbeRequested = Application::Get().GetSpecification().CommandLineArgs.HasFlag(
             "--scene-basic-pbr-material-id-smoke");
-        if (surfaceProbeRequested && pbrProbeRequested)
+        const bool lightPayloadProbeRequested = Application::Get().GetSpecification().CommandLineArgs.HasFlag(
+            "--scene-light-payload-smoke");
+        const u32 dedicatedProbeCount = static_cast<u32>(surfaceProbeRequested)
+            + static_cast<u32>(pbrProbeRequested)
+            + static_cast<u32>(lightPayloadProbeRequested);
+        if (dedicatedProbeCount > 1)
             return false;
         m_VulkanSceneRenderer = CreateScope<NVRHIVulkanViewportSceneRenderer>();
-        if (!(surfaceProbeRequested
-                ? m_VulkanSceneRenderer->InitializeSurfaceBasisProbe(device)
-                : m_VulkanSceneRenderer->Initialize(device)))
+        const bool rendererInitialized = surfaceProbeRequested
+            ? m_VulkanSceneRenderer->InitializeSurfaceBasisProbe(device)
+            : lightPayloadProbeRequested
+                ? m_VulkanSceneRenderer->InitializeLightPayloadProbe(device)
+                : m_VulkanSceneRenderer->Initialize(device);
+        if (!rendererInitialized)
             return false;
 
         AssetRegistry smokeRegistry;
         AssetHandle smokeMesh = kInvalidAssetHandle;
         AssetHandle smokeTexture = kInvalidAssetHandle;
         std::string artifactError;
-        if (surfaceProbeRequested)
+        if (surfaceProbeRequested || lightPayloadProbeRequested)
         {
-            const std::string sourcePath = "Engine/Generated/VulkanSurfaceBasisProbe.mesh";
-            smokeMesh = smokeRegistry.RegisterAsset(AssetType::Mesh, sourcePath, "Vulkan Surface Basis Probe");
+            const std::string sourcePath = lightPayloadProbeRequested
+                ? "Engine/Generated/VulkanSceneLightPayloadProbe.mesh"
+                : "Engine/Generated/VulkanSurfaceBasisProbe.mesh";
+            smokeMesh = smokeRegistry.RegisterAsset(AssetType::Mesh, sourcePath,
+                lightPayloadProbeRequested
+                    ? "Vulkan Scene Light Payload Probe" : "Vulkan Surface Basis Probe");
             MeshArtifact probeArtifact;
             probeArtifact.Asset = smokeMesh;
             probeArtifact.SourcePath = sourcePath;
@@ -2660,7 +2673,10 @@ float4 PSVertexStrideSmoke(RHIVertexStrideOutput input) : SV_Target0
             if (smokeMesh == kInvalidAssetHandle
                 || !StoreMeshArtifact(GetCookedMeshArtifactPath(smokeMesh), probeArtifact, artifactError))
             {
-                Log::Error("Vulkan surface-basis probe could not publish its authored-normal artifact: ", artifactError);
+                Log::Error(lightPayloadProbeRequested
+                    ? "Vulkan light-payload probe could not publish its full-screen artifact: "
+                    : "Vulkan surface-basis probe could not publish its authored-normal artifact: ",
+                    artifactError);
                 return false;
             }
         }
@@ -2800,17 +2816,44 @@ float4 PSVertexStrideSmoke(RHIVertexStrideOutput input) : SV_Target0
         directionalLight.SourceEntity = 2;
         directionalLight.Transform.Position = view.Camera.TranslationOriginPosition;
         directionalLight.PhotometricValue = 30000.0;
-        snapshot.Lights.push_back(directionalLight);
+        directionalLight.Color = { 0.25f, 0.5f, 1.0f };
+        directionalLight.Transform.RotationDegrees = { 17.0f, -31.0f, 0.0f };
+        directionalLight.CastsShadows = false;
         SceneRenderLight pointLight;
         pointLight.SourceEntity = 3;
         pointLight.Type = LightType::Point;
         pointLight.PhotometricValue = 2000.0;
         pointLight.PhotometricUnit = LightPhotometricUnit::Lumens;
         pointLight.Range = 10.0f;
+        pointLight.Color = { 1.0f, 0.5f, 0.25f };
+        pointLight.CastsShadows = false;
         if (!Math::TryDecomposeWorldPosition(
                 { 0.0, 0.0, 5.0 }, snapshot.WorldGridPolicy, pointLight.Transform.Position))
             return false;
-        snapshot.Lights.push_back(pointLight);
+        if (lightPayloadProbeRequested)
+        {
+            SceneRenderLight spotLight;
+            spotLight.SourceEntity = 4;
+            spotLight.Type = LightType::Spot;
+            spotLight.Color = { 0.125f, 0.75f, 0.375f };
+            spotLight.PhotometricValue = 6789.25;
+            spotLight.PhotometricUnit = LightPhotometricUnit::Lumens;
+            spotLight.Range = 10.0f;
+            spotLight.InnerConeDegrees = 21.0f;
+            spotLight.OuterConeDegrees = 47.0f;
+            spotLight.Transform.RotationDegrees = { -12.0f, 23.0f, 0.0f };
+            if (!Math::TryDecomposeWorldPosition(
+                    { 0.5, -0.25, 6.0 }, snapshot.WorldGridPolicy,
+                    spotLight.Transform.Position))
+                return false;
+            // Nonzero directional and local indices make the table readback
+            // discriminating instead of accepting zero-filled padding.
+            snapshot.Lights = { pointLight, directionalLight, spotLight };
+        }
+        else
+        {
+            snapshot.Lights = { directionalLight, pointLight };
+        }
         if (pbrProbeRequested)
         {
             constexpr std::array<double, 5> centers { -0.8, -0.4, 0.0, 0.4, 0.8 };
@@ -2851,18 +2894,234 @@ float4 PSVertexStrideSmoke(RHIVertexStrideOutput input) : SV_Target0
             48u, pbrProbeRequested ? 24u : 36u, background);
         const u64 firstGeneration = m_VulkanSceneRenderer->GetOutputGeneration();
         RHI::TextureReadback firstDedicatedReadback;
-        const bool firstDedicatedRetired = !(surfaceProbeRequested || pbrProbeRequested)
+        const bool firstDedicatedRetired = !(
+            surfaceProbeRequested || pbrProbeRequested || lightPayloadProbeRequested)
             || (firstRaster && m_VulkanSceneRenderer->ReadbackColor(firstDedicatedReadback));
         const bool resizedRaster = firstRaster && firstDedicatedRetired
             && m_VulkanSceneRenderer->RenderCurrentSnapshot(
                 64u, pbrProbeRequested ? 32u : 48u, background);
         const u64 outputGeneration = m_VulkanSceneRenderer->GetOutputGeneration();
         RHI::TextureReadback hdrReadback;
-        const bool hdrReadbackOk = !pbrProbeRequested
+        bool hdrReadbackOk = !(pbrProbeRequested || lightPayloadProbeRequested)
             || (resizedRaster && m_VulkanSceneRenderer->ReadbackHdr(hdrReadback));
         RHI::TextureReadback readback;
-        const bool readbackOk = resizedRaster && hdrReadbackOk
+        bool readbackOk = resizedRaster && hdrReadbackOk
             && m_VulkanSceneRenderer->ReadbackColor(readback);
+        bool finalRaster = resizedRaster;
+        if (lightPayloadProbeRequested)
+        {
+            // Keep the ABI size stable but change sampled words before the
+            // third frame. The exact oracle therefore proves a reused staging
+            // slot is rewritten rather than merely observing old GPU bytes.
+            snapshot.FrameIndex = 2;
+            snapshot.Lights[0].PhotometricValue = 3456.75;
+            snapshot.Lights[2].Color = { 0.625f, 0.25f, 0.875f };
+            Renderer::PublishSceneRenderSnapshot(snapshot);
+            const bool changedFramePrepared =
+                Renderer::PrepareCurrentSceneRasterFrame();
+            finalRaster = readbackOk && changedFramePrepared
+                && m_VulkanSceneRenderer->RenderCurrentSnapshot(
+                    64u, 48u, background);
+            hdrReadbackOk = finalRaster
+                && m_VulkanSceneRenderer->ReadbackHdr(hdrReadback);
+            readbackOk = hdrReadbackOk
+                && m_VulkanSceneRenderer->ReadbackColor(readback);
+        }
+        if (lightPayloadProbeRequested)
+        {
+            ClusteredLightGrid oracleGrid;
+            std::string oracleGridError;
+            const bool oracleGridBuilt = BuildClusteredLightGrid(
+                snapshot, 0, 64u, 48u, {}, oracleGrid, oracleGridError);
+            const ClusteredLightGrid* grid = oracleGridBuilt ? &oracleGrid : nullptr;
+            const auto packedWords = [](size_t count)
+            {
+                return static_cast<u32>((count + 3u) / 4u);
+            };
+            const auto floatBits = [](float value) { return std::bit_cast<u32>(value); };
+            const auto doubleLow = [](double value)
+            {
+                return static_cast<u32>(std::bit_cast<u64>(value));
+            };
+            const auto doubleHigh = [](double value)
+            {
+                return static_cast<u32>(std::bit_cast<u64>(value) >> 32u);
+            };
+            const auto recordWord = [&](const ClusteredLightRecord& light, u32 word)
+                -> SceneLightPayloadWord
+            {
+                switch (word)
+                {
+                    case 0: return { light.SourceEntity, static_cast<u32>(light.Type),
+                        static_cast<u32>(light.PhotometricUnit), light.CastsShadows ? 1u : 0u };
+                    case 1: return { doubleLow(light.PhotometricValue),
+                        doubleHigh(light.PhotometricValue),
+                        floatBits(static_cast<float>(light.PhotometricValue)), 0 };
+                    case 2: return { floatBits(light.ViewPosition.X),
+                        floatBits(light.ViewPosition.Y), floatBits(light.ViewPosition.Z),
+                        floatBits(light.Range) };
+                    case 3: return { floatBits(light.WorldDirection.X),
+                        floatBits(light.WorldDirection.Y), floatBits(light.WorldDirection.Z),
+                        floatBits(light.InnerConeCosine) };
+                    case 4: return { floatBits(light.ViewDirection.X),
+                        floatBits(light.ViewDirection.Y), floatBits(light.ViewDirection.Z),
+                        floatBits(light.OuterConeCosine) };
+                    default: return { floatBits(light.Color.X), floatBits(light.Color.Y),
+                        floatBits(light.Color.Z), 0 };
+                }
+            };
+            const auto scalarWord = [](const std::vector<u32>& values, size_t word)
+            {
+                SceneLightPayloadWord result { 0, 0, 0, 0 };
+                for (size_t component = 0; component < result.size(); ++component)
+                {
+                    const size_t index = word * result.size() + component;
+                    if (index < values.size())
+                        result[component] = values[index];
+                }
+                return result;
+            };
+            bool fixtureValid = finalRaster && readbackOk && grid
+                && grid->Lights.size() == 3
+                && grid->Lights[0].Type == LightType::Point
+                && grid->Lights[1].Type == LightType::Directional
+                && grid->Lights[2].Type == LightType::Spot
+                && grid->GlobalLightIndices == std::vector<u32> { 1 }
+                && grid->ClusterOffsets.size() >= 8
+                && grid->LocalLightIndices.size() >= 4;
+            std::array<SceneLightPayloadWord, 15> expectedWords {};
+            if (fixtureValid)
+            {
+                const u32 records = SceneLightPayload::HeaderWordCount;
+                const u32 directionalOffset = records
+                    + static_cast<u32>(grid->Lights.size())
+                        * SceneLightPayload::LightRecordWordCount;
+                const u32 offsetsOffset = directionalOffset
+                    + packedWords(grid->GlobalLightIndices.size());
+                const u32 localOffset = offsetsOffset
+                    + packedWords(grid->ClusterOffsets.size());
+                const u32 total = localOffset
+                    + packedWords(grid->LocalLightIndices.size());
+                expectedWords[0] = { 0x504C5347u, SceneLightPayload::Version,
+                    total, SceneLightPayload::HeaderWordCount };
+                expectedWords[1] = { records, static_cast<u32>(grid->Lights.size()),
+                    directionalOffset, static_cast<u32>(grid->GlobalLightIndices.size()) };
+                expectedWords[2] = { offsetsOffset,
+                    static_cast<u32>(grid->ClusterOffsets.size()), localOffset,
+                    static_cast<u32>(grid->LocalLightIndices.size()) };
+                expectedWords[3] = recordWord(grid->Lights[0], 0);
+                expectedWords[4] = recordWord(grid->Lights[0], 1);
+                expectedWords[5] = recordWord(grid->Lights[1], 0);
+                expectedWords[6] = recordWord(grid->Lights[1], 3);
+                expectedWords[7] = recordWord(grid->Lights[2], 0);
+                expectedWords[8] = recordWord(grid->Lights[2], 2);
+                expectedWords[9] = recordWord(grid->Lights[2], 3);
+                expectedWords[10] = recordWord(grid->Lights[2], 4);
+                expectedWords[11] = recordWord(grid->Lights[2], 5);
+                expectedWords[12] = scalarWord(grid->GlobalLightIndices, 0);
+                expectedWords[13] = scalarWord(grid->ClusterOffsets, 1);
+                expectedWords[14] = scalarWord(grid->LocalLightIndices, 0);
+            }
+            const auto floatToHalf = [](float value)
+            {
+                const u32 bits = std::bit_cast<u32>(value);
+                const u32 sign = (bits >> 16) & 0x8000u;
+                const u32 exponent = (bits >> 23) & 0xffu;
+                const u32 mantissa = bits & 0x7fffffu;
+                if (exponent == 0xffu)
+                    return static_cast<u16>(sign | 0x7c00u
+                        | (mantissa != 0 ? 0x0200u : 0u));
+                const int halfExponent = static_cast<int>(exponent) - 127 + 15;
+                if (halfExponent >= 31)
+                    return static_cast<u16>(sign | 0x7c00u);
+                if (halfExponent <= 0)
+                {
+                    if (halfExponent < -10)
+                        return static_cast<u16>(sign);
+                    u32 subnormal = (mantissa | 0x800000u) >> (1 - halfExponent);
+                    subnormal += 0x0fffu + ((subnormal >> 13) & 1u);
+                    return static_cast<u16>(sign | (subnormal >> 13));
+                }
+                u32 rounded = mantissa + 0x0fffu + ((mantissa >> 13) & 1u);
+                u32 resultExponent = static_cast<u32>(halfExponent);
+                if ((rounded & 0x800000u) != 0)
+                {
+                    rounded = 0;
+                    ++resultExponent;
+                    if (resultExponent >= 31)
+                        return static_cast<u16>(sign | 0x7c00u);
+                }
+                return static_cast<u16>(sign | (resultExponent << 10)
+                    | (rounded >> 13));
+            };
+            bool cpuGpuExact = fixtureValid && hdrReadbackOk
+                && hdrReadback.Extent.Width == 64 && hdrReadback.Extent.Height == 48
+                && hdrReadback.TextureFormat == RHI::Format::R16G16B16A16Float
+                && hdrReadback.RowPitchBytes >= 64u * 8u
+                && hdrReadback.Data.size()
+                    >= static_cast<size_t>(hdrReadback.RowPitchBytes) * 48u;
+            size_t mismatchCell = expectedWords.size();
+            size_t mismatchByte = 0;
+            size_t mismatchComponent = 0;
+            u16 mismatchActual = 0;
+            u16 mismatchExpected = 0;
+            for (size_t cell = 0; cpuGpuExact && cell < expectedWords.size(); ++cell)
+            {
+                for (size_t byte = 0; cpuGpuExact && byte < 4; ++byte)
+                {
+                    const size_t pixelOffset = static_cast<size_t>(24)
+                        * hdrReadback.RowPitchBytes + (cell * 4u + byte) * 8u;
+                    for (size_t component = 0; component < 4; ++component)
+                    {
+                        const u16 actual = static_cast<u16>(hdrReadback.Data[
+                            pixelOffset + component * 2u])
+                            | static_cast<u16>(static_cast<u16>(hdrReadback.Data[
+                                pixelOffset + component * 2u + 1u]) << 8u);
+                        const u32 expectedByte = (expectedWords[cell][component]
+                            >> static_cast<u32>(byte * 8u)) & 255u;
+                        const u16 expected = floatToHalf(static_cast<float>(expectedByte));
+                        if (actual != expected)
+                        {
+                            mismatchCell = cell;
+                            mismatchByte = byte;
+                            mismatchComponent = component;
+                            mismatchActual = actual;
+                            mismatchExpected = expected;
+                            cpuGpuExact = false;
+                            break;
+                        }
+                    }
+                }
+            }
+            if (!cpuGpuExact)
+                Log::Error("Scene light payload CPU/GPU oracle mismatch: fixture=",
+                    fixtureValid ? "valid" : "invalid", ", hdrReadback=",
+                    hdrReadbackOk ? "valid" : "invalid", ", cell=", mismatchCell,
+                    ", byte=", mismatchByte, ", component=", mismatchComponent,
+                    ", expectedHalf=", mismatchExpected,
+                    ", actualHalf=", mismatchActual, ", finalRaster=",
+                    finalRaster ? "yes" : "no", ", colorReadback=",
+                    readbackOk ? "yes" : "no", ", lights=",
+                    grid ? grid->Lights.size() : 0, ", global=",
+                    grid ? grid->GlobalLightIndices.size() : 0, ", offsets=",
+                    grid ? grid->ClusterOffsets.size() : 0, ", local=",
+                    grid ? grid->LocalLightIndices.size() : 0);
+            const SceneLightPayloadPublicationDiagnostics diagnostics =
+                m_VulkanSceneRenderer->GetLightPayloadPublicationDiagnostics();
+            const bool reusableSlots = diagnostics.AllocationCount == 2
+                && diagnostics.ReuseCount == 1
+                && diagnostics.CapacityRejectionCount == 0
+                && diagnostics.CommitCount == 3;
+            const bool payloadProbeOk = cpuGpuExact && reusableSlots;
+            Renderer::SetColorPipelineSettings(previousColorSettings);
+            Log::Info("SceneLightPayloadV1 backend=Vulkan layout=versioned-uint4 records=directional-point-spot tables=global-csr-local cpuGpu=",
+                cpuGpuExact ? "exact-pass" : "fail",
+                " copy=graph staging=cpu-write gpu=structured-copydest slots=4 allocations=",
+                diagnostics.AllocationCount, " reuses=", diagnostics.ReuseCount,
+                " retention=exact-graph-token productionPSMain=preserved lightingEvaluation=no result=",
+                payloadProbeOk ? "pass" : "fail");
+            return payloadProbeOk;
+        }
         if (pbrProbeRequested)
         {
             using DVec = std::array<double, 3>;

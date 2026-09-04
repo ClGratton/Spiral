@@ -7,6 +7,7 @@
 #include "Engine/Renderer/PortableShaderContract.h"
 #include "Engine/Renderer/SceneRasterPreparation.h"
 #include "Engine/Renderer/SceneSurfaceConstants.h"
+#include "Engine/Renderer/SceneLightPayload.h"
 #include "Engine/Renderer/ShaderLibrary.h"
 #include "Engine/Renderer/SlangShaderCompiler.h"
 #include "Engine/Renderer/TextureRuntimePublication.h"
@@ -17,6 +18,7 @@
     #include <cstddef>
     #include <cstring>
     #include <filesystem>
+    #include <optional>
 #endif
 
 namespace Engine
@@ -50,6 +52,8 @@ namespace Engine
 
     struct NVRHIVulkanViewportSceneRenderer::Impl
     {
+        static_assert(SceneLightPayloadPublication::Capacity
+            == SubmittedRenderGraphFrameOwner::Capacity);
         bool RecordBootstrapReference(
             RHI::Texture& hdrTexture,
             RHI::Texture& colorTexture,
@@ -60,6 +64,7 @@ namespace Engine
             const SceneRasterFrame& frame,
             const std::vector<ConstantBufferAllocation>& constants,
             const std::vector<SceneMeshDraw>& draws,
+            const Ref<SceneLightPayloadSlot>& lightPayload,
             const ToneMapPassConstants& toneMapConstants)
         {
             Scope<RHI::CommandList> commands = m_Device->CreateCommandList(RHI::QueueType::Graphics, "Scene Viewport Bootstrap Reference");
@@ -73,7 +78,9 @@ namespace Engine
             {
                 commands->SetGraphicsPipeline(*m_Pipeline);
                 if (!m_TextureRuntime || !m_TextureRuntime->GetBindingTable()
-                    || !commands->BindGraphicsSampledTextureTable(*m_TextureRuntime->GetBindingTable())) return false;
+                    || !lightPayload || !lightPayload->Gpu
+                    || !commands->BindGraphicsSampledTextureTable(*m_TextureRuntime->GetBindingTable())
+                    || !commands->BindGraphicsReadOnlyStructuredBuffer(*lightPayload->Gpu)) return false;
                 commands->SetViewport({ 0.0f, 0.0f, static_cast<float>(width), static_cast<float>(height), 0.0f, 1.0f }); commands->SetScissorRect({ 0, 0, static_cast<int>(width), static_cast<int>(height) });
                 for (const SceneMeshDraw& draw : draws) { commands->SetVertexBuffer(0, *draw.Bundle->VertexBuffer); commands->SetIndexBuffer(*draw.Bundle->IndexBuffer, RHI::IndexFormat::Uint32); commands->SetGraphicsConstantBuffer(0, *constants[draw.ConstantIndex].Buffer); commands->DrawIndexed(draw.Primitive.IndexCount, 1, draw.Primitive.FirstIndex, draw.Primitive.BaseVertex, 0); }
             }
@@ -117,12 +124,13 @@ namespace Engine
                 request.Targets = { PortableShaderTarget::Spirv };
 #endif
                 request.CompilerIdentity = "Slang"; request.CompilerVersion = "2026.13.1"; request.CompilerPackageHash = GE_SLANG_PACKAGE_SHA256;
-                request.Defines = { "GE_READ_ONLY_TEXTURE_CAPACITY=" + std::to_string(m_TextureTableCapacity) };
+                request.Defines = { "GE_READ_ONLY_TEXTURE_CAPACITY=" + std::to_string(m_TextureTableCapacity), "GE_SCENE_LIGHT_PAYLOAD=" + std::to_string(stage == RHI::ShaderStage::Pixel ? 1 : 0) };
                 request.ExpectedLayout = {
                     { "ViewportConstants", 'b', 0, 0, stage, "ConstantBuffer", "struct{ViewProjection:float32x4x4:row-major@0,NormalTransform:float32x4x4:row-major@64,BaseColorAndAlphaCutoff:float32x4@128,EmissiveAndStrength:float32x4@144,SurfaceFactors:float32x4@160,CallistoFactors:float32x4@176,TextureIndices0:uint32x4@192,TextureIndices1:uint32x4@208,TextureState:uint32x4@224,MaterialState:uint32x4@240,ModelView:float32x4x4:row-major@256,NormalViewTransform:float32x4x4:row-major@320}", 1, 384, 0, 0 },
                     { "ReadOnlySamplers", 's', 0, 1, stage, "SamplerState", "sampler", m_TextureTableCapacity, 0, 0, 0 },
                     { "ReadOnlyTextures", 't', 0, 1, stage, "Texture2D", "float32x4", m_TextureTableCapacity, 0, 1, 4 }
                 };
+                if (stage == RHI::ShaderStage::Pixel) request.ExpectedLayout.push_back({ "SceneLightPayload", 't', 0, 3, RHI::ShaderStage::Pixel, "StructuredBuffer", "uint32x4", 1, 0, 1, 4 });
                 if (stage == RHI::ShaderStage::Vertex) request.ExpectedVertexInputs = {{ "Position", "POSITION", 0, 0, "float32x3", 12, 1, 3 }, { "Normal", "NORMAL", 0, 1, "float32x3", 12, 1, 3 }, { "Color", "COLOR", 0, 2, "float32x3", 12, 1, 3 }, { "UV", "TEXCOORD", 0, 3, "float32x2", 8, 1, 2 }};
                 return request;
             };
@@ -134,7 +142,7 @@ namespace Engine
             RHI::ShaderDescription vs; vs.DebugName = "Vulkan Scene Viewport VS"; vs.SourceName = source.ResolvedPath.string(); vs.EntryPoint = "main"; vs.Stage = RHI::ShaderStage::Vertex; vs.BinaryFormat = RHI::ShaderBinaryFormat::Spirv; vs.Binary = vertex.Spirv; vs.Reflection = vertex.Reflection;
             RHI::ShaderDescription ps = vs; ps.DebugName = "Vulkan Scene Viewport PS"; ps.Stage = RHI::ShaderStage::Pixel; ps.Binary = pixel.Spirv; ps.Reflection = pixel.Reflection;
             m_VertexShader = m_Device->CreateShader(vs); m_PixelShader = m_Device->CreateShader(ps);
-            RHI::PipelineDescription pipeline; pipeline.DebugName = "Vulkan Scene Viewport Pipeline"; pipeline.VertexShader = m_VertexShader.get(); pipeline.PixelShader = m_PixelShader.get(); pipeline.VertexInputs = {{ "POSITION", 0, RHI::Format::R32G32B32Float, 0, offsetof(MeshArtifactVertex, Position) }, { "NORMAL", 0, RHI::Format::R32G32B32Float, 0, offsetof(MeshArtifactVertex, Normal) }, { "COLOR", 0, RHI::Format::R32G32B32Float, 0, offsetof(MeshArtifactVertex, Color) }, { "TEXCOORD", 0, RHI::Format::R32G32Float, 0, offsetof(MeshArtifactVertex, UV) }}; pipeline.VertexStrideBytes = sizeof(MeshArtifactVertex); pipeline.ConstantBufferBindings = {{ 0, 0, RHI::ShaderStage::AllGraphics }}; pipeline.SampledTextureTable = RHI::SampledTextureTableBinding { m_TextureTableCapacity }; pipeline.ColorFormat = RHI::Format::R16G16B16A16Float; pipeline.DepthFormat = RHI::Format::D32Float; pipeline.DepthTestEnable = true; pipeline.DepthWriteEnable = true; pipeline.RasterCullMode = RHI::CullMode::None;
+            RHI::PipelineDescription pipeline; pipeline.DebugName = "Vulkan Scene Viewport Pipeline"; pipeline.VertexShader = m_VertexShader.get(); pipeline.PixelShader = m_PixelShader.get(); pipeline.VertexInputs = {{ "POSITION", 0, RHI::Format::R32G32B32Float, 0, offsetof(MeshArtifactVertex, Position) }, { "NORMAL", 0, RHI::Format::R32G32B32Float, 0, offsetof(MeshArtifactVertex, Normal) }, { "COLOR", 0, RHI::Format::R32G32B32Float, 0, offsetof(MeshArtifactVertex, Color) }, { "TEXCOORD", 0, RHI::Format::R32G32Float, 0, offsetof(MeshArtifactVertex, UV) }}; pipeline.VertexStrideBytes = sizeof(MeshArtifactVertex); pipeline.ConstantBufferBindings = {{ 0, 0, RHI::ShaderStage::AllGraphics }}; pipeline.SampledTextureTable = RHI::SampledTextureTableBinding { m_TextureTableCapacity }; pipeline.FixedReadOnlyStructuredBuffer = RHI::FixedReadOnlyStructuredBufferBinding {}; pipeline.ColorFormat = RHI::Format::R16G16B16A16Float; pipeline.DepthFormat = RHI::Format::D32Float; pipeline.DepthTestEnable = true; pipeline.DepthWriteEnable = true; pipeline.RasterCullMode = RHI::CullMode::None;
             m_Pipeline = m_VertexShader && m_PixelShader ? m_Device->CreatePipeline(pipeline) : nullptr;
             m_TextureRuntime = m_Pipeline ? TextureRuntimePublication::Create(*m_Device,
                 TextureTargetProfile::RGBAFallback, m_TextureTableCapacity - 1,
@@ -216,6 +224,12 @@ namespace Engine
             std::string lightGridError;
             if (!BuildClusteredLightGrid(snapshot, 0, width, height, {}, frame.LightGrid, lightGridError))
             { Log::Error("Vulkan Scene viewport could not build clustered light grid: ", lightGridError); return false; }
+            Ref<SceneLightPayloadSlot> lightPayload;
+            std::string lightPayloadError;
+            if (!m_LightPayloadPublication.Acquire(*m_Device, snapshot, 0, frame.LightGrid,
+                m_LightPayloadPublication.GetLastAcceptedGeneration() + 1,
+                lightPayload, lightPayloadError))
+            { Log::Error("Vulkan Scene viewport could not publish scene light payload: ", lightPayloadError); return false; }
             size_t directionalLightCount = 0;
             size_t localLightCount = 0;
             bool photometricPublicationValid = frame.LightGrid.Lights.size() == snapshot.Lights.size();
@@ -291,9 +305,13 @@ namespace Engine
             RHI::ResourceState hdrColorState = RHI::ResourceState::Unknown;
             RHI::ResourceState colorState = RHI::ResourceState::Unknown;
             RHI::ResourceState depthState = RHI::ResourceState::Unknown;
+            RHI::ResourceState lightStagingState = RHI::ResourceState::Unknown;
+            RHI::ResourceState lightGpuState = RHI::ResourceState::Unknown;
             if (!m_Device->QueryResourceState(m_HdrColor.get(), hdrColorState)
                 || !m_Device->QueryResourceState(m_Color.get(), colorState)
-                || !m_Device->QueryResourceState(m_Depth.get(), depthState)) return false;
+                || !m_Device->QueryResourceState(m_Depth.get(), depthState)
+                || !m_Device->QueryResourceState(lightPayload->Staging.get(), lightStagingState)
+                || !m_Device->QueryResourceState(lightPayload->Gpu.get(), lightGpuState)) return false;
             RHI::ViewportClear clear; clear.Color[0] = clearColor.R; clear.Color[1] = clearColor.G; clear.Color[2] = clearColor.B; clear.Color[3] = clearColor.A;
             Scope<RenderGraph> graph = CreateScope<RenderGraph>();
             RHI::TextureDescription hdrColorDescription = m_HdrColor->GetDescription(); hdrColorDescription.InitialState = hdrColorState;
@@ -302,18 +320,33 @@ namespace Engine
             const RenderGraph::ResourceHandle hdrColor = graph->AddTexture(hdrColorDescription, RenderGraph::ResourceLifetimeKind::Imported);
             const RenderGraph::ResourceHandle color = graph->AddTexture(colorDescription, RenderGraph::ResourceLifetimeKind::Imported);
             const RenderGraph::ResourceHandle depth = graph->AddTexture(depthDescription, RenderGraph::ResourceLifetimeKind::Imported);
+            RHI::BufferDescription lightStagingDescription = lightPayload->Staging->GetDescription(); lightStagingDescription.InitialState = lightStagingState;
+            RHI::BufferDescription lightGpuDescription = lightPayload->Gpu->GetDescription(); lightGpuDescription.InitialState = lightGpuState;
+            const RenderGraph::ResourceHandle lightStaging = graph->AddBuffer(lightStagingDescription, RenderGraph::ResourceLifetimeKind::Imported);
+            const RenderGraph::ResourceHandle lightGpu = graph->AddBuffer(lightGpuDescription, RenderGraph::ResourceLifetimeKind::Imported);
+            const RenderGraph::PassHandle lightCopyPass = graph->AddPass("Scene Light Payload Copy", RHI::QueueType::Graphics);
+            graph->AddRead(lightCopyPass, lightStaging, RHI::ResourceState::CopySource);
+            graph->AddWrite(lightCopyPass, lightGpu, RHI::ResourceState::CopyDest);
+            graph->SetPassCallback(lightCopyPass, [lightStaging, lightGpu](RenderGraph::ExecutionContext& context)
+            {
+                RHI::Buffer* staging = context.GetBuffer(lightStaging);
+                RHI::Buffer* gpu = context.GetBuffer(lightGpu);
+                return staging && gpu && context.GetCommandList().CopyBuffer(*gpu, 0, *staging, 0, gpu->GetDescription().SizeBytes);
+            });
             const RenderGraph::PassHandle clearPass = graph->AddPass("Scene Viewport Graph Clear", RHI::QueueType::Graphics);
             graph->AddWrite(clearPass, hdrColor, RHI::ResourceState::RenderTarget); graph->AddWrite(clearPass, depth, RHI::ResourceState::DepthWrite);
             graph->SetPassCallback(clearPass, [clear](RenderGraph::ExecutionContext& context) { RHI::Texture* graphColor = context.GetTexture({ 0 }); RHI::Texture* graphDepth = context.GetTexture({ 2 }); return graphColor && graphDepth && context.GetCommandList().BindViewportOutputs(*graphColor, graphDepth) && context.GetCommandList().ClearViewportOutputs(clear); });
             graph->SetPassWorkerRecordingEligible(clearPass);
             const RenderGraph::PassHandle rasterPass = graph->AddPass("Scene Viewport Graph Raster", RHI::QueueType::Graphics);
             graph->AddWrite(rasterPass, hdrColor, RHI::ResourceState::RenderTarget); graph->AddWrite(rasterPass, depth, RHI::ResourceState::DepthWrite);
+            graph->AddRead(rasterPass, lightGpu, RHI::ResourceState::ShaderResource, RHI::ShaderStage::Pixel);
             RHI::TextureBindingTable* textureTable = m_TextureRuntime->GetBindingTable();
-            graph->SetPassCallback(rasterPass, [this, textureTable, width, height, &frame, constantBufferSet, draws](RenderGraph::ExecutionContext& context)
+            graph->SetPassCallback(rasterPass, [this, textureTable, lightGpu, width, height, &frame, constantBufferSet, draws](RenderGraph::ExecutionContext& context)
             {
                 RHI::Texture* graphColor = context.GetTexture({ 0 }); RHI::Texture* graphDepth = context.GetTexture({ 2 }); RHI::CommandList& commands = context.GetCommandList();
+                RHI::Buffer* graphLightPayload = context.GetBuffer(lightGpu);
                 if (!graphColor || !graphDepth || !commands.BindViewportOutputs(*graphColor, graphDepth)) return false;
-                commands.SetGraphicsPipeline(*m_Pipeline); if (!textureTable || !commands.BindGraphicsSampledTextureTable(*textureTable)) return false; commands.SetViewport({ 0.0f, 0.0f, static_cast<float>(width), static_cast<float>(height), 0.0f, 1.0f }); commands.SetScissorRect({ 0, 0, static_cast<int>(width), static_cast<int>(height) });
+                commands.SetGraphicsPipeline(*m_Pipeline); if (!textureTable || !graphLightPayload || !commands.BindGraphicsSampledTextureTable(*textureTable) || !commands.BindGraphicsReadOnlyStructuredBuffer(*graphLightPayload)) return false; commands.SetViewport({ 0.0f, 0.0f, static_cast<float>(width), static_cast<float>(height), 0.0f, 1.0f }); commands.SetScissorRect({ 0, 0, static_cast<int>(width), static_cast<int>(height) });
                 for (const SceneMeshDraw& draw : draws) { commands.SetVertexBuffer(0, *draw.Bundle->VertexBuffer); commands.SetIndexBuffer(*draw.Bundle->IndexBuffer, RHI::IndexFormat::Uint32); commands.SetGraphicsConstantBuffer(0, *constantBufferSet->Allocations[draw.ConstantIndex].Buffer); commands.DrawIndexed(draw.Primitive.IndexCount, 1, draw.Primitive.FirstIndex, draw.Primitive.BaseVertex, 0); ++frame.IssuedDrawCount; }
                 return true;
             });
@@ -343,29 +376,45 @@ namespace Engine
                 && m_Device->GetCapabilities().GetFeature(RHI::DeviceFeature::Timestamps).IsUsable();
             const RenderGraph::ExecuteResult executed = graph->BindTexture(hdrColor, *m_HdrColor)
                 && graph->BindTexture(color, *m_Color) && graph->BindTexture(depth, *m_Depth)
+                && graph->BindBuffer(lightStaging, *lightPayload->Staging) && graph->BindBuffer(lightGpu, *lightPayload->Gpu)
                 ? graph->Execute(*m_Device, compiled, executeOptions) : RenderGraph::ExecuteResult {};
             if (Application::Get().GetSpecification().CommandLineArgs.HasFlag("--scene-viewport-render-graph-smoke")) Log::Info("RenderGraphRecordingV1 backend=Vulkan mode=", executeOptions.RecordingMode == FrameTaskExecutionMode::Parallel ? "worker" : "inline", " workerPasses=", executed.WorkerRecordedPassCount, " overlap=", executed.WorkerRecordingOverlapObserved ? "yes" : "no", " submitted=", executed.AcceptedPassCount, " result=", executed.Success ? "pass" : "fail");
+            std::optional<RHI::CompletionToken> materialTextureToken;
+            const auto compiledRaster = std::find_if(compiled.Passes.begin(), compiled.Passes.end(),
+                [rasterPass](const RenderGraph::CompiledPass& pass)
+                {
+                    return pass.Pass.Index == rasterPass.Index;
+                });
+            if (compiledRaster != compiled.Passes.end())
+            {
+                const size_t rasterIndex = static_cast<size_t>(
+                    std::distance(compiled.Passes.begin(), compiledRaster));
+                if (rasterIndex < executed.Completions.size())
+                    materialTextureToken = executed.Completions[rasterIndex];
+            }
             if (!executed.Completions.empty())
             {
-                if (executed.Completions.size() > 1 && !usedTextureHandles.empty())
+                if (materialTextureToken && !usedTextureHandles.empty())
                 {
                     std::string textureRetentionError;
-                    if (!m_TextureRuntime->RetainAcceptedFrame(executed.Completions[1], usedTextureHandles, textureRetentionError))
+                    if (!m_TextureRuntime->RetainAcceptedFrame(
+                        *materialTextureToken, usedTextureHandles, textureRetentionError))
                     { Log::Error("Vulkan Scene viewport could not retain material textures: ", textureRetentionError); m_Device->WaitIdle(); return false; }
                 }
                 std::string retentionError;
-                std::vector<Ref<void>> payloads { constantBufferSet, toneMapConstants };
+                std::vector<Ref<void>> payloads { constantBufferSet, toneMapConstants, lightPayload };
                 for (const SceneMeshDraw& draw : draws) payloads.emplace_back(std::const_pointer_cast<MeshGpuResourceBundle>(draw.Bundle));
                 if (!m_SubmittedGraphFrames.Retain(snapshot.FrameIndex, std::move(graph), compiled, executed,
                     std::move(payloads), &retentionError))
                 {
                     Log::Error("Vulkan Scene viewport could not retain an accepted RenderGraph submission: ", retentionError);
                     m_Device->WaitIdle();
-                    if (executed.Completions.size() > 1 && m_TextureRuntime
-                        && m_TextureRuntime->HasRetainedFrame(executed.Completions[1]))
+                    if (materialTextureToken && m_TextureRuntime
+                        && m_TextureRuntime->HasRetainedFrame(*materialTextureToken))
                     {
                         std::string ignoredTextureRetirementError;
-                        m_TextureRuntime->Retire(executed.Completions[1], ignoredTextureRetirementError);
+                        m_TextureRuntime->Retire(
+                            *materialTextureToken, ignoredTextureRetirementError);
                     }
                     return false;
                 }
@@ -386,11 +435,11 @@ namespace Engine
                 Scope<RHI::Texture> referenceColor = m_Device->CreateTexture(referenceColorDescription);
                 Scope<RHI::Texture> referenceDepth = m_Device->CreateTexture(referenceDepthDescription);
                 RHI::TextureReadback graphReadback, referenceReadback;
-                const bool referenceRendered = referenceHdr && referenceColor && referenceDepth && RecordBootstrapReference(*referenceHdr, *referenceColor, *referenceDepth, width, height, clear, frame, constants, draws, *toneMapConstants);
+                const bool referenceRendered = referenceHdr && referenceColor && referenceDepth && RecordBootstrapReference(*referenceHdr, *referenceColor, *referenceDepth, width, height, clear, frame, constants, draws, lightPayload, *toneMapConstants);
                 const bool readBack = referenceRendered && ReadbackGraphOutput(*m_Color, graphReadback) && m_Device->ReadbackTexture(*referenceColor, referenceReadback);
                 const bool equivalent = readBack && graphReadback.Extent.Width == referenceReadback.Extent.Width && graphReadback.Extent.Height == referenceReadback.Extent.Height
                     && graphReadback.RowPitchBytes == referenceReadback.RowPitchBytes && graphReadback.Data == referenceReadback.Data;
-                Log::Info("SceneViewportRenderGraphV1 backend=Vulkan passes=4 labels=clear,raster,tone-map,output-handoff execution=pass reference=direct comparator=exact-byte-", equivalent ? "pass" : "fail", " size=", width, "x", height, " bytes=", graphReadback.Data.size());
+                Log::Info("SceneViewportRenderGraphV1 backend=Vulkan passes=5 labels=light-payload-copy,clear,raster,tone-map,output-handoff execution=pass reference=direct comparator=exact-byte-", equivalent ? "pass" : "fail", " size=", width, "x", height, " bytes=", graphReadback.Data.size());
                 Log::Info("SceneColorPipelineV1 backend=Vulkan sceneLinear=RGBA16F manualExposureEV100=", colorSettings.ManualExposureEV100,
                     " exposureMode=", ToString(colorSettings.ExposureMode),
                     " effectiveExposureEV100=", EffectiveExposureEV100(colorSettings),
@@ -399,6 +448,13 @@ namespace Engine
                     " postToneMapContrast=", colorSettings.PostToneMapContrast,
                     " output=sRGB-encoded-RGBA8 result=", equivalent ? "pass" : "fail");
                 if (!equivalent) return false;
+            }
+            std::string lightPayloadCommitError;
+            if (!m_LightPayloadPublication.Commit(lightPayload, lightPayloadCommitError))
+            {
+                Log::Error("Vulkan Scene viewport could not commit its accepted light payload: ",
+                    lightPayloadCommitError);
+                return false;
             }
             Renderer::PublishSceneRasterFrame(std::move(frame));
             if (!comparisonRequested && args.HasFlag("--renderer-frame-trace") && !args.HasFlag("--frame-pacing-benchmark"))
@@ -417,6 +473,7 @@ namespace Engine
             if (m_TextureRuntime) m_TextureRuntime->ReleaseAfterDeviceIdle();
             m_TextureRuntime.reset();
             m_SubmittedGraphFrames.ReleaseAfterDeviceIdle();
+            m_LightPayloadPublication.ClearAfterDeviceIdle();
             m_MeshResourceCache.Clear();
             m_FrameConstantBuffers = {};
             m_ToneMap.Shutdown();
@@ -429,6 +486,7 @@ namespace Engine
         ToneMapPass m_ToneMap;
         Scope<RHI::Shader> m_VertexShader, m_PixelShader; Scope<RHI::Pipeline> m_Pipeline;
         Scope<RHI::Texture> m_HdrColor, m_Color, m_Depth; SubmittedRenderGraphFrameOwner m_SubmittedGraphFrames;
+        SceneLightPayloadPublication m_LightPayloadPublication;
         std::array<Ref<ConstantBufferSet>, SubmittedRenderGraphFrameOwner::Capacity> m_FrameConstantBuffers;
         u32 m_Width = 0, m_Height = 0; u64 m_OutputGeneration = 0;
     };
@@ -437,6 +495,7 @@ namespace Engine
     NVRHIVulkanViewportSceneRenderer::~NVRHIVulkanViewportSceneRenderer() { Shutdown(); }
     bool NVRHIVulkanViewportSceneRenderer::Initialize(RHI::Device* device) { m_Impl = CreateScope<Impl>(); if (m_Impl->Initialize(device, "PSMain")) return true; m_Impl.reset(); return false; }
     bool NVRHIVulkanViewportSceneRenderer::InitializeSurfaceBasisProbe(RHI::Device* device) { m_Impl = CreateScope<Impl>(); if (m_Impl->Initialize(device, "PSSurfaceBasisMaterialProbe")) return true; m_Impl.reset(); return false; }
+    bool NVRHIVulkanViewportSceneRenderer::InitializeLightPayloadProbe(RHI::Device* device) { m_Impl = CreateScope<Impl>(); if (m_Impl->Initialize(device, "PSLightPayloadProbe")) return true; m_Impl.reset(); return false; }
     void NVRHIVulkanViewportSceneRenderer::Shutdown() { if (m_Impl) { m_Impl->Shutdown(); m_Impl.reset(); } }
     bool NVRHIVulkanViewportSceneRenderer::RenderCurrentSnapshot(u32 width, u32 height, const ClearColor& clearColor)
     {
@@ -454,6 +513,11 @@ namespace Engine
     ToneMapPassConstantCacheDiagnostics NVRHIVulkanViewportSceneRenderer::GetToneMapConstantCacheDiagnostics() const
     {
         return m_Impl ? m_Impl->m_ToneMap.GetConstantCacheDiagnostics() : ToneMapPassConstantCacheDiagnostics {};
+    }
+    SceneLightPayloadPublicationDiagnostics NVRHIVulkanViewportSceneRenderer::GetLightPayloadPublicationDiagnostics() const
+    {
+        return m_Impl ? m_Impl->m_LightPayloadPublication.GetDiagnostics()
+            : SceneLightPayloadPublicationDiagnostics {};
     }
     RHI::NVRHIVulkanTextureNativeHandles NVRHIVulkanViewportSceneRenderer::GetOutputNativeHandles() const
     {

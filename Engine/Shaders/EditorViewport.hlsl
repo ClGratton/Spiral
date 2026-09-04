@@ -20,6 +20,14 @@ cbuffer ViewportConstants : register(b0)
 
 Texture2D ReadOnlyTextures[GE_READ_ONLY_TEXTURE_CAPACITY] : register(t0, space1);
 SamplerState ReadOnlySamplers[GE_READ_ONLY_TEXTURE_CAPACITY] : register(s0, space1);
+#ifndef GE_SCENE_LIGHT_PAYLOAD
+#define GE_SCENE_LIGHT_PAYLOAD 0
+#endif
+// Fixed renderer-owned Scene payload. PSMain deliberately does not evaluate
+// these lights; the impossible guard retains the declaration for the ABI.
+#if GE_SCENE_LIGHT_PAYLOAD
+StructuredBuffer<uint4> SceneLightPayload : register(t0, space3);
+#endif
 
 struct VSInput
 {
@@ -60,6 +68,46 @@ float4 PSSurfaceBasisMaterialProbe(VSOutput input) : SV_Target0
     return float4(0.5f + input.GeometricNormal * 0.25f, 1.0f);
 }
 
+#if GE_SCENE_LIGHT_PAYLOAD
+float4 EncodeSceneLightPayloadByte(uint4 word, uint byteIndex)
+{
+    const uint shift = byteIndex * 8u;
+    return float4(
+        (word.x >> shift) & 255u,
+        (word.y >> shift) & 255u,
+        (word.z >> shift) & 255u,
+        (word.w >> shift) & 255u);
+}
+
+// Mutually exclusive native diagnostic entry. Its horizontal cells sample
+// all four bytes of varied words from every payload section without changing
+// production PSMain light evaluation.
+float4 PSLightPayloadProbe(VSOutput input) : SV_Target0
+{
+    const uint pixelX = (uint)input.Position.x;
+    const uint cell = min(pixelX / 4u, 14u);
+    const uint4 header1 = SceneLightPayload[1];
+    const uint4 header2 = SceneLightPayload[2];
+    const uint records = header1.x;
+    uint4 word = SceneLightPayload[0];
+    if (cell == 1u) word = header1;
+    else if (cell == 2u) word = header2;
+    else if (cell == 3u) word = SceneLightPayload[records + 0u];
+    else if (cell == 4u) word = SceneLightPayload[records + 1u];
+    else if (cell == 5u) word = SceneLightPayload[records + 6u];
+    else if (cell == 6u) word = SceneLightPayload[records + 9u];
+    else if (cell == 7u) word = SceneLightPayload[records + 12u];
+    else if (cell == 8u) word = SceneLightPayload[records + 14u];
+    else if (cell == 9u) word = SceneLightPayload[records + 15u];
+    else if (cell == 10u) word = SceneLightPayload[records + 16u];
+    else if (cell == 11u) word = SceneLightPayload[records + 17u];
+    else if (cell == 12u) word = SceneLightPayload[header1.z];
+    else if (cell == 13u) word = SceneLightPayload[header2.x + 1u];
+    else if (cell == 14u) word = SceneLightPayload[header2.z];
+    return EncodeSceneLightPayloadByte(word, pixelX & 3u);
+}
+#endif
+
 float3 NormalizeOrFallback(float3 value, float3 fallback)
 {
     if (!all(isfinite(value)))
@@ -75,6 +123,10 @@ float3 NormalizeOrFallback(float3 value, float3 fallback)
 
 float4 PSMain(VSOutput input) : SV_Target0
 {
+    #if GE_SCENE_LIGHT_PAYLOAD
+    if (SceneLightPayload[0].y == 0xffffffffu)
+        return float4(0.0f, 0.0f, 0.0f, 1.0f);
+    #endif
     // Row zero is never a persistent material identity. It is a deliberately
     // obvious deterministic error result in scene-linear HDR.
     if (MaterialState.x == 0u || MaterialState.y != 0u)
@@ -111,7 +163,7 @@ float4 PSMain(VSOutput input) : SV_Target0
     const float3 V = NormalizeOrFallback(-input.ViewPosition, N);
     // Deterministic neutral preview illumination for the basic-PBR slice.
     // These are renderer-owned non-photometric values; Scene light payloads
-    // intentionally remain unconsumed until the next roadmap item.
+    // intentionally remain unconsumed until the light-evaluation roadmap item.
     const float3 neutralPreviewDirectionToLightView = normalize(float3(0.96f, 0.0f, -0.28f));
     const float3 neutralPreviewRadiance = float3(4.0f, 4.0f, 4.0f);
     const float3 H = NormalizeOrFallback(V + neutralPreviewDirectionToLightView, N);

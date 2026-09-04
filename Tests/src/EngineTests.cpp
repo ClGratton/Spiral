@@ -25,6 +25,7 @@
 #include "Engine/Renderer/SlangShaderCompiler.h"
 #include "Engine/Renderer/SceneRasterPreparation.h"
 #include "Engine/Renderer/SceneSurfaceConstants.h"
+#include "Engine/Renderer/SceneLightPayload.h"
 #include "Engine/Renderer/MeshGpuResourceCache.h"
 #include "Engine/Renderer/TextureArtifactUploadPlan.h"
 #include "Engine/Renderer/TextureGpuResourceCache.h"
@@ -41,6 +42,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <bit>
 #include <charconv>
 #include <chrono>
 #include <cerrno>
@@ -2153,13 +2155,23 @@ namespace
     class MeshGpuCacheTestBuffer final : public Engine::RHI::Buffer
     {
     public:
-        explicit MeshGpuCacheTestBuffer(Engine::RHI::BufferDescription description) : m_Description(std::move(description)) {}
+        explicit MeshGpuCacheTestBuffer(Engine::RHI::BufferDescription description,
+            const bool* failMap = nullptr)
+            : m_Description(std::move(description)), m_FailMap(failMap) {}
         const Engine::RHI::BufferDescription& GetDescription() const override { return m_Description; }
-        void* Map() override { return nullptr; }
+        void* Map() override
+        {
+            if ((m_FailMap && *m_FailMap)
+                || m_Description.CpuAccess != Engine::RHI::BufferCpuAccess::Write)
+                return nullptr;
+            Bytes.resize(static_cast<size_t>(m_Description.SizeBytes));
+            return Bytes.data();
+        }
         void Unmap() override {}
         std::vector<Engine::u8> Bytes;
     private:
         Engine::RHI::BufferDescription m_Description;
+        const bool* m_FailMap = nullptr;
     };
 
     class MeshGpuCacheTestTexture final : public Engine::RHI::Texture
@@ -2190,7 +2202,8 @@ namespace
         Engine::Scope<Engine::RHI::Buffer> CreateBuffer(const Engine::RHI::BufferDescription& description) override
         {
             CreatedDescriptions.push_back(description);
-            return FailCreate || description.SizeBytes == 0 ? nullptr : Engine::CreateScope<MeshGpuCacheTestBuffer>(description);
+            return FailCreate || description.SizeBytes == 0 ? nullptr
+                : Engine::CreateScope<MeshGpuCacheTestBuffer>(description, &FailMap);
         }
         Engine::Scope<Engine::RHI::Texture> CreateTexture(const Engine::RHI::TextureDescription& description) override
         {
@@ -2264,6 +2277,7 @@ namespace
         }
 
         bool FailCreate = false;
+        bool FailMap = false;
         bool FailUpload = false;
         bool FailTextureUpload = false;
         bool PublishWrongTextureState = false;
@@ -5121,17 +5135,464 @@ namespace
             && grid.ClusterOffsets[assignedCluster + 1] - grid.ClusterOffsets[assignedCluster] == 1
             && grid.OverflowedLocalLightReferences == 1;
 
+        Engine::Scene rowScene("Clustered Light Grid Screen Rows");
+        Engine::LightComponent rowPoint = point;
+        rowPoint.Range = 0.1f;
+        const Engine::Entity rowPointEntity = rowScene.CreateEntity("Upper Point");
+        rowScene.SetEntityWorldPosition(rowPointEntity, { 0.0, 2.0, 5.0 });
+        rowScene.AddLightComponent(rowPointEntity, rowPoint);
+        const Engine::CameraView squareView = Engine::BuildCameraView(
+            {}, {}, projection, 1.0f, {});
+        const Engine::SceneRenderSnapshot rowSnapshot =
+            rowScene.ExtractRenderSnapshot(78, squareView);
+        Engine::ClusteredLightGridConfig rowConfig;
+        rowConfig.TileSizePixels = 64;
+        rowConfig.DepthSliceCount = 4;
+        rowConfig.MaximumLocalLightsPerCluster = 4;
+        Engine::ClusteredLightGrid rowGrid;
+        const bool rowBuilt = Engine::BuildClusteredLightGrid(
+            rowSnapshot, 0, 128, 128, rowConfig, rowGrid, error);
+        const auto rowContainsLight = [&rowGrid](Engine::u32 tileY)
+        {
+            for (Engine::u32 depth = 0; depth < rowGrid.DepthSliceCount; ++depth)
+            {
+                for (Engine::u32 tileX = 0; tileX < rowGrid.TileCountX; ++tileX)
+                {
+                    const size_t cluster = rowGrid.GetClusterIndex(tileX, tileY, depth);
+                    if (cluster + 1 >= rowGrid.ClusterOffsets.size())
+                        continue;
+                    for (Engine::u32 cursor = rowGrid.ClusterOffsets[cluster];
+                        cursor < rowGrid.ClusterOffsets[cluster + 1]; ++cursor)
+                    {
+                        if (cursor < rowGrid.LocalLightIndices.size()
+                            && rowGrid.LocalLightIndices[cursor] == 0)
+                            return true;
+                    }
+                }
+            }
+            return false;
+        };
+        const bool screenRowsMatchShader = rowBuilt && rowGrid.TileCountY == 2
+            && rowContainsLight(0) && !rowContainsLight(1);
+
         Engine::ClusteredLightGrid retained = grid;
         retained.ViewportWidth = 7;
         Engine::ClusteredLightGridConfig invalidConfig = config;
         invalidConfig.MaximumLocalLightsPerCluster = 0;
         const bool rejected = !Engine::BuildClusteredLightGrid(
             snapshot, 0, 128, 64, invalidConfig, retained, error);
+        Engine::SceneRenderSnapshot nonfiniteSnapshot = snapshot;
+        nonfiniteSnapshot.Views[0].Camera.View.Values[0] =
+            std::numeric_limits<float>::quiet_NaN();
+        const bool nonfiniteDerivedRejected = !Engine::BuildClusteredLightGrid(
+            nonfiniteSnapshot, 0, 128, 64, config, retained, error)
+            && retained.ViewportWidth == 7;
+        Engine::CameraProjection zeroFovProjection = projection;
+        zeroFovProjection.VerticalFovDegrees = 0.0f;
+        const Engine::CameraView zeroFovView = Engine::BuildCameraView(
+            {}, {}, zeroFovProjection, 2.0f, {});
+        const Engine::SceneRenderSnapshot zeroFovSnapshot =
+            scene.ExtractRenderSnapshot(79, zeroFovView);
+        const bool zeroFovRejected = !Engine::BuildClusteredLightGrid(
+            zeroFovSnapshot, 0, 128, 64, config, retained, error)
+            && retained.ViewportWidth == 7;
+        Engine::SceneRenderSnapshot overflowingProjectionSnapshot = snapshot;
+        overflowingProjectionSnapshot.Views[0].Camera.Projection.Values[0] =
+            std::numeric_limits<float>::max();
+        overflowingProjectionSnapshot.Views[0].Camera.Projection.Values[5] =
+            std::numeric_limits<float>::max();
+        const bool overflowingProjectionRejected = !Engine::BuildClusteredLightGrid(
+            overflowingProjectionSnapshot, 0, 128, 64, config, retained, error)
+            && retained.ViewportWidth == 7;
+        Engine::Scene directionalLimitScene("Directional Light Bound");
+        for (Engine::u32 index = 0;
+            index < Engine::kMaximumDirectionalLightCount; ++index)
+        {
+            const Engine::Entity entity = directionalLimitScene.CreateEntity(
+                "Bounded Directional " + std::to_string(index));
+            directionalLimitScene.AddLightComponent(entity, directional);
+        }
+        const Engine::SceneRenderSnapshot acceptedDirectionalLimitSnapshot =
+            directionalLimitScene.ExtractRenderSnapshot(80, view);
+        Engine::ClusteredLightGrid acceptedDirectionalLimitGrid;
+        Engine::SceneLightPayload acceptedDirectionalLimitPayload;
+        const bool directionalLimitAccepted = Engine::BuildClusteredLightGrid(
+                acceptedDirectionalLimitSnapshot, 0, 128, 64, config,
+                acceptedDirectionalLimitGrid, error)
+            && acceptedDirectionalLimitGrid.GlobalLightIndices.size()
+                == Engine::kMaximumDirectionalLightCount
+            && Engine::BuildSceneLightPayload(acceptedDirectionalLimitSnapshot,
+                0, acceptedDirectionalLimitGrid, 80,
+                acceptedDirectionalLimitPayload, error)
+            && acceptedDirectionalLimitPayload.Words[1][3]
+                == Engine::kMaximumDirectionalLightCount;
+        const Engine::Entity overLimitEntity = directionalLimitScene.CreateEntity(
+            "Bounded Directional Overflow");
+        directionalLimitScene.AddLightComponent(overLimitEntity, directional);
+        const Engine::SceneRenderSnapshot directionalLimitSnapshot =
+            directionalLimitScene.ExtractRenderSnapshot(81, view);
+        const bool directionalLimitRejected = !Engine::BuildClusteredLightGrid(
+            directionalLimitSnapshot, 0, 128, 64, config, retained, error)
+            && retained.ViewportWidth == 7;
         return Expect(dimensionsValid, "the clustered grid derives bounded screen tiles and logarithmic depth slices")
             && Expect(globalValid, "directional lights retain deterministic compact global identity and orientation")
             && Expect(localValid, "local-light CSR assignment is conservative, stable, and explicitly overflow bounded")
-            && Expect(rejected && retained.ViewportWidth == 7 && !error.empty(),
-                "invalid clustered-grid requests preserve the caller's prior accepted grid");
+            && Expect(screenRowsMatchShader,
+                "positive view-space Y maps to the top shader tile row")
+            && Expect(directionalLimitAccepted,
+                "the exact directional hard bound remains accepted and payload-visible")
+            && Expect(rejected && nonfiniteDerivedRejected && zeroFovRejected
+                    && overflowingProjectionRejected && directionalLimitRejected
+                    && retained.ViewportWidth == 7 && !error.empty(),
+                "invalid, nonfinite, overflowing, or directionally unbounded grid requests preserve the prior grid");
+    }
+
+    bool TestSceneLightPayloadPacksTransactionally()
+    {
+        using namespace Engine;
+        Scene scene("Scene Light Payload");
+        const Entity directionalEntity = scene.CreateEntity("Directional");
+        LightComponent directional;
+        directional.Color = { 0.25f, 0.5f, 1.0f };
+        directional.PhotometricValue = 10000.125;
+        directional.CastsShadows = false;
+        scene.AddLightComponent(directionalEntity, directional);
+        if (TransformComponent* transform = scene.TryGetTransform(directionalEntity))
+            transform->RotationDegrees = { 17.0f, -31.0f, 0.0f };
+
+        const Entity pointEntity = scene.CreateEntity("Point");
+        LightComponent point;
+        point.Type = LightType::Point;
+        point.Color = { 1.0f, 0.5f, 0.25f };
+        point.PhotometricValue = 1234.5;
+        point.PhotometricUnit = LightPhotometricUnit::Lumens;
+        point.Range = 2.5f;
+        scene.AddLightComponent(pointEntity, point);
+        scene.SetEntityWorldPosition(pointEntity, { -0.25, 0.0, 5.0 });
+
+        const Entity spotEntity = scene.CreateEntity("Spot");
+        LightComponent spot;
+        spot.Type = LightType::Spot;
+        spot.Color = { 0.125f, 0.75f, 0.375f };
+        spot.PhotometricValue = 6789.25;
+        spot.PhotometricUnit = LightPhotometricUnit::Lumens;
+        spot.Range = 3.0f;
+        spot.InnerConeDegrees = 21.0f;
+        spot.OuterConeDegrees = 47.0f;
+        scene.AddLightComponent(spotEntity, spot);
+        scene.SetEntityWorldPosition(spotEntity, { 0.25, 0.0, 5.0 });
+        if (TransformComponent* transform = scene.TryGetTransform(spotEntity))
+            transform->RotationDegrees = { -12.0f, 23.0f, 0.0f };
+
+        CameraProjection projection;
+        projection.NearClip = 0.1f;
+        projection.FarClip = 100.0f;
+        const CameraView view = BuildCameraView({}, {}, projection, 2.0f, {});
+        const SceneRenderSnapshot snapshot = scene.ExtractRenderSnapshot(7, view);
+        ClusteredLightGridConfig config;
+        config.TileSizePixels = 64;
+        config.DepthSliceCount = 2;
+        config.MaximumLocalLightsPerCluster = 4;
+        ClusteredLightGrid grid;
+        std::string error;
+        const bool gridBuilt = BuildClusteredLightGrid(
+            snapshot, 0, 128, 64, config, grid, error);
+
+        SceneLightPayload payload;
+        const bool packed = gridBuilt
+            && BuildSceneLightPayload(snapshot, 0, grid, 7, payload, error);
+        const SceneLightPayload retained = payload;
+        const auto floatBits = [](float value) { return std::bit_cast<u32>(value); };
+        const auto doubleLow = [](double value)
+        {
+            return static_cast<u32>(std::bit_cast<u64>(value));
+        };
+        const auto doubleHigh = [](double value)
+        {
+            return static_cast<u32>(std::bit_cast<u64>(value) >> 32u);
+        };
+        const auto packedWords = [](size_t count)
+        {
+            return static_cast<u32>((count + 3u) / 4u);
+        };
+        const u32 recordsOffset = SceneLightPayload::HeaderWordCount;
+        const u32 directionalOffset = recordsOffset
+            + static_cast<u32>(grid.Lights.size()) * SceneLightPayload::LightRecordWordCount;
+        const u32 offsetsOffset = directionalOffset + packedWords(grid.GlobalLightIndices.size());
+        const u32 localOffset = offsetsOffset + packedWords(grid.ClusterOffsets.size());
+        const u32 totalWords = localOffset + packedWords(grid.LocalLightIndices.size());
+        std::vector<SceneLightPayloadWord> expected(totalWords, { 0, 0, 0, 0 });
+        if (gridBuilt)
+        {
+            expected[0] = { 0x504C5347u, SceneLightPayload::Version,
+                totalWords, SceneLightPayload::HeaderWordCount };
+            expected[1] = { recordsOffset, static_cast<u32>(grid.Lights.size()),
+                directionalOffset, static_cast<u32>(grid.GlobalLightIndices.size()) };
+            expected[2] = { offsetsOffset, static_cast<u32>(grid.ClusterOffsets.size()),
+                localOffset, static_cast<u32>(grid.LocalLightIndices.size()) };
+            expected[3] = { grid.ViewportWidth, grid.ViewportHeight,
+                grid.TileSizePixels, grid.DepthSliceCount };
+            expected[4] = { grid.TileCountX, grid.TileCountY,
+                floatBits(grid.NearClip), floatBits(grid.FarClip) };
+            expected[5] = { grid.MaximumLocalLightsPerCluster,
+                grid.OverflowedLocalLightReferences,
+                SceneLightPayload::LightRecordWordCount, 0 };
+            u32 cursor = recordsOffset;
+            for (const ClusteredLightRecord& record : grid.Lights)
+            {
+                expected[cursor++] = { record.SourceEntity, static_cast<u32>(record.Type),
+                    static_cast<u32>(record.PhotometricUnit), record.CastsShadows ? 1u : 0u };
+                expected[cursor++] = { doubleLow(record.PhotometricValue),
+                    doubleHigh(record.PhotometricValue),
+                    floatBits(static_cast<float>(record.PhotometricValue)), 0 };
+                expected[cursor++] = { floatBits(record.ViewPosition.X),
+                    floatBits(record.ViewPosition.Y), floatBits(record.ViewPosition.Z),
+                    floatBits(record.Range) };
+                expected[cursor++] = { floatBits(record.WorldDirection.X),
+                    floatBits(record.WorldDirection.Y), floatBits(record.WorldDirection.Z),
+                    floatBits(record.InnerConeCosine) };
+                expected[cursor++] = { floatBits(record.ViewDirection.X),
+                    floatBits(record.ViewDirection.Y), floatBits(record.ViewDirection.Z),
+                    floatBits(record.OuterConeCosine) };
+                expected[cursor++] = { floatBits(record.Color.X), floatBits(record.Color.Y),
+                    floatBits(record.Color.Z), 0 };
+            }
+            for (size_t index = 0; index < grid.GlobalLightIndices.size(); ++index)
+                expected[directionalOffset + index / 4u][index % 4u]
+                    = grid.GlobalLightIndices[index];
+            for (size_t index = 0; index < grid.ClusterOffsets.size(); ++index)
+                expected[offsetsOffset + index / 4u][index % 4u]
+                    = grid.ClusterOffsets[index];
+            for (size_t index = 0; index < grid.LocalLightIndices.size(); ++index)
+                expected[localOffset + index / 4u][index % 4u]
+                    = grid.LocalLightIndices[index];
+        }
+        const bool layout = packed && error.empty() && payload.Generation == 7
+            && payload.Words == expected && payload.Words[0][0] == 0x504C5347u
+            && payload.Words[1][0] == recordsOffset
+            && payload.Words[1][2] == directionalOffset
+            && payload.Words[directionalOffset][0] == 0;
+
+        const auto rejectsGrid = [&](const ClusteredLightGrid& invalid)
+        {
+            return !BuildSceneLightPayload(snapshot, 0, invalid, 8, payload, error)
+                && payload.Generation == retained.Generation
+                && payload.Words == retained.Words && !error.empty();
+        };
+        const auto rejectsSnapshot = [&](const SceneRenderSnapshot& invalid, size_t viewIndex = 0)
+        {
+            return !BuildSceneLightPayload(invalid, viewIndex, grid, 8, payload, error)
+                && payload.Generation == retained.Generation
+                && payload.Words == retained.Words && !error.empty();
+        };
+        ClusteredLightGrid invalid = grid;
+        invalid.Lights[1].Color.X = std::nextafter(
+            invalid.Lights[1].Color.X, std::numeric_limits<float>::infinity());
+        const bool copiedFieldRejected = rejectsGrid(invalid);
+        invalid = grid;
+        invalid.Lights[2].ViewDirection.Z = std::nextafter(
+            invalid.Lights[2].ViewDirection.Z, std::numeric_limits<float>::infinity());
+        const bool derivedFieldRejected = rejectsGrid(invalid);
+        invalid = grid;
+        invalid.Lights[2].ViewDirection.X =
+            std::numeric_limits<float>::quiet_NaN();
+        const bool nonfiniteDerivedFieldRejected = rejectsGrid(invalid);
+        invalid = grid;
+        invalid.GlobalLightIndices = { 1 };
+        const bool globalRejected = rejectsGrid(invalid);
+        invalid = grid;
+        if (!invalid.LocalLightIndices.empty())
+            invalid.LocalLightIndices[0] = 0;
+        const bool localRejected = !grid.LocalLightIndices.empty() && rejectsGrid(invalid);
+        invalid = grid;
+        invalid.ClusterOffsets[1] = 1;
+        invalid.ClusterOffsets[2] = 0;
+        const bool csrRejected = rejectsGrid(invalid);
+        invalid = grid;
+        invalid.LocalLightIndices.clear();
+        std::fill(invalid.ClusterOffsets.begin(), invalid.ClusterOffsets.end(), 0);
+        invalid.ClusterOffsets[1] = 1;
+        const bool csrBoundsRejected = rejectsGrid(invalid);
+        invalid = grid;
+        invalid.TileCountX += 1;
+        const bool dimensionsRejected = rejectsGrid(invalid);
+        invalid = grid;
+        invalid.NearClip = std::nextafter(
+            invalid.NearClip, std::numeric_limits<float>::infinity());
+        const bool clipRejected = rejectsGrid(invalid);
+        invalid = grid;
+        invalid.ViewportWidth = std::numeric_limits<u32>::max();
+        invalid.ViewportHeight = std::numeric_limits<u32>::max();
+        invalid.TileSizePixels = 1;
+        invalid.TileCountX = std::numeric_limits<u32>::max();
+        invalid.TileCountY = std::numeric_limits<u32>::max();
+        invalid.DepthSliceCount = 2;
+        const bool overflowRejected = rejectsGrid(invalid);
+        SceneRenderSnapshot invalidSnapshot = snapshot;
+        invalidSnapshot.Lights[1].SourceEntity = invalidSnapshot.Lights[0].SourceEntity;
+        const bool duplicateIdentityRejected = rejectsSnapshot(invalidSnapshot);
+        invalidSnapshot = snapshot;
+        invalidSnapshot.Lights[1].PhotometricUnit = LightPhotometricUnit::Lux;
+        const bool unitRejected = rejectsSnapshot(invalidSnapshot);
+        const bool viewRejected = rejectsSnapshot(snapshot, snapshot.Views.size());
+        const bool generationRejected = !BuildSceneLightPayload(
+            snapshot, 0, grid, 0, payload, error)
+            && payload.Generation == retained.Generation && payload.Words == retained.Words;
+        const bool invalidRejected = copiedFieldRejected && derivedFieldRejected
+            && nonfiniteDerivedFieldRejected && globalRejected && localRejected
+            && csrRejected && csrBoundsRejected
+            && dimensionsRejected && clipRejected && overflowRejected && duplicateIdentityRejected
+            && unitRejected && viewRejected && generationRejected;
+
+        MeshGpuCacheTestDevice publicationDevice(91);
+        SceneLightPayloadPublication publication;
+        Ref<SceneLightPayloadSlot> firstSlot;
+        const bool acquired = publication.Acquire(publicationDevice,
+            snapshot, 0, grid, 1, firstSlot, error);
+        const auto* firstStaging = acquired
+            ? dynamic_cast<const MeshGpuCacheTestBuffer*>(firstSlot->Staging.get()) : nullptr;
+        const RHI::BufferDescription* stagingDescription = acquired
+            ? &firstSlot->Staging->GetDescription() : nullptr;
+        const RHI::BufferDescription* gpuDescription = acquired
+            ? &firstSlot->Gpu->GetDescription() : nullptr;
+        const u64 expectedSize = retained.Words.size() * sizeof(SceneLightPayloadWord);
+        const u32 expectedGpuUsage = static_cast<u32>(RHI::BufferUsage::Structured)
+            | static_cast<u32>(RHI::BufferUsage::CopyDest);
+        const bool uploadedExactly = firstStaging
+            && firstStaging->Bytes.size() == expectedSize
+            && std::memcmp(firstStaging->Bytes.data(), retained.Words.data(),
+                static_cast<size_t>(expectedSize)) == 0;
+        const bool descriptionsValid = stagingDescription && gpuDescription
+            && stagingDescription->SizeBytes == expectedSize
+            && stagingDescription->Usage == RHI::BufferUsage::CopySource
+            && stagingDescription->CpuAccess == RHI::BufferCpuAccess::Write
+            && stagingDescription->InitialState == RHI::ResourceState::CopySource
+            && gpuDescription->SizeBytes == expectedSize
+            && gpuDescription->StrideBytes
+                == RHI::kFixedReadOnlyStructuredBufferStrideBytes
+            && static_cast<u32>(gpuDescription->Usage) == expectedGpuUsage
+            && gpuDescription->CpuAccess == RHI::BufferCpuAccess::None
+            && gpuDescription->InitialState == RHI::ResourceState::CopyDest;
+        const bool uncommittedInvisible = acquired
+            && !publication.GetLastAcceptedPayload()
+            && publication.GetLastAcceptedGeneration() == 0;
+        const bool firstCommitted = acquired && publication.Commit(firstSlot, error)
+            && publication.GetLastAcceptedPayload() == firstSlot->Payload
+            && publication.GetLastAcceptedGeneration() == 1;
+
+        ClusteredLightGrid rejectedGrid = grid;
+        rejectedGrid.ClusterOffsets[1] =
+            static_cast<u32>(rejectedGrid.LocalLightIndices.size() + 1u);
+        Ref<SceneLightPayloadSlot> rejectedSlot;
+        const bool rejectedPreservesAccepted = !publication.Acquire(publicationDevice,
+                snapshot, 0, rejectedGrid, 2, rejectedSlot, error)
+            && publication.GetLastAcceptedPayload() == firstSlot->Payload
+            && publication.GetLastAcceptedGeneration() == 1;
+
+        std::array<Ref<SceneLightPayloadSlot>, SceneLightPayloadPublication::Capacity> heldSlots;
+        heldSlots[0] = firstSlot;
+        firstSlot.reset();
+        bool filledCapacity = true;
+        for (u64 generation = 2; generation <= 4; ++generation)
+        {
+            Ref<SceneLightPayloadSlot> slot;
+            filledCapacity = filledCapacity
+                && publication.Acquire(publicationDevice, snapshot, 0, grid,
+                    generation, slot, error)
+                && publication.Commit(slot, error);
+            heldSlots[static_cast<size_t>(generation - 1)] = std::move(slot);
+        }
+        Ref<SceneLightPayloadSlot> overCapacitySlot;
+        const bool boundedRetention = filledCapacity
+            && !publication.Acquire(publicationDevice, snapshot, 0, grid,
+                5, overCapacitySlot, error)
+            && publication.GetLastAcceptedGeneration() == 4;
+
+        SceneLightPayloadSlot* releasedSlotAddress = heldSlots[0].get();
+        const auto* releasedStaging = releasedSlotAddress
+            ? dynamic_cast<const MeshGpuCacheTestBuffer*>(releasedSlotAddress->Staging.get())
+            : nullptr;
+        const std::vector<u8> releasedBytes = releasedStaging
+            ? releasedStaging->Bytes : std::vector<u8> {};
+        heldSlots[0].reset();
+        SceneRenderSnapshot changedSnapshot = snapshot;
+        changedSnapshot.Lights[1].PhotometricValue += 1.0;
+        ClusteredLightGrid changedGrid;
+        const bool changedGridBuilt = BuildClusteredLightGrid(
+            changedSnapshot, 0, 128, 64, config, changedGrid, error);
+        Ref<SceneLightPayloadSlot> reusedSlot;
+        const bool reused = changedGridBuilt
+            && publication.Acquire(publicationDevice, changedSnapshot, 0,
+                changedGrid, 5, reusedSlot, error)
+            && reusedSlot.get() == releasedSlotAddress;
+        const auto* reusedStaging = reused
+            ? dynamic_cast<const MeshGpuCacheTestBuffer*>(reusedSlot->Staging.get()) : nullptr;
+        const bool rewriteVisible = reusedStaging
+            && reusedStaging->Bytes.size() == releasedBytes.size()
+            && reusedStaging->Bytes != releasedBytes;
+        const bool reusedCommitted = reused && rewriteVisible
+            && publication.Commit(reusedSlot, error)
+            && publication.GetLastAcceptedGeneration() == 5;
+
+        SceneLightPayloadSlot* failureSlotAddress = heldSlots[1].get();
+        const Ref<const SceneLightPayload> failureSlotPayload =
+            heldSlots[1] ? heldSlots[1]->Payload : nullptr;
+        const auto* failureStagingBefore = failureSlotAddress
+            ? dynamic_cast<const MeshGpuCacheTestBuffer*>(
+                failureSlotAddress->Staging.get()) : nullptr;
+        const std::vector<u8> failureBytesBefore = failureStagingBefore
+            ? failureStagingBefore->Bytes : std::vector<u8> {};
+        heldSlots[1].reset();
+        publicationDevice.FailMap = true;
+        Ref<SceneLightPayloadSlot> mapFailureSlot;
+        const bool mapFailureTransactional = failureSlotAddress
+            && !publication.Acquire(publicationDevice,
+                changedSnapshot, 0, changedGrid, 6, mapFailureSlot, error)
+            && publication.GetLastAcceptedGeneration() == 5
+            && failureSlotAddress->Payload == failureSlotPayload;
+        publicationDevice.FailMap = false;
+        const auto* failureStagingAfterMap = failureSlotAddress
+            ? dynamic_cast<const MeshGpuCacheTestBuffer*>(
+                failureSlotAddress->Staging.get()) : nullptr;
+        const bool mapFailurePreservedSlot = failureStagingAfterMap
+            && failureStagingAfterMap->Bytes == failureBytesBefore;
+
+        ClusteredLightGrid differentSizeGrid;
+        const bool differentSizeGridBuilt = BuildClusteredLightGrid(
+            changedSnapshot, 0, 64, 64, config, differentSizeGrid, error);
+        publicationDevice.FailCreate = true;
+        Ref<SceneLightPayloadSlot> allocationFailureSlot;
+        const bool allocationFailureTransactional = failureSlotAddress
+            && differentSizeGridBuilt
+            && !publication.Acquire(publicationDevice, changedSnapshot, 0,
+                differentSizeGrid, 6, allocationFailureSlot, error)
+            && publication.GetLastAcceptedGeneration() == 5
+            && failureSlotAddress->Payload == failureSlotPayload;
+        publicationDevice.FailCreate = false;
+        const auto* failureStagingAfterAllocation = failureSlotAddress
+            ? dynamic_cast<const MeshGpuCacheTestBuffer*>(
+                failureSlotAddress->Staging.get()) : nullptr;
+        const bool allocationFailurePreservedSlot = failureStagingAfterAllocation
+            && failureStagingAfterAllocation->Bytes == failureBytesBefore;
+        const bool staleCommitRejected = !publication.Commit(heldSlots[2], error)
+            && publication.GetLastAcceptedGeneration() == 5;
+        const SceneLightPayloadPublicationDiagnostics diagnostics =
+            publication.GetDiagnostics();
+        const bool publicationLifecycle = uploadedExactly && descriptionsValid
+            && uncommittedInvisible && firstCommitted && rejectedPreservesAccepted
+            && boundedRetention && reusedCommitted && mapFailureTransactional
+            && mapFailurePreservedSlot && allocationFailureTransactional
+            && allocationFailurePreservedSlot
+            && staleCommitRejected && diagnostics.AllocationCount == 4
+            && diagnostics.ReuseCount == 1
+            && diagnostics.CapacityRejectionCount == 1
+            && diagnostics.CommitCount == 5;
+        return Expect(layout,
+                "scene light payload packs exact versioned headers, complete records, and padded directional/CSR tables")
+            && Expect(invalidRejected,
+                "identity, finite record, view, dimension, overflow, and CSR corruption preserve the prior payload")
+            && Expect(publicationLifecycle,
+                "four retained staging/GPU slots publish transactionally, reject capacity and map failures, and rewrite reusable storage");
     }
 
     bool TestPhotometricLightAuthoringPublicationAndDiagnostics()
@@ -10167,6 +10628,7 @@ int main(int argc, char** argv)
         FAST_TEST("Scene surface basis and material rows publish deterministically", TestSceneSurfaceBasisAndMaterialRows),
         FAST_TEST("Basic PBR CPU reference uses accepted convention", TestBasicPbrCpuReferenceUsesAcceptedConvention),
         FAST_TEST("Clustered light grid builds bounded deterministic assignments", TestClusteredLightGridBuildsBoundedDeterministicAssignments),
+        FAST_TEST("Scene light payload packs complete typed records transactionally", TestSceneLightPayloadPacksTransactionally),
         INTEGRATION_TEST("Photometric light schema publication and diagnostics are transactional", TestPhotometricLightAuthoringPublicationAndDiagnostics),
         FAST_TEST("Scene render snapshot extraction and retained epochs", TestSceneRenderSnapshotExtractionAndRetainedEpochs),
         INTEGRATION_TEST("Scene rejects truncated components", TestSceneRejectsTruncatedComponent),

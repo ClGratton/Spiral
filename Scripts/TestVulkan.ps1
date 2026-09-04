@@ -49,6 +49,15 @@ if ($PbrLog -notmatch 'SceneBasicPbrMaterialIdV1 backend=Vulkan productionPSMain
     throw "Dedicated Vulkan basic-PBR smoke did not prove the production BRDF/material-ID contract."
 }
 
+$PayloadResult = Invoke-BoundedProcess -FilePath $Executable -Arguments @("--vulkan-render-smoke", "--vulkan-scene-viewport-raster-smoke", "--scene-light-payload-smoke") -Label "Dedicated Vulkan light-payload smoke" -TimeoutSeconds $ChildTimeoutSeconds
+if ($PayloadResult.TimedOut -or $PayloadResult.ExitCode -ne 0) {
+    throw "Dedicated Vulkan light-payload smoke failed."
+}
+$PayloadLog = $PayloadResult.Output -join "`n"
+if ($PayloadLog -notmatch 'SceneLightPayloadV1 backend=Vulkan layout=versioned-uint4 records=directional-point-spot tables=global-csr-local cpuGpu=exact-pass copy=graph staging=cpu-write gpu=structured-copydest slots=4 allocations=2 reuses=1 retention=exact-graph-token productionPSMain=preserved lightingEvaluation=no result=pass') {
+    throw "Dedicated Vulkan light-payload smoke did not prove exact payload readback and graph-token slot reuse."
+}
+
 foreach ($Candidate in @("inter-frame", "submission-gate")) {
     $PacingResult = Invoke-BoundedProcess -FilePath $Executable -Arguments @("--vulkan-render-smoke", "--smooth-frametime-candidate-smoke", "--smooth-frametime-candidate=$Candidate", "--smooth-frametime-target-fps=5") -Label "Vulkan Smooth Frametime $Candidate" -TimeoutSeconds $ChildTimeoutSeconds
     if ($PacingResult.TimedOut -or $PacingResult.ExitCode -ne 0) { throw "Vulkan Smooth Frametime $Candidate smoke failed." }
@@ -119,7 +128,7 @@ $RequiredMarkers = @(
     "VulkanSceneOutputHandoffV1 producer=pass"
     "SceneRasterPreparationV1 mode=parallel task=Frame.PrepareSceneRaster worker="
     "ScenePhotometricLightPublicationV1 backend=Vulkan directional=1 local=1 directionalUnit=lux localUnit=lm snapshot=typed grid=typed effectiveExposureEV100=0 exposureScale=1 shaderConsumption=no result=pass"
-    "SceneViewportRenderGraphV1 backend=Vulkan passes=4 labels=clear,raster,tone-map,output-handoff execution=pass reference=direct comparator=exact-byte-pass"
+    "SceneViewportRenderGraphV1 backend=Vulkan passes=5 labels=light-payload-copy,clear,raster,tone-map,output-handoff execution=pass reference=direct comparator=exact-byte-pass"
     "SceneColorPipelineV1 backend=Vulkan sceneLinear=RGBA16F manualExposureEV100=0"
     "SceneExposureControlV1 backend=Vulkan ev100=-2,0,+2 graph=exact-byte-pass monotonic=pass constants=immutable-retained-cached"
     "calibrated=camera-fnumber-shutter-iso-pass"
@@ -176,23 +185,23 @@ $InputLatencyMatch = [regex]::Match($JoinedLog, 'FrameLifecycleTelemetryV1 backe
 if (!$InputLatencyMatch.Success -or [uint64]$InputLatencyMatch.Groups[2].Value -ne [uint64]$InputLatencyMatch.Groups[1].Value -or [double]$InputLatencyMatch.Groups[3].Value -lt 0.0 -or [double]$InputLatencyMatch.Groups[4].Value -lt [double]$InputLatencyMatch.Groups[3].Value -or [double]$InputLatencyMatch.Groups[5].Value -lt [double]$InputLatencyMatch.Groups[4].Value) {
     throw "Vulkan render smoke did not publish ordered exact-frame input-to-simulation/submit/Present intervals."
 }
-if ($JoinedLog -notmatch 'RenderGraphRecordingV1 backend=Vulkan mode=worker workerPasses=2 overlap=(yes|no) submitted=3 result=pass') {
+if ($JoinedLog -notmatch 'RenderGraphRecordingV1 backend=Vulkan mode=worker workerPasses=2 overlap=(yes|no) submitted=5 result=pass') {
     throw "Vulkan render smoke did not prove the parallel RenderGraph recording marker."
 }
-$RetirementMatches = [regex]::Matches($JoinedLog, 'ProductionRenderGraphRetirementV1 backend=Vulkan frame=\d+ passes=3 cpuWaitBetween=no pending=\d+ result=pass')
+$RetirementMatches = [regex]::Matches($JoinedLog, 'ProductionRenderGraphRetirementV1 backend=Vulkan frame=\d+ passes=5 cpuWaitBetween=no pending=\d+ result=pass')
 if ($RetirementMatches.Count -lt 2) {
     throw "Vulkan render smoke did not prove asynchronous RenderGraph retirement across consecutive frames."
 }
-$TimestampScopeMatches = [regex]::Matches($JoinedLog, 'RenderGraphTimestampScopesV1 backend=Vulkan frame=\d+ scopes=4 raw=ready cpuWaitBetween=no result=pass')
+$TimestampScopeMatches = [regex]::Matches($JoinedLog, 'RenderGraphTimestampScopesV1 backend=Vulkan frame=\d+ scopes=5 raw=ready cpuWaitBetween=no result=pass')
 if ($TimestampScopeMatches.Count -lt 2) {
     throw "Vulkan render smoke did not prove completion-gated raw timestamp scopes across consecutive frames."
 }
-$GpuTimingMatches = [regex]::Matches($JoinedLog, 'RendererGpuTimingV1 backend=NVRHI Vulkan frame=\d+ passes=4 wholeMs=[0-9]+(?:\.[0-9]+)? status=Ready capability=GpuTimestamps result=pass')
+$GpuTimingMatches = [regex]::Matches($JoinedLog, 'RendererGpuTimingV1 backend=NVRHI Vulkan frame=\d+ passes=5 wholeMs=[0-9]+(?:\.[0-9]+)? status=Ready capability=GpuTimestamps result=pass')
 if ($GpuTimingMatches.Count -lt 1) {
     throw "Vulkan render smoke did not publish exact-frame GPU durations and promote the exercised capability path."
 }
 $InlineRecordingJoinedLog = $InlineRecordingLog -join "`n"
-if (($InlineRecordingJoinedLog -notmatch 'SceneRasterPreparationV1 mode=single-thread task=Frame.PrepareSceneRaster worker=caller') -or ($InlineRecordingJoinedLog -notmatch 'RenderGraphRecordingV1 backend=Vulkan mode=inline workerPasses=2 overlap=no submitted=4 result=pass') -or ($InlineRecordingJoinedLog -notmatch 'SceneViewportRenderGraphV1 backend=Vulkan passes=4 labels=clear,raster,tone-map,output-handoff execution=pass reference=direct comparator=exact-byte-pass') -or ($InlineRecordingJoinedLog -notmatch 'ProductionRenderGraphRetirementV1 backend=Vulkan frame=\d+ passes=4 cpuWaitBetween=no pending=\d+ result=pass')) {
+if (($InlineRecordingJoinedLog -notmatch 'SceneRasterPreparationV1 mode=single-thread task=Frame.PrepareSceneRaster worker=caller') -or ($InlineRecordingJoinedLog -notmatch 'RenderGraphRecordingV1 backend=Vulkan mode=inline workerPasses=2 overlap=no submitted=5 result=pass') -or ($InlineRecordingJoinedLog -notmatch 'SceneViewportRenderGraphV1 backend=Vulkan passes=5 labels=light-payload-copy,clear,raster,tone-map,output-handoff execution=pass reference=direct comparator=exact-byte-pass') -or ($InlineRecordingJoinedLog -notmatch 'ProductionRenderGraphRetirementV1 backend=Vulkan frame=\d+ passes=5 cpuWaitBetween=no pending=\d+ result=pass')) {
     throw "Vulkan inline recording smoke did not preserve the deterministic recording and exact-byte viewport markers."
 }
 if ($JoinedLog -notmatch 'RHICompletionSmokeV1 backend=Vulkan, tokenValidation=pass, query=nonblocking-(incomplete|complete), wait=pass, reuse=pass, result=pass') {
