@@ -20,10 +20,14 @@ namespace Engine
 
     struct SceneLightPayload
     {
-        static constexpr u32 Version = 2;
+        // V3 keeps the exact authored record in words 0-5 and appends a
+        // finite renderer-prepared RGB coefficient plus reciprocal range in
+        // word 6. Word 5.w carries the spot cone's reciprocal cosine span.
+        static constexpr u32 Version = 3;
         static constexpr u32 HeaderWordCount = 6;
-        static constexpr u32 LightRecordWordCount = 6;
+        static constexpr u32 LightRecordWordCount = 7;
         static constexpr u32 MaximumWordCount = 4u * 1024u * 1024u;
+        static constexpr u32 MaximumLocalLightsPerCluster = 64;
 
         u64 Generation = 0;
         RendererColorPipelineSettings ColorSettings;

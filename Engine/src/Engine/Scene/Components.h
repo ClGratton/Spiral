@@ -5,6 +5,7 @@
 #include "Engine/Scene/Camera.h"
 
 #include <cmath>
+#include <limits>
 #include <string>
 #include <string_view>
 
@@ -237,10 +238,20 @@ namespace Engine
             && IsValidLightPhotometricValue(
                 light.Type, light.PhotometricUnit, light.PhotometricValue)
             && std::isfinite(light.Range) && light.Range >= 0.0f
+            && (light.Type == LightType::Directional || light.Range == 0.0f
+                || 1.0 / static_cast<double>(light.Range)
+                    <= static_cast<double>(std::numeric_limits<float>::max()))
             && std::isfinite(light.InnerConeDegrees) && light.InnerConeDegrees >= 0.0f
             && std::isfinite(light.OuterConeDegrees)
             && light.OuterConeDegrees >= light.InnerConeDegrees
-            && light.OuterConeDegrees <= 180.0f;
+            && light.OuterConeDegrees <= 180.0f
+            // Normalize the exact packed cosine profile consumed by the GPU.
+            // Distinct tiny authored angles may collapse to a zero-solid-angle
+            // float cone; positive flux then has no finite coefficient. Zero
+            // flux remains a useful disabled hard cone.
+            && !(light.Type == LightType::Spot && light.PhotometricValue > 0.0
+                && std::cos(Math::DegreesToRadians(light.InnerConeDegrees)) == 1.0f
+                && std::cos(Math::DegreesToRadians(light.OuterConeDegrees)) == 1.0f);
     }
 
     struct MeshRendererComponent

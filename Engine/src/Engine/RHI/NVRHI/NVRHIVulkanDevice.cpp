@@ -714,7 +714,15 @@ namespace Engine::RHI
                 nvrhi::IGraphicsPipeline* nativePipeline = m_Pipeline->GetOrCreateNative(m_Device, m_Framebuffer->getFramebufferInfo());
                 if (!nativePipeline) return;
                 nvrhi::ViewportState viewport;
-                viewport.addViewport(nvrhi::Viewport(m_Viewport.X, m_Viewport.X + m_Viewport.Width, m_Viewport.Y, m_Viewport.Y + m_Viewport.Height, m_Viewport.MinDepth, m_Viewport.MaxDepth)).addScissorRect(nvrhi::Rect(m_Scissor.Left, m_Scissor.Right, m_Scissor.Top, m_Scissor.Bottom));
+                // NVRHI normally converts its DX-style viewport to a negative-height
+                // Vulkan viewport. Portable SPIR-V already applies VulkanInvertY, so
+                // reverse the NVRHI Y interval to keep exactly one coordinate flip.
+                viewport.addViewport(nvrhi::Viewport(m_Viewport.X,
+                    m_Viewport.X + m_Viewport.Width,
+                    m_Viewport.Y + m_Viewport.Height, m_Viewport.Y,
+                    m_Viewport.MinDepth, m_Viewport.MaxDepth))
+                    .addScissorRect(nvrhi::Rect(m_Scissor.Left, m_Scissor.Right,
+                        m_Scissor.Top, m_Scissor.Bottom));
                 nvrhi::GraphicsState state;
                 state.setPipeline(nativePipeline).setFramebuffer(m_Framebuffer).setViewport(viewport).addBindingSet(m_BindingSet)
                     .setIndexBuffer(nvrhi::IndexBufferBinding().setBuffer(m_Index->Native()).setFormat(m_IndexFormat == IndexFormat::Uint16 ? nvrhi::Format::R16_UINT : nvrhi::Format::R32_UINT).setOffset(0));

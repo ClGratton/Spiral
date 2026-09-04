@@ -100,7 +100,7 @@ REQUIRED_MARKERS=(
     "RHIFixedStructuredBufferV1 backend=Vulkan declaration=exact pixel=t0-space3-uint4 stride=16 malformedReflection=rejected malformedBuffer=rejected missing=rejected wrongUsage=rejected pipelineInvalidation=rejected-stale coexistence=sampled-table-preserved readback=33,82,154,255 expected=33,82,154,255 result=pass"
     "VulkanSceneOutputCaptureV1 outputGeneration="
     "VulkanSceneOutputHandoffV1 producer=pass"
-    "ScenePhotometricLightPublicationV1 backend=Vulkan directional=1 local=1 directionalUnit=lux localUnit=lm snapshot=typed grid=typed effectiveExposureEV100=0 exposureScale=1 shaderConsumption=no result=pass"
+    "ScenePhotometricLightPublicationV2 backend=Vulkan directional=1 local=1 directionalUnit=lux localUnit=lm snapshot=typed grid=typed effectiveExposureEV100=0 exposureScale=1 shaderConsumption=production-PSMain result=pass"
     "SceneViewportRenderGraphV1 backend=Vulkan passes=5 labels=light-payload-copy,clear,raster,tone-map,output-handoff execution=pass reference=direct comparator=exact-byte-pass"
     "SceneColorPipelineV2 backend=Vulkan sceneLinear=pre-exposed-finite-RGBA16F exposurePlacement=before-storage toneMapExposure=none finiteClamp=65504 manualExposureEV100=0"
     "ScenePreExposedHdrV1 backend=Vulkan placement=before-RGBA16F scale=exp2-negative-EV toneMapExposure=none finiteClamp=65504 hdrEV2=exact-half doubleApplication=rejected finiteEverywhere=pass singleApplication=pass result=pass"
@@ -255,8 +255,44 @@ for ((ATTEMPT = 1; ATTEMPT <= ITERATIONS; ++ATTEMPT)); do
         echo "Dedicated Vulkan basic-PBR smoke failed with exit code $PBR_STATUS on attempt $ATTEMPT/$ITERATIONS." >&2
         exit "$PBR_STATUS"
     fi
-    if ! grep -Fq 'SceneBasicPbrMaterialIdV1 backend=Vulkan productionPSMain=exercised brdf=GGX-Smith-Schlick-Burley materialIds=stable rowZero=error view=per-pixel-view-space lighting=neutral-preview-nonphotometric sceneLights=unconsumed hdr=float32-unclamped-before-pre-exposed-finite-storage retention=exact-graph-token result=pass' "$PBR_LOG"; then
+    if ! grep -Fq 'SceneBasicPbrMaterialIdV2 backend=Vulkan productionPSMain=exercised brdf=GGX-Smith-Schlick-Burley materialIds=stable rowZero=error view=per-pixel-view-space lighting=typed-directional-lux sceneLights=consumed hdr=float32-before-pre-exposed-finite-storage retention=exact-graph-token result=pass' "$PBR_LOG"; then
         echo "Dedicated Vulkan basic-PBR smoke did not prove the production BRDF/material-ID contract." >&2
+        exit 1
+    fi
+
+    DIRECT_LIGHT_LOG="$LOG_BASE-photometric-direct-light-attempt-$ATTEMPT.log"
+    set +e
+    (cd "$ROOT" && perl -e '
+        my $timeout = shift;
+        my $child = fork();
+        die "fork failed: $!\n" unless defined $child;
+        if ($child == 0) {
+            setpgrp(0, 0) or die "setpgrp failed: $!\n";
+            exec @ARGV or die "exec failed: $!\n";
+        }
+        $SIG{ALRM} = sub {
+            warn "Vulkan photometric direct-light child timed out after ${timeout}s; terminating process group\n";
+            kill "TERM", -$child;
+            sleep 1;
+            kill "KILL", -$child;
+            waitpid($child, 0);
+            exit 124;
+        };
+        alarm $timeout;
+        waitpid($child, 0);
+        alarm 0;
+        my $status = $?;
+        exit(128 + ($status & 127)) if $status & 127;
+        exit($status >> 8);
+    ' "$CHILD_TIMEOUT_SECONDS" "$EDITOR" --vulkan-render-smoke --vulkan-scene-viewport-raster-smoke --scene-photometric-direct-light-smoke) 2>&1 | tee "$DIRECT_LIGHT_LOG"
+    DIRECT_LIGHT_STATUS=${PIPESTATUS[0]}
+    set -e
+    if [[ $DIRECT_LIGHT_STATUS -ne 0 ]]; then
+        echo "Dedicated Vulkan photometric direct-light smoke failed with exit code $DIRECT_LIGHT_STATUS on attempt $ATTEMPT/$ITERATIONS." >&2
+        exit "$DIRECT_LIGHT_STATUS"
+    fi
+    if ! grep -Fq 'ScenePhotometricDirectLightingV1 backend=Vulkan productionPSMain=exercised types=directional-point-spot units=lux-lumens color=Rec709-luminance-normalized point=lm-over-4pi spot=flux-normalized-squared-cosine distance=inverse-square-smooth-range clusters=bounded-csr direction=emission-forward hdr=independent-half-pass ldr=independent-pass overflow=0 retention=exact-graph-token result=pass' "$DIRECT_LIGHT_LOG"; then
+        echo "Dedicated Vulkan photometric direct-light smoke did not prove production directional/point/spot evaluation." >&2
         exit 1
     fi
 
@@ -291,7 +327,7 @@ for ((ATTEMPT = 1; ATTEMPT <= ITERATIONS; ++ATTEMPT)); do
         echo "Dedicated Vulkan light-payload smoke failed with exit code $PAYLOAD_STATUS on attempt $ATTEMPT/$ITERATIONS." >&2
         exit "$PAYLOAD_STATUS"
     fi
-    if ! grep -Fq 'SceneLightPayloadV2 backend=Vulkan layout=versioned-uint4 records=directional-point-spot tables=global-csr-local preExposure=header-scale cpuGpu=exact-pass copy=graph staging=cpu-write gpu=structured-copydest slots=4 allocations=2 reuses=1 retention=exact-graph-token productionPSMain=preserved lightingEvaluation=no result=pass' "$PAYLOAD_LOG"; then
+    if ! grep -Fq 'SceneLightPayloadV3 backend=Vulkan layout=versioned-uint4 records=directional-point-spot-prepared tables=global-csr-local preExposure=header-scale cpuGpu=exact-pass copy=graph staging=cpu-write gpu=structured-copydest slots=4 allocations=2 reuses=1 retention=exact-graph-token productionPSMain=separate lightingEvaluation=not-exercised result=pass' "$PAYLOAD_LOG"; then
         echo "Dedicated Vulkan light-payload smoke did not prove exact payload readback and graph-token slot reuse." >&2
         exit 1
     fi

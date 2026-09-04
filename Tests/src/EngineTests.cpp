@@ -5384,6 +5384,42 @@ namespace
         {
             return static_cast<u32>((count + 3u) / 4u);
         };
+        const auto prepared = [](const ClusteredLightRecord& record)
+        {
+            constexpr double pi = 3.14159265358979323846;
+            const double luminance = 0.2126 * static_cast<double>(record.Color.X)
+                + 0.7152 * static_cast<double>(record.Color.Y)
+                + 0.0722 * static_cast<double>(record.Color.Z);
+            const double normalization = luminance > 0.0 ? 1.0 / luminance : 0.0;
+            double axialValue = record.PhotometricValue;
+            double inverseSpan = 0.0;
+            if (record.Type == LightType::Point)
+                axialValue /= 4.0 * pi;
+            else if (record.Type == LightType::Spot)
+            {
+                const double inner = static_cast<double>(record.InnerConeCosine);
+                const double outer = static_cast<double>(record.OuterConeCosine);
+                const double span = inner - outer;
+                const double solidAngle = span == 0.0
+                    ? 2.0 * pi * (1.0 - outer)
+                    : 2.0 * pi * ((1.0 - inner) + span / 3.0);
+                axialValue = solidAngle > 0.0
+                    ? record.PhotometricValue / solidAngle : 0.0;
+                inverseSpan = span > 0.0 ? 1.0 / span : 0.0;
+            }
+            const double inverseRange = record.Type != LightType::Directional
+                    && record.Range > 0.0f
+                ? 1.0 / static_cast<double>(record.Range) : 0.0;
+            return std::array<float, 5> {
+                static_cast<float>(static_cast<double>(record.Color.X)
+                    * normalization * axialValue),
+                static_cast<float>(static_cast<double>(record.Color.Y)
+                    * normalization * axialValue),
+                static_cast<float>(static_cast<double>(record.Color.Z)
+                    * normalization * axialValue),
+                static_cast<float>(inverseSpan), static_cast<float>(inverseRange)
+            };
+        };
         const u32 recordsOffset = SceneLightPayload::HeaderWordCount;
         const u32 directionalOffset = recordsOffset
             + static_cast<u32>(grid.Lights.size()) * SceneLightPayload::LightRecordWordCount;
@@ -5409,6 +5445,7 @@ namespace
             u32 cursor = recordsOffset;
             for (const ClusteredLightRecord& record : grid.Lights)
             {
+                const std::array<float, 5> light = prepared(record);
                 expected[cursor++] = { record.SourceEntity, static_cast<u32>(record.Type),
                     static_cast<u32>(record.PhotometricUnit), record.CastsShadows ? 1u : 0u };
                 expected[cursor++] = { doubleLow(record.PhotometricValue),
@@ -5424,7 +5461,9 @@ namespace
                     floatBits(record.ViewDirection.Y), floatBits(record.ViewDirection.Z),
                     floatBits(record.OuterConeCosine) };
                 expected[cursor++] = { floatBits(record.Color.X), floatBits(record.Color.Y),
-                    floatBits(record.Color.Z), 0 };
+                    floatBits(record.Color.Z), floatBits(light[3]) };
+                expected[cursor++] = { floatBits(light[0]), floatBits(light[1]),
+                    floatBits(light[2]), floatBits(light[4]) };
             }
             for (size_t index = 0; index < grid.GlobalLightIndices.size(); ++index)
                 expected[directionalOffset + index / 4u][index % 4u]
@@ -5443,6 +5482,78 @@ namespace
             && payload.Words[1][0] == recordsOffset
             && payload.Words[1][2] == directionalOffset
             && payload.Words[directionalOffset][0] == 0;
+
+        Scene edgeScene("Scene Light Payload Photometric Edges");
+        LightComponent blackDirectional;
+        blackDirectional.Color = {};
+        const Entity blackEntity = edgeScene.CreateEntity("Black Directional");
+        const bool blackAdded = edgeScene.AddLightComponent(
+            blackEntity, blackDirectional) != nullptr;
+        LightComponent zeroPoint;
+        zeroPoint.Type = LightType::Point;
+        zeroPoint.PhotometricUnit = LightPhotometricUnit::Lumens;
+        zeroPoint.PhotometricValue = 0.0;
+        zeroPoint.Range = 0.0f;
+        const Entity zeroPointEntity = edgeScene.CreateEntity("Zero Point");
+        const bool zeroPointAdded = edgeScene.AddLightComponent(
+            zeroPointEntity, zeroPoint) != nullptr;
+        LightComponent hardSpot;
+        hardSpot.Type = LightType::Spot;
+        hardSpot.PhotometricUnit = LightPhotometricUnit::Lumens;
+        hardSpot.PhotometricValue = 1000.0;
+        hardSpot.Range = 1.0f;
+        hardSpot.InnerConeDegrees = 60.0f;
+        hardSpot.OuterConeDegrees = 60.0f;
+        const Entity hardSpotEntity = edgeScene.CreateEntity("Hard Spot");
+        const bool hardSpotAdded = edgeScene.AddLightComponent(
+            hardSpotEntity, hardSpot) != nullptr;
+        LightComponent zeroConeSpot = hardSpot;
+        zeroConeSpot.PhotometricValue = 0.0;
+        zeroConeSpot.InnerConeDegrees = 0.0f;
+        zeroConeSpot.OuterConeDegrees = 0.0f;
+        const Entity zeroConeEntity = edgeScene.CreateEntity("Zero Cone Spot");
+        const bool zeroConeAdded = edgeScene.AddLightComponent(
+            zeroConeEntity, zeroConeSpot) != nullptr;
+        const SceneRenderSnapshot edgeSnapshot = edgeScene.ExtractRenderSnapshot(9, view);
+        ClusteredLightGrid edgeGrid;
+        SceneLightPayload edgePayload;
+        const bool edgeGridBuilt = BuildClusteredLightGrid(
+            edgeSnapshot, 0, 64, 64, config, edgeGrid, error);
+        const bool edgePacked = edgeGridBuilt && BuildSceneLightPayload(
+            edgeSnapshot, 0, edgeGrid, colorSettings, 9, edgePayload, error);
+        const u32 edgeRecords = SceneLightPayload::HeaderWordCount;
+        const u32 blackPrepared = edgeRecords + 6u;
+        const u32 pointPrepared = edgeRecords
+            + SceneLightPayload::LightRecordWordCount + 6u;
+        const u32 hardAuthored = edgeRecords
+            + 2u * SceneLightPayload::LightRecordWordCount + 5u;
+        const u32 hardPrepared = hardAuthored + 1u;
+        const u32 zeroConePrepared = edgeRecords
+            + 3u * SceneLightPayload::LightRecordWordCount + 6u;
+        const float hardCosine = std::cos(Math::DegreesToRadians(60.0f));
+        const float hardCandela = static_cast<float>(1000.0
+            / (2.0 * 3.14159265358979323846 * (1.0 - hardCosine)));
+        const bool edgeValues = blackAdded && zeroPointAdded && hardSpotAdded
+            && zeroConeAdded && edgePacked && edgeGrid.Lights.size() == 4
+            && edgePayload.Words[blackPrepared]
+                == SceneLightPayloadWord { 0u, 0u, 0u, 0u }
+            && edgePayload.Words[pointPrepared]
+                == SceneLightPayloadWord { 0u, 0u, 0u, 0u }
+            && edgePayload.Words[hardAuthored][3] == floatBits(0.0f)
+            && edgePayload.Words[hardPrepared]
+                == SceneLightPayloadWord { floatBits(hardCandela),
+                    floatBits(hardCandela), floatBits(hardCandela), floatBits(1.0f) }
+            && edgePayload.Words[zeroConePrepared]
+                == SceneLightPayloadWord { 0u, 0u, 0u, floatBits(1.0f) };
+        LightComponent positiveZeroCone = zeroConeSpot;
+        positiveZeroCone.PhotometricValue = 1.0;
+        LightComponent collapsedCone = positiveZeroCone;
+        collapsedCone.OuterConeDegrees = std::numeric_limits<float>::denorm_min();
+        LightComponent unrepresentableRange = zeroPoint;
+        unrepresentableRange.Range = std::numeric_limits<float>::denorm_min();
+        const bool zeroSolidAngleRejected = !IsValidLightComponent(positiveZeroCone)
+            && !IsValidLightComponent(collapsedCone)
+            && !IsValidLightComponent(unrepresentableRange);
 
         const auto rejectsGrid = [&](const ClusteredLightGrid& invalid)
         {
@@ -5505,6 +5616,10 @@ namespace
         invalid.TileCountY = std::numeric_limits<u32>::max();
         invalid.DepthSliceCount = 2;
         const bool overflowRejected = rejectsGrid(invalid);
+        invalid = grid;
+        invalid.MaximumLocalLightsPerCluster =
+            SceneLightPayload::MaximumLocalLightsPerCluster + 1u;
+        const bool shaderBoundRejected = rejectsGrid(invalid);
         SceneRenderSnapshot invalidSnapshot = snapshot;
         invalidSnapshot.Lights[1].SourceEntity = invalidSnapshot.Lights[0].SourceEntity;
         const bool duplicateIdentityRejected = rejectsSnapshot(invalidSnapshot);
@@ -5527,7 +5642,8 @@ namespace
         const bool invalidRejected = copiedFieldRejected && derivedFieldRejected
             && nonfiniteDerivedFieldRejected && globalRejected && localRejected
             && csrRejected && csrBoundsRejected
-            && dimensionsRejected && clipRejected && overflowRejected && duplicateIdentityRejected
+            && dimensionsRejected && clipRejected && overflowRejected
+            && shaderBoundRejected && duplicateIdentityRejected
             && unitRejected && viewRejected && generationRejected
             && colorSettingsRejected;
 
@@ -5675,8 +5791,8 @@ namespace
             && diagnostics.ReuseCount == 1
             && diagnostics.CapacityRejectionCount == 1
             && diagnostics.CommitCount == 5;
-        return Expect(layout,
-                "scene light payload packs exact versioned headers, complete records, and padded directional/CSR tables")
+        return Expect(layout && edgeValues && zeroSolidAngleRejected,
+                "scene light payload packs exact V3 records, independent photometric coefficients, and finite cone/range edges")
             && Expect(invalidRejected,
                 "identity, finite record, view, dimension, overflow, and CSR corruption preserve the prior payload")
             && Expect(publicationLifecycle,

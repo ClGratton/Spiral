@@ -43,6 +43,59 @@ namespace Engine
         u32 DoubleLow(double value) { return static_cast<u32>(std::bit_cast<u64>(value)); }
         u32 DoubleHigh(double value) { return static_cast<u32>(std::bit_cast<u64>(value) >> 32u); }
 
+        bool ToFiniteNonnegativeFloat(double value, float& out)
+        {
+            if (!std::isfinite(value) || value < 0.0
+                || value > static_cast<double>(std::numeric_limits<float>::max()))
+                return false;
+            out = static_cast<float>(value);
+            return std::isfinite(out) && out >= 0.0f;
+        }
+
+        bool PreparePhotometricRecord(const ClusteredLightRecord& record,
+            Math::Vec3& outCoefficient, float& outInverseSpan, float& outReciprocalRange)
+        {
+            constexpr double kRec709R = 0.2126, kRec709G = 0.7152, kRec709B = 0.0722;
+            constexpr double kPi = 3.14159265358979323846;
+            const double luminance = static_cast<double>(record.Color.X) * kRec709R
+                + static_cast<double>(record.Color.Y) * kRec709G
+                + static_cast<double>(record.Color.Z) * kRec709B;
+            if (!std::isfinite(luminance) || luminance < 0.0)
+                return false;
+            const double norm = luminance > 0.0 ? 1.0 / luminance : 0.0;
+            double scale = 0.0;
+            outInverseSpan = 0.0f;
+            outReciprocalRange = 0.0f;
+            if (record.Type == LightType::Directional)
+                scale = record.PhotometricValue;
+            else if (record.Type == LightType::Point)
+                scale = record.PhotometricValue / (4.0 * kPi);
+            else if (record.Type == LightType::Spot)
+            {
+                const double ci = static_cast<double>(record.InnerConeCosine);
+                const double co = static_cast<double>(record.OuterConeCosine);
+                if (!(ci >= co) || co < -1.0 || ci > 1.0)
+                    return false;
+                const double span = ci - co;
+                double omega = 0.0;
+                if (span == 0.0)
+                    omega = 2.0 * kPi * (1.0 - co);
+                else
+                {
+                    omega = 2.0 * kPi * ((1.0 - ci) + span / 3.0);
+                    if (!ToFiniteNonnegativeFloat(1.0 / span, outInverseSpan)) return false;
+                }
+                if (!(omega > 0.0) && record.PhotometricValue > 0.0) return false;
+                scale = omega > 0.0 ? record.PhotometricValue / omega : 0.0;
+            }
+            else return false;
+            if (record.Type != LightType::Directional && record.Range > 0.0f
+                && !ToFiniteNonnegativeFloat(1.0 / static_cast<double>(record.Range), outReciprocalRange)) return false;
+            return ToFiniteNonnegativeFloat(static_cast<double>(record.Color.X) * norm * scale, outCoefficient.X)
+                && ToFiniteNonnegativeFloat(static_cast<double>(record.Color.Y) * norm * scale, outCoefficient.Y)
+                && ToFiniteNonnegativeFloat(static_cast<double>(record.Color.Z) * norm * scale, outCoefficient.Z);
+        }
+
         bool SameFloat(float left, float right)
         {
             return std::bit_cast<u32>(left) == std::bit_cast<u32>(right);
@@ -120,7 +173,8 @@ namespace Engine
             || grid.TileSizePixels == 0 || grid.TileSizePixels > 4096
             || grid.DepthSliceCount == 0 || grid.DepthSliceCount > 128
             || grid.MaximumLocalLightsPerCluster == 0
-            || grid.MaximumLocalLightsPerCluster > 1024)
+            || grid.MaximumLocalLightsPerCluster
+                > SceneLightPayload::MaximumLocalLightsPerCluster)
             return fail("scene light payload has invalid snapshot or grid dimensions");
         ScenePreExposureState preExposure;
         if (!TryResolveScenePreExposure(colorSettings, preExposure))
@@ -303,12 +357,17 @@ namespace Engine
         for (const ClusteredLightRecord& record : grid.Lights)
         {
             const float consumption = static_cast<float>(record.PhotometricValue);
+            Math::Vec3 coefficient;
+            float inverseSpan = 0.0f, reciprocalRange = 0.0f;
+            if (!PreparePhotometricRecord(record, coefficient, inverseSpan, reciprocalRange))
+                return fail("scene light payload could not prepare finite photometric data");
             candidate.Words[cursor++] = { record.SourceEntity, static_cast<u32>(record.Type), static_cast<u32>(record.PhotometricUnit), record.CastsShadows ? 1u : 0u };
             candidate.Words[cursor++] = { DoubleLow(record.PhotometricValue), DoubleHigh(record.PhotometricValue), FloatBits(consumption), 0 };
             candidate.Words[cursor++] = { FloatBits(record.ViewPosition.X), FloatBits(record.ViewPosition.Y), FloatBits(record.ViewPosition.Z), FloatBits(record.Range) };
             candidate.Words[cursor++] = { FloatBits(record.WorldDirection.X), FloatBits(record.WorldDirection.Y), FloatBits(record.WorldDirection.Z), FloatBits(record.InnerConeCosine) };
             candidate.Words[cursor++] = { FloatBits(record.ViewDirection.X), FloatBits(record.ViewDirection.Y), FloatBits(record.ViewDirection.Z), FloatBits(record.OuterConeCosine) };
-            candidate.Words[cursor++] = { FloatBits(record.Color.X), FloatBits(record.Color.Y), FloatBits(record.Color.Z), 0 };
+            candidate.Words[cursor++] = { FloatBits(record.Color.X), FloatBits(record.Color.Y), FloatBits(record.Color.Z), FloatBits(inverseSpan) };
+            candidate.Words[cursor++] = { FloatBits(coefficient.X), FloatBits(coefficient.Y), FloatBits(coefficient.Z), FloatBits(reciprocalRange) };
         }
         for (size_t index = 0; index < grid.GlobalLightIndices.size(); ++index) candidate.Words[directionalOffset + index / 4u][index % 4u] = grid.GlobalLightIndices[index];
         for (size_t index = 0; index < grid.ClusterOffsets.size(); ++index) candidate.Words[offsetsOffset + index / 4u][index % 4u] = grid.ClusterOffsets[index];

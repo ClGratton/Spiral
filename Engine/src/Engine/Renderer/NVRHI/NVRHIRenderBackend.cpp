@@ -2620,9 +2620,12 @@ float4 PSVertexStrideSmoke(RHIVertexStrideOutput input) : SV_Target0
             "--scene-basic-pbr-material-id-smoke");
         const bool lightPayloadProbeRequested = Application::Get().GetSpecification().CommandLineArgs.HasFlag(
             "--scene-light-payload-smoke");
+        const bool directLightingProbeRequested = Application::Get().GetSpecification().CommandLineArgs.HasFlag(
+            "--scene-photometric-direct-light-smoke");
         const u32 dedicatedProbeCount = static_cast<u32>(surfaceProbeRequested)
             + static_cast<u32>(pbrProbeRequested)
-            + static_cast<u32>(lightPayloadProbeRequested);
+            + static_cast<u32>(lightPayloadProbeRequested)
+            + static_cast<u32>(directLightingProbeRequested);
         if (dedicatedProbeCount > 1)
             return false;
         m_VulkanSceneRenderer = CreateScope<NVRHIVulkanViewportSceneRenderer>();
@@ -2680,10 +2683,14 @@ float4 PSVertexStrideSmoke(RHIVertexStrideOutput input) : SV_Target0
                 return false;
             }
         }
-        else if (pbrProbeRequested)
+        else if (pbrProbeRequested || directLightingProbeRequested)
         {
-            const std::string sourcePath = "Engine/Generated/VulkanBasicPbrProbe.mesh";
-            smokeMesh = smokeRegistry.RegisterAsset(AssetType::Mesh, sourcePath, "Vulkan Basic PBR Probe");
+            const std::string sourcePath = directLightingProbeRequested
+                ? "Engine/Generated/VulkanPhotometricDirectLightProbe.mesh"
+                : "Engine/Generated/VulkanBasicPbrProbe.mesh";
+            smokeMesh = smokeRegistry.RegisterAsset(AssetType::Mesh, sourcePath,
+                directLightingProbeRequested
+                    ? "Vulkan Photometric Direct Light Probe" : "Vulkan Basic PBR Probe");
             MeshArtifact probeArtifact;
             probeArtifact.Asset = smokeMesh;
             probeArtifact.SourcePath = sourcePath;
@@ -2696,12 +2703,19 @@ float4 PSVertexStrideSmoke(RHIVertexStrideOutput input) : SV_Target0
                 result.UV[0] = u; result.UV[1] = v;
                 return result;
             };
-            probeArtifact.Vertices = {
-                vertex(-0.16f, -0.4f, 0.0f, 1.0f),
-                vertex(-0.16f, 0.4f, 0.0f, 0.0f),
-                vertex(0.16f, 0.4f, 1.0f, 0.0f),
-                vertex(0.16f, -0.4f, 1.0f, 1.0f)
-            };
+            probeArtifact.Vertices = directLightingProbeRequested
+                ? std::vector<MeshArtifactVertex> {
+                    vertex(-1.0f, -1.0f, 0.0f, 1.0f),
+                    vertex(-1.0f, 1.0f, 0.0f, 0.0f),
+                    vertex(1.0f, 1.0f, 1.0f, 0.0f),
+                    vertex(1.0f, -1.0f, 1.0f, 1.0f)
+                }
+                : std::vector<MeshArtifactVertex> {
+                    vertex(-0.16f, -0.4f, 0.0f, 1.0f),
+                    vertex(-0.16f, 0.4f, 0.0f, 0.0f),
+                    vertex(0.16f, 0.4f, 1.0f, 0.0f),
+                    vertex(0.16f, -0.4f, 1.0f, 1.0f)
+                };
             probeArtifact.Indices = { 0, 1, 2, 0, 2, 3 };
             probeArtifact.Primitives = {{ 0, 0, 0,
                 sizeof(MeshArtifactVertex) * probeArtifact.Vertices.size(),
@@ -2709,7 +2723,9 @@ float4 PSVertexStrideSmoke(RHIVertexStrideOutput input) : SV_Target0
             if (smokeMesh == kInvalidAssetHandle
                 || !StoreMeshArtifact(GetCookedMeshArtifactPath(smokeMesh), probeArtifact, artifactError))
             {
-                Log::Error("Vulkan basic-PBR probe could not publish its panel artifact: ", artifactError);
+                Log::Error(directLightingProbeRequested
+                    ? "Vulkan photometric direct-light probe could not publish its surface artifact: "
+                    : "Vulkan basic-PBR probe could not publish its panel artifact: ", artifactError);
                 return false;
             }
         }
@@ -2788,13 +2804,23 @@ float4 PSVertexStrideSmoke(RHIVertexStrideOutput input) : SV_Target0
         else
         {
             smokeMaterial = smokeRegistry.RegisterAsset(AssetType::Material,
-                "Engine/Generated/VulkanSceneSmoke.spiralmat", "Vulkan Scene Smoke");
+                directLightingProbeRequested
+                    ? "Engine/Generated/VulkanPhotometricDirectLightProbe.spiralmat"
+                    : "Engine/Generated/VulkanSceneSmoke.spiralmat",
+                directLightingProbeRequested
+                    ? "Vulkan Photometric Direct Light Probe" : "Vulkan Scene Smoke");
             MaterialAsset material;
-            material.Name = "Vulkan Scene Smoke";
-            material.BaseColor = { 0.72f, 0.78f, 0.92f };
-            material.Roughness = 0.45f;
-            material.Textures.BaseColor = smokeTexture;
-            material.Samplers.BaseColor = MaterialTextureSampler::LinearWrap;
+            material.Name = directLightingProbeRequested
+                ? "Vulkan Photometric Direct Light Probe" : "Vulkan Scene Smoke";
+            material.BaseColor = directLightingProbeRequested
+                ? Math::Vec3 { 0.5f, 0.5f, 0.5f }
+                : Math::Vec3 { 0.72f, 0.78f, 0.92f };
+            material.Roughness = directLightingProbeRequested ? 0.5f : 0.45f;
+            if (!directLightingProbeRequested)
+            {
+                material.Textures.BaseColor = smokeTexture;
+                material.Samplers.BaseColor = MaterialTextureSampler::LinearWrap;
+            }
             if (smokeMaterial == kInvalidAssetHandle || !materials.Set(smokeMaterial, material))
                 return false;
         }
@@ -2850,6 +2876,21 @@ float4 PSVertexStrideSmoke(RHIVertexStrideOutput input) : SV_Target0
             // discriminating instead of accepting zero-filled padding.
             snapshot.Lights = { pointLight, directionalLight, spotLight };
         }
+        else if (pbrProbeRequested)
+        {
+            // Preserve the established BRDF oracle with a real typed Scene
+            // directional light equivalent to the retired preview source.
+            directionalLight.Color = { 1.0f, 1.0f, 1.0f };
+            directionalLight.PhotometricValue = 4.0;
+            directionalLight.Transform.RotationDegrees = { 0.0f,
+                static_cast<float>(std::atan2(-0.96, 0.28)
+                    * 180.0 / 3.14159265358979323846), 0.0f };
+            snapshot.Lights = { directionalLight };
+        }
+        else if (directLightingProbeRequested)
+        {
+            snapshot.Lights.clear();
+        }
         else
         {
             snapshot.Lights = { directionalLight, pointLight };
@@ -2891,18 +2932,22 @@ float4 PSVertexStrideSmoke(RHIVertexStrideOutput input) : SV_Target0
             return false;
         const ClearColor background { 0.04f, 0.05f, 0.06f, 1.0f };
         const bool firstRaster = m_VulkanSceneRenderer->RenderCurrentSnapshot(
-            48u, pbrProbeRequested ? 24u : 36u, background);
+            48u, pbrProbeRequested ? 24u
+                : directLightingProbeRequested ? 48u : 36u, background);
         const u64 firstGeneration = m_VulkanSceneRenderer->GetOutputGeneration();
         RHI::TextureReadback firstDedicatedReadback;
         const bool firstDedicatedRetired = !(
-            surfaceProbeRequested || pbrProbeRequested || lightPayloadProbeRequested)
+            surfaceProbeRequested || pbrProbeRequested || lightPayloadProbeRequested
+                || directLightingProbeRequested)
             || (firstRaster && m_VulkanSceneRenderer->ReadbackColor(firstDedicatedReadback));
         const bool resizedRaster = firstRaster && firstDedicatedRetired
             && m_VulkanSceneRenderer->RenderCurrentSnapshot(
-                64u, pbrProbeRequested ? 32u : 48u, background);
+                64u, pbrProbeRequested ? 32u
+                    : directLightingProbeRequested ? 64u : 48u, background);
         const u64 outputGeneration = m_VulkanSceneRenderer->GetOutputGeneration();
         RHI::TextureReadback hdrReadback;
-        bool hdrReadbackOk = !(pbrProbeRequested || lightPayloadProbeRequested)
+        bool hdrReadbackOk = !(pbrProbeRequested || lightPayloadProbeRequested
+                || directLightingProbeRequested)
             || (resizedRaster && m_VulkanSceneRenderer->ReadbackHdr(hdrReadback));
         RHI::TextureReadback readback;
         bool readbackOk = resizedRaster && hdrReadbackOk
@@ -2947,9 +2992,45 @@ float4 PSVertexStrideSmoke(RHIVertexStrideOutput input) : SV_Target0
             {
                 return static_cast<u32>(std::bit_cast<u64>(value) >> 32u);
             };
+            const auto prepared = [](const ClusteredLightRecord& light)
+            {
+                constexpr double pi = 3.14159265358979323846;
+                const double luminance = 0.2126 * static_cast<double>(light.Color.X)
+                    + 0.7152 * static_cast<double>(light.Color.Y)
+                    + 0.0722 * static_cast<double>(light.Color.Z);
+                const double normalization = luminance > 0.0 ? 1.0 / luminance : 0.0;
+                double axialValue = light.PhotometricValue;
+                double inverseSpan = 0.0;
+                if (light.Type == LightType::Point)
+                    axialValue /= 4.0 * pi;
+                else if (light.Type == LightType::Spot)
+                {
+                    const double inner = static_cast<double>(light.InnerConeCosine);
+                    const double outer = static_cast<double>(light.OuterConeCosine);
+                    const double span = inner - outer;
+                    const double solidAngle = span == 0.0
+                        ? 2.0 * pi * (1.0 - outer)
+                        : 2.0 * pi * ((1.0 - inner) + span / 3.0);
+                    axialValue = solidAngle > 0.0
+                        ? light.PhotometricValue / solidAngle : 0.0;
+                    inverseSpan = span > 0.0 ? 1.0 / span : 0.0;
+                }
+                return std::array<float, 5> {
+                    static_cast<float>(static_cast<double>(light.Color.X)
+                        * normalization * axialValue),
+                    static_cast<float>(static_cast<double>(light.Color.Y)
+                        * normalization * axialValue),
+                    static_cast<float>(static_cast<double>(light.Color.Z)
+                        * normalization * axialValue),
+                    static_cast<float>(inverseSpan),
+                    light.Type != LightType::Directional && light.Range > 0.0f
+                        ? 1.0f / light.Range : 0.0f
+                };
+            };
             const auto recordWord = [&](const ClusteredLightRecord& light, u32 word)
                 -> SceneLightPayloadWord
             {
+                const std::array<float, 5> preparedLight = prepared(light);
                 switch (word)
                 {
                     case 0: return { light.SourceEntity, static_cast<u32>(light.Type),
@@ -2966,8 +3047,10 @@ float4 PSVertexStrideSmoke(RHIVertexStrideOutput input) : SV_Target0
                     case 4: return { floatBits(light.ViewDirection.X),
                         floatBits(light.ViewDirection.Y), floatBits(light.ViewDirection.Z),
                         floatBits(light.OuterConeCosine) };
-                    default: return { floatBits(light.Color.X), floatBits(light.Color.Y),
-                        floatBits(light.Color.Z), 0 };
+                    case 5: return { floatBits(light.Color.X), floatBits(light.Color.Y),
+                        floatBits(light.Color.Z), floatBits(preparedLight[3]) };
+                    default: return { floatBits(preparedLight[0]), floatBits(preparedLight[1]),
+                        floatBits(preparedLight[2]), floatBits(preparedLight[4]) };
                 }
             };
             const auto scalarWord = [](const std::vector<u32>& values, size_t word)
@@ -3015,13 +3098,13 @@ float4 PSVertexStrideSmoke(RHIVertexStrideOutput input) : SV_Target0
                     floatBits(1.0f) };
                 expectedWords[4] = recordWord(grid->Lights[0], 0);
                 expectedWords[5] = recordWord(grid->Lights[0], 1);
-                expectedWords[6] = recordWord(grid->Lights[1], 0);
-                expectedWords[7] = recordWord(grid->Lights[1], 3);
-                expectedWords[8] = recordWord(grid->Lights[2], 0);
-                expectedWords[9] = recordWord(grid->Lights[2], 2);
+                expectedWords[6] = recordWord(grid->Lights[0], 6);
+                expectedWords[7] = recordWord(grid->Lights[1], 0);
+                expectedWords[8] = recordWord(grid->Lights[1], 6);
+                expectedWords[9] = recordWord(grid->Lights[2], 0);
                 expectedWords[10] = recordWord(grid->Lights[2], 3);
                 expectedWords[11] = recordWord(grid->Lights[2], 4);
-                expectedWords[12] = recordWord(grid->Lights[2], 5);
+                expectedWords[12] = recordWord(grid->Lights[2], 6);
                 expectedWords[13] = scalarWord(grid->GlobalLightIndices, 0);
                 expectedWords[14] = scalarWord(grid->ClusterOffsets, 1);
                 expectedWords[15] = scalarWord(grid->LocalLightIndices, 0);
@@ -3118,13 +3201,447 @@ float4 PSVertexStrideSmoke(RHIVertexStrideOutput input) : SV_Target0
                 && diagnostics.CommitCount == 3;
             const bool payloadProbeOk = cpuGpuExact && reusableSlots;
             Renderer::SetColorPipelineSettings(previousColorSettings);
-            Log::Info("SceneLightPayloadV2 backend=Vulkan layout=versioned-uint4 records=directional-point-spot tables=global-csr-local preExposure=header-scale cpuGpu=",
+            Log::Info("SceneLightPayloadV3 backend=Vulkan layout=versioned-uint4 records=directional-point-spot-prepared tables=global-csr-local preExposure=header-scale cpuGpu=",
                 cpuGpuExact ? "exact-pass" : "fail",
                 " copy=graph staging=cpu-write gpu=structured-copydest slots=4 allocations=",
                 diagnostics.AllocationCount, " reuses=", diagnostics.ReuseCount,
-                " retention=exact-graph-token productionPSMain=preserved lightingEvaluation=no result=",
+                " retention=exact-graph-token productionPSMain=separate lightingEvaluation=not-exercised result=",
                 payloadProbeOk ? "pass" : "fail");
             return payloadProbeOk;
+        }
+        if (directLightingProbeRequested)
+        {
+            using DVec = std::array<double, 3>;
+            constexpr double pi = 3.14159265358979323846;
+            constexpr u32 sampleX = 32;
+            constexpr u32 sampleY = 32;
+            constexpr double sampleCoordinate = 1.0 / 64.0;
+            const DVec surfacePosition { sampleCoordinate, -sampleCoordinate, 0.25 };
+            const DVec surfaceNormal { 0.0, 0.0, -1.0 };
+            const auto dot = [](const DVec& left, const DVec& right)
+            {
+                return left[0] * right[0] + left[1] * right[1]
+                    + left[2] * right[2];
+            };
+            const auto normalize = [&dot](DVec value)
+            {
+                const double length = std::sqrt(dot(value, value));
+                if (!(length > 0.0) || !std::isfinite(length))
+                    return DVec {};
+                for (double& component : value)
+                    component /= length;
+                return value;
+            };
+            const DVec viewDirection = normalize({ -surfacePosition[0],
+                -surfacePosition[1], -surfacePosition[2] });
+            const auto evaluateBrdf = [dot, normalize, surfaceNormal, viewDirection](
+                DVec directionToLight, double incident)
+            {
+                constexpr double localPi = 3.14159265358979323846;
+                constexpr double base = 0.5;
+                constexpr double metallic = 0.0;
+                constexpr double perceptualRoughness = 0.5;
+                const DVec halfVector = normalize({
+                    viewDirection[0] + directionToLight[0],
+                    viewDirection[1] + directionToLight[1],
+                    viewDirection[2] + directionToLight[2]
+                });
+                const double noV = std::clamp(dot(surfaceNormal, viewDirection), 0.0, 1.0);
+                const double noL = std::clamp(dot(surfaceNormal, directionToLight), 0.0, 1.0);
+                const double noH = std::clamp(dot(surfaceNormal, halfVector), 0.0, 1.0);
+                const double voH = std::clamp(dot(viewDirection, halfVector), 0.0, 1.0);
+                const double alpha = perceptualRoughness * perceptualRoughness;
+                const double alphaSquared = alpha * alpha;
+                const double denominator = noH * noH * (alphaSquared - 1.0) + 1.0;
+                const double distribution = alphaSquared
+                    / std::max(localPi * denominator * denominator, 0.000001);
+                const double smithV = noL * std::sqrt(
+                    noV * noV * (1.0 - alphaSquared) + alphaSquared);
+                const double smithL = noV * std::sqrt(
+                    noL * noL * (1.0 - alphaSquared) + alphaSquared);
+                const double visibility = 0.5 / std::max(smithV + smithL, 0.000001);
+                const double fresnel = 0.04 + 0.96 * std::pow(1.0 - voH, 5.0);
+                const double specular = distribution * visibility * fresnel;
+                const double fd90 = 0.5 + 2.0 * alpha * voH * voH;
+                const double lightScatter = 1.0 + (fd90 - 1.0)
+                    * std::pow(1.0 - noL, 5.0);
+                const double viewScatter = 1.0 + (fd90 - 1.0)
+                    * std::pow(1.0 - noV, 5.0);
+                const double diffuse = base * (1.0 - metallic)
+                    * lightScatter * viewScatter / localPi;
+                const double result = noV > 0.0 && noL > 0.0
+                    ? (diffuse + specular) * incident * noL : 0.0;
+                return DVec { result, result, result };
+            };
+            const auto floatToHalf = [](float value)
+            {
+                const u32 bits = std::bit_cast<u32>(value);
+                const u32 sign = (bits >> 16) & 0x8000u;
+                const u32 exponent = (bits >> 23) & 0xffu;
+                const u32 mantissa = bits & 0x7fffffu;
+                if (exponent == 0xffu)
+                    return static_cast<u16>(sign | 0x7c00u
+                        | (mantissa != 0 ? 0x0200u : 0u));
+                const int halfExponent = static_cast<int>(exponent) - 127 + 15;
+                if (halfExponent >= 31)
+                    return static_cast<u16>(sign | 0x7c00u);
+                if (halfExponent <= 0)
+                {
+                    if (halfExponent < -10)
+                        return static_cast<u16>(sign);
+                    u32 subnormal = (mantissa | 0x800000u) >> (1 - halfExponent);
+                    subnormal += 0x0fffu + ((subnormal >> 13) & 1u);
+                    return static_cast<u16>(sign | (subnormal >> 13));
+                }
+                u32 rounded = mantissa + 0x0fffu + ((mantissa >> 13) & 1u);
+                u32 resultExponent = static_cast<u32>(halfExponent);
+                if ((rounded & 0x800000u) != 0)
+                {
+                    rounded = 0;
+                    ++resultExponent;
+                    if (resultExponent >= 31)
+                        return static_cast<u16>(sign | 0x7c00u);
+                }
+                return static_cast<u16>(sign | (resultExponent << 10)
+                    | (rounded >> 13));
+            };
+            const auto halfToDouble = [](u16 value)
+            {
+                const double sign = (value & 0x8000u) != 0 ? -1.0 : 1.0;
+                const u16 exponent = static_cast<u16>((value >> 10) & 0x1fu);
+                const u16 mantissa = static_cast<u16>(value & 0x03ffu);
+                if (exponent == 0)
+                    return sign * std::ldexp(static_cast<double>(mantissa), -24);
+                if (exponent == 31)
+                    return sign * std::numeric_limits<double>::infinity();
+                return sign * std::ldexp(1.0
+                    + static_cast<double>(mantissa) / 1024.0,
+                    static_cast<int>(exponent) - 15);
+            };
+            const auto toneMap = [](DVec color)
+            {
+                for (double& channel : color)
+                    channel = std::min(channel, 6.25);
+                const double minimum = std::min(color[0], std::min(color[1], color[2]));
+                const double offset = minimum < 0.08
+                    ? minimum - 6.25 * minimum * minimum : 0.04;
+                for (double& channel : color)
+                    channel -= offset;
+                const double peak = std::max(color[0], std::max(color[1], color[2]));
+                if (peak >= 0.76)
+                {
+                    const double distance = 0.24;
+                    const double newPeak = 1.0 - distance * distance
+                        / (peak + distance - 0.76);
+                    for (double& channel : color)
+                        channel *= newPeak / peak;
+                    const double amount = 1.0
+                        - 1.0 / (0.15 * (peak - newPeak) + 1.0);
+                    for (double& channel : color)
+                        channel += (newPeak - channel) * amount;
+                }
+                return color;
+            };
+            const auto encode = [](DVec color)
+            {
+                std::array<u8, 3> result {};
+                for (size_t channel = 0; channel < result.size(); ++channel)
+                {
+                    const double value = std::clamp(color[channel], 0.0, 1.0);
+                    const double srgb = value <= 0.0031308 ? value * 12.92
+                        : 1.055 * std::pow(value, 1.0 / 2.4) - 0.055;
+                    result[channel] = static_cast<u8>(std::clamp(
+                        static_cast<int>(std::lround(srgb * 255.0)), 0, 255));
+                }
+                return result;
+            };
+            const auto expectedHalves = [floatToHalf](const DVec& value)
+            {
+                return std::array<u16, 3> {
+                    floatToHalf(static_cast<float>(value[0])),
+                    floatToHalf(static_cast<float>(value[1])),
+                    floatToHalf(static_cast<float>(value[2]))
+                };
+            };
+            const auto actualHalves = [](const RHI::TextureReadback& value)
+            {
+                std::array<u16, 3> result {};
+                if (value.Extent.Width != 64 || value.Extent.Height != 64
+                    || value.TextureFormat != RHI::Format::R16G16B16A16Float
+                    || value.RowPitchBytes < 64u * 8u
+                    || value.Data.size() < static_cast<size_t>(value.RowPitchBytes) * 64u)
+                    return result;
+                const size_t offset = static_cast<size_t>(sampleY)
+                    * value.RowPitchBytes + static_cast<size_t>(sampleX) * 8u;
+                for (size_t channel = 0; channel < result.size(); ++channel)
+                    result[channel] = static_cast<u16>(value.Data[offset + channel * 2u])
+                        | static_cast<u16>(static_cast<u16>(
+                            value.Data[offset + channel * 2u + 1u]) << 8u);
+                return result;
+            };
+            const auto closeHalves = [](const std::array<u16, 3>& left,
+                const std::array<u16, 3>& right)
+            {
+                for (size_t channel = 0; channel < left.size(); ++channel)
+                    if (std::abs(static_cast<int>(left[channel])
+                        - static_cast<int>(right[channel])) > 2)
+                        return false;
+                return true;
+            };
+            const auto ldrMatches = [halfToDouble, toneMap, encode](
+                const RHI::TextureReadback& value,
+                const std::array<u16, 3>& expected)
+            {
+                if (value.Extent.Width != 64 || value.Extent.Height != 64
+                    || value.RowPitchBytes < 64u * 4u
+                    || value.Data.size() < static_cast<size_t>(value.RowPitchBytes) * 64u)
+                    return false;
+                DVec quantized {};
+                for (size_t channel = 0; channel < quantized.size(); ++channel)
+                    quantized[channel] = halfToDouble(expected[channel]);
+                const std::array<u8, 3> expectedBytes = encode(toneMap(quantized));
+                const u8* actual = &value.Data[static_cast<size_t>(sampleY)
+                    * value.RowPitchBytes + static_cast<size_t>(sampleX) * 4u];
+                for (size_t channel = 0; channel < expectedBytes.size(); ++channel)
+                    if (std::abs(static_cast<int>(actual[channel])
+                        - static_cast<int>(expectedBytes[channel])) > 3)
+                        return false;
+                return actual[3] == 255;
+            };
+            const auto actualLdrBytes = [](const RHI::TextureReadback& value)
+            {
+                std::array<u8, 3> result {};
+                if (value.Extent.Width != 64 || value.Extent.Height != 64
+                    || value.RowPitchBytes < 64u * 4u
+                    || value.Data.size() < static_cast<size_t>(value.RowPitchBytes) * 64u)
+                    return result;
+                const u8* actual = &value.Data[static_cast<size_t>(sampleY)
+                    * value.RowPitchBytes + static_cast<size_t>(sampleX) * 4u];
+                std::copy_n(actual, result.size(), result.begin());
+                return result;
+            };
+            const auto expectedLdrBytes = [halfToDouble, toneMap, encode](
+                const std::array<u16, 3>& expected)
+            {
+                DVec quantized {};
+                for (size_t channel = 0; channel < quantized.size(); ++channel)
+                    quantized[channel] = halfToDouble(expected[channel]);
+                return encode(toneMap(quantized));
+            };
+
+            const RHI::TextureReadback zeroHdr = hdrReadback;
+            const RHI::TextureReadback zeroLdr = readback;
+            ClusteredLightGrid zeroGrid;
+            std::string gridError;
+            const bool zeroGridBuilt = BuildClusteredLightGrid(
+                snapshot, 0, 64, 64, {}, zeroGrid, gridError);
+            const auto renderCase = [&](u64 frameIndex,
+                const std::vector<SceneRenderLight>& lights,
+                RHI::TextureReadback& outHdr, RHI::TextureReadback& outLdr,
+                ClusteredLightGrid& outGrid)
+            {
+                snapshot.FrameIndex = frameIndex;
+                snapshot.Lights = lights;
+                Renderer::PublishSceneRenderSnapshot(snapshot);
+                std::string caseGridError;
+                return Renderer::PrepareCurrentSceneRasterFrame()
+                    && BuildClusteredLightGrid(snapshot, 0, 64, 64, {},
+                        outGrid, caseGridError)
+                    && m_VulkanSceneRenderer->RenderCurrentSnapshot(
+                        64, 64, background)
+                    && m_VulkanSceneRenderer->ReadbackHdr(outHdr)
+                    && m_VulkanSceneRenderer->ReadbackColor(outLdr);
+            };
+
+            SceneRenderLight directional;
+            directional.SourceEntity = 20;
+            directional.Transform.Position = view.Camera.TranslationOriginPosition;
+            directional.Color = { 1.0f, 1.0f, 1.0f };
+            directional.PhotometricValue = 1.0;
+            directional.CastsShadows = false;
+            SceneRenderLight point;
+            point.SourceEntity = 21;
+            point.Type = LightType::Point;
+            point.PhotometricUnit = LightPhotometricUnit::Lumens;
+            point.PhotometricValue = pi / 4.0;
+            point.Color = { 1.0f, 1.0f, 1.0f };
+            point.Range = 0.5f;
+            point.CastsShadows = false;
+            if (!Math::TryDecomposeWorldPosition({ sampleCoordinate,
+                    -sampleCoordinate, 0.0 }, snapshot.WorldGridPolicy,
+                    point.Transform.Position))
+                return false;
+            SceneRenderLight spot = point;
+            spot.SourceEntity = 22;
+            spot.Type = LightType::Spot;
+            spot.InnerConeDegrees = 60.0f;
+            spot.OuterConeDegrees = 90.0f;
+            const float authoredInner = std::cos(
+                Math::DegreesToRadians(spot.InnerConeDegrees));
+            const float authoredOuter = std::cos(
+                Math::DegreesToRadians(spot.OuterConeDegrees));
+            const double authoredSpan = static_cast<double>(authoredInner)
+                - static_cast<double>(authoredOuter);
+            const double authoredSolidAngle = 2.0 * pi
+                * ((1.0 - static_cast<double>(authoredInner))
+                    + authoredSpan / 3.0);
+            spot.PhotometricValue = 0.25 * authoredSolidAngle;
+            const double targetCosine = 0.5
+                * (static_cast<double>(authoredInner)
+                    + static_cast<double>(authoredOuter));
+            spot.Transform.RotationDegrees.Y = static_cast<float>(
+                std::acos(targetCosine) * 180.0 / pi);
+
+            RHI::TextureReadback directionalHdr, directionalLdr;
+            RHI::TextureReadback pointHdr, pointLdr;
+            RHI::TextureReadback spotHdr, spotLdr;
+            ClusteredLightGrid directionalGrid, pointGrid, spotGrid;
+            const bool casesRendered = zeroGridBuilt
+                && renderCase(2, { directional }, directionalHdr,
+                    directionalLdr, directionalGrid)
+                && renderCase(3, { point }, pointHdr, pointLdr, pointGrid)
+                && renderCase(4, { spot }, spotHdr, spotLdr, spotGrid);
+            const auto localMembership = [](const ClusteredLightGrid& grid)
+            {
+                if (grid.TileCountX == 0 || grid.TileCountY == 0
+                    || grid.ClusterOffsets.empty())
+                    return false;
+                const u32 depth = grid.SelectDepthSlice(0.25f);
+                const size_t cluster = grid.GetClusterIndex(0, 0, depth);
+                if (cluster + 1 >= grid.ClusterOffsets.size())
+                    return false;
+                for (u32 cursor = grid.ClusterOffsets[cluster];
+                    cursor < grid.ClusterOffsets[cluster + 1]; ++cursor)
+                    if (cursor < grid.LocalLightIndices.size()
+                        && grid.LocalLightIndices[cursor] == 0u)
+                        return true;
+                return false;
+            };
+            const bool gridValid = casesRendered && zeroGrid.Lights.empty()
+                && directionalGrid.GlobalLightIndices == std::vector<u32> { 0u }
+                && localMembership(pointGrid) && localMembership(spotGrid)
+                && zeroGrid.OverflowedLocalLightReferences == 0
+                && directionalGrid.OverflowedLocalLightReferences == 0
+                && pointGrid.OverflowedLocalLightReferences == 0
+                && spotGrid.OverflowedLocalLightReferences == 0;
+
+            const DVec directionalL = { 0.0, 0.0, -1.0 };
+            const DVec wrongDirectionalL = { 0.0, 0.0, 1.0 };
+            const DVec directionalExpected = evaluateBrdf(directionalL, 1.0);
+            const DVec wrongDirectional = evaluateBrdf(wrongDirectionalL, 1.0);
+            DVec localDelta {
+                static_cast<double>(pointGrid.Lights.empty()
+                    ? 0.0f : pointGrid.Lights[0].ViewPosition.X) - surfacePosition[0],
+                static_cast<double>(pointGrid.Lights.empty()
+                    ? 0.0f : pointGrid.Lights[0].ViewPosition.Y) - surfacePosition[1],
+                static_cast<double>(pointGrid.Lights.empty()
+                    ? 0.0f : pointGrid.Lights[0].ViewPosition.Z) - surfacePosition[2]
+            };
+            const double distanceSquared = dot(localDelta, localDelta);
+            const DVec localL = normalize(localDelta);
+            const float inverseRange = 1.0f / point.Range;
+            const double normalizedDistanceSquared = distanceSquared
+                * static_cast<double>(inverseRange) * inverseRange;
+            const double windowBase = std::clamp(1.0
+                - normalizedDistanceSquared * normalizedDistanceSquared, 0.0, 1.0);
+            const double attenuation = windowBase * windowBase
+                / std::max(distanceSquared, 0.0001);
+            const float pointCandela = static_cast<float>(point.PhotometricValue
+                / (4.0 * pi));
+            const DVec pointExpected = evaluateBrdf(localL,
+                static_cast<double>(pointCandela) * attenuation);
+            const DVec pointWithoutSphere = evaluateBrdf(localL,
+                static_cast<double>(static_cast<float>(point.PhotometricValue))
+                    * attenuation);
+            const DVec pointWithoutAttenuation = evaluateBrdf(localL,
+                static_cast<double>(pointCandela));
+
+            const ClusteredLightRecord& packedSpot = spotGrid.Lights.empty()
+                ? ClusteredLightRecord {} : spotGrid.Lights[0];
+            DVec spotEmission { packedSpot.ViewDirection.X,
+                packedSpot.ViewDirection.Y, packedSpot.ViewDirection.Z };
+            spotEmission = normalize(spotEmission);
+            const double spotCosine = dot(spotEmission,
+                { -localL[0], -localL[1], -localL[2] });
+            const double spotSpan = static_cast<double>(packedSpot.InnerConeCosine)
+                - static_cast<double>(packedSpot.OuterConeCosine);
+            const float spotInverseSpan = static_cast<float>(1.0 / spotSpan);
+            const double spotQ = std::clamp((spotCosine
+                    - static_cast<double>(packedSpot.OuterConeCosine))
+                * static_cast<double>(spotInverseSpan), 0.0, 1.0);
+            const double spotOmega = 2.0 * pi
+                * ((1.0 - static_cast<double>(packedSpot.InnerConeCosine))
+                    + spotSpan / 3.0);
+            const float spotCandela = static_cast<float>(
+                spot.PhotometricValue / spotOmega);
+            const double spotBase = static_cast<double>(spotCandela) * attenuation;
+            const DVec spotExpected = evaluateBrdf(localL,
+                spotBase * spotQ * spotQ);
+            const DVec spotLinear = evaluateBrdf(localL, spotBase * spotQ);
+            const DVec spotCubic = evaluateBrdf(localL,
+                spotBase * spotQ * spotQ * (3.0 - 2.0 * spotQ));
+            const DVec spotHard = evaluateBrdf(localL, spotBase);
+            const DVec spotUnnormalized = evaluateBrdf(localL,
+                static_cast<double>(static_cast<float>(spot.PhotometricValue))
+                    * attenuation * spotQ * spotQ);
+
+            const std::array<u16, 3> zeroExpected { 0u, 0u, 0u };
+            const std::array<u16, 3> directionalHalf = expectedHalves(directionalExpected);
+            const std::array<u16, 3> pointHalf = expectedHalves(pointExpected);
+            const std::array<u16, 3> spotHalf = expectedHalves(spotExpected);
+            const std::array<u16, 3> zeroActual = actualHalves(zeroHdr);
+            const std::array<u16, 3> directionalActual = actualHalves(directionalHdr);
+            const std::array<u16, 3> pointActual = actualHalves(pointHdr);
+            const std::array<u16, 3> spotActual = actualHalves(spotHdr);
+            const std::array<u8, 3> zeroLdrActual = actualLdrBytes(zeroLdr);
+            const std::array<u8, 3> directionalLdrActual = actualLdrBytes(directionalLdr);
+            const std::array<u8, 3> pointLdrActual = actualLdrBytes(pointLdr);
+            const std::array<u8, 3> spotLdrActual = actualLdrBytes(spotLdr);
+            const std::array<u8, 3> zeroLdrExpected = expectedLdrBytes(zeroExpected);
+            const std::array<u8, 3> directionalLdrExpected = expectedLdrBytes(directionalHalf);
+            const std::array<u8, 3> pointLdrExpected = expectedLdrBytes(pointHalf);
+            const std::array<u8, 3> spotLdrExpected = expectedLdrBytes(spotHalf);
+            const bool hdrMatches = closeHalves(zeroActual, zeroExpected)
+                && closeHalves(directionalActual, directionalHalf)
+                && closeHalves(pointActual, pointHalf)
+                && closeHalves(spotActual, spotHalf);
+            const bool ldrMatchesAll = ldrMatches(zeroLdr, zeroExpected)
+                && ldrMatches(directionalLdr, directionalHalf)
+                && ldrMatches(pointLdr, pointHalf)
+                && ldrMatches(spotLdr, spotHalf);
+            const bool counterfactualsRejected = !closeHalves(directionalActual,
+                    expectedHalves(wrongDirectional))
+                && !closeHalves(pointActual, expectedHalves(pointWithoutSphere))
+                && !closeHalves(pointActual, expectedHalves(pointWithoutAttenuation))
+                && !closeHalves(spotActual, expectedHalves(spotLinear))
+                && !closeHalves(spotActual, expectedHalves(spotCubic))
+                && !closeHalves(spotActual, expectedHalves(spotHard))
+                && !closeHalves(spotActual, expectedHalves(spotUnnormalized));
+            const bool directLightProbeOk = gridValid && hdrMatches
+                && ldrMatchesAll && counterfactualsRejected;
+            Log::Info("ScenePhotometricDirectLightingDiagnosticsV1 zeroHalf=",
+                zeroActual[0], ",", zeroActual[1], ",", zeroActual[2],
+                " directionalHalf=", directionalActual[0], ",",
+                directionalActual[1], ",", directionalActual[2],
+                " pointHalf=", pointActual[0], ",", pointActual[1], ",",
+                pointActual[2], " spotHalf=", spotActual[0], ",",
+                spotActual[1], ",", spotActual[2], " q=", spotQ,
+                " grid=", gridValid ? "pass" : "fail",
+                " hdr=", hdrMatches ? "pass" : "fail",
+                " ldr=", ldrMatchesAll ? "pass" : "fail",
+                " ldrActual=", static_cast<u32>(zeroLdrActual[0]), ",",
+                static_cast<u32>(directionalLdrActual[0]), ",",
+                static_cast<u32>(pointLdrActual[0]), ",",
+                static_cast<u32>(spotLdrActual[0]),
+                " ldrExpected=", static_cast<u32>(zeroLdrExpected[0]), ",",
+                static_cast<u32>(directionalLdrExpected[0]), ",",
+                static_cast<u32>(pointLdrExpected[0]), ",",
+                static_cast<u32>(spotLdrExpected[0]),
+                " counterfactuals=", counterfactualsRejected ? "rejected" : "fail");
+            Renderer::SetColorPipelineSettings(previousColorSettings);
+            Log::Info("ScenePhotometricDirectLightingV1 backend=Vulkan productionPSMain=exercised types=directional-point-spot units=lux-lumens color=Rec709-luminance-normalized point=lm-over-4pi spot=flux-normalized-squared-cosine distance=inverse-square-smooth-range clusters=bounded-csr direction=emission-forward hdr=independent-half-pass ldr=independent-pass overflow=0 retention=exact-graph-token result=",
+                directLightProbeOk ? "pass" : "fail");
+            return directLightProbeOk;
         }
         if (pbrProbeRequested)
         {
@@ -3384,7 +3901,7 @@ float4 PSVertexStrideSmoke(RHIVertexStrideOutput input) : SV_Target0
                 " roughMetalGolden=", roughMetalGoldenMatch ? "pass" : "fail",
                 " ids=", idsStable ? "pass" : "fail");
             Renderer::SetColorPipelineSettings(previousColorSettings);
-            Log::Info("SceneBasicPbrMaterialIdV1 backend=Vulkan productionPSMain=exercised brdf=GGX-Smith-Schlick-Burley materialIds=stable rowZero=error view=per-pixel-view-space lighting=neutral-preview-nonphotometric sceneLights=unconsumed hdr=float32-unclamped-before-pre-exposed-finite-storage retention=exact-graph-token result=",
+            Log::Info("SceneBasicPbrMaterialIdV2 backend=Vulkan productionPSMain=exercised brdf=GGX-Smith-Schlick-Burley materialIds=stable rowZero=error view=per-pixel-view-space lighting=typed-directional-lux sceneLights=consumed hdr=float32-before-pre-exposed-finite-storage retention=exact-graph-token result=",
                 pbrProbeOk ? "pass" : "fail");
             return pbrProbeOk;
         }

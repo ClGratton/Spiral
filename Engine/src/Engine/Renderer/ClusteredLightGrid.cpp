@@ -202,11 +202,18 @@ namespace Engine
                 || !IsValidLightPhotometricValue(
                     source.Type, source.PhotometricUnit, source.PhotometricValue)
                 || !std::isfinite(source.Range) || source.Range < 0.0f
+                || (source.Type != LightType::Directional && source.Range > 0.0f
+                    && 1.0 / static_cast<double>(source.Range)
+                        > static_cast<double>(std::numeric_limits<float>::max()))
                 || !std::isfinite(source.InnerConeDegrees)
                 || !std::isfinite(source.OuterConeDegrees)
                 || source.InnerConeDegrees < 0.0f
                 || source.OuterConeDegrees < source.InnerConeDegrees
-                || source.OuterConeDegrees > 180.0f)
+                || source.OuterConeDegrees > 180.0f
+                || (source.Type == LightType::Spot
+                    && source.PhotometricValue > 0.0
+                    && std::cos(Math::DegreesToRadians(source.InnerConeDegrees)) == 1.0f
+                    && std::cos(Math::DegreesToRadians(source.OuterConeDegrees)) == 1.0f))
             {
                 outError = "clustered light grid rejected invalid light data";
                 return false;

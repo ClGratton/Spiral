@@ -738,6 +738,7 @@ namespace Engine
             request.CompilerVersion = "2026.13.1";
             request.CompilerPackageHash = GE_SLANG_PACKAGE_SHA256;
             request.DownstreamCompilerPackageHash = GE_DXC_PACKAGE_SHA256;
+            request.Options = { "-O3" };
             request.Defines = { "GE_READ_ONLY_TEXTURE_CAPACITY=" + std::to_string(m_TextureTableCapacity), "GE_SCENE_LIGHT_PAYLOAD=" + std::to_string(stage == RHI::ShaderStage::Pixel ? 1 : 0) };
             request.ExpectedLayout = {
                 { "ViewportConstants", 'b', 0, 0, stage, "ConstantBuffer", "struct{ViewProjection:float32x4x4:row-major@0,NormalTransform:float32x4x4:row-major@64,BaseColorAndAlphaCutoff:float32x4@128,EmissiveAndStrength:float32x4@144,SurfaceFactors:float32x4@160,CallistoFactors:float32x4@176,TextureIndices0:uint32x4@192,TextureIndices1:uint32x4@208,TextureState:uint32x4@224,MaterialState:uint32x4@240,ModelView:float32x4x4:row-major@256,NormalViewTransform:float32x4x4:row-major@320}", 1, 384, 0, 0 },

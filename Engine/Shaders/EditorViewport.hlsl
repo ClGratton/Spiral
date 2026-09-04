@@ -23,26 +23,23 @@ SamplerState ReadOnlySamplers[GE_READ_ONLY_TEXTURE_CAPACITY] : register(s0, spac
 #ifndef GE_SCENE_LIGHT_PAYLOAD
 #define GE_SCENE_LIGHT_PAYLOAD 0
 #endif
-// Fixed renderer-owned Scene payload. PSMain deliberately does not evaluate
-// these lights; the impossible guard retains the declaration for the ABI.
+// Fixed renderer-owned Scene payload. Production PSMain validates and consumes
+// the bounded global/clustered light lists directly from this immutable ABI.
 #if GE_SCENE_LIGHT_PAYLOAD
 StructuredBuffer<uint4> SceneLightPayload : register(t0, space3);
 #endif
 
-float4 StoreSceneLinearHdr(float3 sceneLinear, float alpha)
+float4 StoreSceneLinearHdr(float3 sceneLinear, float alpha, float preExposure)
 {
-    if (!all(isfinite(sceneLinear)) || !isfinite(alpha))
+    if (!all(isfinite(sceneLinear)) || !isfinite(alpha)
+        || !isfinite(preExposure) || !(preExposure > 0.0f))
         return float4(4.0f, 0.0f, 4.0f, 1.0f);
 #if GE_SCENE_LIGHT_PAYLOAD
-    const uint4 header = SceneLightPayload[0];
-    const float scale = asfloat(SceneLightPayload[5].w);
-    const float maximumInput = 65504.0f / scale;
-    if (header.x != 0x504C5347u || header.y != 2u || header.w != 6u
-        || !isfinite(scale) || !(scale > 0.0f)
-        || !isfinite(maximumInput) || !(maximumInput > 0.0f))
+    const float maximumInput = 65504.0f / preExposure;
+    if (!isfinite(maximumInput) || !(maximumInput > 0.0f))
         return float4(4.0f, 0.0f, 4.0f, 1.0f);
     const float3 nonnegative = max(sceneLinear, 0.0f);
-    const float3 exposed = min(nonnegative, maximumInput.xxx) * scale;
+    const float3 exposed = min(nonnegative, maximumInput.xxx) * preExposure;
     return float4(min(exposed, 65504.0f), saturate(alpha));
 #else
     return float4(max(sceneLinear, 0.0f), saturate(alpha));
@@ -116,12 +113,12 @@ float4 PSLightPayloadProbe(VSOutput input) : SV_Target0
     else if (cell == 4u) word = SceneLightPayload[records + 0u];
     else if (cell == 5u) word = SceneLightPayload[records + 1u];
     else if (cell == 6u) word = SceneLightPayload[records + 6u];
-    else if (cell == 7u) word = SceneLightPayload[records + 9u];
-    else if (cell == 8u) word = SceneLightPayload[records + 12u];
+    else if (cell == 7u) word = SceneLightPayload[records + 7u];
+    else if (cell == 8u) word = SceneLightPayload[records + 13u];
     else if (cell == 9u) word = SceneLightPayload[records + 14u];
-    else if (cell == 10u) word = SceneLightPayload[records + 15u];
-    else if (cell == 11u) word = SceneLightPayload[records + 16u];
-    else if (cell == 12u) word = SceneLightPayload[records + 17u];
+    else if (cell == 10u) word = SceneLightPayload[records + 17u];
+    else if (cell == 11u) word = SceneLightPayload[records + 18u];
+    else if (cell == 12u) word = SceneLightPayload[records + 20u];
     else if (cell == 13u) word = SceneLightPayload[header1.z];
     else if (cell == 14u) word = SceneLightPayload[header2.x + 1u];
     else if (cell == 15u) word = SceneLightPayload[header2.z];
@@ -142,12 +139,260 @@ float3 NormalizeOrFallback(float3 value, float3 fallback)
         ? scaled * rsqrt(lengthSquared) : fallback;
 }
 
+#if GE_SCENE_LIGHT_PAYLOAD
+struct SceneLightHeader
+{
+    uint Length;
+    uint LightCount;
+    uint DirectionalOffset;
+    uint DirectionalCount;
+    uint OffsetsOffset;
+    uint OffsetCount;
+    uint LocalOffset;
+    uint LocalCount;
+    uint ViewportWidth;
+    uint ViewportHeight;
+    uint TileSize;
+    uint DepthSliceCount;
+    uint TileCountX;
+    uint TileCountY;
+    uint MaximumLocalLights;
+    float NearClip;
+    float FarClip;
+    float PreExposure;
+};
+
+bool ValidateSceneLightPayload(out SceneLightHeader header)
+{
+    header = (SceneLightHeader)0;
+    uint length, stride;
+    SceneLightPayload.GetDimensions(length, stride);
+    if (stride != 16u || length < 6u || length > 4194304u)
+        return false;
+    const uint4 h0 = SceneLightPayload[0];
+    const uint4 h1 = SceneLightPayload[1];
+    const uint4 h2 = SceneLightPayload[2];
+    const uint4 h3 = SceneLightPayload[3];
+    const uint4 h4 = SceneLightPayload[4];
+    const uint4 h5 = SceneLightPayload[5];
+    if (h0.x != 0x504C5347u || h0.y != 3u || h0.z != length
+        || h0.w != 6u || h1.x != 6u || h5.z != 7u
+        || h1.w > 16u || h1.w > h1.y || h5.x == 0u || h5.x > 64u
+        || h3.x == 0u || h3.y == 0u || h3.z == 0u || h3.z > 4096u
+        || h3.w == 0u || h3.w > 128u || h4.x == 0u || h4.y == 0u)
+        return false;
+    const float nearClip = asfloat(h4.z);
+    const float farClip = asfloat(h4.w);
+    const float preExposure = asfloat(h5.w);
+    if (!isfinite(nearClip) || !isfinite(farClip) || !(nearClip > 0.0f)
+        || !(farClip > nearClip) || !isfinite(preExposure) || !(preExposure > 0.0f))
+        return false;
+
+    if (h1.y > (length - 6u) / 7u)
+        return false;
+    const uint recordsEnd = 6u + h1.y * 7u;
+    if (recordsEnd != h1.z)
+        return false;
+
+    const uint maximumScalarCount = length * 4u;
+    if (h2.y > maximumScalarCount || h2.w > maximumScalarCount)
+        return false;
+    const uint directionalWords = (h1.w + 3u) / 4u;
+    const uint offsetWords = (h2.y + 3u) / 4u;
+    const uint localWords = (h2.w + 3u) / 4u;
+    if (h1.z > length || directionalWords > length - h1.z
+        || h2.x != h1.z + directionalWords || h2.x > length
+        || offsetWords > length - h2.x
+        || h2.z != h2.x + offsetWords || h2.z > length
+        || localWords != length - h2.z)
+        return false;
+
+    if (h4.x != 1u + (h3.x - 1u) / h3.z
+        || h4.y != 1u + (h3.y - 1u) / h3.z
+        || h4.y > 4194304u / h4.x)
+        return false;
+    const uint tileCount = h4.x * h4.y;
+    if (h3.w > 4194304u / tileCount)
+        return false;
+    const uint clusterCount = tileCount * h3.w;
+    if (h2.y != clusterCount + 1u
+        || h2.w > clusterCount * h5.x)
+        return false;
+
+    header.Length = length;
+    header.LightCount = h1.y;
+    header.DirectionalOffset = h1.z;
+    header.DirectionalCount = h1.w;
+    header.OffsetsOffset = h2.x;
+    header.OffsetCount = h2.y;
+    header.LocalOffset = h2.z;
+    header.LocalCount = h2.w;
+    header.ViewportWidth = h3.x;
+    header.ViewportHeight = h3.y;
+    header.TileSize = h3.z;
+    header.DepthSliceCount = h3.w;
+    header.TileCountX = h4.x;
+    header.TileCountY = h4.y;
+    header.MaximumLocalLights = h5.x;
+    header.NearClip = nearClip;
+    header.FarClip = farClip;
+    header.PreExposure = preExposure;
+    return true;
+}
+
+uint LoadPackedScalar(uint sectionOffset, uint scalarIndex)
+{
+    return SceneLightPayload[sectionOffset + scalarIndex / 4u][scalarIndex % 4u];
+}
+
+bool TryNormalizeDirection(float3 value, out float3 normalized)
+{
+    normalized = 0.0f.xxx;
+    if (!all(isfinite(value)))
+        return false;
+    const float largest = max(abs(value.x), max(abs(value.y), abs(value.z)));
+    if (!(largest > 0.0f))
+        return false;
+    const float3 scaled = value / largest;
+    const float lengthSquared = dot(scaled, scaled);
+    if (!isfinite(lengthSquared) || !(lengthSquared > 0.0f))
+        return false;
+    normalized = scaled * rsqrt(lengthSquared);
+    return all(isfinite(normalized));
+}
+#endif
+
+float3 EvaluateDirectBrdf(float3 surfaceBaseColor, float metallic,
+    float perceptualRoughness, float3 N, float3 V, float3 L,
+    float3 incidentIlluminance)
+{
+    const float NoV = saturate(dot(N, V));
+    const float NoL = saturate(dot(N, L));
+    if (!(NoV > 0.0f) || !(NoL > 0.0f))
+        return 0.0f.xxx;
+    const float3 H = NormalizeOrFallback(V + L, N);
+    const float NoH = saturate(dot(N, H));
+    const float VoH = saturate(dot(V, H));
+    const float alphaRoughness = perceptualRoughness * perceptualRoughness;
+    const float alphaSquared = alphaRoughness * alphaRoughness;
+    const float distributionDenominator = NoH * NoH * (alphaSquared - 1.0f) + 1.0f;
+    const float D = alphaSquared / max(3.14159265359f
+        * distributionDenominator * distributionDenominator, 0.000001f);
+    const float smithV = NoL * sqrt(NoV * NoV * (1.0f - alphaSquared) + alphaSquared);
+    const float smithL = NoV * sqrt(NoL * NoL * (1.0f - alphaSquared) + alphaSquared);
+    const float visibility = 0.5f / max(smithV + smithL, 0.000001f);
+    const float3 F0 = lerp(0.04f.xxx, surfaceBaseColor, metallic);
+    const float fresnelFactor = pow(1.0f - VoH, 5.0f);
+    const float3 F = F0 + (1.0f - F0) * fresnelFactor;
+    const float3 specularBrdf = D * visibility * F;
+    const float fd90 = 0.5f + 2.0f * alphaRoughness * VoH * VoH;
+    const float lightScatter = 1.0f + (fd90 - 1.0f) * pow(1.0f - NoL, 5.0f);
+    const float viewScatter = 1.0f + (fd90 - 1.0f) * pow(1.0f - NoV, 5.0f);
+    const float3 diffuseBrdf = surfaceBaseColor * (1.0f - metallic)
+        * lightScatter * viewScatter / 3.14159265359f;
+    return (diffuseBrdf + specularBrdf) * incidentIlluminance * NoL;
+}
+
+#if GE_SCENE_LIGHT_PAYLOAD
+bool EvaluateSceneLightRecord(uint lightIndex, bool requireDirectional,
+    float3 viewPosition, float3 surfaceBaseColor, float metallic,
+    float perceptualRoughness, float3 N, float3 V, inout float3 direct)
+{
+    const uint base = 6u + lightIndex * 7u;
+    const uint4 meta = SceneLightPayload[base];
+    const float photometricValue = asfloat(SceneLightPayload[base + 1u].z);
+    const float4 positionAndRange = asfloat(SceneLightPayload[base + 2u]);
+    const float4 worldDirectionAndInner = asfloat(SceneLightPayload[base + 3u]);
+    const float4 viewDirectionAndOuter = asfloat(SceneLightPayload[base + 4u]);
+    const float4 authoredColorAndInverseSpan = asfloat(SceneLightPayload[base + 5u]);
+    const float4 coefficientAndInverseRange = asfloat(SceneLightPayload[base + 6u]);
+    if (meta.x == 0u || meta.w > 1u || !isfinite(photometricValue)
+        || photometricValue < 0.0f || !all(isfinite(positionAndRange))
+        || !all(isfinite(worldDirectionAndInner)) || !all(isfinite(viewDirectionAndOuter))
+        || !all(isfinite(authoredColorAndInverseSpan))
+        || !all(isfinite(coefficientAndInverseRange))
+        || any(authoredColorAndInverseSpan.xyz < 0.0f)
+        || any(coefficientAndInverseRange.xyz < 0.0f)
+        || positionAndRange.w < 0.0f || authoredColorAndInverseSpan.w < 0.0f
+        || coefficientAndInverseRange.w < 0.0f)
+        return false;
+
+    if (requireDirectional)
+    {
+        if (meta.y != 0u || meta.z != 0u
+            || authoredColorAndInverseSpan.w != 0.0f
+            || coefficientAndInverseRange.w != 0.0f)
+            return false;
+        float3 emission;
+        if (!TryNormalizeDirection(viewDirectionAndOuter.xyz, emission))
+            return false;
+        const float3 contribution = EvaluateDirectBrdf(surfaceBaseColor, metallic,
+            perceptualRoughness, N, V, -emission, coefficientAndInverseRange.xyz);
+        direct += contribution;
+        return all(isfinite(direct));
+    }
+
+    if ((meta.y != 1u && meta.y != 2u) || meta.z != 1u)
+        return false;
+    const float range = positionAndRange.w;
+    const float inverseRange = coefficientAndInverseRange.w;
+    if ((range == 0.0f) != (inverseRange == 0.0f))
+        return false;
+    if (meta.y == 1u && authoredColorAndInverseSpan.w != 0.0f)
+        return false;
+    if (meta.y == 2u)
+    {
+        const float inner = worldDirectionAndInner.w;
+        const float outer = viewDirectionAndOuter.w;
+        if (inner < -1.0f || inner > 1.0f || outer < -1.0f
+            || outer > 1.0f || inner < outer
+            || (inner == 1.0f && outer == 1.0f && photometricValue > 0.0f)
+            || ((inner > outer) != (authoredColorAndInverseSpan.w > 0.0f)))
+            return false;
+    }
+    const float3 delta = positionAndRange.xyz - viewPosition;
+    const float distanceSquared = dot(delta, delta);
+    if (!isfinite(distanceSquared) || !(distanceSquared > 0.0f) || !(range > 0.0f))
+        return isfinite(distanceSquared) && distanceSquared >= 0.0f;
+    const float distance = sqrt(distanceSquared);
+    const float3 L = delta / distance;
+    const float distanceOverRangeSquared = distanceSquared * inverseRange * inverseRange;
+    const float rangeWindowBase = saturate(1.0f
+        - distanceOverRangeSquared * distanceOverRangeSquared);
+    float attenuation = rangeWindowBase * rangeWindowBase
+        / max(distanceSquared, 0.0001f);
+    if (meta.y == 2u)
+    {
+        float3 emission;
+        if (!TryNormalizeDirection(viewDirectionAndOuter.xyz, emission))
+            return false;
+        const float inner = worldDirectionAndInner.w;
+        const float outer = viewDirectionAndOuter.w;
+        const float angular = inner == outer
+            ? (dot(emission, -L) >= outer ? 1.0f : 0.0f)
+            : saturate((dot(emission, -L) - outer)
+                * authoredColorAndInverseSpan.w);
+        attenuation *= inner == outer ? angular : angular * angular;
+    }
+    direct += EvaluateDirectBrdf(surfaceBaseColor, metallic,
+        perceptualRoughness, N, V, L, coefficientAndInverseRange.xyz * attenuation);
+    return all(isfinite(direct));
+}
+#endif
+
 float4 PSMain(VSOutput input) : SV_Target0
 {
+    float preExposure = 1.0f;
+#if GE_SCENE_LIGHT_PAYLOAD
+    SceneLightHeader lightHeader;
+    if (!ValidateSceneLightPayload(lightHeader))
+        return float4(4.0f, 0.0f, 4.0f, 1.0f);
+    preExposure = lightHeader.PreExposure;
+#endif
     // Row zero is never a persistent material identity. It is a deliberately
     // obvious deterministic error result in scene-linear HDR.
     if (MaterialState.x == 0u || MaterialState.y != 0u)
-        return StoreSceneLinearHdr(float3(4.0f, 0.0f, 4.0f), 1.0f);
+        return StoreSceneLinearHdr(float3(4.0f, 0.0f, 4.0f), 1.0f, preExposure);
 
     const float2 uv = input.UV;
     const uint declared = TextureState.x;
@@ -175,59 +420,62 @@ float4 PSMain(VSOutput input) : SV_Target0
         * max(EmissiveAndStrength.a, 0.0f) * emissiveSample;
     if (TextureState.w == 1u)
         return StoreSceneLinearHdr(baseColor + emissive,
-            TextureState.z == 2u ? alpha : 1.0f);
+            TextureState.z == 2u ? alpha : 1.0f, preExposure);
 
     const float3 N = NormalizeOrFallback(input.ViewNormal, float3(0.0f, 0.0f, -1.0f));
     const float3 V = NormalizeOrFallback(-input.ViewPosition, N);
-    // Deterministic neutral preview illumination for the basic-PBR slice.
-    // These are renderer-owned non-photometric values; Scene light payloads
-    // intentionally remain unconsumed until the light-evaluation roadmap item.
-    const float3 neutralPreviewDirectionToLightView = normalize(float3(0.96f, 0.0f, -0.28f));
-    const float3 neutralPreviewRadiance = float3(4.0f, 4.0f, 4.0f);
-    const float3 H = NormalizeOrFallback(V + neutralPreviewDirectionToLightView, N);
-    const float NoV = saturate(dot(N, V));
-    const float NoL = saturate(dot(N, neutralPreviewDirectionToLightView));
-    const float NoH = saturate(dot(N, H));
-    const float VoH = saturate(dot(V, H));
+#if GE_SCENE_LIGHT_PAYLOAD
+    float3 direct = 0.0f.xxx;
+    [loop] for (uint i = 0u; i < lightHeader.DirectionalCount; ++i)
+    {
+        const uint index = LoadPackedScalar(lightHeader.DirectionalOffset, i);
+        if (index >= lightHeader.LightCount || !EvaluateSceneLightRecord(index,
+            true, input.ViewPosition, surfaceBaseColor, metallic,
+            perceptualRoughness, N, V, direct))
+            return StoreSceneLinearHdr(float3(4.0f, 0.0f, 4.0f), 1.0f, preExposure);
+    }
 
-    // Trowbridge-Reitz GGX NDF using the accepted Filament convention:
-    // perceptual p=max(saturate(r), 0.045), then alpha=p*p.
-    const float alphaRoughness = perceptualRoughness * perceptualRoughness;
-    const float alphaSquared = alphaRoughness * alphaRoughness;
-    const float distributionDenominator = NoH * NoH * (alphaSquared - 1.0f) + 1.0f;
-    const float D = alphaSquared / max(3.14159265359f
-        * distributionDenominator * distributionDenominator, 0.000001f);
-
-    // Height-correlated Smith GGX visibility (the 1/(4 NoL NoV) term is
-    // already included in this form).
-    const float smithV = NoL * sqrt(NoV * NoV * (1.0f - alphaSquared) + alphaSquared);
-    const float smithL = NoV * sqrt(NoL * NoL * (1.0f - alphaSquared) + alphaSquared);
-    const float visibility = 0.5f / max(smithV + smithL, 0.000001f);
-
-    // Schlick Fresnel with dielectric F0=0.04, tinted by base color for metals.
-    const float3 F0 = lerp(0.04f.xxx, surfaceBaseColor, metallic);
-    const float fresnelFactor = pow(1.0f - VoH, 5.0f);
-    const float3 F = F0 + (1.0f - F0) * fresnelFactor;
-    const float3 specularBrdf = D * visibility * F;
-
-    // Disney/Burley diffuse baseline using Filament's remapped alpha in Fd90.
-    // This slice deliberately uses base*(1-metal)*Fd_Burley with no additional
-    // (1-F) coupling.
-    const float fd90 = 0.5f + 2.0f * alphaRoughness * VoH * VoH;
-    const float lightScatter = 1.0f + (fd90 - 1.0f) * pow(1.0f - NoL, 5.0f);
-    const float viewScatter = 1.0f + (fd90 - 1.0f) * pow(1.0f - NoV, 5.0f);
-    const float3 diffuseBrdf = surfaceBaseColor * (1.0f - metallic)
-        * lightScatter * viewScatter / 3.14159265359f;
-    // The ORM occlusion channel is reserved for a future indirect-light term;
-    // it does not attenuate this direct neutral preview light.
-    const float3 direct = NoV > 0.0f && NoL > 0.0f
-        ? (diffuseBrdf + specularBrdf) * neutralPreviewRadiance * NoL
-        : 0.0f.xxx;
+    if (!all(isfinite(input.Position.xy)) || !isfinite(input.ViewPosition.z))
+        return StoreSceneLinearHdr(float3(4.0f, 0.0f, 4.0f), 1.0f, preExposure);
+    const uint tileX = min((uint)max(input.Position.x, 0.0f)
+        / lightHeader.TileSize, lightHeader.TileCountX - 1u);
+    const uint tileY = min((uint)max(input.Position.y, 0.0f)
+        / lightHeader.TileSize, lightHeader.TileCountY - 1u);
+    const float clampedDepth = clamp(input.ViewPosition.z,
+        lightHeader.NearClip, lightHeader.FarClip);
+    const float normalizedDepth = log(clampedDepth / lightHeader.NearClip)
+        / log(lightHeader.FarClip / lightHeader.NearClip);
+    if (!isfinite(normalizedDepth))
+        return StoreSceneLinearHdr(float3(4.0f, 0.0f, 4.0f), 1.0f, preExposure);
+    const uint depthSlice = min((uint)(saturate(normalizedDepth)
+        * lightHeader.DepthSliceCount), lightHeader.DepthSliceCount - 1u);
+    const uint clusterIndex = (depthSlice * lightHeader.TileCountY + tileY)
+        * lightHeader.TileCountX + tileX;
+    const uint begin = LoadPackedScalar(lightHeader.OffsetsOffset, clusterIndex);
+    const uint end = LoadPackedScalar(lightHeader.OffsetsOffset, clusterIndex + 1u);
+    if (begin > end || end > lightHeader.LocalCount
+        || end - begin > lightHeader.MaximumLocalLights || end - begin > 64u)
+        return StoreSceneLinearHdr(float3(4.0f, 0.0f, 4.0f), 1.0f, preExposure);
+    [loop] for (uint cursor = begin; cursor < end; ++cursor)
+    {
+        const uint index = LoadPackedScalar(lightHeader.LocalOffset, cursor);
+        if (index >= lightHeader.LightCount || !EvaluateSceneLightRecord(index,
+            false, input.ViewPosition, surfaceBaseColor, metallic,
+            perceptualRoughness, N, V, direct))
+            return StoreSceneLinearHdr(float3(4.0f, 0.0f, 4.0f), 1.0f, preExposure);
+    }
     const float3 shaded = direct + emissive;
+#else
+    // Shader-tool probes without the Scene payload retain deterministic
+    // illumination, but every production Scene permutation defines it.
+    const float3 previewL = normalize(float3(0.96f, 0.0f, -0.28f));
+    const float3 shaded = EvaluateDirectBrdf(surfaceBaseColor, metallic,
+        perceptualRoughness, N, V, previewL, 4.0f.xxx) + emissive;
+#endif
     const float3 finiteShaded = all(isfinite(shaded))
         ? max(shaded, 0.0f) : float3(4.0f, 0.0f, 4.0f);
     return StoreSceneLinearHdr(finiteShaded,
-        TextureState.z == 2u ? alpha : 1.0f);
+        TextureState.z == 2u ? alpha : 1.0f, preExposure);
 }
 
 // Native cross-backend acceptance entry point. Each eight-pixel cell exposes
