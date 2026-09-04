@@ -2853,7 +2853,7 @@ namespace Engine::RHI
                 profile.RequiredFormats.push_back({ Format::D32Float, FormatUsage::DepthStencil });
                 profile.RequiredFormats.push_back({
                     Format::R16G16B16A16Float,
-                    FormatUsage::Sampled | FormatUsage::ColorAttachment
+                    FormatUsage::Sampled | FormatUsage::ColorAttachment | FormatUsage::CopySource
                 });
                 return profile;
             }

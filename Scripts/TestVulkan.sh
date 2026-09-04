@@ -222,6 +222,42 @@ for ((ATTEMPT = 1; ATTEMPT <= ITERATIONS; ++ATTEMPT)); do
         exit 1
     fi
 
+    PBR_LOG="$LOG_BASE-basic-pbr-attempt-$ATTEMPT.log"
+    set +e
+    (cd "$ROOT" && perl -e '
+        my $timeout = shift;
+        my $child = fork();
+        die "fork failed: $!\n" unless defined $child;
+        if ($child == 0) {
+            setpgrp(0, 0) or die "setpgrp failed: $!\n";
+            exec @ARGV or die "exec failed: $!\n";
+        }
+        $SIG{ALRM} = sub {
+            warn "Vulkan basic-PBR child timed out after ${timeout}s; terminating process group\n";
+            kill "TERM", -$child;
+            sleep 1;
+            kill "KILL", -$child;
+            waitpid($child, 0);
+            exit 124;
+        };
+        alarm $timeout;
+        waitpid($child, 0);
+        alarm 0;
+        my $status = $?;
+        exit(128 + ($status & 127)) if $status & 127;
+        exit($status >> 8);
+    ' "$CHILD_TIMEOUT_SECONDS" "$EDITOR" --vulkan-render-smoke --vulkan-scene-viewport-raster-smoke --scene-basic-pbr-material-id-smoke) 2>&1 | tee "$PBR_LOG"
+    PBR_STATUS=${PIPESTATUS[0]}
+    set -e
+    if [[ $PBR_STATUS -ne 0 ]]; then
+        echo "Dedicated Vulkan basic-PBR smoke failed with exit code $PBR_STATUS on attempt $ATTEMPT/$ITERATIONS." >&2
+        exit "$PBR_STATUS"
+    fi
+    if ! grep -Fq 'SceneBasicPbrMaterialIdV1 backend=Vulkan productionPSMain=exercised brdf=GGX-Smith-Schlick-Burley materialIds=stable rowZero=error view=per-pixel-view-space lighting=neutral-preview-nonphotometric sceneLights=unconsumed hdr=unclamped retention=exact-graph-token result=pass' "$PBR_LOG"; then
+        echo "Dedicated Vulkan basic-PBR smoke did not prove the production BRDF/material-ID contract." >&2
+        exit 1
+    fi
+
     for MARKER in "${REQUIRED_MARKERS[@]}"; do
         if ! grep -Fq "$MARKER" "$LOG_FILE"; then
             echo "Vulkan render smoke did not emit required marker on attempt $ATTEMPT/$ITERATIONS: $MARKER" >&2

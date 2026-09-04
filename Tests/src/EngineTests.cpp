@@ -3983,6 +3983,7 @@ namespace
         const bool blockLayout = RHI::CalculateTextureSubresourceStorage(RHI::Format::BC7Unorm, { 7, 5 }, rowPitch, byteCount)
             && rowPitch == 32 && byteCount == 64
             && RHI::IsTextureReadbackFormatSupported(RHI::Format::R8G8B8A8Unorm)
+            && RHI::IsTextureReadbackFormatSupported(RHI::Format::R16G16B16A16Float)
             && RHI::IsTextureReadbackFormatSupported(RHI::Format::BC5Unorm)
             && RHI::IsTextureReadbackFormatSupported(RHI::Format::BC7UnormSrgb)
             && !RHI::IsTextureReadbackFormatSupported(RHI::Format::R8Unorm)
@@ -4771,23 +4772,53 @@ namespace
 
         MaterialTextureBindingSet bindings;
         bindings.Material = firstFrame.MaterialRows[instance.MaterialId].Material;
-        const SceneSurfaceConstants constants = BuildSceneSurfaceConstants(instance, bindings, false);
+        SceneSurfaceConstants constants;
+        const bool constantsBuilt = TryBuildSceneSurfaceConstants(instance, bindings, false, constants);
         const auto errorInstance = std::find_if(firstFrame.Instances.begin(), firstFrame.Instances.end(),
             [](const SceneRasterInstance& candidate) { return candidate.MaterialId == 0; });
         MaterialTextureBindingSet errorBindings;
         errorBindings.Material = firstFrame.MaterialRows[0].Material;
-        const SceneSurfaceConstants errorConstants = errorInstance == firstFrame.Instances.end()
-            ? SceneSurfaceConstants {}
-            : BuildSceneSurfaceConstants(*errorInstance, errorBindings, true);
-        const bool constantBoundary = sizeof(SceneSurfaceConstants) == 256
+        SceneSurfaceConstants errorConstants;
+        const bool errorConstantsBuilt = errorInstance != firstFrame.Instances.end()
+            && TryBuildSceneSurfaceConstants(*errorInstance, errorBindings, true, errorConstants);
+        SceneSurfaceConstants preservedConstants;
+        preservedConstants.MaterialState[0] = 91;
+        MaterialTextureBindingSet invalidBindings = bindings;
+        invalidBindings.Material.Roughness = std::numeric_limits<float>::quiet_NaN();
+        const bool nonfiniteRejected = !TryBuildSceneSurfaceConstants(
+            instance, invalidBindings, false, preservedConstants)
+            && preservedConstants.MaterialState[0] == 91;
+        invalidBindings = bindings;
+        invalidBindings.Material.BaseColor.X = 1.01f;
+        const bool invalidBaseColorRejected = !TryBuildSceneSurfaceConstants(
+            instance, invalidBindings, false, preservedConstants)
+            && preservedConstants.MaterialState[0] == 91;
+        invalidBindings = bindings;
+        invalidBindings.Material.AlphaMode = static_cast<MaterialAlphaMode>(99);
+        const bool invalidAlphaModeRejected = !TryBuildSceneSurfaceConstants(
+            instance, invalidBindings, false, preservedConstants)
+            && preservedConstants.MaterialState[0] == 91;
+        invalidBindings = bindings;
+        invalidBindings.Material.ShadingModel = static_cast<MaterialShadingModel>(99);
+        const bool invalidShadingModelRejected = !TryBuildSceneSurfaceConstants(
+            instance, invalidBindings, false, preservedConstants)
+            && preservedConstants.MaterialState[0] == 91;
+        const bool constantBoundary = constantsBuilt && errorConstantsBuilt
+            && sizeof(SceneSurfaceConstants) == 384
             && offsetof(SceneSurfaceConstants, NormalTransform) == 64
             && offsetof(SceneSurfaceConstants, BaseColorAndAlphaCutoff) == 128
             && offsetof(SceneSurfaceConstants, MaterialState) == 240
+            && offsetof(SceneSurfaceConstants, ModelView) == 256
+            && offsetof(SceneSurfaceConstants, NormalViewTransform) == 320
             && constants.NormalTransform[0] == instance.NormalTransform.Values[0]
             && constants.NormalTransform[5] == instance.NormalTransform.Values[5]
+            && constants.ModelView[0] == instance.ModelView.Values[0]
+            && constants.NormalViewTransform[5] == instance.NormalViewTransform.Values[5]
             && constants.MaterialState[0] == instance.MaterialId && constants.MaterialState[1] == 0
             && errorConstants.MaterialState[0] == 0 && errorConstants.MaterialState[1] == 1
-            && errorConstants.MaterialState[2] == 0 && errorConstants.MaterialState[3] == 0;
+            && errorConstants.MaterialState[2] == 0 && errorConstants.MaterialState[3] == 0
+            && nonfiniteRejected && invalidBaseColorRejected
+            && invalidAlphaModeRejected && invalidShadingModelRejected;
         const bool singularWholeFrameRejected = !singularFrame.HasValidView
             && singularFrame.Instances.empty() && singularFrame.MaterialRows.empty();
         return Expect(stableRows,
@@ -4795,7 +4826,80 @@ namespace
             && Expect(normalTransformValid && singularWholeFrameRejected,
                 "nonuniform scale publishes the row-vector inverse-transpose while any singular mesh rejects the complete prepared frame")
             && Expect(constantBoundary,
-                "the exact 256-byte Scene constants carry valid rows and the explicit zero/one/zero/zero error state");
+                "the exact 384-byte Scene payload carries model/view data, bounded finite material rows, valid enums, and the explicit zero/one/zero/zero error state");
+    }
+
+    bool TestBasicPbrCpuReferenceUsesAcceptedConvention()
+    {
+        using Vec = std::array<double, 3>;
+        const auto dot = [](const Vec& a, const Vec& b)
+        { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; };
+        const auto normalize = [&dot](Vec value)
+        {
+            const double length = std::sqrt(dot(value, value));
+            for (double& component : value)
+                component /= length;
+            return value;
+        };
+        const auto evaluate = [dot, normalize](Vec baseColor, double metallic,
+            double roughness, double viewX)
+        {
+            constexpr double pi = 3.14159265358979323846;
+            const Vec normal { 0.0, 0.0, -1.0 };
+            const Vec light { 0.96, 0.0, -0.28 };
+            const Vec view = normalize({ -viewX, -0.03125, -0.25 });
+            const Vec halfVector = normalize({
+                view[0] + light[0], view[1] + light[1], view[2] + light[2]
+            });
+            const double noV = std::clamp(dot(normal, view), 0.0, 1.0);
+            const double noL = std::clamp(dot(normal, light), 0.0, 1.0);
+            const double noH = std::clamp(dot(normal, halfVector), 0.0, 1.0);
+            const double voH = std::clamp(dot(view, halfVector), 0.0, 1.0);
+            const double perceptual = std::max(std::clamp(roughness, 0.0, 1.0), 0.045);
+            const double alpha = perceptual * perceptual;
+            const double alphaSquared = alpha * alpha;
+            const double denominator = noH * noH * (alphaSquared - 1.0) + 1.0;
+            const double distribution = alphaSquared / (pi * denominator * denominator);
+            const double visibility = 0.5 / (
+                noL * std::sqrt(noV * noV * (1.0 - alphaSquared) + alphaSquared)
+                + noV * std::sqrt(noL * noL * (1.0 - alphaSquared) + alphaSquared));
+            const double fresnelFactor = std::pow(1.0 - voH, 5.0);
+            const double fd90 = 0.5 + 2.0 * alpha * voH * voH;
+            const double lightScatter = 1.0 + (fd90 - 1.0) * std::pow(1.0 - noL, 5.0);
+            const double viewScatter = 1.0 + (fd90 - 1.0) * std::pow(1.0 - noV, 5.0);
+            Vec result {};
+            for (size_t channel = 0; channel < result.size(); ++channel)
+            {
+                const double f0 = 0.04 * (1.0 - metallic) + baseColor[channel] * metallic;
+                const double fresnel = f0 + (1.0 - f0) * fresnelFactor;
+                const double specular = distribution * visibility * fresnel;
+                const double diffuse = baseColor[channel] * (1.0 - metallic)
+                    * lightScatter * viewScatter / pi;
+                result[channel] = (diffuse + specular) * 4.0 * noL;
+            }
+            return result;
+        };
+
+        const Vec roughDielectric = evaluate(
+            { 0.62, 0.18, 0.055 }, 0.0, 0.83, 7.5 / 32.0 - 1.0);
+        const Vec blueMetal = evaluate(
+            { 0.12, 0.55, 0.90 }, 1.0, 0.52, 39.5 / 32.0 - 1.0);
+        const bool dielectricReference = std::abs(roughDielectric[0] - 0.3026868496343908) < 1e-12
+            && std::abs(roughDielectric[1] - 0.09407282386218895) < 1e-12
+            && std::abs(roughDielectric[2] - 0.0348074756314498) < 1e-12;
+        const bool metallicReference = std::abs(blueMetal[0] - 0.17829592959190155) < 1e-12
+            && std::abs(blueMetal[1] - 0.7070486432332693) < 1e-12
+            && std::abs(blueMetal[2] - 1.1374287589878709) < 1e-12
+            && blueMetal[2] > 1.0;
+        const Vec zeroRoughness = evaluate(
+            { 0.5, 0.5, 0.5 }, 0.0, 0.0, 7.5 / 32.0 - 1.0);
+        const Vec belowFloor = evaluate(
+            { 0.5, 0.5, 0.5 }, 0.0, 0.02, 7.5 / 32.0 - 1.0);
+        const bool exactFloor = zeroRoughness == belowFloor;
+        return Expect(dielectricReference && metallicReference,
+                "the independent CPU reference pins GGX, correlated Smith, Schlick F0, alpha-remapped Burley, and unclamped HDR")
+            && Expect(exactFloor,
+                "perceptual roughness values below 0.045 share the accepted analytical-light alpha floor");
     }
 
     bool TestClusteredLightGridBuildsBoundedDeterministicAssignments()
@@ -9612,6 +9716,7 @@ int main(int argc, char** argv)
         FAST_TEST("Per-view sector-snapped origin tracking", TestPerViewSectorSnappedOriginTracking),
         FAST_TEST("Scene raster origin epoch invariance", TestSceneRasterOriginEpochInvariance),
         FAST_TEST("Scene surface basis and material rows publish deterministically", TestSceneSurfaceBasisAndMaterialRows),
+        FAST_TEST("Basic PBR CPU reference uses accepted convention", TestBasicPbrCpuReferenceUsesAcceptedConvention),
         FAST_TEST("Clustered light grid builds bounded deterministic assignments", TestClusteredLightGridBuildsBoundedDeterministicAssignments),
         INTEGRATION_TEST("Photometric light schema publication and diagnostics are transactional", TestPhotometricLightAuthoringPublicationAndDiagnostics),
         FAST_TEST("Scene render snapshot extraction and retained epochs", TestSceneRenderSnapshotExtractionAndRetainedEpochs),

@@ -140,10 +140,12 @@ namespace Engine
                 Math::DegreesToRadians(mesh.Transform.RotationDegrees.Z));
             const Math::Mat4 translation = Math::Translation(instance.CameraRelativePosition);
             instance.CameraRelativeModel = Math::Multiply(Math::Multiply(scale, rotation), translation);
+            instance.ModelView = Math::Multiply(instance.CameraRelativeModel, view.View);
             instance.ModelViewProjection = Math::Multiply(instance.CameraRelativeModel, view.ViewProjection);
             if (!BuildSceneNormalTransform(mesh.Transform.Scale,
                 mesh.Transform.RotationDegrees, instance.NormalTransform))
                 return {};
+            instance.NormalViewTransform = Math::Multiply(instance.NormalTransform, view.View);
             frame.Instances.push_back(instance);
         }
 

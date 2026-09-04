@@ -8,7 +8,8 @@ namespace Engine
     struct SceneRasterInstance;
 
     // Exact b0/space0 payload shared by the production D3D12/Vulkan Scene path.
-    // It is one 256-byte hardware constant-buffer block per visible instance.
+    // The reflected payload is 384 bytes and native allocations are rounded to
+    // one 512-byte hardware constant-buffer block per visible instance.
     struct SceneSurfaceConstants
     {
         float ViewProjection[16] {};
@@ -23,12 +24,15 @@ namespace Engine
         // x is the stable frame-local material row. y marks row zero as the
         // deterministic default/error row; z/w are reserved and remain zero.
         u32 MaterialState[4] {};
+        float ModelView[16] {};
+        float NormalViewTransform[16] {};
     };
 
-    static_assert(sizeof(SceneSurfaceConstants) == 256);
+    static_assert(sizeof(SceneSurfaceConstants) == 384);
 
-    SceneSurfaceConstants BuildSceneSurfaceConstants(
+    bool TryBuildSceneSurfaceConstants(
         const SceneRasterInstance& instance,
         const MaterialTextureBindingSet& bindings,
-        bool materialErrorRow);
+        bool materialErrorRow,
+        SceneSurfaceConstants& outConstants);
 }

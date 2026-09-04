@@ -719,3 +719,22 @@ Texture queue ownership is whole-resource-only: a transfer requires an exact-dev
 ## Read-Only Texture-Content Initialization
 
 The deterministic RHI contract accepts only a full single-mip/layer/sample RGBA8 UNORM/sRGB payload with exact extent/format, row pitch at least `width * 4`, exact `rowPitch * height` bytes, non-writable `CopyDest|ShaderResource` usage, and `CopyDest` initial state. It rejects mismatched format, truncation, writable output usage, and a non-copy initial state. `RHITextureUploadSmokeV1`, invoked by `TestRender.ps1` and both Vulkan harnesses, verifies source bytes through readback and observes `ShaderResource` immediately after upload, then transitions explicitly for readback. Final Windows acceptance produced a zero-warning/error Debug build, the focused pass, 86/86 Integration tests, and passing complete D3D12/Vulkan harnesses with byte-exact upload markers. It does not claim descriptor/sampler, shader binding, mip generation, streaming, or residency behavior.
+
+## Phase 3E Basic PBR Material IDs
+
+Run the focused CPU contracts after the Debug build:
+
+```bash
+bin/Debug-linux-x86_64-gmake/EngineTests/EngineTests --test "Scene surface basis and material rows publish deterministically"
+bin/Debug-linux-x86_64-gmake/EngineTests/EngineTests --test "Basic PBR CPU reference uses accepted convention"
+```
+
+The first test proves stable frame-local row selection, row-zero error state, the preserved `S^-1 * R` transform, appended model/view matrices, 384-byte reflection boundary, and transactional rejection of nonfinite material numbers. The second independently pins the accepted GGX/correlated-Smith/Schlick/Burley equations, the `0.045` perceptual roughness floor and alpha remap, dielectric and metallic references, and an unclamped HDR channel above one.
+
+`Scripts/TestVulkan.sh Debug gmake --skip-build` also launches a separate production-`PSMain` fixture. Five view-space panels resolve smooth dielectric, rough dielectric from a declared linear ORM texel, metallic, rough metallic, and row-zero/error material states. The rough-metal sample explicitly rejects uncorrelated Smith visibility by more than the two-half-ULP raw-HDR tolerance. The fixture compares RGBA16F cells within two half-float ULPs against an independent CPU BRDF oracle, then compares the real Khronos-neutral/tone-map/sRGB RGBA8 handoff within three bytes. It must reject a fixed camera vector and emit:
+
+```text
+SceneBasicPbrMaterialIdV1 backend=Vulkan productionPSMain=exercised brdf=GGX-Smith-Schlick-Burley materialIds=stable rowZero=error view=per-pixel-view-space lighting=neutral-preview-nonphotometric sceneLights=unconsumed hdr=unclamped retention=exact-graph-token result=pass
+```
+
+This is Linux/Vulkan execution only. Shared D3D12 reflection and 512-byte aligned constant allocation compile from the same source, but D3D12 PBR execution remains unqualified. The marker does not claim tangent-space normal mapping, Callisto/Proxima control consumption, two-sided material policy, shadows, photometric attenuation, or Scene-light evaluation.

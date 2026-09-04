@@ -620,6 +620,14 @@ Implementation acceptance on 2026-07-18 isolated the deadline primitive as a rea
 - Whether high-end static GI should use light field probes, DDGI-like probes, or directional lightmaps first.
 - How much direct baked lighting to support for mobile/static scenes.
 
+## Phase 3 Basic PBR Material-ID Baseline
+
+The first production Scene PBR consumer is deliberately per draw. Renderer raster preparation resolves immutable material assets into deterministic frame-local rows, and the per-instance constant payload carries the selected row number plus explicit row-zero error state. The shader does not introduce a persistent shader ID or a structured material table. Row zero is visible bright-magenta scene-linear error output rather than a plausible default surface.
+
+The accepted analytical-light equations are GGX distribution, height-correlated Smith GGX visibility, Schlick Fresnel with dielectric `F0=0.04`, and Disney/Burley diffuse without an additional Fresnel multiplier. Material base color times the decoded base-color texture defines `surfaceBaseColor`; constant publication rejects a component outside `[0,1]`, and vertex color does not retint the baseline. Perceptual roughness is floored at `0.045`, mapped to `alpha=p^2`, and that alpha is used in Burley `Fd90`. The output remains nonnegative unclamped scene-linear HDR until the existing exposure, Khronos PBR Neutral tone-map, grading, and sRGB handoff. Direct-light evaluation does not consume ORM occlusion; that channel is reserved for an indirect-light consumer.
+
+This closure uses one renderer-owned neutral, non-photometric preview direction and radiance so material response is deterministic before GPU Scene-light payload publication. Published directional/point/spot lux/lumen records remain unconsumed. Tangent-space normal mapping, Callisto/Proxima controls, two-sided shading policy, shadows, physical attenuation, and Scene-light evaluation are later mechanisms.
+
 ## Sources
 
 - NVRHI GitHub: https://github.com/NVIDIA-RTX/NVRHI

@@ -63,6 +63,7 @@ namespace Engine::RHI
     inline bool IsTextureReadbackFormatSupported(Format format)
     {
         return format == Format::R8G8B8A8Unorm || format == Format::R8G8B8A8UnormSrgb
+            || format == Format::R16G16B16A16Float
             || format == Format::BC5Unorm || format == Format::BC7Unorm
             || format == Format::BC7UnormSrgb;
     }

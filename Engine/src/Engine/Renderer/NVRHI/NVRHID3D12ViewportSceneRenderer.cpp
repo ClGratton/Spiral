@@ -29,7 +29,7 @@ namespace Engine
 #if defined(GE_HAS_NVRHI_D3D12)
     namespace
     {
-        constexpr u32 kViewportConstantBufferSize = 256;
+        constexpr u32 kViewportConstantBufferSize = 512;
         constexpr std::string_view kViewportShaderPath = "Engine/Shaders/EditorViewport.hlsl";
 
         std::string_view ViewportShaderPath()
@@ -382,8 +382,14 @@ namespace Engine
                             if ((materialBindings.DeclaredMask & (1u << static_cast<u32>(slot))) != 0
                                 && (materialBindings.ErrorMask & (1u << static_cast<u32>(slot))) == 0)
                                 usedTextureHandles.push_back(materialBindings.Handles[slot]);
-                        const SceneSurfaceConstants constants = BuildSceneSurfaceConstants(
-                            rasterFrame.Instances[index], materialBindings, materialRow.IsError);
+                        SceneSurfaceConstants constants;
+                        if (!TryBuildSceneSurfaceConstants(rasterFrame.Instances[index],
+                            materialBindings, materialRow.IsError, constants))
+                        {
+                            Log::Error("D3D12 Scene viewport rejected nonfinite material or surface constants");
+                            renderSucceeded = false;
+                            break;
+                        }
                         std::memcpy((*constantBuffers)[index].Mapped, &constants, sizeof(constants));
                     }
                     if (!renderSucceeded)
@@ -629,7 +635,7 @@ namespace Engine
             request.DownstreamCompilerPackageHash = GE_DXC_PACKAGE_SHA256;
             request.Defines = { "GE_READ_ONLY_TEXTURE_CAPACITY=" + std::to_string(m_TextureTableCapacity) };
             request.ExpectedLayout = {
-                { "ViewportConstants", 'b', 0, 0, stage, "ConstantBuffer", "struct{ViewProjection:float32x4x4:row-major@0,NormalTransform:float32x4x4:row-major@64,BaseColorAndAlphaCutoff:float32x4@128,EmissiveAndStrength:float32x4@144,SurfaceFactors:float32x4@160,CallistoFactors:float32x4@176,TextureIndices0:uint32x4@192,TextureIndices1:uint32x4@208,TextureState:uint32x4@224,MaterialState:uint32x4@240}", 1, 256, 0, 0 },
+                { "ViewportConstants", 'b', 0, 0, stage, "ConstantBuffer", "struct{ViewProjection:float32x4x4:row-major@0,NormalTransform:float32x4x4:row-major@64,BaseColorAndAlphaCutoff:float32x4@128,EmissiveAndStrength:float32x4@144,SurfaceFactors:float32x4@160,CallistoFactors:float32x4@176,TextureIndices0:uint32x4@192,TextureIndices1:uint32x4@208,TextureState:uint32x4@224,MaterialState:uint32x4@240,ModelView:float32x4x4:row-major@256,NormalViewTransform:float32x4x4:row-major@320}", 1, 384, 0, 0 },
                 { "ReadOnlySamplers", 's', 0, 1, stage, "SamplerState", "sampler", m_TextureTableCapacity, 0, 0, 0 },
                 { "ReadOnlyTextures", 't', 0, 1, stage, "Texture2D", "float32x4", m_TextureTableCapacity, 0, 1, 4 }
             };

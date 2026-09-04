@@ -24,7 +24,7 @@ namespace Engine
 #if defined(GE_HAS_NVRHI_VULKAN)
     namespace
     {
-        constexpr u32 kConstantBufferSize = 256;
+        constexpr u32 kConstantBufferSize = 512;
 
         struct ConstantBufferAllocation
         {
@@ -119,7 +119,7 @@ namespace Engine
                 request.CompilerIdentity = "Slang"; request.CompilerVersion = "2026.13.1"; request.CompilerPackageHash = GE_SLANG_PACKAGE_SHA256;
                 request.Defines = { "GE_READ_ONLY_TEXTURE_CAPACITY=" + std::to_string(m_TextureTableCapacity) };
                 request.ExpectedLayout = {
-                    { "ViewportConstants", 'b', 0, 0, stage, "ConstantBuffer", "struct{ViewProjection:float32x4x4:row-major@0,NormalTransform:float32x4x4:row-major@64,BaseColorAndAlphaCutoff:float32x4@128,EmissiveAndStrength:float32x4@144,SurfaceFactors:float32x4@160,CallistoFactors:float32x4@176,TextureIndices0:uint32x4@192,TextureIndices1:uint32x4@208,TextureState:uint32x4@224,MaterialState:uint32x4@240}", 1, 256, 0, 0 },
+                    { "ViewportConstants", 'b', 0, 0, stage, "ConstantBuffer", "struct{ViewProjection:float32x4x4:row-major@0,NormalTransform:float32x4x4:row-major@64,BaseColorAndAlphaCutoff:float32x4@128,EmissiveAndStrength:float32x4@144,SurfaceFactors:float32x4@160,CallistoFactors:float32x4@176,TextureIndices0:uint32x4@192,TextureIndices1:uint32x4@208,TextureState:uint32x4@224,MaterialState:uint32x4@240,ModelView:float32x4x4:row-major@256,NormalViewTransform:float32x4x4:row-major@320}", 1, 384, 0, 0 },
                     { "ReadOnlySamplers", 's', 0, 1, stage, "SamplerState", "sampler", m_TextureTableCapacity, 0, 0, 0 },
                     { "ReadOnlyTextures", 't', 0, 1, stage, "Texture2D", "float32x4", m_TextureTableCapacity, 0, 1, 4 }
                 };
@@ -176,7 +176,7 @@ namespace Engine
             // retains an exact token for the current output generation.
             m_HdrColor.reset(); m_Color.reset(); m_Depth.reset();
             RHI::TextureDescription color; color.DebugName = "Vulkan Scene Viewport Color"; color.Extent = { width, height }; color.TextureFormat = RHI::Format::R8G8B8A8Unorm; color.Usage = static_cast<RHI::TextureUsage>(static_cast<u32>(RHI::TextureUsage::RenderTarget) | static_cast<u32>(RHI::TextureUsage::CopySource) | static_cast<u32>(RHI::TextureUsage::ShaderResource));
-            RHI::TextureDescription hdrColor = color; hdrColor.DebugName = "Vulkan Scene Viewport Linear HDR"; hdrColor.TextureFormat = RHI::Format::R16G16B16A16Float; hdrColor.Usage = static_cast<RHI::TextureUsage>(static_cast<u32>(RHI::TextureUsage::RenderTarget) | static_cast<u32>(RHI::TextureUsage::ShaderResource));
+            RHI::TextureDescription hdrColor = color; hdrColor.DebugName = "Vulkan Scene Viewport Linear HDR"; hdrColor.TextureFormat = RHI::Format::R16G16B16A16Float; hdrColor.Usage = static_cast<RHI::TextureUsage>(static_cast<u32>(RHI::TextureUsage::RenderTarget) | static_cast<u32>(RHI::TextureUsage::ShaderResource) | static_cast<u32>(RHI::TextureUsage::CopySource));
             RHI::TextureDescription depth = color; depth.DebugName = "Vulkan Scene Viewport Depth"; depth.TextureFormat = RHI::Format::D32Float; depth.Usage = RHI::TextureUsage::DepthStencil;
             m_HdrColor = m_Device->CreateTexture(hdrColor); m_Color = m_Device->CreateTexture(color); m_Depth = m_Device->CreateTexture(depth);
             if (!m_HdrColor || !m_Color || !m_Depth) return false;
@@ -265,7 +265,13 @@ namespace Engine
                     if ((materialBindings.DeclaredMask & (1u << static_cast<u32>(slot))) != 0
                         && (materialBindings.ErrorMask & (1u << static_cast<u32>(slot))) == 0)
                         usedTextureHandles.push_back(materialBindings.Handles[slot]);
-                const SceneSurfaceConstants instanceConstants = BuildSceneSurfaceConstants(instance, materialBindings, materialRow.IsError);
+                SceneSurfaceConstants instanceConstants;
+                if (!TryBuildSceneSurfaceConstants(instance, materialBindings,
+                    materialRow.IsError, instanceConstants))
+                {
+                    Log::Error("Vulkan Scene viewport rejected nonfinite material or surface constants");
+                    return false;
+                }
                 std::memcpy(constants[instanceIndex].Mapped, &instanceConstants, sizeof(instanceConstants));
             }
             std::vector<SceneMeshDraw> draws;
@@ -401,6 +407,10 @@ namespace Engine
         }
 
         bool ReadbackColor(RHI::TextureReadback& readback) const { return m_Device && m_Color && m_Device->ReadbackTexture(*m_Color, readback); }
+        bool ReadbackHdr(RHI::TextureReadback& readback)
+        {
+            return m_Device && m_HdrColor && ReadbackGraphOutput(*m_HdrColor, readback);
+        }
         void Shutdown()
         {
             if (m_Device) m_Device->WaitIdle();
@@ -437,6 +447,7 @@ namespace Engine
     }
     bool NVRHIVulkanViewportSceneRenderer::Render(const SceneRenderSnapshot& snapshot, u32 width, u32 height, const ClearColor& clearColor) { return m_Impl && m_Impl->Render(snapshot, width, height, clearColor); }
     bool NVRHIVulkanViewportSceneRenderer::ReadbackColor(RHI::TextureReadback& readback) const { return m_Impl && m_Impl->ReadbackColor(readback); }
+    bool NVRHIVulkanViewportSceneRenderer::ReadbackHdr(RHI::TextureReadback& readback) { return m_Impl && m_Impl->ReadbackHdr(readback); }
     u64 NVRHIVulkanViewportSceneRenderer::GetOutputGeneration() const { return m_Impl ? m_Impl->m_OutputGeneration : 0; }
     u32 NVRHIVulkanViewportSceneRenderer::GetOutputWidth() const { return m_Impl ? m_Impl->m_Width : 0; }
     u32 NVRHIVulkanViewportSceneRenderer::GetOutputHeight() const { return m_Impl ? m_Impl->m_Height : 0; }

@@ -27,6 +27,8 @@ namespace Engine
         Math::Mat4 CameraRelativeModel;
         Math::Mat4 ModelViewProjection;
         Math::Mat4 NormalTransform;
+        Math::Mat4 ModelView;
+        Math::Mat4 NormalViewTransform;
         // Frame-local row zero is always the default/error material and never
         // aliases a persistent asset, entity, or future visibility ID.
         u32 MaterialId = 0;

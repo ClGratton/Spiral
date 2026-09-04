@@ -1649,7 +1649,7 @@ float4 PSMain(PixelInput input) : SV_Target { return ReadOnlyTextures[1].SampleL
             request.CompilerVersion = "2026.13.1";
             request.CompilerPackageHash = GE_SLANG_PACKAGE_SHA256;
             request.ExpectedLayout = {
-                { "ViewportConstants", 'b', 0, 0, stage, "ConstantBuffer", "struct{ViewProjection:float32x4x4:row-major@0,NormalTransform:float32x4x4:row-major@64,BaseColorAndAlphaCutoff:float32x4@128,EmissiveAndStrength:float32x4@144,SurfaceFactors:float32x4@160,CallistoFactors:float32x4@176,TextureIndices0:uint32x4@192,TextureIndices1:uint32x4@208,TextureState:uint32x4@224,MaterialState:uint32x4@240}", 1, 256, 0, 0 },
+                { "ViewportConstants", 'b', 0, 0, stage, "ConstantBuffer", "struct{ViewProjection:float32x4x4:row-major@0,NormalTransform:float32x4x4:row-major@64,BaseColorAndAlphaCutoff:float32x4@128,EmissiveAndStrength:float32x4@144,SurfaceFactors:float32x4@160,CallistoFactors:float32x4@176,TextureIndices0:uint32x4@192,TextureIndices1:uint32x4@208,TextureState:uint32x4@224,MaterialState:uint32x4@240,ModelView:float32x4x4:row-major@256,NormalViewTransform:float32x4x4:row-major@320}", 1, 384, 0, 0 },
                 { "ReadOnlySamplers", 's', 0, 1, stage, "SamplerState", "sampler", tableCapacity, 0, 0, 0 },
                 { "ReadOnlyTextures", 't', 0, 1, stage, "Texture2D", "float32x4", tableCapacity, 0, 1, 4 }
             };
@@ -2173,7 +2173,7 @@ float4 PSVertexStrideSmoke(RHIVertexStrideOutput input) : SV_Target0
             request.CompilerPackageHash = GE_SLANG_PACKAGE_SHA256;
             request.Defines = { "GE_READ_ONLY_TEXTURE_CAPACITY=" + std::to_string(tableCapacity) };
             request.ExpectedLayout = {
-                { "ViewportConstants", 'b', 0, 0, stage, "ConstantBuffer", "struct{ViewProjection:float32x4x4:row-major@0,NormalTransform:float32x4x4:row-major@64,BaseColorAndAlphaCutoff:float32x4@128,EmissiveAndStrength:float32x4@144,SurfaceFactors:float32x4@160,CallistoFactors:float32x4@176,TextureIndices0:uint32x4@192,TextureIndices1:uint32x4@208,TextureState:uint32x4@224,MaterialState:uint32x4@240}", 1, 256, 0, 0 },
+                { "ViewportConstants", 'b', 0, 0, stage, "ConstantBuffer", "struct{ViewProjection:float32x4x4:row-major@0,NormalTransform:float32x4x4:row-major@64,BaseColorAndAlphaCutoff:float32x4@128,EmissiveAndStrength:float32x4@144,SurfaceFactors:float32x4@160,CallistoFactors:float32x4@176,TextureIndices0:uint32x4@192,TextureIndices1:uint32x4@208,TextureState:uint32x4@224,MaterialState:uint32x4@240,ModelView:float32x4x4:row-major@256,NormalViewTransform:float32x4x4:row-major@320}", 1, 384, 0, 0 },
                 { "ReadOnlySamplers", 's', 0, 1, stage, "SamplerState", "sampler", tableCapacity, 0, 0, 0 },
                 { "ReadOnlyTextures", 't', 0, 1, stage, "Texture2D", "float32x4", tableCapacity, 0, 1, 4 }
             };
@@ -2251,6 +2251,10 @@ float4 PSVertexStrideSmoke(RHIVertexStrideOutput input) : SV_Target0
             return false;
         const bool surfaceProbeRequested = Application::Get().GetSpecification().CommandLineArgs.HasFlag(
             "--scene-surface-basis-material-id-smoke");
+        const bool pbrProbeRequested = Application::Get().GetSpecification().CommandLineArgs.HasFlag(
+            "--scene-basic-pbr-material-id-smoke");
+        if (surfaceProbeRequested && pbrProbeRequested)
+            return false;
         m_VulkanSceneRenderer = CreateScope<NVRHIVulkanViewportSceneRenderer>();
         if (!(surfaceProbeRequested
                 ? m_VulkanSceneRenderer->InitializeSurfaceBasisProbe(device)
@@ -2296,6 +2300,39 @@ float4 PSVertexStrideSmoke(RHIVertexStrideOutput input) : SV_Target0
                 return false;
             }
         }
+        else if (pbrProbeRequested)
+        {
+            const std::string sourcePath = "Engine/Generated/VulkanBasicPbrProbe.mesh";
+            smokeMesh = smokeRegistry.RegisterAsset(AssetType::Mesh, sourcePath, "Vulkan Basic PBR Probe");
+            MeshArtifact probeArtifact;
+            probeArtifact.Asset = smokeMesh;
+            probeArtifact.SourcePath = sourcePath;
+            const auto vertex = [](float x, float y, float u, float v)
+            {
+                MeshArtifactVertex result;
+                result.Position[0] = x; result.Position[1] = y; result.Position[2] = 0.25f;
+                result.Normal[0] = 0.0f; result.Normal[1] = 0.0f; result.Normal[2] = -1.0f;
+                result.Color[0] = result.Color[1] = result.Color[2] = 1.0f;
+                result.UV[0] = u; result.UV[1] = v;
+                return result;
+            };
+            probeArtifact.Vertices = {
+                vertex(-0.16f, -0.4f, 0.0f, 1.0f),
+                vertex(-0.16f, 0.4f, 0.0f, 0.0f),
+                vertex(0.16f, 0.4f, 1.0f, 0.0f),
+                vertex(0.16f, -0.4f, 1.0f, 1.0f)
+            };
+            probeArtifact.Indices = { 0, 1, 2, 0, 2, 3 };
+            probeArtifact.Primitives = {{ 0, 0, 0,
+                sizeof(MeshArtifactVertex) * probeArtifact.Vertices.size(),
+                0, sizeof(u32) * probeArtifact.Indices.size() }};
+            if (smokeMesh == kInvalidAssetHandle
+                || !StoreMeshArtifact(GetCookedMeshArtifactPath(smokeMesh), probeArtifact, artifactError))
+            {
+                Log::Error("Vulkan basic-PBR probe could not publish its panel artifact: ", artifactError);
+                return false;
+            }
+        }
         else if (!EnsureDefaultSceneMeshArtifact(smokeRegistry, smokeMesh, artifactError))
         {
             Log::Error("Vulkan Scene viewport smoke could not publish its default mesh artifact: ", artifactError);
@@ -2306,17 +2343,81 @@ float4 PSVertexStrideSmoke(RHIVertexStrideOutput input) : SV_Target0
             Log::Error("Vulkan Scene viewport smoke could not publish its default texture artifact: ", artifactError);
             return false;
         }
-        const AssetHandle smokeMaterial = smokeRegistry.RegisterAsset(AssetType::Material,
-            "Engine/Generated/VulkanSceneSmoke.spiralmat", "Vulkan Scene Smoke");
-        MaterialAsset material;
-        material.Name = "Vulkan Scene Smoke";
-        material.BaseColor = { 0.72f, 0.78f, 0.92f };
-        material.Roughness = 0.45f;
-        material.Textures.BaseColor = smokeTexture;
-        material.Samplers.BaseColor = MaterialTextureSampler::LinearWrap;
         MaterialLibrary materials;
-        if (smokeMaterial == kInvalidAssetHandle || !materials.Set(smokeMaterial, material))
-            return false;
+        AssetHandle smokeMaterial = kInvalidAssetHandle;
+        AssetHandle pbrOrmTexture = kInvalidAssetHandle;
+        std::array<AssetHandle, 5> pbrMaterialHandles {};
+        std::array<MaterialAsset, 4> pbrMaterials {};
+        if (pbrProbeRequested)
+        {
+            const std::string ormPath = "Engine/Generated/VulkanBasicPbrOrm.rgba8";
+            pbrOrmTexture = smokeRegistry.RegisterAsset(
+                AssetType::Texture, ormPath, "Vulkan Basic PBR ORM");
+            TextureArtifact ormArtifact;
+            ormArtifact.Asset = pbrOrmTexture;
+            ormArtifact.SourcePath = ormPath;
+            ormArtifact.Role = TextureRole::Orm;
+            ormArtifact.ColorSpace = TextureColorSpace::Linear;
+            ormArtifact.TargetProfile = TextureTargetProfile::RGBAFallback;
+            ormArtifact.CookedFormat = TextureCookedFormat::R8G8B8A8Unorm;
+            ormArtifact.Mips.push_back({ 1, 1, 0, 4 });
+            ormArtifact.Payload = { 255, 156, 0, 255 };
+            if (pbrOrmTexture == kInvalidAssetHandle
+                || !StoreTextureArtifact(GetCookedTextureArtifactPath(
+                    pbrOrmTexture, TextureTargetProfile::RGBAFallback), ormArtifact, artifactError))
+            {
+                Log::Error("Vulkan basic-PBR probe could not publish its linear ORM artifact: ", artifactError);
+                return false;
+            }
+            const std::array<const char*, 5> names {
+                "Smooth Dielectric", "Rough Dielectric", "Metallic",
+                "Rough Metallic", "Row Zero Error"
+            };
+            for (size_t index = 0; index < names.size(); ++index)
+            {
+                const std::string path = "Engine/Generated/VulkanBasicPbr" + std::to_string(index) + ".spiralmat";
+                pbrMaterialHandles[index] = smokeRegistry.RegisterAsset(
+                    AssetType::Material, path, names[index]);
+                if (pbrMaterialHandles[index] == kInvalidAssetHandle)
+                    return false;
+            }
+            pbrMaterials[0].Name = names[0];
+            pbrMaterials[0].BaseColor = { 0.55f, 0.55f, 0.55f };
+            pbrMaterials[0].Metallic = 0.0f;
+            pbrMaterials[0].Roughness = 0.12f;
+            pbrMaterials[1] = pbrMaterials[0];
+            pbrMaterials[1].Name = names[1];
+            pbrMaterials[1].BaseColor = { 0.71f, 0.33f, 0.09f };
+            pbrMaterials[1].Metallic = 1.0f;
+            pbrMaterials[1].Roughness = 1.0f;
+            pbrMaterials[1].Textures.Orm = pbrOrmTexture;
+            pbrMaterials[2].Name = names[2];
+            pbrMaterials[2].BaseColor = { 0.92f, 0.24f, 0.08f };
+            pbrMaterials[2].Metallic = 1.0f;
+            pbrMaterials[2].Roughness = 0.28f;
+            pbrMaterials[3].Name = names[3];
+            pbrMaterials[3].BaseColor = { 0.18f, 0.52f, 0.10f };
+            pbrMaterials[3].Metallic = 1.0f;
+            pbrMaterials[3].Roughness = 1.0f;
+            for (size_t index = 0; index < pbrMaterials.size(); ++index)
+                if (!materials.Set(pbrMaterialHandles[index], pbrMaterials[index]))
+                    return false;
+            // The fifth registered material deliberately has no library row,
+            // so immutable resolution selects the visible row-zero error state.
+        }
+        else
+        {
+            smokeMaterial = smokeRegistry.RegisterAsset(AssetType::Material,
+                "Engine/Generated/VulkanSceneSmoke.spiralmat", "Vulkan Scene Smoke");
+            MaterialAsset material;
+            material.Name = "Vulkan Scene Smoke";
+            material.BaseColor = { 0.72f, 0.78f, 0.92f };
+            material.Roughness = 0.45f;
+            material.Textures.BaseColor = smokeTexture;
+            material.Samplers.BaseColor = MaterialTextureSampler::LinearWrap;
+            if (smokeMaterial == kInvalidAssetHandle || !materials.Set(smokeMaterial, material))
+                return false;
+        }
         Renderer::PublishArtifactResolvers(smokeRegistry, materials);
 
         SceneRenderSnapshot snapshot;
@@ -2346,17 +2447,35 @@ float4 PSVertexStrideSmoke(RHIVertexStrideOutput input) : SV_Target0
                 { 0.0, 0.0, 5.0 }, snapshot.WorldGridPolicy, pointLight.Transform.Position))
             return false;
         snapshot.Lights.push_back(pointLight);
-        SceneRenderMesh mesh;
-        mesh.SourceEntity = 1;
-        mesh.MeshAsset = smokeMesh;
-        mesh.MaterialAsset = smokeMaterial;
-        mesh.Transform.Position = view.Camera.TranslationOriginPosition;
-        if (surfaceProbeRequested)
+        if (pbrProbeRequested)
         {
-            mesh.Transform.Scale = { 1.3f, 0.7f, 2.0f };
-            mesh.Transform.RotationDegrees = { 0.0f, 0.0f, 23.0f };
+            constexpr std::array<double, 5> centers { -0.8, -0.4, 0.0, 0.4, 0.8 };
+            for (size_t index = 0; index < centers.size(); ++index)
+            {
+                SceneRenderMesh panel;
+                panel.SourceEntity = static_cast<EntityId>(10 + index);
+                panel.MeshAsset = smokeMesh;
+                panel.MaterialAsset = pbrMaterialHandles[index];
+                if (!Math::TryDecomposeWorldPosition({ centers[index], 0.0, 0.0 },
+                    snapshot.WorldGridPolicy, panel.Transform.Position))
+                    return false;
+                snapshot.Meshes.push_back(panel);
+            }
         }
-        snapshot.Meshes.push_back(mesh);
+        else
+        {
+            SceneRenderMesh mesh;
+            mesh.SourceEntity = 1;
+            mesh.MeshAsset = smokeMesh;
+            mesh.MaterialAsset = smokeMaterial;
+            mesh.Transform.Position = view.Camera.TranslationOriginPosition;
+            if (surfaceProbeRequested)
+            {
+                mesh.Transform.Scale = { 1.3f, 0.7f, 2.0f };
+                mesh.Transform.RotationDegrees = { 0.0f, 0.0f, 23.0f };
+            }
+            snapshot.Meshes.push_back(mesh);
+        }
         Renderer::PublishSceneRenderSnapshot(snapshot);
         if (!Renderer::PrepareCurrentSceneRasterFrame())
             return false;
@@ -2364,16 +2483,284 @@ float4 PSVertexStrideSmoke(RHIVertexStrideOutput input) : SV_Target0
         if (!Renderer::SetColorPipelineSettings({ 0.0 }))
             return false;
         const ClearColor background { 0.04f, 0.05f, 0.06f, 1.0f };
-        const bool firstRaster = m_VulkanSceneRenderer->RenderCurrentSnapshot(48, 36, background);
+        const bool firstRaster = m_VulkanSceneRenderer->RenderCurrentSnapshot(
+            48u, pbrProbeRequested ? 24u : 36u, background);
         const u64 firstGeneration = m_VulkanSceneRenderer->GetOutputGeneration();
-        RHI::TextureReadback firstSurfaceProbeReadback;
-        const bool firstSurfaceProbeRetired = !surfaceProbeRequested
-            || (firstRaster && m_VulkanSceneRenderer->ReadbackColor(firstSurfaceProbeReadback));
-        const bool resizedRaster = firstRaster && firstSurfaceProbeRetired
-            && m_VulkanSceneRenderer->RenderCurrentSnapshot(64, 48, background);
+        RHI::TextureReadback firstDedicatedReadback;
+        const bool firstDedicatedRetired = !(surfaceProbeRequested || pbrProbeRequested)
+            || (firstRaster && m_VulkanSceneRenderer->ReadbackColor(firstDedicatedReadback));
+        const bool resizedRaster = firstRaster && firstDedicatedRetired
+            && m_VulkanSceneRenderer->RenderCurrentSnapshot(
+                64u, pbrProbeRequested ? 32u : 48u, background);
         const u64 outputGeneration = m_VulkanSceneRenderer->GetOutputGeneration();
+        RHI::TextureReadback hdrReadback;
+        const bool hdrReadbackOk = !pbrProbeRequested
+            || (resizedRaster && m_VulkanSceneRenderer->ReadbackHdr(hdrReadback));
         RHI::TextureReadback readback;
-        const bool readbackOk = resizedRaster && m_VulkanSceneRenderer->ReadbackColor(readback);
+        const bool readbackOk = resizedRaster && hdrReadbackOk
+            && m_VulkanSceneRenderer->ReadbackColor(readback);
+        if (pbrProbeRequested)
+        {
+            using DVec = std::array<double, 3>;
+            const auto dot = [](const DVec& a, const DVec& b)
+            { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; };
+            const auto normalize = [&dot](DVec value)
+            {
+                const double length = std::sqrt(dot(value, value));
+                for (double& component : value)
+                    component /= length;
+                return value;
+            };
+            const auto evaluate = [dot, normalize](const MaterialAsset& probeMaterial,
+                DVec viewPosition, bool fixedView, bool correlatedSmith = true)
+            {
+                constexpr double pi = 3.14159265358979323846;
+                const DVec normal { 0.0, 0.0, -1.0 };
+                const DVec light = normalize({ 0.96, 0.0, -0.28 });
+                DVec view = fixedView ? DVec { 0.0, 0.0, -1.0 }
+                                      : normalize({ -viewPosition[0], -viewPosition[1], -viewPosition[2] });
+                const DVec halfVector = normalize({
+                    view[0] + light[0], view[1] + light[1], view[2] + light[2]
+                });
+                const double noV = std::clamp(dot(normal, view), 0.0, 1.0);
+                const double noL = std::clamp(dot(normal, light), 0.0, 1.0);
+                const double noH = std::clamp(dot(normal, halfVector), 0.0, 1.0);
+                const double voH = std::clamp(dot(view, halfVector), 0.0, 1.0);
+                const double perceptualRoughness = std::max(std::clamp(
+                    static_cast<double>(probeMaterial.Roughness), 0.0, 1.0), 0.045);
+                const double alpha = perceptualRoughness * perceptualRoughness;
+                const double alphaSquared = alpha * alpha;
+                const double distributionDenominator = noH * noH * (alphaSquared - 1.0) + 1.0;
+                const double distribution = alphaSquared
+                    / (pi * distributionDenominator * distributionDenominator);
+                const double smithV = noL * std::sqrt(noV * noV * (1.0 - alphaSquared) + alphaSquared);
+                const double smithL = noV * std::sqrt(noL * noL * (1.0 - alphaSquared) + alphaSquared);
+                const double correlatedVisibility = 0.5 / std::max(smithV + smithL, 0.000001);
+                const double uncorrelatedVisibility = 1.0 / std::max(
+                    (noV + std::sqrt(noV * noV * (1.0 - alphaSquared) + alphaSquared))
+                    * (noL + std::sqrt(noL * noL * (1.0 - alphaSquared) + alphaSquared)),
+                    0.000001);
+                const double visibility = correlatedSmith
+                    ? correlatedVisibility : uncorrelatedVisibility;
+                const double fresnelFactor = std::pow(1.0 - voH, 5.0);
+                const double fd90 = 0.5 + 2.0 * alpha * voH * voH;
+                const double lightScatter = 1.0 + (fd90 - 1.0) * std::pow(1.0 - noL, 5.0);
+                const double viewScatter = 1.0 + (fd90 - 1.0) * std::pow(1.0 - noV, 5.0);
+                const double metallic = std::clamp(static_cast<double>(probeMaterial.Metallic), 0.0, 1.0);
+                const DVec base {
+                    probeMaterial.BaseColor.X, probeMaterial.BaseColor.Y, probeMaterial.BaseColor.Z
+                };
+                DVec result {};
+                for (size_t channel = 0; channel < result.size(); ++channel)
+                {
+                    const double f0 = 0.04 * (1.0 - metallic) + base[channel] * metallic;
+                    const double fresnel = f0 + (1.0 - f0) * fresnelFactor;
+                    const double specular = distribution * visibility * fresnel;
+                    const double diffuse = base[channel] * (1.0 - metallic)
+                        * lightScatter * viewScatter / pi;
+                    result[channel] = noV > 0.0 && noL > 0.0
+                        ? (diffuse + specular) * 4.0 * noL : 0.0;
+                }
+                return result;
+            };
+            const auto toneMap = [](DVec color)
+            {
+                for (double& channel : color)
+                    channel = std::min(channel, 6.25);
+                const double minimum = std::min(color[0], std::min(color[1], color[2]));
+                const double offset = minimum < 0.08 ? minimum - 6.25 * minimum * minimum : 0.04;
+                for (double& channel : color)
+                    channel -= offset;
+                const double peak = std::max(color[0], std::max(color[1], color[2]));
+                if (peak >= 0.76)
+                {
+                    const double distance = 0.24;
+                    const double newPeak = 1.0 - distance * distance / (peak + distance - 0.76);
+                    for (double& channel : color)
+                        channel *= newPeak / peak;
+                    const double amount = 1.0 - 1.0 / (0.15 * (peak - newPeak) + 1.0);
+                    for (double& channel : color)
+                        channel += (newPeak - channel) * amount;
+                }
+                return color;
+            };
+            const auto encode = [](DVec displayLinear)
+            {
+                std::array<u8, 3> bytes {};
+                for (size_t channel = 0; channel < bytes.size(); ++channel)
+                {
+                    const double value = std::clamp(displayLinear[channel], 0.0, 1.0);
+                    const double srgb = value <= 0.0031308 ? value * 12.92
+                        : 1.055 * std::pow(value, 1.0 / 2.4) - 0.055;
+                    bytes[channel] = static_cast<u8>(std::clamp(
+                        static_cast<int>(std::lround(srgb * 255.0)), 0, 255));
+                }
+                return bytes;
+            };
+            const auto floatToHalf = [](float value)
+            {
+                u32 bits = 0;
+                std::memcpy(&bits, &value, sizeof(bits));
+                const u32 sign = (bits >> 16) & 0x8000u;
+                const u32 exponent = (bits >> 23) & 0xffu;
+                const u32 mantissa = bits & 0x7fffffu;
+                if (exponent == 0xffu)
+                    return static_cast<u16>(sign | 0x7c00u | (mantissa != 0 ? 0x0200u : 0u));
+                const int halfExponent = static_cast<int>(exponent) - 127 + 15;
+                if (halfExponent >= 31)
+                    return static_cast<u16>(sign | 0x7c00u);
+                if (halfExponent <= 0)
+                {
+                    if (halfExponent < -10)
+                        return static_cast<u16>(sign);
+                    u32 subnormal = (mantissa | 0x800000u) >> (1 - halfExponent);
+                    subnormal += 0x0fffu + ((subnormal >> 13) & 1u);
+                    return static_cast<u16>(sign | (subnormal >> 13));
+                }
+                u32 rounded = mantissa + 0x0fffu + ((mantissa >> 13) & 1u);
+                u32 resultExponent = static_cast<u32>(halfExponent);
+                if ((rounded & 0x800000u) != 0)
+                {
+                    rounded = 0;
+                    ++resultExponent;
+                    if (resultExponent >= 31)
+                        return static_cast<u16>(sign | 0x7c00u);
+                }
+                return static_cast<u16>(sign | (resultExponent << 10) | (rounded >> 13));
+            };
+            const auto halfToDouble = [](u16 value)
+            {
+                const double sign = (value & 0x8000u) != 0 ? -1.0 : 1.0;
+                const u16 exponent = static_cast<u16>((value >> 10) & 0x1fu);
+                const u16 mantissa = static_cast<u16>(value & 0x03ffu);
+                if (exponent == 0)
+                    return sign * std::ldexp(static_cast<double>(mantissa), -24);
+                if (exponent == 31)
+                    return sign * std::numeric_limits<double>::infinity();
+                return sign * std::ldexp(1.0 + static_cast<double>(mantissa) / 1024.0,
+                    static_cast<int>(exponent) - 15);
+            };
+            const std::shared_ptr<const SceneRasterFrame> pbrFrame = Renderer::GetPreparedSceneRasterFrame();
+            constexpr std::array<u32, 5> sampleX { 6, 19, 32, 45, 58 };
+            const u32 sampleY = 16;
+            bool pixelsMatch = readbackOk && readback.Extent.Width == 64
+                && readback.Extent.Height == 32 && readback.RowPitchBytes >= 64 * 4
+                && readback.Data.size() >= static_cast<size_t>(readback.RowPitchBytes) * 32;
+            bool hdrPixelsMatch = hdrReadbackOk && hdrReadback.Extent.Width == 64
+                && hdrReadback.Extent.Height == 32 && hdrReadback.RowPitchBytes >= 64 * 8
+                && hdrReadback.Data.size() >= static_cast<size_t>(hdrReadback.RowPitchBytes) * 32;
+            const bool buffersValid = pixelsMatch && hdrPixelsMatch;
+            bool fixedViewRejected = false;
+            bool uncorrelatedSmithRejected = false;
+            bool roughMetalGoldenMatch = false;
+            std::array<std::array<u8, 3>, 5> expectedPixels {};
+            for (size_t index = 0; buffersValid && index < sampleX.size(); ++index)
+            {
+                MaterialAsset oracleMaterial = index < pbrMaterials.size()
+                    ? pbrMaterials[index] : MaterialAsset {};
+                if (index == 1)
+                {
+                    oracleMaterial.Roughness *= 156.0f / 255.0f;
+                    oracleMaterial.Metallic = 0.0f;
+                }
+                const DVec viewPosition {
+                    (static_cast<double>(sampleX[index]) + 0.5) / 32.0 - 1.0,
+                    0.03125, 0.25
+                };
+                DVec hdr = index == 4 ? DVec { 4.0, 0.0, 4.0 }
+                    : evaluate(oracleMaterial, {
+                        viewPosition[0], viewPosition[1], viewPosition[2]
+                    }, false);
+                DVec quantizedHdr {};
+                const size_t hdrOffset = static_cast<size_t>(sampleY) * hdrReadback.RowPitchBytes
+                    + static_cast<size_t>(sampleX[index]) * 8;
+                std::array<u16, 3> actualHdrHalf {};
+                std::array<u16, 3> expectedHdrHalf {};
+                for (size_t channel = 0; channel < 3; ++channel)
+                {
+                    const u16 expectedHalf = floatToHalf(static_cast<float>(hdr[channel]));
+                    const u16 actualHalf = static_cast<u16>(hdrReadback.Data[hdrOffset + channel * 2])
+                        | static_cast<u16>(static_cast<u16>(hdrReadback.Data[hdrOffset + channel * 2 + 1]) << 8);
+                    actualHdrHalf[channel] = actualHalf;
+                    expectedHdrHalf[channel] = expectedHalf;
+                    hdrPixelsMatch = hdrPixelsMatch
+                        && std::abs(static_cast<int>(actualHalf) - static_cast<int>(expectedHalf)) <= 2;
+                    quantizedHdr[channel] = halfToDouble(expectedHalf);
+                }
+                expectedPixels[index] = encode(toneMap(quantizedHdr));
+                if (index == 3)
+                {
+                    roughMetalGoldenMatch = expectedHdrHalf
+                            == std::array<u16, 3> { 11025, 12296, 10480 }
+                        && expectedPixels[index] == std::array<u8, 3> { 45, 88, 24 };
+                }
+                const u8* actual = &readback.Data[static_cast<size_t>(sampleY) * readback.RowPitchBytes
+                    + static_cast<size_t>(sampleX[index]) * 4];
+                for (size_t channel = 0; channel < 3; ++channel)
+                    pixelsMatch = pixelsMatch
+                        && std::abs(static_cast<int>(actual[channel])
+                            - static_cast<int>(expectedPixels[index][channel])) <= 3;
+                pixelsMatch = pixelsMatch && actual[3] == 255;
+                Log::Info("SceneBasicPbrMaterialIdDiagnosticsV1 panel=", index,
+                    " actual=", static_cast<u32>(actual[0]), ",", static_cast<u32>(actual[1]), ",", static_cast<u32>(actual[2]),
+                    " expected=", static_cast<u32>(expectedPixels[index][0]), ",", static_cast<u32>(expectedPixels[index][1]), ",", static_cast<u32>(expectedPixels[index][2]),
+                    " actualHalf=", actualHdrHalf[0], ",", actualHdrHalf[1], ",", actualHdrHalf[2],
+                    " expectedHalf=", expectedHdrHalf[0], ",", expectedHdrHalf[1], ",", expectedHdrHalf[2]);
+                if (index < pbrMaterials.size())
+                {
+                    const std::array<u8, 3> fixed = encode(toneMap(evaluate(oracleMaterial, {
+                        viewPosition[0], viewPosition[1], viewPosition[2]
+                    }, true)));
+                    int delta = 0;
+                    for (size_t channel = 0; channel < 3; ++channel)
+                        delta += std::abs(static_cast<int>(fixed[channel])
+                            - static_cast<int>(expectedPixels[index][channel]));
+                    fixedViewRejected = fixedViewRejected || delta > 10;
+                    if (index == 3)
+                    {
+                        const DVec uncorrelated = evaluate(
+                            oracleMaterial, viewPosition, false, false);
+                        std::array<u16, 3> uncorrelatedHalf {};
+                        for (size_t channel = 0; channel < 3; ++channel)
+                        {
+                            const int correlatedHalf = static_cast<int>(
+                                floatToHalf(static_cast<float>(hdr[channel])));
+                            const int uncorrelatedHalfValue = static_cast<int>(
+                                floatToHalf(static_cast<float>(uncorrelated[channel])));
+                            uncorrelatedSmithRejected = uncorrelatedSmithRejected
+                                || std::abs(correlatedHalf - uncorrelatedHalfValue) > 2;
+                            uncorrelatedHalf[channel] = static_cast<u16>(uncorrelatedHalfValue);
+                        }
+                        uncorrelatedSmithRejected = uncorrelatedSmithRejected
+                            && uncorrelatedHalf == std::array<u16, 3> { 10694, 11927, 10248 };
+                    }
+                }
+            }
+            bool idsStable = pbrFrame && pbrFrame->MaterialRows.size() == 5
+                && pbrFrame->Instances.size() == 5;
+            for (size_t index = 0; idsStable && index < pbrMaterials.size(); ++index)
+                idsStable = pbrFrame->Instances[index].MaterialId != 0
+                    && pbrFrame->Instances[index].MaterialId < pbrFrame->MaterialRows.size()
+                    && pbrFrame->MaterialRows[pbrFrame->Instances[index].MaterialId].SourceAsset
+                        == pbrMaterialHandles[index]
+                    && !pbrFrame->MaterialRows[pbrFrame->Instances[index].MaterialId].IsError;
+            idsStable = idsStable && pbrFrame->Instances[4].MaterialId == 0
+                && pbrFrame->MaterialRows[0].IsError;
+            const bool pbrProbeOk = pixelsMatch && hdrPixelsMatch
+                && fixedViewRejected && uncorrelatedSmithRejected
+                && roughMetalGoldenMatch && idsStable;
+            Log::Info("SceneBasicPbrMaterialIdDiagnosticsV1 buffers=", buffersValid ? "pass" : "fail",
+                " rgba8=", pixelsMatch ? "pass" : "fail",
+                " rgba16f=", hdrPixelsMatch ? "pass" : "fail",
+                " fixedViewRejected=", fixedViewRejected ? "pass" : "fail",
+                " uncorrelatedSmithRejected=", uncorrelatedSmithRejected ? "pass" : "fail",
+                " roughMetalGolden=", roughMetalGoldenMatch ? "pass" : "fail",
+                " ids=", idsStable ? "pass" : "fail");
+            Renderer::SetColorPipelineSettings(previousColorSettings);
+            Log::Info("SceneBasicPbrMaterialIdV1 backend=Vulkan productionPSMain=exercised brdf=GGX-Smith-Schlick-Burley materialIds=stable rowZero=error view=per-pixel-view-space lighting=neutral-preview-nonphotometric sceneLights=unconsumed hdr=unclamped retention=exact-graph-token result=",
+                pbrProbeOk ? "pass" : "fail");
+            return pbrProbeOk;
+        }
         if (surfaceProbeRequested)
         {
             const std::shared_ptr<const SceneRasterFrame> surfaceFrame = Renderer::GetPreparedSceneRasterFrame();

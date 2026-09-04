@@ -26,6 +26,7 @@ namespace Engine
         bool RenderCurrentSnapshot(u32 width, u32 height, const ClearColor& clearColor);
         bool Render(const SceneRenderSnapshot& snapshot, u32 width, u32 height, const ClearColor& clearColor);
         bool ReadbackColor(RHI::TextureReadback& readback) const;
+        bool ReadbackHdr(RHI::TextureReadback& readback);
         u64 GetOutputGeneration() const;
         u32 GetOutputWidth() const;
         u32 GetOutputHeight() const;
