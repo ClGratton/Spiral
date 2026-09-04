@@ -63,6 +63,13 @@ private:
     void PublishFramePacingPolicy();
     void PublishPresentationPolicy();
     void PublishColorPipelineSettings();
+    bool PublishProjectColorPipelineSettings(
+        const Engine::RendererColorPipelineSettings& settings);
+    bool ApplyProjectColorPipelineSettings(const Engine::RendererColorPipelineSettings& settings,
+        std::string label = "Edit project color pipeline settings");
+    void HandleProjectColorPipelineInput(
+        const Engine::RendererColorPipelineSettings& settings, bool edited,
+        std::string label = "Edit project color pipeline settings");
     void DrawNewProjectDialog();
     bool DrawMaterialAssetControls(Engine::AssetHandle handle);
     void HandleAssetWatchEvents();
@@ -87,6 +94,8 @@ private:
     void RunEditorMaterialControlCapacitySmokeAfterDrain();
     void RunEditorMaterialControlDurabilitySmokeBeforeDrain();
     void RunEditorMaterialControlDurabilitySmokeAfterDrain();
+    void RunEditorMaterialControlRollbackFailureSmokeBeforeDrain();
+    void RunEditorMaterialControlRollbackFailureSmokeAfterDrain();
     void ConfigureSceneOriginRasterSmoke();
     void AdvanceSceneOriginRasterSmoke();
     void CaptureSceneOriginRasterSmoke();
@@ -105,7 +114,7 @@ private:
     bool Undo();
     bool Redo();
     HistoryState CaptureHistoryState() const;
-    void RestoreHistoryState(const HistoryState& state);
+    bool RestoreHistoryState(const HistoryState& state);
     void EnsureDefaultSceneEntities();
 
 private:
@@ -170,9 +179,13 @@ private:
     bool m_EditorMaterialControlCapacitySmokeCompleted = false;
     bool m_EditorMaterialControlDurabilitySmokeRequested = false;
     bool m_EditorMaterialControlDurabilitySmokeCompleted = false;
+    bool m_EditorMaterialControlRollbackFailureSmokeRequested = false;
+    bool m_EditorMaterialControlPostCommitRollbackFailureSmokeRequested = false;
+    bool m_EditorMaterialControlRollbackFailureSmokeCompleted = false;
     bool m_EditorMaterialControlForceCommitFailureOnce = false;
     bool m_EditorMaterialControlForceLateResponseCollisionOnce = false;
     bool m_EditorMaterialControlForceParentSyncFailureOnce = false;
+    bool m_EditorMaterialControlForceRollbackVerificationFailureOnce = false;
     unsigned int m_EditorMaterialControlSmokeStage = 0;
     Engine::u64 m_PresentationPolicySmokeTearingGeneration = 0;
     bool m_ShowNewProjectDialog = false;
@@ -277,6 +290,7 @@ private:
         float CameraFovDegrees = 60.0f;
         float CameraNearClip = 0.1f;
         float CameraFarClip = 100.0f;
+        Engine::RendererColorPipelineSettings ProjectColorPipelineSettings;
     };
 
     struct HistoryEntry
@@ -288,4 +302,8 @@ private:
 
     std::vector<HistoryEntry> m_UndoHistory;
     std::vector<HistoryEntry> m_RedoHistory;
+    std::optional<HistoryState> m_ProjectColorPipelineInteractionBefore;
+    unsigned int m_ProjectColorPipelineInteractionItemId = 0;
+    bool m_ProjectColorPipelineInteractionChanged = false;
+    std::string m_ProjectColorPipelineInteractionLabel;
 };

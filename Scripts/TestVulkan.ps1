@@ -124,7 +124,7 @@ $RequiredMarkers = @(
     "SceneExposureControlV1 backend=Vulkan ev100=-2,0,+2 graph=exact-byte-pass monotonic=pass constants=immutable-retained-cached"
     "calibrated=camera-fnumber-shutter-iso-pass"
     "calibratedCache=same-ev-distinct-settings-pass"
-    "ColorPipelineSettingsSmokeV1 default=pass bounds=pass nonfinite=pass v3Migration=pass v4GradingMigration=pass v5SaveReopen=pass rendererPublication=pass"
+    "ColorPipelineSettingsSmokeV1 default=pass bounds=pass nonfinite=pass v3Migration=pass v4GradingMigration=pass v5SaveReopen=pass historyUndoRedo=pass restoreFailureAtomic=pass rendererPublication=pass"
     "v6Calibration=pass"
     "orderIndependent=pass"
     "roundTripPrecision=pass"

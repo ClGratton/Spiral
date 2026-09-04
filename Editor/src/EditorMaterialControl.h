@@ -67,7 +67,7 @@ struct EditorMaterialControlTransaction
     EditorMaterialControlReceipt Receipt;
     bool Mutating = false;
     std::function<bool(std::string&)> Commit;
-    std::function<void(EditorMaterialControlReceipt&)> Rollback;
+    std::function<bool(EditorMaterialControlReceipt&)> Rollback;
 };
 
 class EditorMaterialControlMailbox
@@ -142,6 +142,7 @@ private:
         bool closeOnDurabilityDegradation, std::string& error);
     bool PublishSessionFile(std::string_view state, std::string& error);
     bool PublishResponse(const TerminalEntry& terminal, bool allowExisting, std::string& error);
+    bool PublishRecoveryResponse(const TerminalEntry& terminal, std::string& error);
     bool PublishCollisionReceipt(std::string_view requestId, std::string& error);
     bool StageResponse(std::string_view requestId, std::string_view text,
         std::filesystem::path& temporary, std::string& error);

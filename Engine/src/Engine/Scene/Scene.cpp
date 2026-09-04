@@ -83,6 +83,21 @@ namespace Engine
 
             return it == entities.end() ? nullptr : &(*it);
         }
+
+        bool IsFinite(const Math::Vec3& value)
+        {
+            return std::isfinite(value.X) && std::isfinite(value.Y) && std::isfinite(value.Z);
+        }
+
+        bool HasStrictlyPositiveScale(const Math::Vec3& scale)
+        {
+            return IsFinite(scale) && scale.X > 0.0f && scale.Y > 0.0f && scale.Z > 0.0f;
+        }
+
+        bool HasUnitScale(const Math::Vec3& scale)
+        {
+            return scale.X == 1.0f && scale.Y == 1.0f && scale.Z == 1.0f;
+        }
     }
 
     Scene::Scene(std::string name, Math::WorldGridPolicy worldGridPolicy)
@@ -230,6 +245,28 @@ namespace Engine
         return sceneEntity ? &sceneEntity->Transform : nullptr;
     }
 
+    bool Scene::SetEntityTransform(Entity entity, const Math::SectorLocalPosition& position,
+        const Math::Vec3& rotationDegrees, const Math::Vec3& scale)
+    {
+        SceneEntity* sceneEntity = FindEntityStorage(entity);
+        if (!sceneEntity || !Math::IsCanonical(position, m_WorldGridPolicy)
+            || !IsFinite(rotationDegrees)
+            || !HasStrictlyPositiveScale(scale)
+            || (sceneEntity->Camera && !HasUnitScale(scale)))
+        {
+            return false;
+        }
+
+        TransformComponent normalized;
+        normalized.RotationDegrees = rotationDegrees;
+        normalized.Scale = scale;
+        if (!normalized.SetPosition(position, m_WorldGridPolicy))
+            return false;
+
+        sceneEntity->Transform = normalized;
+        return true;
+    }
+
     bool Scene::SetEntityWorldPosition(Entity entity, const Math::DVec3& position)
     {
         SceneEntity* sceneEntity = FindEntityStorage(entity);
@@ -258,7 +295,7 @@ namespace Engine
     CameraComponent* Scene::AddCameraComponent(Entity entity, const CameraComponent& camera)
     {
         SceneEntity* sceneEntity = FindEntityStorage(entity);
-        if (!sceneEntity)
+        if (!sceneEntity || !HasUnitScale(sceneEntity->Transform.Scale))
             return nullptr;
 
         sceneEntity->Camera = camera;
@@ -377,14 +414,10 @@ namespace Engine
         return sceneEntity ? sceneEntity->Transform : emptyTransform;
     }
 
-    void Scene::SetMainCameraTransform(const TransformComponent& transform)
+    bool Scene::SetMainCameraTransform(const TransformComponent& transform)
     {
-        if (SceneEntity* sceneEntity = FindEntityStorage(m_MainCameraEntity))
-        {
-            TransformComponent normalized = transform;
-            if (normalized.SetPosition(transform.GetPosition(), m_WorldGridPolicy))
-                sceneEntity->Transform = normalized;
-        }
+        return SetEntityTransform(m_MainCameraEntity, transform.GetPosition(),
+            transform.RotationDegrees, transform.Scale);
     }
 
     void Scene::SetMainCamera(const CameraComponent& camera)
@@ -529,6 +562,7 @@ namespace Engine
         Scene scene;
         TransformComponent cameraTransform;
         CameraComponent camera;
+        bool parsedLegacyCameraTransform = false;
         bool parsedEntities = false;
         Entity parsedMainCameraEntity;
         EntityId parsedNextEntityId = 1;
@@ -673,6 +707,7 @@ namespace Engine
                 if (version >= 4)
                     return fail("MainCamera.Transform is legacy duplicated state in scene format version 4 or newer");
 
+                parsedLegacyCameraTransform = true;
                 bool parsed = false;
                 if (key == "Position")
                 {
@@ -828,7 +863,7 @@ namespace Engine
         if (!applyWorldGridPolicy())
             return fail("missing or invalid WorldGrid policy");
 
-        if (parsedEntities && !scene.m_Entities.empty())
+        if (parsedEntities)
         {
             scene.m_NextEntityId = std::max(scene.m_NextEntityId, parsedNextEntityId);
             if (!scene.SetMainCameraEntity(parsedMainCameraEntity))
@@ -846,13 +881,25 @@ namespace Engine
             if (!scene.m_MainCameraEntity)
             {
                 scene.SetMainCamera(camera);
-                scene.SetMainCameraTransform(cameraTransform);
+                if (scene.m_MainCameraEntity)
+                {
+                    if (!scene.SetMainCameraTransform(cameraTransform))
+                        return fail("invalid legacy MainCamera.Transform");
+                }
+                else if (parsedLegacyCameraTransform
+                    && (!Math::IsCanonical(cameraTransform.GetPosition(), scene.m_WorldGridPolicy)
+                        || !IsFinite(cameraTransform.RotationDegrees)
+                        || !HasUnitScale(cameraTransform.Scale)))
+                {
+                    return fail("invalid legacy MainCamera.Transform");
+                }
             }
         }
         else
         {
             scene.SetMainCamera(camera);
-            scene.SetMainCameraTransform(cameraTransform);
+            if (!scene.SetMainCameraTransform(cameraTransform))
+                return fail("invalid legacy MainCamera.Transform");
         }
 
         outScene = std::move(scene);

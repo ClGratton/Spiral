@@ -305,23 +305,34 @@ def _parse_receipt(text: str, request_id: str, session_id: str,
     }
 
 
-def _wait_for_receipt(response: Path, collision: Path, request_id: str,
-                      session_id: str, digest: str, action: str,
+def _wait_for_receipt(response: Path, recovery: Path, collision: Path,
+                      request_id: str, session_id: str, digest: str, action: str,
                       timeout_seconds: float) -> dict[str, object]:
     deadline = time.monotonic() + timeout_seconds
+    deferred_response_error: ControlError | None = None
     while True:
+        if recovery.exists():
+            receipt = _parse_receipt(
+                _read_private_regular(recovery, MAXIMUM_RECEIPT_BYTES),
+                request_id, session_id, digest, action)
+            if (receipt["status"] != "Rejected"
+                    or receipt["effect"] != "RecoveryRequired"
+                    or receipt["recovery"] != "RestartSession"):
+                raise ControlError("recovery receipt has invalid semantics")
+            return receipt
         if response.exists():
             try:
                 return _parse_receipt(
                     _read_private_regular(response, MAXIMUM_RECEIPT_BYTES),
                     request_id, session_id, digest, action)
-            except ControlError:
-                if not collision.exists():
-                    raise
+            except ControlError as error:
+                deferred_response_error = error
         if collision.exists():
             return _parse_receipt(_read_private_regular(collision, MAXIMUM_RECEIPT_BYTES),
                                   request_id, session_id, digest, action, True)
         if time.monotonic() >= deadline:
+            if deferred_response_error is not None:
+                raise deferred_response_error
             raise ControlError(f"timed out waiting for receipt {request_id}")
         time.sleep(0.02)
 
@@ -398,10 +409,11 @@ def main() -> int:
         raise ControlError("request exceeds the editor mailbox limit")
     digest = _fnv1a64(contents)
     response = responses / f"{request_id}.response"
+    recovery = responses / f"{request_id}.recovery.response"
     collision = responses / f"{request_id}.collision.response"
 
-    if response.exists() or collision.exists():
-        receipt = _wait_for_receipt(response, collision, request_id, session_id,
+    if response.exists() or recovery.exists() or collision.exists():
+        receipt = _wait_for_receipt(response, recovery, collision, request_id, session_id,
                                     digest, action, 0.001)
     else:
         if (control_dir / "session.closed").exists():
@@ -413,7 +425,7 @@ def main() -> int:
             existing = _read_private_regular(request, MAXIMUM_REQUEST_BYTES).encode("utf-8")
             if existing != contents:
                 raise ControlError("request ID is already pending with a different payload")
-        receipt = _wait_for_receipt(response, collision, request_id, session_id,
+        receipt = _wait_for_receipt(response, recovery, collision, request_id, session_id,
                                     digest, action, args.timeout_seconds)
     if receipt["status"] == "Succeeded":
         expected_before = None

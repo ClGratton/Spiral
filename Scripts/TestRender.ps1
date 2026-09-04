@@ -126,7 +126,7 @@ $RequiredMarkers = @(
     "SceneRasterPreparationV1 mode=parallel task=Frame.PrepareSceneRaster worker="
     "SceneViewportRenderGraphV1 backend=D3D12 passes=4 labels=clear,raster,tone-map,output-handoff execution=pass reference=direct comparator=exact-byte-pass"
     "SceneColorPipelineV1 backend=D3D12 sceneLinear=RGBA16F manualExposureEV100=0"
-    "ColorPipelineSettingsSmokeV1 default=pass bounds=pass nonfinite=pass v3Migration=pass v4GradingMigration=pass v5SaveReopen=pass rendererPublication=pass"
+    "ColorPipelineSettingsSmokeV1 default=pass bounds=pass nonfinite=pass v3Migration=pass v4GradingMigration=pass v5SaveReopen=pass historyUndoRedo=pass restoreFailureAtomic=pass rendererPublication=pass"
     "v6Calibration=pass"
     "orderIndependent=pass"
     "roundTripPrecision=pass"

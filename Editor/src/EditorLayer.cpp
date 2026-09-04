@@ -604,11 +604,17 @@ void EditorLayer::OnAttach()
         args.HasFlag("--editor-control-capacity-smoke");
     m_EditorMaterialControlDurabilitySmokeRequested =
         args.HasFlag("--editor-control-durability-smoke");
+    m_EditorMaterialControlRollbackFailureSmokeRequested =
+        args.HasFlag("--editor-control-rollback-failure-smoke");
+    m_EditorMaterialControlPostCommitRollbackFailureSmokeRequested =
+        args.HasFlag("--editor-control-postcommit-rollback-failure-smoke");
     const unsigned int controlSmokeCount =
         (m_EditorMaterialControlSmokeRequested ? 1u : 0u)
         + (m_EditorMaterialControlLiveHelperSmokeRequested ? 1u : 0u)
         + (m_EditorMaterialControlCapacitySmokeRequested ? 1u : 0u)
-        + (m_EditorMaterialControlDurabilitySmokeRequested ? 1u : 0u);
+        + (m_EditorMaterialControlDurabilitySmokeRequested ? 1u : 0u)
+        + (m_EditorMaterialControlRollbackFailureSmokeRequested ? 1u : 0u)
+        + (m_EditorMaterialControlPostCommitRollbackFailureSmokeRequested ? 1u : 0u);
     if (controlSmokeCount > 1)
         throw std::runtime_error("editor material-control smoke modes are mutually exclusive");
     if (m_SceneOriginRasterSmokeRequested)
@@ -624,7 +630,9 @@ void EditorLayer::OnAttach()
     if (m_EditorMaterialControlSmokeRequested
         || m_EditorMaterialControlLiveHelperSmokeRequested
         || m_EditorMaterialControlCapacitySmokeRequested
-        || m_EditorMaterialControlDurabilitySmokeRequested)
+        || m_EditorMaterialControlDurabilitySmokeRequested
+        || m_EditorMaterialControlRollbackFailureSmokeRequested
+        || m_EditorMaterialControlPostCommitRollbackFailureSmokeRequested)
     {
         m_EditorMaterialControlSmokeInitialRendererGeneration =
             Engine::Renderer::GetPublishedArtifactResolverGeneration();
@@ -729,6 +737,7 @@ void EditorLayer::OnUpdate(Engine::Timestep timestep)
     RunEditorMaterialControlSmokeBeforeDrain();
     RunEditorMaterialControlCapacitySmokeBeforeDrain();
     RunEditorMaterialControlDurabilitySmokeBeforeDrain();
+    RunEditorMaterialControlRollbackFailureSmokeBeforeDrain();
     const Engine::u64 applicationFrame = Engine::Application::Get().GetFrameIndex();
     m_EditorMaterialControl.Drain(applicationFrame,
         [this](const EditorMaterialControlRequest& request, Engine::u64 frame)
@@ -739,6 +748,7 @@ void EditorLayer::OnUpdate(Engine::Timestep timestep)
     RunEditorMaterialControlLiveHelperSmokeAfterDrain();
     RunEditorMaterialControlCapacitySmokeAfterDrain();
     RunEditorMaterialControlDurabilitySmokeAfterDrain();
+    RunEditorMaterialControlRollbackFailureSmokeAfterDrain();
 
     Engine::TrackedCameraViewRequest viewportViewRequest;
     viewportViewRequest.StableViewId = 1;
@@ -777,7 +787,9 @@ void EditorLayer::InitializeEditorMaterialControl()
         if (m_EditorMaterialControlSmokeRequested
             || m_EditorMaterialControlLiveHelperSmokeRequested
             || m_EditorMaterialControlCapacitySmokeRequested
-            || m_EditorMaterialControlDurabilitySmokeRequested)
+            || m_EditorMaterialControlDurabilitySmokeRequested
+            || m_EditorMaterialControlRollbackFailureSmokeRequested
+            || m_EditorMaterialControlPostCommitRollbackFailureSmokeRequested)
             throw std::runtime_error(
                 "editor material-control smokes require --editor-control-dir=<absolute path>");
         return;
@@ -788,7 +800,9 @@ void EditorLayer::InitializeEditorMaterialControl()
     if (m_EditorMaterialControlSmokeRequested
         || m_EditorMaterialControlLiveHelperSmokeRequested
         || m_EditorMaterialControlCapacitySmokeRequested
-        || m_EditorMaterialControlDurabilitySmokeRequested)
+        || m_EditorMaterialControlDurabilitySmokeRequested
+        || m_EditorMaterialControlRollbackFailureSmokeRequested
+        || m_EditorMaterialControlPostCommitRollbackFailureSmokeRequested)
     {
         if (!Engine::Application::Get().GetSpecification().Window.Headless)
             throw std::runtime_error("editor material-control smoke requires --headless");
@@ -1058,8 +1072,7 @@ EditorMaterialControlTransaction EditorLayer::ExecuteEditorMaterialControlReques
     };
     transaction.Rollback = [this, rollback, request](EditorMaterialControlReceipt& rolledBack)
     {
-        if (rollback->MutationStarted)
-            RestoreHistoryState(rollback->State);
+        const bool stateRestored = !rollback->MutationStarted || RestoreHistoryState(rollback->State);
         m_UndoHistory = rollback->UndoHistory;
         m_RedoHistory = rollback->RedoHistory;
         m_FusionNavigationPivot = rollback->FusionPivot;
@@ -1078,6 +1091,20 @@ EditorMaterialControlTransaction EditorLayer::ExecuteEditorMaterialControlReques
                 publishedMaterial, publishedGeneration, readbackError)
             && publishedGeneration == rolledBack.RendererGeneration
             && Engine::GetMaterialSurface(publishedMaterial) == rolledBack.Before;
+        const bool verified = stateRestored
+            && m_UndoHistory.size() == rollback->UndoHistory.size()
+            && m_RedoHistory.size() == rollback->RedoHistory.size()
+            && m_FusionNavigationPivotValid == rollback->FusionPivotValid
+            && (!m_FusionNavigationPivotValid || (m_FusionNavigationPivot.X == rollback->FusionPivot.X
+                && m_FusionNavigationPivot.Y == rollback->FusionPivot.Y
+                && m_FusionNavigationPivot.Z == rollback->FusionPivot.Z))
+            && rolledBack.RendererReadbackVerified;
+        if (m_EditorMaterialControlForceRollbackVerificationFailureOnce)
+        {
+            m_EditorMaterialControlForceRollbackVerificationFailureOnce = false;
+            return false;
+        }
+        return verified;
     };
     return transaction;
 }
@@ -1600,6 +1627,101 @@ void EditorLayer::RunEditorMaterialControlDurabilitySmokeAfterDrain()
     Engine::Application::Get().Close();
 }
 
+void EditorLayer::RunEditorMaterialControlRollbackFailureSmokeBeforeDrain()
+{
+    if ((!m_EditorMaterialControlRollbackFailureSmokeRequested
+            && !m_EditorMaterialControlPostCommitRollbackFailureSmokeRequested)
+        || m_EditorMaterialControlRollbackFailureSmokeCompleted
+        || m_EditorMaterialControlSmokeStage != 0)
+    {
+        return;
+    }
+
+    const Engine::SceneEntity* target = m_ActiveScene.TryGetEntity(m_PrototypeMeshEntity);
+    if (!target)
+        throw std::runtime_error("editor material-control rollback-failure target disappeared");
+
+    const bool postCommit = m_EditorMaterialControlPostCommitRollbackFailureSmokeRequested;
+    const std::string requestId = postCommit
+        ? "rollback-failure-postcommit" : "rollback-failure-commit";
+    m_EditorMaterialControlForceRollbackVerificationFailureOnce = true;
+    m_EditorMaterialControlForceCommitFailureOnce = !postCommit;
+    m_EditorMaterialControlForceLateResponseCollisionOnce = postCommit;
+    const std::string request = EditorMaterialControlMailbox::FormatPatchRequest(
+        requestId, m_EditorMaterialControl.GetSessionId(), target->EntityHandle.Id,
+        target->Name, m_EditorMaterialControlSmokeMaterial,
+        m_EditorMaterialControlSmokeBefore, m_EditorMaterialControlSmokeAfter);
+    std::string error;
+    if (!m_EditorMaterialControl.PublishRequestForSmoke(requestId, request, error))
+        throw std::runtime_error(
+            "could not stage editor material-control rollback-failure smoke: " + error);
+    m_EditorMaterialControlSmokeStage = 1;
+}
+
+void EditorLayer::RunEditorMaterialControlRollbackFailureSmokeAfterDrain()
+{
+    if ((!m_EditorMaterialControlRollbackFailureSmokeRequested
+            && !m_EditorMaterialControlPostCommitRollbackFailureSmokeRequested)
+        || m_EditorMaterialControlRollbackFailureSmokeCompleted
+        || m_EditorMaterialControlSmokeStage != 1
+        || m_EditorMaterialControl.IsAcceptingRequests())
+    {
+        return;
+    }
+
+    const bool postCommit = m_EditorMaterialControlPostCommitRollbackFailureSmokeRequested;
+    const std::string requestId = postCommit
+        ? "rollback-failure-postcommit" : "rollback-failure-commit";
+    bool requestWasRequeued = false;
+    std::error_code iterationError;
+    for (std::filesystem::directory_iterator iterator(
+             m_EditorMaterialControl.GetRoot() / "requests", iterationError), end;
+         !iterationError && iterator != end; iterator.increment(iterationError))
+    {
+        if (iterator->path().filename().string().find(requestId) != std::string::npos)
+            requestWasRequeued = true;
+    }
+
+    const EditorMaterialControlReceipt* receipt =
+        m_EditorMaterialControl.FindTerminalReceipt(requestId);
+    const bool receiptIsRecoveryRequired = receipt && !receipt->Succeeded
+        && receipt->Reason == (postCommit
+            ? "postcommit_rollback_verification_failed"
+            : "rollback_verification_failed")
+        && receipt->Effect == "RecoveryRequired"
+        && receipt->Recovery == "RestartSession";
+    const Engine::MaterialAsset* material =
+        m_MaterialLibrary.Get(m_EditorMaterialControlSmokeMaterial);
+    const bool stateActuallyRestored = material
+        && Engine::GetMaterialSurface(*material) == m_EditorMaterialControlSmokeBefore
+        && m_UndoHistory.size() == m_EditorMaterialControlSmokeInitialUndoDepth
+        && m_RedoHistory.size() == m_EditorMaterialControlSmokeInitialRedoDepth
+        && m_SelectedEntity == m_ActiveScene.GetMainCameraEntity()
+        && Engine::Renderer::GetPublishedArtifactResolverGeneration()
+            == m_EditorMaterialControlSmokeInitialRendererGeneration + 2;
+    const bool closed = !m_EditorMaterialControl.IsAcceptingRequests()
+        && std::filesystem::is_regular_file(
+            m_EditorMaterialControl.GetRoot() / "session.closed");
+    if (iterationError || requestWasRequeued || !receiptIsRecoveryRequired
+        || !stateActuallyRestored || !closed)
+    {
+        throw std::runtime_error(
+            "editor material-control rollback-verification failure smoke failed");
+    }
+
+    Engine::Log::Info(
+        "EditorMaterialControlRollbackFailureV1 path=",
+        postCommit ? "postcommit-publication" : "commit",
+        " closeReason=",
+        postCommit ? "postcommit_rollback_verification_failed"
+                   : "rollback_verification_failed",
+        " effect=RecoveryRequired acknowledgement=typed",
+        " rolledBackClaim=no requestRequeued=no session=closed result=pass");
+    m_EditorMaterialControlRollbackFailureSmokeCompleted = true;
+    m_EditorMaterialControlSmokeStage = 2;
+    Engine::Application::Get().Close();
+}
+
 void EditorLayer::OnUiRender()
 {
     if (!ImGui::GetCurrentContext())
@@ -2030,11 +2152,7 @@ void EditorLayer::DrawMainMenuBar()
                     {
                         Engine::RendererColorPipelineSettings edited = m_ProjectColorPipelineSettings;
                         edited.ExposureMode = mode;
-                        if (Engine::IsValidRendererColorPipelineSettings(edited))
-                        {
-                            m_ProjectColorPipelineSettings = edited;
-                            PublishColorPipelineSettings();
-                        }
+                        ApplyProjectColorPipelineSettings(edited);
                     }
                     if (selected)
                         ImGui::SetItemDefaultFocus();
@@ -2043,32 +2161,23 @@ void EditorLayer::DrawMainMenuBar()
             }
 
             double manualExposureEV100 = m_ProjectColorPipelineSettings.ManualExposureEV100;
-            if (ImGui::InputDouble("Manual EV100", &manualExposureEV100, 0.25, 1.0, "%.2f"))
-            {
-                Engine::RendererColorPipelineSettings edited = m_ProjectColorPipelineSettings;
-                edited.ManualExposureEV100 = manualExposureEV100;
-                if (Engine::IsValidRendererColorPipelineSettings(edited))
-                {
-                    m_ProjectColorPipelineSettings = edited;
-                    PublishColorPipelineSettings();
-                }
-            }
+            const bool manualExposureEdited = ImGui::InputDouble(
+                "Manual EV100", &manualExposureEV100, 0.25, 1.0, "%.2f");
+            Engine::RendererColorPipelineSettings editedManualExposure =
+                m_ProjectColorPipelineSettings;
+            editedManualExposure.ManualExposureEV100 = manualExposureEV100;
+            HandleProjectColorPipelineInput(editedManualExposure, manualExposureEdited);
             const Engine::RendererColorPipelineSettings previewColorPipelineSettings { manualExposureEV100 };
             if (!Engine::IsValidRendererColorPipelineSettings(previewColorPipelineSettings))
                 ImGui::TextDisabled("Manual EV100 must be finite and between %.0f and %.0f; current saved value remains unchanged.",
                     Engine::kMinimumManualExposureEV100, Engine::kMaximumManualExposureEV100);
 
             double apertureFNumber = m_ProjectColorPipelineSettings.CameraApertureFNumber;
-            if (ImGui::InputDouble("Aperture f-number", &apertureFNumber, 0.1, 1.0, "%.2f"))
-            {
-                Engine::RendererColorPipelineSettings edited = m_ProjectColorPipelineSettings;
-                edited.CameraApertureFNumber = apertureFNumber;
-                if (Engine::IsValidRendererColorPipelineSettings(edited))
-                {
-                    m_ProjectColorPipelineSettings = edited;
-                    PublishColorPipelineSettings();
-                }
-            }
+            const bool apertureEdited = ImGui::InputDouble(
+                "Aperture f-number", &apertureFNumber, 0.1, 1.0, "%.2f");
+            Engine::RendererColorPipelineSettings editedAperture = m_ProjectColorPipelineSettings;
+            editedAperture.CameraApertureFNumber = apertureFNumber;
+            HandleProjectColorPipelineInput(editedAperture, apertureEdited);
             Engine::RendererColorPipelineSettings previewApertureSettings = m_ProjectColorPipelineSettings;
             previewApertureSettings.CameraApertureFNumber = apertureFNumber;
             if (!Engine::IsValidRendererColorPipelineSettings(previewApertureSettings))
@@ -2076,16 +2185,11 @@ void EditorLayer::DrawMainMenuBar()
                     Engine::kMinimumCameraApertureFNumber, Engine::kMaximumCameraApertureFNumber);
 
             double shutterSeconds = m_ProjectColorPipelineSettings.CameraShutterSeconds;
-            if (ImGui::InputDouble("Shutter seconds", &shutterSeconds, 0.001, 0.01, "%.5f"))
-            {
-                Engine::RendererColorPipelineSettings edited = m_ProjectColorPipelineSettings;
-                edited.CameraShutterSeconds = shutterSeconds;
-                if (Engine::IsValidRendererColorPipelineSettings(edited))
-                {
-                    m_ProjectColorPipelineSettings = edited;
-                    PublishColorPipelineSettings();
-                }
-            }
+            const bool shutterEdited = ImGui::InputDouble(
+                "Shutter seconds", &shutterSeconds, 0.001, 0.01, "%.5f");
+            Engine::RendererColorPipelineSettings editedShutter = m_ProjectColorPipelineSettings;
+            editedShutter.CameraShutterSeconds = shutterSeconds;
+            HandleProjectColorPipelineInput(editedShutter, shutterEdited);
             Engine::RendererColorPipelineSettings previewShutterSettings = m_ProjectColorPipelineSettings;
             previewShutterSettings.CameraShutterSeconds = shutterSeconds;
             if (!Engine::IsValidRendererColorPipelineSettings(previewShutterSettings))
@@ -2093,16 +2197,11 @@ void EditorLayer::DrawMainMenuBar()
                     Engine::kMinimumCameraShutterSeconds, Engine::kMaximumCameraShutterSeconds);
 
             double cameraISO = m_ProjectColorPipelineSettings.CameraISO;
-            if (ImGui::InputDouble("ISO", &cameraISO, 10.0, 100.0, "%.0f"))
-            {
-                Engine::RendererColorPipelineSettings edited = m_ProjectColorPipelineSettings;
-                edited.CameraISO = cameraISO;
-                if (Engine::IsValidRendererColorPipelineSettings(edited))
-                {
-                    m_ProjectColorPipelineSettings = edited;
-                    PublishColorPipelineSettings();
-                }
-            }
+            const bool cameraISOEdited = ImGui::InputDouble(
+                "ISO", &cameraISO, 10.0, 100.0, "%.0f");
+            Engine::RendererColorPipelineSettings editedCameraISO = m_ProjectColorPipelineSettings;
+            editedCameraISO.CameraISO = cameraISO;
+            HandleProjectColorPipelineInput(editedCameraISO, cameraISOEdited);
             Engine::RendererColorPipelineSettings previewISOSettings = m_ProjectColorPipelineSettings;
             previewISOSettings.CameraISO = cameraISO;
             if (!Engine::IsValidRendererColorPipelineSettings(previewISOSettings))
@@ -2110,16 +2209,11 @@ void EditorLayer::DrawMainMenuBar()
                     Engine::kMinimumCameraISO, Engine::kMaximumCameraISO);
 
             double postToneMapSaturation = m_ProjectColorPipelineSettings.PostToneMapSaturation;
-            if (ImGui::InputDouble("Post-tone-map saturation", &postToneMapSaturation, 0.05, 0.25, "%.2f"))
-            {
-                Engine::RendererColorPipelineSettings edited = m_ProjectColorPipelineSettings;
-                edited.PostToneMapSaturation = postToneMapSaturation;
-                if (Engine::IsValidRendererColorPipelineSettings(edited))
-                {
-                    m_ProjectColorPipelineSettings = edited;
-                    PublishColorPipelineSettings();
-                }
-            }
+            const bool saturationEdited = ImGui::InputDouble(
+                "Post-tone-map saturation", &postToneMapSaturation, 0.05, 0.25, "%.2f");
+            Engine::RendererColorPipelineSettings editedSaturation = m_ProjectColorPipelineSettings;
+            editedSaturation.PostToneMapSaturation = postToneMapSaturation;
+            HandleProjectColorPipelineInput(editedSaturation, saturationEdited);
             Engine::RendererColorPipelineSettings previewSaturationSettings = m_ProjectColorPipelineSettings;
             previewSaturationSettings.PostToneMapSaturation = postToneMapSaturation;
             if (!Engine::IsValidRendererColorPipelineSettings(previewSaturationSettings))
@@ -2127,16 +2221,11 @@ void EditorLayer::DrawMainMenuBar()
                     Engine::kMinimumPostToneMapSaturation, Engine::kMaximumPostToneMapSaturation);
 
             double postToneMapContrast = m_ProjectColorPipelineSettings.PostToneMapContrast;
-            if (ImGui::InputDouble("Post-tone-map contrast", &postToneMapContrast, 0.05, 0.25, "%.2f"))
-            {
-                Engine::RendererColorPipelineSettings edited = m_ProjectColorPipelineSettings;
-                edited.PostToneMapContrast = postToneMapContrast;
-                if (Engine::IsValidRendererColorPipelineSettings(edited))
-                {
-                    m_ProjectColorPipelineSettings = edited;
-                    PublishColorPipelineSettings();
-                }
-            }
+            const bool contrastEdited = ImGui::InputDouble(
+                "Post-tone-map contrast", &postToneMapContrast, 0.05, 0.25, "%.2f");
+            Engine::RendererColorPipelineSettings editedContrast = m_ProjectColorPipelineSettings;
+            editedContrast.PostToneMapContrast = postToneMapContrast;
+            HandleProjectColorPipelineInput(editedContrast, contrastEdited);
             Engine::RendererColorPipelineSettings previewContrastSettings = m_ProjectColorPipelineSettings;
             previewContrastSettings.PostToneMapContrast = postToneMapContrast;
             if (!Engine::IsValidRendererColorPipelineSettings(previewContrastSettings))
@@ -2193,6 +2282,21 @@ void EditorLayer::DrawMainMenuBar()
         }
 
         ImGui::EndMenu();
+    }
+
+    if (m_ProjectColorPipelineInteractionBefore && !ImGui::IsAnyItemActive())
+    {
+        if (m_ProjectColorPipelineInteractionChanged
+            && m_ProjectColorPipelineInteractionBefore->ProjectColorPipelineSettings
+                != m_ProjectColorPipelineSettings)
+        {
+            RecordHistory(std::move(m_ProjectColorPipelineInteractionLabel),
+                std::move(*m_ProjectColorPipelineInteractionBefore));
+        }
+        m_ProjectColorPipelineInteractionBefore.reset();
+        m_ProjectColorPipelineInteractionItemId = 0;
+        m_ProjectColorPipelineInteractionChanged = false;
+        m_ProjectColorPipelineInteractionLabel.clear();
     }
 
     ImGui::EndMenuBar();
@@ -2486,8 +2590,10 @@ void EditorLayer::DrawInspectorPanel()
         {
             Engine::CameraComponent camera;
             camera.Primary = false;
-            m_ActiveScene.AddCameraComponent(selectedEntity->EntityHandle, camera);
-            historyStateChanged = true;
+            if (m_ActiveScene.AddCameraComponent(selectedEntity->EntityHandle, camera))
+                historyStateChanged = true;
+            else
+                m_ConsoleLines.emplace_back("Camera component requires unit transform scale");
         }
         if (!selectedEntity->Light && ImGui::MenuItem("Light"))
         {
@@ -3780,6 +3886,77 @@ void EditorLayer::PublishColorPipelineSettings()
         Engine::Log::Error("Rejected invalid project color pipeline settings");
 }
 
+bool EditorLayer::PublishProjectColorPipelineSettings(
+    const Engine::RendererColorPipelineSettings& settings)
+{
+    if (settings == m_ProjectColorPipelineSettings
+        || !Engine::IsValidRendererColorPipelineSettings(settings))
+    {
+        return false;
+    }
+    if (!Engine::Renderer::SetColorPipelineSettings(settings))
+        return false;
+    m_ProjectColorPipelineSettings = settings;
+    return true;
+}
+
+bool EditorLayer::ApplyProjectColorPipelineSettings(
+    const Engine::RendererColorPipelineSettings& settings, std::string label)
+{
+    const HistoryState before = CaptureHistoryState();
+    if (!PublishProjectColorPipelineSettings(settings))
+        return false;
+    RecordHistory(std::move(label), before);
+    return true;
+}
+
+void EditorLayer::HandleProjectColorPipelineInput(
+    const Engine::RendererColorPipelineSettings& settings, bool edited, std::string label)
+{
+    const unsigned int itemId = ImGui::GetItemID();
+    const auto finalizePendingInteraction = [this]()
+    {
+        if (m_ProjectColorPipelineInteractionBefore
+            && m_ProjectColorPipelineInteractionChanged
+            && m_ProjectColorPipelineInteractionBefore->ProjectColorPipelineSettings
+                != m_ProjectColorPipelineSettings)
+        {
+            RecordHistory(std::move(m_ProjectColorPipelineInteractionLabel),
+                std::move(*m_ProjectColorPipelineInteractionBefore));
+        }
+        m_ProjectColorPipelineInteractionBefore.reset();
+        m_ProjectColorPipelineInteractionItemId = 0;
+        m_ProjectColorPipelineInteractionChanged = false;
+        m_ProjectColorPipelineInteractionLabel.clear();
+    };
+
+    if (ImGui::IsItemActivated())
+    {
+        if (m_ProjectColorPipelineInteractionBefore)
+            finalizePendingInteraction();
+        m_ProjectColorPipelineInteractionBefore = CaptureHistoryState();
+        m_ProjectColorPipelineInteractionItemId = itemId;
+        m_ProjectColorPipelineInteractionChanged = false;
+        m_ProjectColorPipelineInteractionLabel = label;
+    }
+
+    if (edited)
+    {
+        if (!m_ProjectColorPipelineInteractionBefore)
+        {
+            m_ProjectColorPipelineInteractionBefore = CaptureHistoryState();
+            m_ProjectColorPipelineInteractionItemId = itemId;
+            m_ProjectColorPipelineInteractionLabel = label;
+        }
+        m_ProjectColorPipelineInteractionChanged |=
+            PublishProjectColorPipelineSettings(settings);
+    }
+
+    if (ImGui::IsItemDeactivatedAfterEdit()
+        && m_ProjectColorPipelineInteractionItemId == itemId)
+        finalizePendingInteraction();
+}
+
 void EditorLayer::RunPresentationPolicySmoke()
 {
     if (!m_PresentationPolicySmokeRequested || m_PresentationPolicySmokeCompleted)
@@ -4426,6 +4603,7 @@ void EditorLayer::RunColorPipelineSettingsSmoke()
         && invalidReadPreserved(invalidCameraExposureTarget);
 
     const Engine::RendererColorPipelineSettings previousSettings = m_ProjectColorPipelineSettings;
+    const HistoryState historyBeforeSettingsChange = CaptureHistoryState();
     m_ProjectColorPipelineSettings = { 2.0, 0.5, 1.25 };
     m_ProjectColorPipelineSettings.ExposureMode = Engine::RendererExposureMode::CameraCalibration;
     m_ProjectColorPipelineSettings.CameraApertureFNumber = 2.0;
@@ -4455,22 +4633,123 @@ void EditorLayer::RunColorPipelineSettingsSmoke()
         && Engine::Renderer::GetColorPipelineSettings().CameraApertureFNumber == 2.0
         && Engine::Renderer::GetColorPipelineSettings().CameraShutterSeconds == 0.25
         && Engine::Renderer::GetColorPipelineSettings().CameraISO == 200.0;
-    m_ProjectColorPipelineSettings = previousSettings;
-    PublishColorPipelineSettings();
-    const bool restoredAndSaved = SaveProject();
+    const HistoryState historyAfterSettingsChange = CaptureHistoryState();
+    const std::vector<HistoryEntry> priorUndoHistory = m_UndoHistory;
+    const std::vector<HistoryEntry> priorRedoHistory = m_RedoHistory;
+    const bool historyRestoredBefore = RestoreHistoryState(historyBeforeSettingsChange)
+        && m_ProjectColorPipelineSettings == previousSettings
+        && Engine::Renderer::GetColorPipelineSettings() == previousSettings;
+    m_UndoHistory.clear();
+    m_RedoHistory.clear();
+    const bool historyApplied = historyRestoredBefore
+        && ApplyProjectColorPipelineSettings(
+            historyAfterSettingsChange.ProjectColorPipelineSettings,
+            "Color pipeline settings smoke")
+        && m_UndoHistory.size() == 1 && m_RedoHistory.empty()
+        && m_ProjectColorPipelineSettings
+            == historyAfterSettingsChange.ProjectColorPipelineSettings
+        && Engine::Renderer::GetColorPipelineSettings()
+            == historyAfterSettingsChange.ProjectColorPipelineSettings;
+    const bool historyUndone = historyApplied && Undo()
+        && m_UndoHistory.empty() && m_RedoHistory.size() == 1
+        && m_ProjectColorPipelineSettings == previousSettings
+        && Engine::Renderer::GetColorPipelineSettings() == previousSettings;
+    const bool historyRedone = historyUndone && Redo()
+        && m_UndoHistory.size() == 1 && m_RedoHistory.empty()
+        && m_ProjectColorPipelineSettings
+            == historyAfterSettingsChange.ProjectColorPipelineSettings
+        && Engine::Renderer::GetColorPipelineSettings()
+            == historyAfterSettingsChange.ProjectColorPipelineSettings;
+
+    const auto transformsEqual = [](const Engine::TransformComponent& left,
+                                     const Engine::TransformComponent& right)
+    {
+        return left.GetPosition().Sector.X == right.GetPosition().Sector.X
+            && left.GetPosition().Sector.Y == right.GetPosition().Sector.Y
+            && left.GetPosition().Sector.Z == right.GetPosition().Sector.Z
+            && left.GetPosition().Local.X == right.GetPosition().Local.X
+            && left.GetPosition().Local.Y == right.GetPosition().Local.Y
+            && left.GetPosition().Local.Z == right.GetPosition().Local.Z
+            && left.RotationDegrees.X == right.RotationDegrees.X
+            && left.RotationDegrees.Y == right.RotationDegrees.Y
+            && left.RotationDegrees.Z == right.RotationDegrees.Z
+            && left.Scale.X == right.Scale.X
+            && left.Scale.Y == right.Scale.Y
+            && left.Scale.Z == right.Scale.Z;
+    };
+    const HistoryState liveBeforeInvalidUndo = CaptureHistoryState();
+    const Engine::TransformComponent liveMainCameraTransform =
+        m_ActiveScene.GetMainCameraTransform();
+    HistoryState invalidHistoryState = liveBeforeInvalidUndo;
+    Engine::Math::DVec3 invalidCameraPosition;
+    const Engine::Entity invalidMainCamera = invalidHistoryState.Scene.GetMainCameraEntity();
+    const bool invalidSceneMadeDistinct = invalidHistoryState.Scene
+            .TryGetEntityApproximateWorldPosition(invalidMainCamera, invalidCameraPosition)
+        && invalidHistoryState.Scene.SetEntityWorldPositionAxis(
+            invalidMainCamera, 0, invalidCameraPosition.X + 123.0);
+    invalidHistoryState.SelectedEntity = {};
+    invalidHistoryState.CameraPosition[0] += 321.0;
+    invalidHistoryState.CameraRotation[1] += 17.0f;
+    const Engine::AssetHandle invalidOnlyAsset = invalidHistoryState.AssetRegistry.RegisterAsset(
+        Engine::AssetType::Material,
+        "output/assets/invalid-history-only.spiralmat", "Invalid history only");
+    Engine::MaterialAsset invalidOnlyMaterial;
+    invalidOnlyMaterial.Name = "Invalid history only";
+    const bool invalidAssetsMadeDistinct = invalidOnlyAsset != Engine::kInvalidAssetHandle
+        && invalidHistoryState.MaterialLibrary.Set(invalidOnlyAsset, invalidOnlyMaterial);
+    invalidHistoryState.ProjectColorPipelineSettings.ManualExposureEV100 =
+        std::numeric_limits<double>::quiet_NaN();
+    m_UndoHistory.push_back({ "Invalid color history smoke",
+        invalidHistoryState, liveBeforeInvalidUndo });
+    const std::size_t invalidUndoDepth = m_UndoHistory.size();
+    const std::size_t invalidRedoDepth = m_RedoHistory.size();
+    const bool invalidUndoRejected = !Undo();
+    const bool invalidStacksPreserved = m_UndoHistory.size() == invalidUndoDepth
+        && m_RedoHistory.size() == invalidRedoDepth
+        && !m_UndoHistory.empty()
+        && m_UndoHistory.back().Label == "Invalid color history smoke";
+    const bool invalidLiveStatePreserved =
+        m_ActiveScene.GetName() == liveBeforeInvalidUndo.Scene.GetName()
+        && m_ActiveScene.GetEntities().size()
+            == liveBeforeInvalidUndo.Scene.GetEntities().size()
+        && transformsEqual(m_ActiveScene.GetMainCameraTransform(), liveMainCameraTransform)
+        && m_SelectedEntity == liveBeforeInvalidUndo.SelectedEntity
+        && m_CameraPosition == liveBeforeInvalidUndo.CameraPosition
+        && m_CameraRotation == liveBeforeInvalidUndo.CameraRotation
+        && m_CameraFovDegrees == liveBeforeInvalidUndo.CameraFovDegrees
+        && m_CameraNearClip == liveBeforeInvalidUndo.CameraNearClip
+        && m_CameraFarClip == liveBeforeInvalidUndo.CameraFarClip
+        && m_ProjectColorPipelineSettings
+            == liveBeforeInvalidUndo.ProjectColorPipelineSettings
+        && Engine::Renderer::GetColorPipelineSettings()
+            == liveBeforeInvalidUndo.ProjectColorPipelineSettings
+        && !m_AssetRegistry.GetAsset(invalidOnlyAsset)
+        && !m_MaterialLibrary.Get(invalidOnlyAsset);
+    const bool invalidHistoryRejected = invalidSceneMadeDistinct
+        && invalidAssetsMadeDistinct && invalidUndoRejected
+        && invalidStacksPreserved && invalidLiveStatePreserved;
+
+    const bool historyRestoredAfter = RestoreHistoryState(historyBeforeSettingsChange)
+        && m_ProjectColorPipelineSettings == previousSettings
+        && Engine::Renderer::GetColorPipelineSettings() == previousSettings;
+    m_UndoHistory = priorUndoHistory;
+    m_RedoHistory = priorRedoHistory;
+    const bool restoredAndSaved = historyRestoredAfter && SaveProject();
 
     m_ColorPipelineSettingsSmokeCompleted = true;
     if (!v3Migrated || !v4Loaded || !v5Loaded || !v6Loaded || !orderLoaded || !orderRoundTrip
         || !boundaryRoundTrip || !invalidBoundsRejected || !invalidNonfiniteRejected
         || !invalidSaturationRejected || !invalidContrastRejected
         || !invalidExposureModeRejected || !invalidCameraExposureRejected
-        || !rendererPublished || !savedAndReloaded || !restoredAndSaved)
+        || !rendererPublished || !savedAndReloaded || !historyApplied
+        || !historyUndone || !historyRedone || !invalidHistoryRejected
+        || !historyRestoredAfter || !restoredAndSaved)
     {
         throw std::runtime_error("Color pipeline settings smoke failed");
     }
 
     const Engine::RendererColorPipelineSettings published = Engine::Renderer::GetColorPipelineSettings();
-    Engine::Log::Info("ColorPipelineSettingsSmokeV1 default=pass bounds=pass nonfinite=pass v3Migration=pass v4GradingMigration=pass v5SaveReopen=pass rendererPublication=pass manualExposureEV100=",
+    Engine::Log::Info("ColorPipelineSettingsSmokeV1 default=pass bounds=pass nonfinite=pass v3Migration=pass v4GradingMigration=pass v5SaveReopen=pass historyUndoRedo=pass restoreFailureAtomic=pass rendererPublication=pass manualExposureEV100=",
         published.ManualExposureEV100, " postToneMapSaturation=", published.PostToneMapSaturation,
         " postToneMapContrast=", published.PostToneMapContrast,
         " exposureMode=", Engine::ToString(published.ExposureMode),
@@ -4973,7 +5252,6 @@ bool EditorLayer::CreateNewProject(std::string name, const std::filesystem::path
     const std::string previousScenePath = m_ScenePath;
     const std::string previousAssetRegistryPath = m_AssetRegistryPath;
     const Engine::FramePacingPolicy previousFramePacingPolicy = m_ProjectFramePacingPolicy;
-    const Engine::RendererColorPipelineSettings previousColorPipelineSettings = m_ProjectColorPipelineSettings;
     const Engine::RendererColorPipelineSettings previousPublishedColorPipelineSettings =
         Engine::Renderer::GetColorPipelineSettings();
     const std::vector<HistoryEntry> previousUndoHistory = m_UndoHistory;
@@ -5005,9 +5283,10 @@ bool EditorLayer::CreateNewProject(std::string name, const std::filesystem::path
         m_ScenePath = previousScenePath;
         m_AssetRegistryPath = previousAssetRegistryPath;
         m_ProjectFramePacingPolicy = previousFramePacingPolicy;
-        m_ProjectColorPipelineSettings = previousColorPipelineSettings;
-        Engine::Renderer::SetColorPipelineSettings(previousPublishedColorPipelineSettings);
-        RestoreHistoryState(previousState);
+        if (!RestoreHistoryState(previousState))
+            Engine::Log::Error("Project-creation rollback could not restore history state");
+        if (!Engine::Renderer::SetColorPipelineSettings(previousPublishedColorPipelineSettings))
+            Engine::Log::Error("Project-creation rollback could not restore renderer color settings");
         m_UndoHistory = previousUndoHistory;
         m_RedoHistory = previousRedoHistory;
         return false;
@@ -5019,9 +5298,10 @@ bool EditorLayer::CreateNewProject(std::string name, const std::filesystem::path
         m_ScenePath = previousScenePath;
         m_AssetRegistryPath = previousAssetRegistryPath;
         m_ProjectFramePacingPolicy = previousFramePacingPolicy;
-        m_ProjectColorPipelineSettings = previousColorPipelineSettings;
-        Engine::Renderer::SetColorPipelineSettings(previousPublishedColorPipelineSettings);
-        RestoreHistoryState(previousState);
+        if (!RestoreHistoryState(previousState))
+            Engine::Log::Error("Project-creation rollback could not restore history state");
+        if (!Engine::Renderer::SetColorPipelineSettings(previousPublishedColorPipelineSettings))
+            Engine::Log::Error("Project-creation rollback could not restore renderer color settings");
         m_UndoHistory = previousUndoHistory;
         m_RedoHistory = previousRedoHistory;
         return false;
@@ -5202,11 +5482,19 @@ EditorLayer::HistoryState EditorLayer::CaptureHistoryState() const
     state.CameraFovDegrees = m_CameraFovDegrees;
     state.CameraNearClip = m_CameraNearClip;
     state.CameraFarClip = m_CameraFarClip;
+    state.ProjectColorPipelineSettings = m_ProjectColorPipelineSettings;
     return state;
 }
 
-void EditorLayer::RestoreHistoryState(const HistoryState& state)
+bool EditorLayer::RestoreHistoryState(const HistoryState& state)
 {
+    if (!Engine::IsValidRendererColorPipelineSettings(state.ProjectColorPipelineSettings)
+        || !Engine::Renderer::SetColorPipelineSettings(state.ProjectColorPipelineSettings))
+    {
+        Engine::Log::Error("History restore rejected invalid project color pipeline settings");
+        return false;
+    }
+
     m_ActiveScene = state.Scene;
     m_AssetRegistry = state.AssetRegistry;
     m_MaterialLibrary = state.MaterialLibrary;
@@ -5217,6 +5505,7 @@ void EditorLayer::RestoreHistoryState(const HistoryState& state)
     m_CameraFovDegrees = state.CameraFovDegrees;
     m_CameraNearClip = state.CameraNearClip;
     m_CameraFarClip = state.CameraFarClip;
+    m_ProjectColorPipelineSettings = state.ProjectColorPipelineSettings;
     m_PrototypeMeshEntity = m_ActiveScene.FindEntityByName("Prototype Mesh");
     m_DirectionalLightEntity = m_ActiveScene.FindEntityByName("Directional Light");
     m_PlayerStartEntity = m_ActiveScene.FindEntityByName("Player Start");
@@ -5226,6 +5515,7 @@ void EditorLayer::RestoreHistoryState(const HistoryState& state)
     SyncEditorCameraStateFromMainCamera(true);
     ResetFusionNavigationPivotFromSelectionOrScene();
     m_AssetWatcher.SyncRegistry(m_AssetRegistry);
+    return true;
 }
 
 void EditorLayer::RecordHistory(std::string label, HistoryState before)
@@ -5242,9 +5532,10 @@ bool EditorLayer::Undo()
     if (m_UndoHistory.empty())
         return false;
 
-    HistoryEntry entry = std::move(m_UndoHistory.back());
+    HistoryEntry entry = m_UndoHistory.back();
+    if (!RestoreHistoryState(entry.Before))
+        return false;
     m_UndoHistory.pop_back();
-    RestoreHistoryState(entry.Before);
     m_ConsoleLines.emplace_back("Undid: " + entry.Label);
     m_RedoHistory.push_back(std::move(entry));
     return true;
@@ -5255,9 +5546,10 @@ bool EditorLayer::Redo()
     if (m_RedoHistory.empty())
         return false;
 
-    HistoryEntry entry = std::move(m_RedoHistory.back());
+    HistoryEntry entry = m_RedoHistory.back();
+    if (!RestoreHistoryState(entry.After))
+        return false;
     m_RedoHistory.pop_back();
-    RestoreHistoryState(entry.After);
     m_ConsoleLines.emplace_back("Redid: " + entry.Label);
     m_UndoHistory.push_back(std::move(entry));
     return true;

@@ -225,6 +225,86 @@ assert receipt["rendererReadbackVerified"]
 assert receipt["selectionCommitted"] and receipt["pivotRetargeted"]
 PY
 
+for rollback_mode in commit postcommit; do
+    rollback_control_dir="$smoke_root/rollback-$rollback_mode-mailbox"
+    rollback_log="$smoke_root/rollback-$rollback_mode-editor.log"
+    if [[ "$rollback_mode" == "commit" ]]; then
+        rollback_flag="--editor-control-rollback-failure-smoke"
+        rollback_request_id="rollback-failure-commit"
+        rollback_reason="rollback_verification_failed"
+        rollback_path="commit"
+    else
+        rollback_flag="--editor-control-postcommit-rollback-failure-smoke"
+        rollback_request_id="rollback-failure-postcommit"
+        rollback_reason="postcommit_rollback_verification_failed"
+        rollback_path="postcommit-publication"
+    fi
+    timeout 20s "$editor" --headless \
+        "--editor-control-dir=$rollback_control_dir" \
+        "$rollback_flag" >"$rollback_log" 2>&1
+    grep -Fq -- "EditorMaterialControlV1 accepting=no reason=$rollback_reason" \
+        "$rollback_log"
+    grep -Fq -- "EditorMaterialControlRollbackFailureV1 path=$rollback_path closeReason=$rollback_reason" \
+        "$rollback_log"
+    grep -Fq -- "rolledBackClaim=no requestRequeued=no session=closed result=pass" \
+        "$rollback_log"
+    test -f "$rollback_control_dir/session.closed"
+    if find "$rollback_control_dir/requests" -maxdepth 1 -name "*$rollback_request_id*" \
+        -print -quit | grep -q .; then
+        echo "Rollback-failure request was retained for unsafe replay: $rollback_mode" >&2
+        exit 1
+    fi
+    rollback_response="$rollback_control_dir/responses/$rollback_request_id.response"
+    if [[ "$rollback_mode" == "commit" ]]; then
+        rollback_typed_response="$rollback_response"
+    else
+        grep -Fxq -- "late response collision" "$rollback_response"
+        rollback_typed_response="$rollback_control_dir/responses/$rollback_request_id.recovery.response"
+    fi
+    grep -Fq -- "Status Rejected" "$rollback_typed_response"
+    grep -Fq -- "Reason \"$rollback_reason\"" "$rollback_typed_response"
+    grep -Fq -- "Effect RecoveryRequired" "$rollback_typed_response"
+    grep -Fq -- "Recovery RestartSession" "$rollback_typed_response"
+    if grep -Fq -- "Effect RolledBack" "$rollback_typed_response"; then
+        echo "Rollback failure falsely claimed a completed rollback" >&2
+        exit 1
+    fi
+
+    rollback_entity_id="$(awk '$1 == "EntityId" { print $2 }' "$rollback_typed_response")"
+    rollback_material_handle="$(awk '$1 == "MaterialHandle" { print $2 }' "$rollback_typed_response")"
+    set +e
+    python3 "$script_dir/EditorMaterialControl.py" \
+        --control-dir "$rollback_control_dir" \
+        --expected-project "$repo_root/output/projects/default.spiralproject" \
+        --request-id "$rollback_request_id" \
+        set --entity-id "$rollback_entity_id" --expected-name "Prototype Mesh" \
+        --material-handle "$rollback_material_handle" \
+        --expected-base 0.62 0.22 0.14 \
+        --expected-metallic 0.35 --expected-roughness 0.74 \
+        --new-base 0.21 0.43 0.67 \
+        --new-metallic 0.77 --new-roughness 0.31 \
+        >"$smoke_root/rollback-$rollback_mode-helper.json" \
+        2>"$smoke_root/rollback-$rollback_mode-helper.error"
+    rollback_helper_status=$?
+    set -e
+    if [[ "$rollback_helper_status" -ne 2 ]]; then
+        cat "$smoke_root/rollback-$rollback_mode-helper.error" >&2
+        echo "Helper did not return typed RecoveryRequired: $rollback_mode" >&2
+        exit 1
+    fi
+    python3 - "$smoke_root/rollback-$rollback_mode-helper.json" "$rollback_reason" <<'PY'
+import json
+import sys
+
+receipt = json.load(open(sys.argv[1], encoding="utf-8"))
+assert receipt["status"] == "Rejected"
+assert receipt["reason"] == sys.argv[2]
+assert receipt["effect"] == "RecoveryRequired"
+assert receipt["recovery"] == "RestartSession"
+assert not receipt["rendererReadbackVerified"]
+PY
+done
+
 capacity_control_dir="$smoke_root/capacity-mailbox"
 capacity_log="$smoke_root/capacity-editor.log"
 timeout 20s "$editor" --headless \
@@ -267,4 +347,4 @@ if python3 "$script_dir/EditorMaterialControl.py" \
 fi
 grep -Fq -- "editor-control session is closed" "$smoke_root/capacity-helper.error"
 
-echo "EditorMaterialControlTestV1 internal=pass conflicts=A-B-C-consumed liveHelper=fresh-inspect-set durability=visible-success-preserved capacity=retained private=pass cleanup=bounded result=pass"
+echo "EditorMaterialControlTestV1 internal=pass conflicts=A-B-C-consumed liveHelper=fresh-inspect-set durability=visible-success-preserved rollbackFailure=closed-no-replay commit-and-postcommit=pass capacity=retained private=pass cleanup=bounded result=pass"

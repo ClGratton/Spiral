@@ -905,6 +905,25 @@ bool EditorMaterialControlMailbox::PublishResponse(
         && PublishFileNoReplace(temporary, destination, "terminal response", true, error);
 }
 
+bool EditorMaterialControlMailbox::PublishRecoveryResponse(
+    const TerminalEntry& terminal, std::string& error)
+{
+    error.clear();
+    const std::filesystem::path destination = m_Responses
+        / (terminal.RequestId + ".recovery.response");
+    std::error_code statusError;
+    if (std::filesystem::symlink_status(destination, statusError).type()
+        != std::filesystem::file_type::not_found)
+    {
+        error = "recovery_response_collision";
+        return false;
+    }
+    std::filesystem::path temporary;
+    return StageResponse(terminal.RequestId, terminal.Text, temporary, error)
+        && PublishFileNoReplace(
+            temporary, destination, "recovery-required response", true, error);
+}
+
 bool EditorMaterialControlMailbox::StageResponse(std::string_view requestId,
     std::string_view text, std::filesystem::path& temporary, std::string& error)
 {
@@ -1234,10 +1253,37 @@ void EditorMaterialControlMailbox::ProcessRequest(const std::filesystem::path& p
         return;
     }
 
+    const auto closeAfterUnverifiedRollback = [&](std::string_view reason)
+    {
+        std::error_code ignored;
+        std::filesystem::remove(stagedResponse, ignored);
+        receipt.Succeeded = false;
+        receipt.Reason = std::string(reason);
+        receipt.Effect = "RecoveryRequired";
+        receipt.Recovery = "RestartSession";
+        receipt.RendererReadbackVerified = false;
+        terminal.Receipt = receipt;
+        terminal.Text = FormatReceipt(receipt);
+        std::string recoveryReceiptError;
+        if (PublishResponse(terminal, false, recoveryReceiptError)
+            || PublishRecoveryResponse(terminal, recoveryReceiptError))
+            m_Terminals.push_back(std::move(terminal));
+        else
+            Engine::Log::Error(
+                "Editor material-control recovery-required receipt could not be published: ",
+                recoveryReceiptError);
+        std::filesystem::remove(claimedPath, ignored);
+        TransitionToClosed(reason);
+    };
+
     std::string commitError;
     if (!transaction.Commit(commitError))
     {
-        transaction.Rollback(receipt);
+        if (!transaction.Rollback(receipt))
+        {
+            closeAfterUnverifiedRollback("rollback_verification_failed");
+            return;
+        }
         std::error_code ignored;
         std::filesystem::remove(stagedResponse, ignored);
         receipt.Succeeded = false;
@@ -1276,7 +1322,11 @@ void EditorMaterialControlMailbox::ProcessRequest(const std::filesystem::path& p
         return;
     }
 
-    transaction.Rollback(receipt);
+    if (!transaction.Rollback(receipt))
+    {
+        closeAfterUnverifiedRollback("postcommit_rollback_verification_failed");
+        return;
+    }
     Engine::Log::Error(
         "Editor material-control committed mutation rolled back after final receipt publication failure: ",
         publishError);

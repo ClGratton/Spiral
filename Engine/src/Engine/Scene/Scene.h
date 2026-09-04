@@ -44,6 +44,11 @@ namespace Engine
         const SceneEntity* TryGetEntity(Entity entity) const;
         TransformComponent* TryGetTransform(Entity entity);
         const TransformComponent* TryGetTransform(Entity entity) const;
+        // Replaces a complete transform only when it is valid for this Scene's
+        // world-grid policy. Camera-bearing entities keep their unit-scale
+        // invariant. Failed requests leave the existing transform unchanged.
+        bool SetEntityTransform(Entity entity, const Math::SectorLocalPosition& position,
+            const Math::Vec3& rotationDegrees, const Math::Vec3& scale);
         bool SetEntityWorldPosition(Entity entity, const Math::DVec3& position);
         bool SetEntityWorldPositionAxis(Entity entity, u32 axis, double position);
         bool SetEntitySectorLocalPosition(Entity entity, const Math::SectorLocalPosition& position);
@@ -65,7 +70,7 @@ namespace Engine
         bool SetMainCameraEntity(Entity entity);
         const TransformComponent& GetMainCameraTransform() const;
         const CameraComponent& GetMainCamera() const { return m_MainCamera; }
-        void SetMainCameraTransform(const TransformComponent& transform);
+        bool SetMainCameraTransform(const TransformComponent& transform);
         void SetMainCamera(const CameraComponent& camera);
 
         bool SaveToFile(const std::filesystem::path& path) const;

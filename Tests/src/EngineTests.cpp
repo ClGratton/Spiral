@@ -2081,6 +2081,75 @@ namespace
                 && loaded.GetMainCamera().BackgroundColor.Z == 0.55f, "camera background color round trips");
     }
 
+    bool TestSceneFullTransformMutationIsTransactional()
+    {
+        using namespace Engine;
+
+        Scene scene("Transform transaction");
+        const Entity entity = scene.CreateEntity("Transform target");
+        const Math::SectorLocalPosition acceptedPosition { { 2, -1, 0 }, { 10.0, -20.0, 30.0 } };
+        const Math::Vec3 acceptedRotation { 15.0f, -25.0f, 35.0f };
+        const Math::Vec3 acceptedScale { 1.5f, 2.0f, 0.75f };
+        const bool accepted = scene.SetEntityTransform(entity, acceptedPosition,
+            acceptedRotation, acceptedScale);
+        const TransformComponent acceptedTransform = *scene.TryGetTransform(entity);
+
+        const Math::SectorLocalPosition noncanonicalPosition { { 0, 0, 0 },
+            { scene.GetWorldGridPolicy().SectorExtent, 0.0, 0.0 } };
+        const bool noncanonicalRejected = !scene.SetEntityTransform(entity,
+            noncanonicalPosition, acceptedRotation, acceptedScale);
+        const bool nonfiniteRotationRejected = !scene.SetEntityTransform(entity,
+            acceptedPosition, { std::numeric_limits<float>::quiet_NaN(), 0.0f, 0.0f }, acceptedScale);
+        const bool nonpositiveScaleRejected = !scene.SetEntityTransform(entity,
+            acceptedPosition, acceptedRotation, { 1.0f, 0.0f, 1.0f });
+        const bool infiniteScaleRejected = !scene.SetEntityTransform(entity,
+            acceptedPosition, acceptedRotation,
+            { 1.0f, std::numeric_limits<float>::infinity(), 1.0f });
+        const TransformComponent* afterRejected = scene.TryGetTransform(entity);
+        const bool preserved = afterRejected
+            && afterRejected->GetPosition().Sector.X == acceptedTransform.GetPosition().Sector.X
+            && afterRejected->GetPosition().Sector.Y == acceptedTransform.GetPosition().Sector.Y
+            && afterRejected->GetPosition().Sector.Z == acceptedTransform.GetPosition().Sector.Z
+            && afterRejected->GetPosition().Local.X == acceptedTransform.GetPosition().Local.X
+            && afterRejected->GetPosition().Local.Y == acceptedTransform.GetPosition().Local.Y
+            && afterRejected->GetPosition().Local.Z == acceptedTransform.GetPosition().Local.Z
+            && afterRejected->RotationDegrees.X == acceptedTransform.RotationDegrees.X
+            && afterRejected->RotationDegrees.Y == acceptedTransform.RotationDegrees.Y
+            && afterRejected->RotationDegrees.Z == acceptedTransform.RotationDegrees.Z
+            && afterRejected->Scale.X == acceptedTransform.Scale.X
+            && afterRejected->Scale.Y == acceptedTransform.Scale.Y
+            && afterRejected->Scale.Z == acceptedTransform.Scale.Z;
+
+        const Entity camera = scene.CreateEntity("Camera target");
+        const bool cameraScaled = scene.SetEntityTransform(camera,
+            acceptedPosition, acceptedRotation, acceptedScale);
+        const TransformComponent cameraBeforeAttachment = *scene.TryGetTransform(camera);
+        const bool cameraAttachmentRejected = scene.AddCameraComponent(camera) == nullptr
+            && !scene.TryGetCameraComponent(camera);
+        const TransformComponent* cameraAfterRejectedAttachment = scene.TryGetTransform(camera);
+        const bool cameraAttachmentPreserved = cameraAfterRejectedAttachment
+            && cameraAfterRejectedAttachment->Scale.X == cameraBeforeAttachment.Scale.X
+            && cameraAfterRejectedAttachment->Scale.Y == cameraBeforeAttachment.Scale.Y
+            && cameraAfterRejectedAttachment->Scale.Z == cameraBeforeAttachment.Scale.Z;
+        const bool cameraUnitScaleRestored = scene.SetEntityTransform(camera,
+            acceptedPosition, acceptedRotation, { 1.0f, 1.0f, 1.0f });
+        const bool cameraAdded = scene.AddCameraComponent(camera) != nullptr;
+        const bool cameraNonUnitScaleRejected = !scene.SetEntityTransform(camera,
+            acceptedPosition, acceptedRotation, acceptedScale);
+        const bool cameraUnitScaleAccepted = scene.SetEntityTransform(camera,
+            acceptedPosition, acceptedRotation, { 1.0f, 1.0f, 1.0f });
+
+        return Expect(accepted, "a canonical finite non-camera transform is accepted")
+            && Expect(noncanonicalRejected && nonfiniteRotationRejected && nonpositiveScaleRejected
+                    && infiniteScaleRejected,
+                "noncanonical, nonfinite, and nonpositive full-transform requests are rejected")
+            && Expect(preserved, "rejected full-transform requests preserve the exact prior transform")
+            && Expect(cameraScaled && cameraAttachmentRejected && cameraAttachmentPreserved
+                    && cameraUnitScaleRestored && cameraAdded && cameraNonUnitScaleRejected
+                    && cameraUnitScaleAccepted,
+                "camera attachment and later camera transforms require unit scale transactionally");
+    }
+
     class MeshGpuCacheTestBuffer final : public Engine::RHI::Buffer
     {
     public:
@@ -4189,8 +4258,36 @@ namespace
             std::filesystem::remove(path, error);
         }
 
+        const std::filesystem::path invalidPath = TestFilePath("scene-legacy-invalid-camera-scale.spiral");
+        {
+            std::ofstream file(invalidPath);
+            file << "SpiralScene 1\nName \"Invalid legacy\"\n\n[MainCamera]\nPrimary true\nVerticalFovDegrees 60\nNearClip 0.1\nFarClip 100\n\n"
+                 << "[MainCamera.Transform]\nPosition 0 0 -3.35\nRotationDegrees 0 0 0\nScale 2 1 1\n";
+        }
+        Scene invalidLegacy;
+        const bool invalidRejected = !Scene::LoadFromFile(invalidPath, invalidLegacy);
+        std::error_code invalidError;
+        std::filesystem::remove(invalidPath, invalidError);
+
+        const std::filesystem::path cameraLessPath = TestFilePath(
+            "scene-legacy-empty-camera-less.spiral");
+        {
+            std::ofstream file(cameraLessPath);
+            file << "SpiralScene 1\nName \"Empty legacy\"\n\n[Entities]\n"
+                 << "NextEntityId 1\nMainCameraEntity 0\n";
+        }
+        Scene cameraLessLegacy;
+        const bool cameraLessLoaded = Scene::LoadFromFile(cameraLessPath, cameraLessLegacy)
+            && !cameraLessLegacy.GetMainCameraEntity()
+            && cameraLessLegacy.GetEntities().empty();
+        std::error_code cameraLessError;
+        std::filesystem::remove(cameraLessPath, cameraLessError);
         return Expect(loadedAll,
-            "scene formats 1-3 migrate absolute doubles using the default grid and retain entity main-camera precedence");
+                   "scene formats 1-3 migrate absolute doubles using the default grid and retain entity main-camera precedence")
+            && Expect(invalidRejected,
+                "legacy MainCamera.Transform rejects a non-unit camera scale")
+            && Expect(cameraLessLoaded,
+                "an explicitly empty legacy Scene remains valid without a main-camera target");
     }
 
     bool TestSceneRejectsInvalidVersionFourWorldState()
@@ -10015,6 +10112,7 @@ int main(int argc, char** argv)
         FAST_TEST("Frame task graph rejects cycles", TestFrameTaskGraphRejectsCycles),
         FAST_TEST("Frame task graph rejects invalid dependencies", TestFrameTaskGraphRejectsInvalidDependencies),
         INTEGRATION_TEST("Scene round trip", TestSceneRoundTrip),
+        FAST_TEST("Scene full-transform mutation validates and preserves prior state", TestSceneFullTransformMutationIsTransactional),
         INTEGRATION_TEST("Cooked mesh artifacts validate and resolve transactionally", TestMeshArtifactValidationAndResolution),
         INTEGRATION_TEST("glTF geometric normals preserve authored data and derive deterministic fallback", TestGltfGeometricNormalImportPolicy),
         INTEGRATION_TEST("Texture artifacts cook the deterministic RGBA fallback transactionally", TestTextureArtifactFallbackCooking),

@@ -38,11 +38,14 @@ Engine::Application* Engine::CreateApplication(ApplicationCommandLineArgs args)
         || args.HasFlag("--optical-input-correlation-smoke")
         || args.HasFlag("--frame-pacing-benchmark")
         || args.HasFlag("--editor-settings-smoke")
+        || args.HasFlag("--color-pipeline-settings-smoke")
         || args.HasFlag("--scene-authoring-smoke")
         || args.HasFlag("--scene-render-snapshot-smoke")
         || args.HasFlag("--scene-origin-raster-smoke")
         || args.HasFlag("--editor-control-mailbox-smoke")
         || args.HasFlag("--editor-control-durability-smoke")
+        || args.HasFlag("--editor-control-rollback-failure-smoke")
+        || args.HasFlag("--editor-control-postcommit-rollback-failure-smoke")
         || args.HasFlag("--live-d3d12-pipeline-rebuild-smoke");
     const size_t benchmarkSamples = Engine::ResolveFramePacingBenchmarkSampleCount(
         args.GetOptionValue("--frame-pacing-benchmark-frames"));
