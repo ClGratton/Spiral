@@ -29,6 +29,26 @@ SamplerState ReadOnlySamplers[GE_READ_ONLY_TEXTURE_CAPACITY] : register(s0, spac
 StructuredBuffer<uint4> SceneLightPayload : register(t0, space3);
 #endif
 
+float4 StoreSceneLinearHdr(float3 sceneLinear, float alpha)
+{
+    if (!all(isfinite(sceneLinear)) || !isfinite(alpha))
+        return float4(4.0f, 0.0f, 4.0f, 1.0f);
+#if GE_SCENE_LIGHT_PAYLOAD
+    const uint4 header = SceneLightPayload[0];
+    const float scale = asfloat(SceneLightPayload[5].w);
+    const float maximumInput = 65504.0f / scale;
+    if (header.x != 0x504C5347u || header.y != 2u || header.w != 6u
+        || !isfinite(scale) || !(scale > 0.0f)
+        || !isfinite(maximumInput) || !(maximumInput > 0.0f))
+        return float4(4.0f, 0.0f, 4.0f, 1.0f);
+    const float3 nonnegative = max(sceneLinear, 0.0f);
+    const float3 exposed = min(nonnegative, maximumInput.xxx) * scale;
+    return float4(min(exposed, 65504.0f), saturate(alpha));
+#else
+    return float4(max(sceneLinear, 0.0f), saturate(alpha));
+#endif
+}
+
 struct VSInput
 {
     float3 Position : POSITION;
@@ -85,25 +105,26 @@ float4 EncodeSceneLightPayloadByte(uint4 word, uint byteIndex)
 float4 PSLightPayloadProbe(VSOutput input) : SV_Target0
 {
     const uint pixelX = (uint)input.Position.x;
-    const uint cell = min(pixelX / 4u, 14u);
+    const uint cell = min(pixelX / 4u, 15u);
     const uint4 header1 = SceneLightPayload[1];
     const uint4 header2 = SceneLightPayload[2];
     const uint records = header1.x;
     uint4 word = SceneLightPayload[0];
     if (cell == 1u) word = header1;
     else if (cell == 2u) word = header2;
-    else if (cell == 3u) word = SceneLightPayload[records + 0u];
-    else if (cell == 4u) word = SceneLightPayload[records + 1u];
-    else if (cell == 5u) word = SceneLightPayload[records + 6u];
-    else if (cell == 6u) word = SceneLightPayload[records + 9u];
-    else if (cell == 7u) word = SceneLightPayload[records + 12u];
-    else if (cell == 8u) word = SceneLightPayload[records + 14u];
-    else if (cell == 9u) word = SceneLightPayload[records + 15u];
-    else if (cell == 10u) word = SceneLightPayload[records + 16u];
-    else if (cell == 11u) word = SceneLightPayload[records + 17u];
-    else if (cell == 12u) word = SceneLightPayload[header1.z];
-    else if (cell == 13u) word = SceneLightPayload[header2.x + 1u];
-    else if (cell == 14u) word = SceneLightPayload[header2.z];
+    else if (cell == 3u) word = SceneLightPayload[5];
+    else if (cell == 4u) word = SceneLightPayload[records + 0u];
+    else if (cell == 5u) word = SceneLightPayload[records + 1u];
+    else if (cell == 6u) word = SceneLightPayload[records + 6u];
+    else if (cell == 7u) word = SceneLightPayload[records + 9u];
+    else if (cell == 8u) word = SceneLightPayload[records + 12u];
+    else if (cell == 9u) word = SceneLightPayload[records + 14u];
+    else if (cell == 10u) word = SceneLightPayload[records + 15u];
+    else if (cell == 11u) word = SceneLightPayload[records + 16u];
+    else if (cell == 12u) word = SceneLightPayload[records + 17u];
+    else if (cell == 13u) word = SceneLightPayload[header1.z];
+    else if (cell == 14u) word = SceneLightPayload[header2.x + 1u];
+    else if (cell == 15u) word = SceneLightPayload[header2.z];
     return EncodeSceneLightPayloadByte(word, pixelX & 3u);
 }
 #endif
@@ -123,14 +144,10 @@ float3 NormalizeOrFallback(float3 value, float3 fallback)
 
 float4 PSMain(VSOutput input) : SV_Target0
 {
-    #if GE_SCENE_LIGHT_PAYLOAD
-    if (SceneLightPayload[0].y == 0xffffffffu)
-        return float4(0.0f, 0.0f, 0.0f, 1.0f);
-    #endif
     // Row zero is never a persistent material identity. It is a deliberately
     // obvious deterministic error result in scene-linear HDR.
     if (MaterialState.x == 0u || MaterialState.y != 0u)
-        return float4(4.0f, 0.0f, 4.0f, 1.0f);
+        return StoreSceneLinearHdr(float3(4.0f, 0.0f, 4.0f), 1.0f);
 
     const float2 uv = input.UV;
     const uint declared = TextureState.x;
@@ -157,7 +174,8 @@ float4 PSMain(VSOutput input) : SV_Target0
     const float3 emissive = max(EmissiveAndStrength.rgb, 0.0f)
         * max(EmissiveAndStrength.a, 0.0f) * emissiveSample;
     if (TextureState.w == 1u)
-        return float4(baseColor + emissive, TextureState.z == 2u ? alpha : 1.0f);
+        return StoreSceneLinearHdr(baseColor + emissive,
+            TextureState.z == 2u ? alpha : 1.0f);
 
     const float3 N = NormalizeOrFallback(input.ViewNormal, float3(0.0f, 0.0f, -1.0f));
     const float3 V = NormalizeOrFallback(-input.ViewPosition, N);
@@ -208,7 +226,7 @@ float4 PSMain(VSOutput input) : SV_Target0
     const float3 shaded = direct + emissive;
     const float3 finiteShaded = all(isfinite(shaded))
         ? max(shaded, 0.0f) : float3(4.0f, 0.0f, 4.0f);
-    return float4(finiteShaded,
+    return StoreSceneLinearHdr(finiteShaded,
         TextureState.z == 2u ? alpha : 1.0f);
 }
 

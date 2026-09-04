@@ -108,7 +108,8 @@ namespace Engine
     }
 
     bool BuildSceneLightPayload(const SceneRenderSnapshot& snapshot,
-        size_t viewIndex, const ClusteredLightGrid& grid, u64 generation,
+        size_t viewIndex, const ClusteredLightGrid& grid,
+        const RendererColorPipelineSettings& colorSettings, u64 generation,
         SceneLightPayload& outPayload, std::string& outError)
     {
         const auto fail = [&outError](const char* message) { outError = message; return false; };
@@ -121,6 +122,9 @@ namespace Engine
             || grid.MaximumLocalLightsPerCluster == 0
             || grid.MaximumLocalLightsPerCluster > 1024)
             return fail("scene light payload has invalid snapshot or grid dimensions");
+        ScenePreExposureState preExposure;
+        if (!TryResolveScenePreExposure(colorSettings, preExposure))
+            return fail("scene light payload has invalid color-pipeline exposure");
 
         const u32 expectedTileCountX = 1u + (grid.ViewportWidth - 1u) / grid.TileSizePixels;
         const u32 expectedTileCountY = 1u + (grid.ViewportHeight - 1u) / grid.TileSizePixels;
@@ -283,14 +287,18 @@ namespace Engine
 
         SceneLightPayload candidate;
         candidate.Generation = generation;
+        candidate.ColorSettings = colorSettings;
+        candidate.PreExposure = preExposure;
         candidate.Words.resize(total, { 0, 0, 0, 0 });
         candidate.Words[0] = { kMagic, SceneLightPayload::Version, total, SceneLightPayload::HeaderWordCount };
         candidate.Words[1] = { SceneLightPayload::HeaderWordCount, lightCount, directionalOffset, static_cast<u32>(grid.GlobalLightIndices.size()) };
         candidate.Words[2] = { offsetsOffset, static_cast<u32>(grid.ClusterOffsets.size()), localOffset, static_cast<u32>(grid.LocalLightIndices.size()) };
         candidate.Words[3] = { grid.ViewportWidth, grid.ViewportHeight, grid.TileSizePixels, grid.DepthSliceCount };
         candidate.Words[4] = { grid.TileCountX, grid.TileCountY, FloatBits(grid.NearClip), FloatBits(grid.FarClip) };
-        candidate.Words[5] = { grid.MaximumLocalLightsPerCluster, grid.OverflowedLocalLightReferences,
-            SceneLightPayload::LightRecordWordCount, 0 };
+        candidate.Words[5] = { grid.MaximumLocalLightsPerCluster,
+            grid.OverflowedLocalLightReferences,
+            SceneLightPayload::LightRecordWordCount,
+            FloatBits(preExposure.Scale) };
         u32 cursor = SceneLightPayload::HeaderWordCount;
         for (const ClusteredLightRecord& record : grid.Lights)
         {
@@ -312,7 +320,8 @@ namespace Engine
 
     bool SceneLightPayloadPublication::Acquire(RHI::Device& device,
         const SceneRenderSnapshot& snapshot, size_t viewIndex, const ClusteredLightGrid& grid,
-        u64 generation, Ref<SceneLightPayloadSlot>& outSlot, std::string& outError)
+        const RendererColorPipelineSettings& colorSettings, u64 generation,
+        Ref<SceneLightPayloadSlot>& outSlot, std::string& outError)
     {
         if (m_Device && m_Device != &device)
         {
@@ -326,7 +335,8 @@ namespace Engine
             return false;
         }
         SceneLightPayload packed;
-        if (!BuildSceneLightPayload(snapshot, viewIndex, grid, generation, packed, outError))
+        if (!BuildSceneLightPayload(snapshot, viewIndex, grid,
+            colorSettings, generation, packed, outError))
             return false;
         const u64 sizeBytes = packed.Words.size() * sizeof(SceneLightPayloadWord);
         if (sizeBytes == 0 || sizeBytes > std::numeric_limits<u32>::max())

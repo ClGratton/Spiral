@@ -928,6 +928,63 @@ namespace
         const bool signConvention = ManualExposureScale(brighter) == 4.0
             && ManualExposureScale(darker) == 0.25;
 
+        ScenePreExposureState defaultPreExposure;
+        ScenePreExposureState darkerPreExposure;
+        ScenePreExposureState brightestPreExposure;
+        ScenePreExposureState darkestPreExposure;
+        const bool preExposureResolved = TryResolveScenePreExposure(
+                defaults, defaultPreExposure)
+            && TryResolveScenePreExposure(darker, darkerPreExposure)
+            && TryResolveScenePreExposure(minimum, brightestPreExposure)
+            && TryResolveScenePreExposure(maximum, darkestPreExposure)
+            && defaultPreExposure == ScenePreExposureState {}
+            && darkerPreExposure.EffectiveExposureEV100 == 2.0
+            && darkerPreExposure.Scale == 0.25f
+            && darkerPreExposure.MaximumSceneLinearChannel == 262016.0f
+            && brightestPreExposure.Scale == 65536.0f
+            && darkestPreExposure.Scale == 1.0f / 65536.0f
+            && IsValidScenePreExposureState(defaultPreExposure)
+            && IsValidScenePreExposureState(darkerPreExposure)
+            && IsValidScenePreExposureState(brightestPreExposure)
+            && IsValidScenePreExposureState(darkestPreExposure);
+        Math::Vec3 preExposedSentinel { 9.0f, 8.0f, 7.0f };
+        Math::Vec3 preExposed = preExposedSentinel;
+        const bool finiteStorageBound = TryPreExposeSceneLinear(
+                { 2.0f, 1.0f, 0.5f }, brightestPreExposure, preExposed)
+            && preExposed.X == kMaximumFiniteRgba16Float
+            && preExposed.Y == kMaximumFiniteRgba16Float
+            && preExposed.Z == 32768.0f;
+        Math::Vec3 onceExposed;
+        const bool exposureAppliedOnce = TryPreExposeSceneLinear(
+                { 0.5f, -1.0f, 1.0f }, darkerPreExposure, onceExposed)
+            && onceExposed.X == 0.125f && onceExposed.Y == 0.0f
+            && onceExposed.Z == 0.25f
+            && onceExposed.X != 0.5f * darkerPreExposure.Scale
+                * darkerPreExposure.Scale;
+        ScenePreExposureState retainedPreExposure { 3.0, 4.0f, 5.0f };
+        const ScenePreExposureState preExposureBeforeReject = retainedPreExposure;
+        RendererColorPipelineSettings invalidPreExposureSettings = defaults;
+        invalidPreExposureSettings.ManualExposureEV100 =
+            std::numeric_limits<double>::quiet_NaN();
+        ScenePreExposureState forgedPreExposure = defaultPreExposure;
+        forgedPreExposure.Scale = 2.0f;
+        const Math::Vec3 outputBeforeReject = preExposedSentinel;
+        preExposed = outputBeforeReject;
+        const bool preExposureRejectsTransactionally =
+            !TryResolveScenePreExposure(invalidPreExposureSettings, retainedPreExposure)
+            && retainedPreExposure == preExposureBeforeReject
+            && !TryPreExposeSceneLinear({ 1.0f, 1.0f, 1.0f },
+                forgedPreExposure, preExposed)
+            && preExposed.X == outputBeforeReject.X
+            && preExposed.Y == outputBeforeReject.Y
+            && preExposed.Z == outputBeforeReject.Z
+            && !TryPreExposeSceneLinear(
+                { std::numeric_limits<float>::infinity(), 1.0f, 1.0f },
+                defaultPreExposure, preExposed)
+            && preExposed.X == outputBeforeReject.X
+            && preExposed.Y == outputBeforeReject.Y
+            && preExposed.Z == outputBeforeReject.Z;
+
         const auto independentCameraEV100 = [](double apertureFNumber, double shutterSeconds, double iso)
         {
             const double exposureValue = (apertureFNumber * apertureFNumber) / shutterSeconds * (100.0 / iso);
@@ -970,6 +1027,12 @@ namespace
             && !IsValidRendererColorPipelineSettings(invalidShutter)
             && !IsValidRendererColorPipelineSettings(invalidISO)
             && !IsValidRendererColorPipelineSettings(invalidEffective);
+        ScenePreExposureState calibratedPreExposure;
+        const bool calibratedPreExposureResolved = TryResolveScenePreExposure(
+                calibrated, calibratedPreExposure)
+            && calibratedPreExposure.EffectiveExposureEV100 == calibratedEV100
+            && calibratedPreExposure.Scale == 0.125f
+            && IsValidScenePreExposureState(calibratedPreExposure);
 
         const RendererColorPipelineSettings previous = Renderer::GetColorPipelineSettings();
         RendererColorPipelineSettings graded { -1.0, 0.5, 1.5 };
@@ -991,8 +1054,11 @@ namespace
                 && nanRejected && infinityRejected && saturationBoundsAccepted
                 && saturationBoundsRejected && saturationNonfiniteRejected
                 && contrastBoundsAccepted && contrastBoundsRejected && contrastNonfiniteRejected
-                && signConvention && calibratedExposure && published && invalidPublicationRejected && restored,
-            "manual and calibrated EV100 exposure plus post-tone-map grading default to identity, validate finite bounded controls, publish transactionally, and preserve exposure sign convention");
+                && signConvention && preExposureResolved && finiteStorageBound
+                && exposureAppliedOnce && preExposureRejectsTransactionally
+                && calibratedExposure && calibratedPreExposureResolved
+                && published && invalidPublicationRejected && restored,
+            "manual and calibrated EV100 resolve one transactional pre-exposure state, clamp scene-linear RGB to finite RGBA16F, and preserve post-tone-map controls");
     }
 
     class FakeFramePacingClock final : public Engine::FramePacingClock
@@ -5222,7 +5288,8 @@ namespace
             && acceptedDirectionalLimitGrid.GlobalLightIndices.size()
                 == Engine::kMaximumDirectionalLightCount
             && Engine::BuildSceneLightPayload(acceptedDirectionalLimitSnapshot,
-                0, acceptedDirectionalLimitGrid, 80,
+                0, acceptedDirectionalLimitGrid,
+                Engine::RendererColorPipelineSettings {}, 80,
                 acceptedDirectionalLimitPayload, error)
             && acceptedDirectionalLimitPayload.Words[1][3]
                 == Engine::kMaximumDirectionalLightCount;
@@ -5294,13 +5361,15 @@ namespace
         config.DepthSliceCount = 2;
         config.MaximumLocalLightsPerCluster = 4;
         ClusteredLightGrid grid;
+        const RendererColorPipelineSettings colorSettings;
         std::string error;
         const bool gridBuilt = BuildClusteredLightGrid(
             snapshot, 0, 128, 64, config, grid, error);
 
         SceneLightPayload payload;
         const bool packed = gridBuilt
-            && BuildSceneLightPayload(snapshot, 0, grid, 7, payload, error);
+            && BuildSceneLightPayload(snapshot, 0, grid,
+                colorSettings, 7, payload, error);
         const SceneLightPayload retained = payload;
         const auto floatBits = [](float value) { return std::bit_cast<u32>(value); };
         const auto doubleLow = [](double value)
@@ -5336,7 +5405,7 @@ namespace
                 floatBits(grid.NearClip), floatBits(grid.FarClip) };
             expected[5] = { grid.MaximumLocalLightsPerCluster,
                 grid.OverflowedLocalLightReferences,
-                SceneLightPayload::LightRecordWordCount, 0 };
+                SceneLightPayload::LightRecordWordCount, floatBits(1.0f) };
             u32 cursor = recordsOffset;
             for (const ClusteredLightRecord& record : grid.Lights)
             {
@@ -5368,6 +5437,8 @@ namespace
                     = grid.LocalLightIndices[index];
         }
         const bool layout = packed && error.empty() && payload.Generation == 7
+            && payload.ColorSettings == colorSettings
+            && payload.PreExposure == ScenePreExposureState {}
             && payload.Words == expected && payload.Words[0][0] == 0x504C5347u
             && payload.Words[1][0] == recordsOffset
             && payload.Words[1][2] == directionalOffset
@@ -5375,14 +5446,20 @@ namespace
 
         const auto rejectsGrid = [&](const ClusteredLightGrid& invalid)
         {
-            return !BuildSceneLightPayload(snapshot, 0, invalid, 8, payload, error)
+            return !BuildSceneLightPayload(snapshot, 0, invalid,
+                    colorSettings, 8, payload, error)
                 && payload.Generation == retained.Generation
+                && payload.ColorSettings == retained.ColorSettings
+                && payload.PreExposure == retained.PreExposure
                 && payload.Words == retained.Words && !error.empty();
         };
         const auto rejectsSnapshot = [&](const SceneRenderSnapshot& invalid, size_t viewIndex = 0)
         {
-            return !BuildSceneLightPayload(invalid, viewIndex, grid, 8, payload, error)
+            return !BuildSceneLightPayload(invalid, viewIndex, grid,
+                    colorSettings, 8, payload, error)
                 && payload.Generation == retained.Generation
+                && payload.ColorSettings == retained.ColorSettings
+                && payload.PreExposure == retained.PreExposure
                 && payload.Words == retained.Words && !error.empty();
         };
         ClusteredLightGrid invalid = grid;
@@ -5436,19 +5513,29 @@ namespace
         const bool unitRejected = rejectsSnapshot(invalidSnapshot);
         const bool viewRejected = rejectsSnapshot(snapshot, snapshot.Views.size());
         const bool generationRejected = !BuildSceneLightPayload(
-            snapshot, 0, grid, 0, payload, error)
+            snapshot, 0, grid, colorSettings, 0, payload, error)
             && payload.Generation == retained.Generation && payload.Words == retained.Words;
+        RendererColorPipelineSettings invalidColorSettings = colorSettings;
+        invalidColorSettings.ManualExposureEV100 =
+            std::numeric_limits<double>::quiet_NaN();
+        const bool colorSettingsRejected = !BuildSceneLightPayload(
+            snapshot, 0, grid, invalidColorSettings, 8, payload, error)
+            && payload.Generation == retained.Generation
+            && payload.ColorSettings == retained.ColorSettings
+            && payload.PreExposure == retained.PreExposure
+            && payload.Words == retained.Words;
         const bool invalidRejected = copiedFieldRejected && derivedFieldRejected
             && nonfiniteDerivedFieldRejected && globalRejected && localRejected
             && csrRejected && csrBoundsRejected
             && dimensionsRejected && clipRejected && overflowRejected && duplicateIdentityRejected
-            && unitRejected && viewRejected && generationRejected;
+            && unitRejected && viewRejected && generationRejected
+            && colorSettingsRejected;
 
         MeshGpuCacheTestDevice publicationDevice(91);
         SceneLightPayloadPublication publication;
         Ref<SceneLightPayloadSlot> firstSlot;
         const bool acquired = publication.Acquire(publicationDevice,
-            snapshot, 0, grid, 1, firstSlot, error);
+            snapshot, 0, grid, colorSettings, 1, firstSlot, error);
         const auto* firstStaging = acquired
             ? dynamic_cast<const MeshGpuCacheTestBuffer*>(firstSlot->Staging.get()) : nullptr;
         const RHI::BufferDescription* stagingDescription = acquired
@@ -5485,7 +5572,7 @@ namespace
             static_cast<u32>(rejectedGrid.LocalLightIndices.size() + 1u);
         Ref<SceneLightPayloadSlot> rejectedSlot;
         const bool rejectedPreservesAccepted = !publication.Acquire(publicationDevice,
-                snapshot, 0, rejectedGrid, 2, rejectedSlot, error)
+                snapshot, 0, rejectedGrid, colorSettings, 2, rejectedSlot, error)
             && publication.GetLastAcceptedPayload() == firstSlot->Payload
             && publication.GetLastAcceptedGeneration() == 1;
 
@@ -5498,14 +5585,14 @@ namespace
             Ref<SceneLightPayloadSlot> slot;
             filledCapacity = filledCapacity
                 && publication.Acquire(publicationDevice, snapshot, 0, grid,
-                    generation, slot, error)
+                    colorSettings, generation, slot, error)
                 && publication.Commit(slot, error);
             heldSlots[static_cast<size_t>(generation - 1)] = std::move(slot);
         }
         Ref<SceneLightPayloadSlot> overCapacitySlot;
         const bool boundedRetention = filledCapacity
             && !publication.Acquire(publicationDevice, snapshot, 0, grid,
-                5, overCapacitySlot, error)
+                colorSettings, 5, overCapacitySlot, error)
             && publication.GetLastAcceptedGeneration() == 4;
 
         SceneLightPayloadSlot* releasedSlotAddress = heldSlots[0].get();
@@ -5515,16 +5602,15 @@ namespace
         const std::vector<u8> releasedBytes = releasedStaging
             ? releasedStaging->Bytes : std::vector<u8> {};
         heldSlots[0].reset();
-        SceneRenderSnapshot changedSnapshot = snapshot;
-        changedSnapshot.Lights[1].PhotometricValue += 1.0;
-        ClusteredLightGrid changedGrid;
-        const bool changedGridBuilt = BuildClusteredLightGrid(
-            changedSnapshot, 0, 128, 64, config, changedGrid, error);
+        RendererColorPipelineSettings changedColorSettings = colorSettings;
+        changedColorSettings.ManualExposureEV100 = 2.0;
         Ref<SceneLightPayloadSlot> reusedSlot;
-        const bool reused = changedGridBuilt
-            && publication.Acquire(publicationDevice, changedSnapshot, 0,
-                changedGrid, 5, reusedSlot, error)
-            && reusedSlot.get() == releasedSlotAddress;
+        const bool reused = publication.Acquire(publicationDevice, snapshot, 0,
+                grid, changedColorSettings, 5, reusedSlot, error)
+            && reusedSlot.get() == releasedSlotAddress
+            && reusedSlot->Payload->ColorSettings == changedColorSettings
+            && reusedSlot->Payload->PreExposure.Scale == 0.25f
+            && reusedSlot->Payload->Words[5][3] == floatBits(0.25f);
         const auto* reusedStaging = reused
             ? dynamic_cast<const MeshGpuCacheTestBuffer*>(reusedSlot->Staging.get()) : nullptr;
         const bool rewriteVisible = reusedStaging
@@ -5547,7 +5633,8 @@ namespace
         Ref<SceneLightPayloadSlot> mapFailureSlot;
         const bool mapFailureTransactional = failureSlotAddress
             && !publication.Acquire(publicationDevice,
-                changedSnapshot, 0, changedGrid, 6, mapFailureSlot, error)
+                snapshot, 0, grid, changedColorSettings, 6,
+                mapFailureSlot, error)
             && publication.GetLastAcceptedGeneration() == 5
             && failureSlotAddress->Payload == failureSlotPayload;
         publicationDevice.FailMap = false;
@@ -5559,13 +5646,14 @@ namespace
 
         ClusteredLightGrid differentSizeGrid;
         const bool differentSizeGridBuilt = BuildClusteredLightGrid(
-            changedSnapshot, 0, 64, 64, config, differentSizeGrid, error);
+            snapshot, 0, 64, 64, config, differentSizeGrid, error);
         publicationDevice.FailCreate = true;
         Ref<SceneLightPayloadSlot> allocationFailureSlot;
         const bool allocationFailureTransactional = failureSlotAddress
             && differentSizeGridBuilt
-            && !publication.Acquire(publicationDevice, changedSnapshot, 0,
-                differentSizeGrid, 6, allocationFailureSlot, error)
+            && !publication.Acquire(publicationDevice, snapshot, 0,
+                differentSizeGrid, changedColorSettings, 6,
+                allocationFailureSlot, error)
             && publication.GetLastAcceptedGeneration() == 5
             && failureSlotAddress->Payload == failureSlotPayload;
         publicationDevice.FailCreate = false;

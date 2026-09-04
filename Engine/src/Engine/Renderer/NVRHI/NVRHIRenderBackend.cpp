@@ -2989,7 +2989,7 @@ float4 PSVertexStrideSmoke(RHIVertexStrideOutput input) : SV_Target0
                 && grid->GlobalLightIndices == std::vector<u32> { 1 }
                 && grid->ClusterOffsets.size() >= 8
                 && grid->LocalLightIndices.size() >= 4;
-            std::array<SceneLightPayloadWord, 15> expectedWords {};
+            std::array<SceneLightPayloadWord, 16> expectedWords {};
             if (fixtureValid)
             {
                 const u32 records = SceneLightPayload::HeaderWordCount;
@@ -3009,18 +3009,22 @@ float4 PSVertexStrideSmoke(RHIVertexStrideOutput input) : SV_Target0
                 expectedWords[2] = { offsetsOffset,
                     static_cast<u32>(grid->ClusterOffsets.size()), localOffset,
                     static_cast<u32>(grid->LocalLightIndices.size()) };
-                expectedWords[3] = recordWord(grid->Lights[0], 0);
-                expectedWords[4] = recordWord(grid->Lights[0], 1);
-                expectedWords[5] = recordWord(grid->Lights[1], 0);
-                expectedWords[6] = recordWord(grid->Lights[1], 3);
-                expectedWords[7] = recordWord(grid->Lights[2], 0);
-                expectedWords[8] = recordWord(grid->Lights[2], 2);
-                expectedWords[9] = recordWord(grid->Lights[2], 3);
-                expectedWords[10] = recordWord(grid->Lights[2], 4);
-                expectedWords[11] = recordWord(grid->Lights[2], 5);
-                expectedWords[12] = scalarWord(grid->GlobalLightIndices, 0);
-                expectedWords[13] = scalarWord(grid->ClusterOffsets, 1);
-                expectedWords[14] = scalarWord(grid->LocalLightIndices, 0);
+                expectedWords[3] = { grid->MaximumLocalLightsPerCluster,
+                    grid->OverflowedLocalLightReferences,
+                    SceneLightPayload::LightRecordWordCount,
+                    floatBits(1.0f) };
+                expectedWords[4] = recordWord(grid->Lights[0], 0);
+                expectedWords[5] = recordWord(grid->Lights[0], 1);
+                expectedWords[6] = recordWord(grid->Lights[1], 0);
+                expectedWords[7] = recordWord(grid->Lights[1], 3);
+                expectedWords[8] = recordWord(grid->Lights[2], 0);
+                expectedWords[9] = recordWord(grid->Lights[2], 2);
+                expectedWords[10] = recordWord(grid->Lights[2], 3);
+                expectedWords[11] = recordWord(grid->Lights[2], 4);
+                expectedWords[12] = recordWord(grid->Lights[2], 5);
+                expectedWords[13] = scalarWord(grid->GlobalLightIndices, 0);
+                expectedWords[14] = scalarWord(grid->ClusterOffsets, 1);
+                expectedWords[15] = scalarWord(grid->LocalLightIndices, 0);
             }
             const auto floatToHalf = [](float value)
             {
@@ -3114,7 +3118,7 @@ float4 PSVertexStrideSmoke(RHIVertexStrideOutput input) : SV_Target0
                 && diagnostics.CommitCount == 3;
             const bool payloadProbeOk = cpuGpuExact && reusableSlots;
             Renderer::SetColorPipelineSettings(previousColorSettings);
-            Log::Info("SceneLightPayloadV1 backend=Vulkan layout=versioned-uint4 records=directional-point-spot tables=global-csr-local cpuGpu=",
+            Log::Info("SceneLightPayloadV2 backend=Vulkan layout=versioned-uint4 records=directional-point-spot tables=global-csr-local preExposure=header-scale cpuGpu=",
                 cpuGpuExact ? "exact-pass" : "fail",
                 " copy=graph staging=cpu-write gpu=structured-copydest slots=4 allocations=",
                 diagnostics.AllocationCount, " reuses=", diagnostics.ReuseCount,
@@ -3380,7 +3384,7 @@ float4 PSVertexStrideSmoke(RHIVertexStrideOutput input) : SV_Target0
                 " roughMetalGolden=", roughMetalGoldenMatch ? "pass" : "fail",
                 " ids=", idsStable ? "pass" : "fail");
             Renderer::SetColorPipelineSettings(previousColorSettings);
-            Log::Info("SceneBasicPbrMaterialIdV1 backend=Vulkan productionPSMain=exercised brdf=GGX-Smith-Schlick-Burley materialIds=stable rowZero=error view=per-pixel-view-space lighting=neutral-preview-nonphotometric sceneLights=unconsumed hdr=unclamped retention=exact-graph-token result=",
+            Log::Info("SceneBasicPbrMaterialIdV1 backend=Vulkan productionPSMain=exercised brdf=GGX-Smith-Schlick-Burley materialIds=stable rowZero=error view=per-pixel-view-space lighting=neutral-preview-nonphotometric sceneLights=unconsumed hdr=float32-unclamped-before-pre-exposed-finite-storage retention=exact-graph-token result=",
                 pbrProbeOk ? "pass" : "fail");
             return pbrProbeOk;
         }
@@ -3560,7 +3564,56 @@ float4 PSVertexStrideSmoke(RHIVertexStrideOutput input) : SV_Target0
                 difference += std::abs(static_cast<int>(value[channel]) - static_cast<int>(expected[channel]));
             return difference >= minimumTotalDifference;
         };
-        auto renderExposure = [&](double ev100, u64 frameIndex, RHI::TextureReadback& outReadback)
+        const auto floatToHalf = [](float value)
+        {
+            const u32 bits = std::bit_cast<u32>(value);
+            const u32 sign = (bits >> 16) & 0x8000u;
+            const u32 exponent = (bits >> 23) & 0xffu;
+            const u32 mantissa = bits & 0x7fffffu;
+            if (exponent == 0xffu)
+                return static_cast<u16>(sign | 0x7c00u
+                    | (mantissa != 0 ? 0x0200u : 0u));
+            const int halfExponent = static_cast<int>(exponent) - 127 + 15;
+            if (halfExponent >= 31)
+                return static_cast<u16>(sign | 0x7c00u);
+            if (halfExponent <= 0)
+            {
+                if (halfExponent < -10)
+                    return static_cast<u16>(sign);
+                u32 subnormal = (mantissa | 0x800000u) >> (1 - halfExponent);
+                subnormal += 0x0fffu + ((subnormal >> 13) & 1u);
+                return static_cast<u16>(sign | (subnormal >> 13));
+            }
+            u32 rounded = mantissa + 0x0fffu + ((mantissa >> 13) & 1u);
+            u32 resultExponent = static_cast<u32>(halfExponent);
+            if ((rounded & 0x800000u) != 0)
+            {
+                rounded = 0;
+                ++resultExponent;
+                if (resultExponent >= 31)
+                    return static_cast<u16>(sign | 0x7c00u);
+            }
+            return static_cast<u16>(sign | (resultExponent << 10)
+                | (rounded >> 13));
+        };
+        const auto hdrHalfAt = [](const RHI::TextureReadback& sample,
+            u32 x, u32 y, u32 channel)
+        {
+            const size_t offset = static_cast<size_t>(y) * sample.RowPitchBytes
+                + static_cast<size_t>(x) * 8u + static_cast<size_t>(channel) * 2u;
+            return static_cast<u16>(sample.Data[offset])
+                | static_cast<u16>(static_cast<u16>(sample.Data[offset + 1u]) << 8u);
+        };
+        const auto validHdrReadback = [](const RHI::TextureReadback& sample)
+        {
+            return sample.Extent.Width == 64 && sample.Extent.Height == 48
+                && sample.TextureFormat == RHI::Format::R16G16B16A16Float
+                && sample.RowPitchBytes >= 64u * 8u
+                && sample.Data.size()
+                    >= static_cast<size_t>(sample.RowPitchBytes) * 48u;
+        };
+        auto renderExposure = [&](double ev100, u64 frameIndex,
+            RHI::TextureReadback& outReadback)
         {
             if (!Renderer::SetColorPipelineSettings({ ev100 }))
                 return false;
@@ -3711,7 +3764,6 @@ float4 PSVertexStrideSmoke(RHIVertexStrideOutput input) : SV_Target0
             && gradingConstantCache.ReuseCount >= calibratedSameEVConstantCache.ReuseCount
             && gradingConstantCache.CurrentGeneration == 7
             && gradingConstantCache.CurrentSettings == gradedSettings;
-        Renderer::SetColorPipelineSettings(previousColorSettings);
         Log::Info("ScenePostToneMapGradingV1 backend=Vulkan identity=", identityGradeOk ? "pass" : "fail",
             " controls=saturation-contrast order=",
             postOrderMatched && preOrderRejected ? "after-tone-map" : "fail",
@@ -3721,9 +3773,107 @@ float4 PSVertexStrideSmoke(RHIVertexStrideOutput input) : SV_Target0
             " postExpected=", static_cast<u32>(postToneMapExpected[0]), ",",
             static_cast<u32>(postToneMapExpected[1]), ",", static_cast<u32>(postToneMapExpected[2]),
             " preRejected=", preOrderRejected ? "pass" : "fail");
+        const ClearColor exactExposureBackground { 0.25f, 0.5f, 1.0f, 1.0f };
+        RHI::TextureReadback exactExposureHdr;
+        RHI::TextureReadback exactExposureColor;
+        const bool exactExposureSet = Renderer::SetColorPipelineSettings({ 2.0 });
+        SceneRenderSnapshot exactExposureSnapshot = snapshot;
+        exactExposureSnapshot.FrameIndex = 9;
+        Renderer::PublishSceneRenderSnapshot(std::move(exactExposureSnapshot));
+        const bool exactExposureRendered = exactExposureSet
+            && Renderer::PrepareCurrentSceneRasterFrame()
+            && m_VulkanSceneRenderer->RenderCurrentSnapshot(
+                64, 48, exactExposureBackground)
+            && m_VulkanSceneRenderer->ReadbackHdr(exactExposureHdr)
+            && m_VulkanSceneRenderer->ReadbackColor(exactExposureColor);
+        const std::array<u16, 4> expectedExactExposureHdr {
+            floatToHalf(0.0625f), floatToHalf(0.125f),
+            floatToHalf(0.25f), floatToHalf(1.0f)
+        };
+        bool exactExposureHdrExact = exactExposureRendered
+            && validHdrReadback(exactExposureHdr);
+        for (u32 channel = 0; exactExposureHdrExact && channel < 4; ++channel)
+            exactExposureHdrExact = hdrHalfAt(exactExposureHdr, 2, 2, channel)
+                == expectedExactExposureHdr[channel];
+        const bool singleExposureOutput = exactExposureRendered
+            && backgroundPixelMatches(exactExposureColor,
+                expectedPostToneMapPixelAtEV(
+                    exactExposureBackground, 2.0, 1.0, 1.0), 4);
+        const bool doubleExposureRejected = exactExposureRendered
+            && backgroundPixelDiffers(exactExposureColor,
+                expectedPostToneMapPixelAtEV(
+                    exactExposureBackground, 4.0, 1.0, 1.0), 12);
+
+        const ClearColor finiteClampBackground { 2.0f, 1.0f, 0.5f, 1.0f };
+        RHI::TextureReadback finiteClampHdr;
+        RHI::TextureReadback finiteClampColor;
+        const bool finiteClampSet = Renderer::SetColorPipelineSettings({ -16.0 });
+        SceneRenderSnapshot finiteClampSnapshot = snapshot;
+        finiteClampSnapshot.FrameIndex = 10;
+        Renderer::PublishSceneRenderSnapshot(std::move(finiteClampSnapshot));
+        const bool finiteClampRendered = finiteClampSet
+            && Renderer::PrepareCurrentSceneRasterFrame()
+            && m_VulkanSceneRenderer->RenderCurrentSnapshot(
+                64, 48, finiteClampBackground)
+            && m_VulkanSceneRenderer->ReadbackHdr(finiteClampHdr)
+            && m_VulkanSceneRenderer->ReadbackColor(finiteClampColor);
+        const std::array<u16, 4> expectedFiniteClampHdr {
+            0x7bffu,
+            0x7bffu,
+            floatToHalf(32768.0f),
+            floatToHalf(1.0f)
+        };
+        bool finiteClampExact = finiteClampRendered
+            && validHdrReadback(finiteClampHdr);
+        for (u32 channel = 0; finiteClampExact && channel < 4; ++channel)
+            finiteClampExact = hdrHalfAt(finiteClampHdr, 2, 2, channel)
+                == expectedFiniteClampHdr[channel];
+        bool finiteHdrEverywhere = finiteClampRendered
+            && validHdrReadback(finiteClampHdr);
+        for (u32 y = 0; finiteHdrEverywhere && y < finiteClampHdr.Extent.Height; ++y)
+        {
+            for (u32 x = 0; finiteHdrEverywhere && x < finiteClampHdr.Extent.Width; ++x)
+            {
+                for (u32 channel = 0; channel < 4; ++channel)
+                {
+                    const u16 value = hdrHalfAt(finiteClampHdr, x, y, channel);
+                    if ((value & 0x7c00u) == 0x7c00u)
+                    {
+                        finiteHdrEverywhere = false;
+                        break;
+                    }
+                }
+            }
+        }
+        Renderer::SetColorPipelineSettings(previousColorSettings);
+        const bool preExposedHdrOk = exactExposureHdrExact
+            && singleExposureOutput && doubleExposureRejected && finiteClampRendered
+            && finiteClampExact && finiteHdrEverywhere;
+        if (!preExposedHdrOk)
+            Log::Error("Scene pre-exposed HDR oracle mismatch: hdrEV2=",
+                exactExposureHdrExact ? "exact" : "fail", ", singleOutput=",
+                singleExposureOutput ? "yes" : "no", ", doubleRejected=",
+                doubleExposureRejected ? "yes" : "no", ", clampRender=",
+                finiteClampRendered ? "yes" : "no", ", clampPixel=",
+                finiteClampExact ? "exact" : "fail", ", finiteEverywhere=",
+                finiteHdrEverywhere ? "yes" : "no", ", hdrEV2Actual=",
+                validHdrReadback(exactExposureHdr) ? hdrHalfAt(exactExposureHdr, 2, 2, 0) : 0, ",",
+                validHdrReadback(exactExposureHdr) ? hdrHalfAt(exactExposureHdr, 2, 2, 1) : 0, ",",
+                validHdrReadback(exactExposureHdr) ? hdrHalfAt(exactExposureHdr, 2, 2, 2) : 0, ",",
+                validHdrReadback(exactExposureHdr) ? hdrHalfAt(exactExposureHdr, 2, 2, 3) : 0,
+                ", hdrEV2Expected=", expectedExactExposureHdr[0], ",",
+                expectedExactExposureHdr[1], ",", expectedExactExposureHdr[2], ",",
+                expectedExactExposureHdr[3]);
+        Log::Info("ScenePreExposedHdrV1 backend=Vulkan placement=before-RGBA16F scale=exp2-negative-EV toneMapExposure=none finiteClamp=65504 hdrEV2=exact-half doubleApplication=rejected finiteEverywhere=",
+            finiteHdrEverywhere ? "pass" : "fail", " singleApplication=",
+            exactExposureHdrExact && singleExposureOutput && doubleExposureRejected
+                ? "pass" : "fail",
+            " result=", preExposedHdrOk ? "pass" : "fail");
         return resizedRaster && readbackOk && geometryOk && backgroundOk && resizeOk
             && exposureRenders && exposureReadbacks && monotonic && constantCacheOk
+            && exactExposureHdrExact && singleExposureOutput && doubleExposureRejected
             && calibratedRendered && calibratedPixelOk && calibratedConstantsOk && calibratedCacheIdentityOk
-            && identityGradeOk && gradingRendered && postOrderMatched && preOrderRejected && gradingConstantsOk;
+            && identityGradeOk && gradingRendered && postOrderMatched && preOrderRejected && gradingConstantsOk
+            && finiteClampRendered && finiteClampExact && finiteHdrEverywhere;
     }
 }

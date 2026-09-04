@@ -3,7 +3,9 @@
 #include "Engine/Core/Base.h"
 #include "Engine/Scene/Components.h"
 
+#include <algorithm>
 #include <cmath>
+#include <limits>
 #include <string_view>
 
 namespace Engine
@@ -20,6 +22,7 @@ namespace Engine
     constexpr double kMaximumPostToneMapSaturation = 2.0;
     constexpr double kMinimumPostToneMapContrast = 0.0;
     constexpr double kMaximumPostToneMapContrast = 2.0;
+    constexpr float kMaximumFiniteRgba16Float = 65504.0f;
 
     enum class RendererExposureMode
     {
@@ -108,6 +111,80 @@ namespace Engine
     inline double ManualExposureScale(const RendererColorPipelineSettings& settings)
     {
         return std::exp2(-EffectiveExposureEV100(settings));
+    }
+
+    // Scene-linear radiance is pre-exposed before entering RGBA16F. Saturation
+    // at the finite-half limit intentionally preserves the current neutral
+    // tone mapper's displayed result (its input ceiling is much lower), not an
+    // unbounded HDR value. Tone mapping never applies exposure a second time.
+    struct ScenePreExposureState
+    {
+        double EffectiveExposureEV100 = 0.0;
+        float Scale = 1.0f;
+        float MaximumSceneLinearChannel = kMaximumFiniteRgba16Float;
+
+        bool operator==(const ScenePreExposureState&) const = default;
+    };
+
+    inline bool TryResolveScenePreExposure(const RendererColorPipelineSettings& settings,
+        ScenePreExposureState& outState)
+    {
+        if (!IsValidRendererColorPipelineSettings(settings))
+            return false;
+        const double effectiveEV100 = EffectiveExposureEV100(settings);
+        const double scale = std::exp2(-effectiveEV100);
+        const double maximumInput = static_cast<double>(kMaximumFiniteRgba16Float) / scale;
+        if (!std::isfinite(scale) || scale <= 0.0
+            || scale > std::numeric_limits<float>::max()
+            || !std::isfinite(maximumInput) || maximumInput <= 0.0
+            || maximumInput > std::numeric_limits<float>::max())
+            return false;
+        outState = {
+            effectiveEV100,
+            static_cast<float>(scale),
+            static_cast<float>(maximumInput)
+        };
+        return true;
+    }
+
+    inline bool IsValidScenePreExposureState(const ScenePreExposureState& state)
+    {
+        if (!std::isfinite(state.EffectiveExposureEV100)
+            || state.EffectiveExposureEV100 < kMinimumManualExposureEV100
+            || state.EffectiveExposureEV100 > kMaximumManualExposureEV100)
+            return false;
+        const double expectedScale = std::exp2(-state.EffectiveExposureEV100);
+        const double expectedMaximum =
+            static_cast<double>(kMaximumFiniteRgba16Float) / expectedScale;
+        return std::isfinite(state.Scale) && state.Scale > 0.0f
+            && std::isfinite(state.MaximumSceneLinearChannel)
+            && state.MaximumSceneLinearChannel > 0.0f
+            && state.Scale == static_cast<float>(expectedScale)
+            && state.MaximumSceneLinearChannel == static_cast<float>(expectedMaximum);
+    }
+
+    inline bool TryPreExposeSceneLinear(const Math::Vec3& sceneLinear,
+        const ScenePreExposureState& state, Math::Vec3& outPreExposed)
+    {
+        if (!std::isfinite(sceneLinear.X) || !std::isfinite(sceneLinear.Y)
+            || !std::isfinite(sceneLinear.Z)
+            || !IsValidScenePreExposureState(state))
+            return false;
+        const auto convert = [&state](float channel)
+        {
+            const double nonnegative = std::max(static_cast<double>(channel), 0.0);
+            const double boundedInput = std::min(nonnegative,
+                static_cast<double>(state.MaximumSceneLinearChannel));
+            return static_cast<float>(std::min(
+                boundedInput * static_cast<double>(state.Scale),
+                static_cast<double>(kMaximumFiniteRgba16Float)));
+        };
+        outPreExposed = {
+            convert(sceneLinear.X),
+            convert(sceneLinear.Y),
+            convert(sceneLinear.Z)
+        };
+        return true;
     }
 
     struct PhotometricLightReadout

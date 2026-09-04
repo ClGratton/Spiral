@@ -45,7 +45,7 @@ if ($PbrResult.TimedOut -or $PbrResult.ExitCode -ne 0) {
     throw "Dedicated Vulkan basic-PBR smoke failed."
 }
 $PbrLog = $PbrResult.Output -join "`n"
-if ($PbrLog -notmatch 'SceneBasicPbrMaterialIdV1 backend=Vulkan productionPSMain=exercised brdf=GGX-Smith-Schlick-Burley materialIds=stable rowZero=error view=per-pixel-view-space lighting=neutral-preview-nonphotometric sceneLights=unconsumed hdr=unclamped retention=exact-graph-token result=pass') {
+if ($PbrLog -notmatch 'SceneBasicPbrMaterialIdV1 backend=Vulkan productionPSMain=exercised brdf=GGX-Smith-Schlick-Burley materialIds=stable rowZero=error view=per-pixel-view-space lighting=neutral-preview-nonphotometric sceneLights=unconsumed hdr=float32-unclamped-before-pre-exposed-finite-storage retention=exact-graph-token result=pass') {
     throw "Dedicated Vulkan basic-PBR smoke did not prove the production BRDF/material-ID contract."
 }
 
@@ -54,7 +54,7 @@ if ($PayloadResult.TimedOut -or $PayloadResult.ExitCode -ne 0) {
     throw "Dedicated Vulkan light-payload smoke failed."
 }
 $PayloadLog = $PayloadResult.Output -join "`n"
-if ($PayloadLog -notmatch 'SceneLightPayloadV1 backend=Vulkan layout=versioned-uint4 records=directional-point-spot tables=global-csr-local cpuGpu=exact-pass copy=graph staging=cpu-write gpu=structured-copydest slots=4 allocations=2 reuses=1 retention=exact-graph-token productionPSMain=preserved lightingEvaluation=no result=pass') {
+if ($PayloadLog -notmatch 'SceneLightPayloadV2 backend=Vulkan layout=versioned-uint4 records=directional-point-spot tables=global-csr-local preExposure=header-scale cpuGpu=exact-pass copy=graph staging=cpu-write gpu=structured-copydest slots=4 allocations=2 reuses=1 retention=exact-graph-token productionPSMain=preserved lightingEvaluation=no result=pass') {
     throw "Dedicated Vulkan light-payload smoke did not prove exact payload readback and graph-token slot reuse."
 }
 
@@ -129,7 +129,8 @@ $RequiredMarkers = @(
     "SceneRasterPreparationV1 mode=parallel task=Frame.PrepareSceneRaster worker="
     "ScenePhotometricLightPublicationV1 backend=Vulkan directional=1 local=1 directionalUnit=lux localUnit=lm snapshot=typed grid=typed effectiveExposureEV100=0 exposureScale=1 shaderConsumption=no result=pass"
     "SceneViewportRenderGraphV1 backend=Vulkan passes=5 labels=light-payload-copy,clear,raster,tone-map,output-handoff execution=pass reference=direct comparator=exact-byte-pass"
-    "SceneColorPipelineV1 backend=Vulkan sceneLinear=RGBA16F manualExposureEV100=0"
+    "SceneColorPipelineV2 backend=Vulkan sceneLinear=pre-exposed-finite-RGBA16F exposurePlacement=before-storage toneMapExposure=none finiteClamp=65504 manualExposureEV100=0"
+    "ScenePreExposedHdrV1 backend=Vulkan placement=before-RGBA16F scale=exp2-negative-EV toneMapExposure=none finiteClamp=65504 hdrEV2=exact-half doubleApplication=rejected finiteEverywhere=pass singleApplication=pass result=pass"
     "SceneExposureControlV1 backend=Vulkan ev100=-2,0,+2 graph=exact-byte-pass monotonic=pass constants=immutable-retained-cached"
     "calibrated=camera-fnumber-shutter-iso-pass"
     "calibratedCache=same-ev-distinct-settings-pass"

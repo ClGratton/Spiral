@@ -18,6 +18,8 @@
 #include "Engine/Renderer/ToneMapPass.h"
 
 #if defined(GE_HAS_NVRHI_D3D12)
+    #include <algorithm>
+    #include <cmath>
     #include <cstddef>
 #include <filesystem>
 #include <memory>
@@ -307,11 +309,8 @@ namespace Engine
                 || !m_RHIDevice->QueryResourceState(&depthTexture, depthState))
                 return false;
 
-            RHI::ViewportClear clear;
-            clear.Color[0] = clearColor.R;
-            clear.Color[1] = clearColor.G;
-            clear.Color[2] = clearColor.B;
-            clear.Color[3] = clearColor.A;
+            const RendererColorPipelineSettings colorSettings =
+                Renderer::GetColorPipelineSettings();
             SceneRasterFrame rasterFrame;
             Ref<ConstantBufferSet> constantBufferSet;
             std::vector<ConstantBufferAllocation>* constantBuffers = nullptr;
@@ -335,6 +334,7 @@ namespace Engine
                 std::string lightPayloadError;
                 if (rasterFrame.HasValidView && !m_LightPayloadPublication.Acquire(*m_RHIDevice,
                     *snapshot, 0, rasterFrame.LightGrid,
+                    colorSettings,
                     m_LightPayloadPublication.GetLastAcceptedGeneration() + 1,
                     lightPayload, lightPayloadError))
                 {
@@ -342,6 +342,28 @@ namespace Engine
                     return false;
                 }
             }
+            ScenePreExposureState preExposure;
+            if (lightPayload && lightPayload->Payload)
+            {
+                if (lightPayload->Payload->ColorSettings != colorSettings)
+                    return false;
+                preExposure = lightPayload->Payload->PreExposure;
+            }
+            else if (!TryResolveScenePreExposure(colorSettings, preExposure))
+            {
+                return false;
+            }
+            Math::Vec3 preExposedClear;
+            if (!TryPreExposeSceneLinear(
+                    { clearColor.R, clearColor.G, clearColor.B },
+                    preExposure, preExposedClear)
+                || !std::isfinite(clearColor.A))
+                return false;
+            RHI::ViewportClear clear;
+            clear.Color[0] = preExposedClear.X;
+            clear.Color[1] = preExposedClear.Y;
+            clear.Color[2] = preExposedClear.Z;
+            clear.Color[3] = std::clamp(clearColor.A, 0.0f, 1.0f);
             recordStage("D3D12 Viewport Clustered Light Grid");
             if (!m_Pipeline)
             {
@@ -443,7 +465,6 @@ namespace Engine
                 return false;
 
             recordStage("D3D12 Viewport Scene Resolve");
-            const RendererColorPipelineSettings colorSettings = Renderer::GetColorPipelineSettings();
             Ref<ToneMapPassConstants> toneMapConstants = m_ToneMap.AcquireConstants(colorSettings);
             if (!toneMapConstants)
                 return false;
@@ -662,7 +683,7 @@ namespace Engine
                     && graphReadback.Data == referenceReadback.Data;
                 Log::Info("SceneViewportRenderGraphV1 backend=D3D12 passes=5 labels=light-payload-copy,clear,raster,tone-map,output-handoff execution=pass reference=direct comparator=exact-byte-",
                     equivalent ? "pass" : "fail", " size=", width, "x", height, " bytes=", graphReadback.Data.size());
-                Log::Info("SceneColorPipelineV1 backend=D3D12 sceneLinear=RGBA16F manualExposureEV100=", colorSettings.ManualExposureEV100,
+                Log::Info("SceneColorPipelineV2 backend=D3D12 sceneLinear=pre-exposed-finite-RGBA16F exposurePlacement=before-storage toneMapExposure=none finiteClamp=65504 manualExposureEV100=", colorSettings.ManualExposureEV100,
                     " exposureMode=", ToString(colorSettings.ExposureMode),
                     " effectiveExposureEV100=", EffectiveExposureEV100(colorSettings),
                     " exposureScale=", ManualExposureScale(colorSettings),

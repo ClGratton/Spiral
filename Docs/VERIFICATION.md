@@ -644,7 +644,7 @@ After one coherent Debug build, run the complete integration registry and native
 bash Scripts/TestVulkan.sh Debug gmake --skip-build
 ```
 
-The current Vulkan harness requires `SceneViewportRenderGraphV1 backend=Vulkan passes=5 labels=light-payload-copy,clear,raster,tone-map,output-handoff execution=pass reference=direct comparator=exact-byte-pass` at two sizes and `SceneColorPipelineV1 backend=Vulkan sceneLinear=RGBA16F manualExposureEV100=0 toneMap=Khronos-PBR-Neutral output=sRGB-encoded-RGBA8 result=pass`. It also requires five completion-gated timestamp scopes and five-pass exact-frame GPU timing. The 2026-09-03 RTX 3080 Ti acceptance used the then-four-pass graph, 1,253 MiB of 12,288 MiB before launch, passed 97/97 tests, preserved resize/ImGui/presentation, and reported 1.03693 ms whole-graph GPU work on its first published frame. The direct recorder is a graph/state/order comparator using the same shader, while the independent scene-raster background expectation catches the explicit low-range tone-map/sRGB result. This qualifies the native Vulkan RGBA16F target, pass-local sampled binding, neutral operator, encoded RGBA8 handoff, and resource transitions. It does not qualify D3D12 until `Scripts/TestRender.ps1` emits the matching marker, nor calibrated/automatic exposure, grading/LUTs, HDR display output, photometric light coupling, or alternative tone mappers.
+The current Vulkan harness requires `SceneViewportRenderGraphV1 backend=Vulkan passes=5 labels=light-payload-copy,clear,raster,tone-map,output-handoff execution=pass reference=direct comparator=exact-byte-pass` at two sizes and `SceneColorPipelineV2 backend=Vulkan sceneLinear=pre-exposed-finite-RGBA16F exposurePlacement=before-storage toneMapExposure=none finiteClamp=65504 manualExposureEV100=0`. It also requires five completion-gated timestamp scopes and five-pass exact-frame GPU timing. The 2026-09-03 RTX 3080 Ti acceptance used the then-four-pass graph, 1,253 MiB of 12,288 MiB before launch, passed 97/97 tests, preserved resize/ImGui/presentation, and reported 1.03693 ms whole-graph GPU work on its first published frame. The direct recorder is a graph/state/order comparator using the same shader, while the independent scene-raster background expectation catches the explicit low-range tone-map/sRGB result and the newer finite-storage section below proves exposure placement. This qualifies the native Vulkan pre-exposed finite RGBA16F target, pass-local sampled binding, neutral operator, encoded RGBA8 handoff, and resource transitions. It does not qualify D3D12 until `Scripts/TestRender.ps1` emits the matching marker, nor automatic exposure, grading LUTs, HDR display output, photometric light coupling, or alternative tone mappers.
 
 ## Phase 3E Manual EV100 Exposure Control
 
@@ -734,7 +734,7 @@ The first test proves stable frame-local row selection, row-zero error state, th
 `Scripts/TestVulkan.sh Debug gmake --skip-build` also launches a separate production-`PSMain` fixture. Five view-space panels resolve smooth dielectric, rough dielectric from a declared linear ORM texel, metallic, rough metallic, and row-zero/error material states. The rough-metal sample explicitly rejects uncorrelated Smith visibility by more than the two-half-ULP raw-HDR tolerance. The fixture compares RGBA16F cells within two half-float ULPs against an independent CPU BRDF oracle, then compares the real Khronos-neutral/tone-map/sRGB RGBA8 handoff within three bytes. It must reject a fixed camera vector and emit:
 
 ```text
-SceneBasicPbrMaterialIdV1 backend=Vulkan productionPSMain=exercised brdf=GGX-Smith-Schlick-Burley materialIds=stable rowZero=error view=per-pixel-view-space lighting=neutral-preview-nonphotometric sceneLights=unconsumed hdr=unclamped retention=exact-graph-token result=pass
+SceneBasicPbrMaterialIdV1 backend=Vulkan productionPSMain=exercised brdf=GGX-Smith-Schlick-Burley materialIds=stable rowZero=error view=per-pixel-view-space lighting=neutral-preview-nonphotometric sceneLights=unconsumed hdr=float32-unclamped-before-pre-exposed-finite-storage retention=exact-graph-token result=pass
 ```
 
 This is Linux/Vulkan execution only. Shared D3D12 reflection and 512-byte aligned constant allocation compile from the same source, but D3D12 PBR execution remains unqualified. The marker does not claim tangent-space normal mapping, Callisto/Proxima control consumption, two-sided material policy, shadows, photometric attenuation, or Scene-light evaluation.
@@ -870,7 +870,31 @@ The focused oracle constructs its expected versioned header, complete directiona
 The dedicated Vulkan entry is mutually exclusive with the surface and PBR diagnostics. It renders varied header, directional, point, spot, global-index, cluster-offset, and local-index words into discriminating RGBA16F cells and compares them with an independent CPU expectation derived from the accepted fixture snapshot/grid. It must emit:
 
 ```text
-SceneLightPayloadV1 backend=Vulkan layout=versioned-uint4 records=directional-point-spot tables=global-csr-local cpuGpu=exact-pass copy=graph staging=cpu-write gpu=structured-copydest slots=4 allocations=2 reuses=1 retention=exact-graph-token productionPSMain=preserved lightingEvaluation=no result=pass
+SceneLightPayloadV2 backend=Vulkan layout=versioned-uint4 records=directional-point-spot tables=global-csr-local preExposure=header-scale cpuGpu=exact-pass copy=graph staging=cpu-write gpu=structured-copydest slots=4 allocations=2 reuses=1 retention=exact-graph-token productionPSMain=preserved lightingEvaluation=no result=pass
 ```
 
 The comprehensive harness additionally requires the five-pass `light-payload-copy,clear,raster,tone-map,output-handoff` graph, five ready timestamp scopes, exact graph/direct viewport bytes, resize, ImGui handoff, presentation, and cleanup. The 2026-09-04 Linux acceptance passed the warning-free Debug GMake build, focused oracle, 111/111 Integration registry, style/diff/script checks, and complete native RTX 3080 Ti Vulkan harness. Shared D3D12 production source is present but has not been executed by this Linux evidence; this section does not qualify light evaluation, BRDF coupling, attenuation/cone normalization, shadows, a GPU-built cluster grid, D3D12, or MoltenVK.
+
+## Phase 3E Finite Pre-Exposed RGBA16F Storage
+
+After one coherent Debug build, run both focused transactional oracles, the complete Integration registry, and the full native Vulkan harness:
+
+```bash
+bin/Debug-linux-x86_64-gmake/EngineTests/EngineTests --test "Renderer color pipeline settings validate manual calibrated exposure and post-tone-map grading"
+bin/Debug-linux-x86_64-gmake/EngineTests/EngineTests --test "Scene light payload packs complete typed records transactionally"
+bin/Debug-linux-x86_64-gmake/EngineTests/EngineTests --tier integration
+bash Scripts/TestVulkan.sh Debug gmake --skip-build
+bash Scripts/CheckCodeStyle.sh
+git diff --check
+```
+
+The settings oracle must resolve manual and calibrated pre-exposure states at EV -16, 0, +2, and +16, validate their internal EV/scale/input-bound correspondence, prove negative-to-zero and finite-half saturation, distinguish one application from two, and preserve caller output on invalid settings, nonfinite RGB, or a forged inconsistent state. The payload oracle must independently expect the exact scale bits in V2 header word 5 `.w`, retain the complete settings/derived state, reject invalid settings transactionally, and prove that an exposure-only change rewrites a safely reusable staging/GPU slot.
+
+The native harness must require both:
+
+```text
+SceneColorPipelineV2 backend=Vulkan sceneLinear=pre-exposed-finite-RGBA16F exposurePlacement=before-storage toneMapExposure=none finiteClamp=65504 manualExposureEV100=0
+ScenePreExposedHdrV1 backend=Vulkan placement=before-RGBA16F scale=exp2-negative-EV toneMapExposure=none finiteClamp=65504 hdrEV2=exact-half doubleApplication=rejected finiteEverywhere=pass singleApplication=pass result=pass
+```
+
+The EV +2 HDR fixture deliberately uses binary-exact clear values so exact half comparison is meaningful; do not weaken this to a tolerance around decimal conversion. Its RGBA8 result must match an independent one-application tone-map oracle and differ materially from the EV +4/double-application counterfactual. The EV -16 fixture must read exact `0x7bff,0x7bff,0x7800,0x3c00` at a background pixel and scan every RGBA16F channel for Inf/NaN. The ordinary graph/direct comparison must remain byte-exact across all five passes. D3D12 shares source only until the matching behavior is executed on Windows; no light-evaluation, photometric-normalization, automatic-exposure, HDR-display, or MoltenVK claim follows from this gate.

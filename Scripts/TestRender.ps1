@@ -125,7 +125,7 @@ $RequiredMarkers = @(
     "SceneMaterialTextureShaderReadbackV1 backend=D3D12 roles=exact-pass colorSpace=sRGB-linear-pass samplers=declared-pass mip1=pass missing=semantic-defaults-pass invalid=error-resource-pass retention=exact-token-pass result=pass"
     "SceneRasterPreparationV1 mode=parallel task=Frame.PrepareSceneRaster worker="
     "SceneViewportRenderGraphV1 backend=D3D12 passes=5 labels=light-payload-copy,clear,raster,tone-map,output-handoff execution=pass reference=direct comparator=exact-byte-pass"
-    "SceneColorPipelineV1 backend=D3D12 sceneLinear=RGBA16F manualExposureEV100=0"
+    "SceneColorPipelineV2 backend=D3D12 sceneLinear=pre-exposed-finite-RGBA16F exposurePlacement=before-storage toneMapExposure=none finiteClamp=65504 manualExposureEV100=0"
     "ColorPipelineSettingsSmokeV1 default=pass bounds=pass nonfinite=pass v3Migration=pass v4GradingMigration=pass v5SaveReopen=pass historyUndoRedo=pass restoreFailureAtomic=pass rendererPublication=pass"
     "v6Calibration=pass"
     "orderIndependent=pass"

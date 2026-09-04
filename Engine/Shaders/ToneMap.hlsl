@@ -1,6 +1,7 @@
 cbuffer ToneMapConstants : register(b0)
 {
-    // x = resolved exposure in EV100 stops, y = paper-white scale,
+    // x = reserved zero (exposure is applied before RGBA16F storage),
+    // y = paper-white scale,
     // z = post-tone-map saturation, w = post-tone-map contrast.
     float4 ExposureAndOutput;
 };
@@ -73,9 +74,8 @@ float3 ApplyPostToneMapGrade(float3 displayLinear)
 
 float4 PSMain(VSOutput input) : SV_Target0
 {
-    const float exposure = exp2(-ExposureAndOutput.x) * ExposureAndOutput.y;
     const float3 hdr = max(HdrScene.SampleLevel(HdrSceneSampler, input.UV, 0.0f).rgb, 0.0f);
-    const float3 displayLinear = saturate(NeutralToneMap(hdr * exposure));
+    const float3 displayLinear = saturate(NeutralToneMap(hdr * ExposureAndOutput.y));
     const float3 graded = saturate(ApplyPostToneMapGrade(displayLinear));
     return float4(LinearToSrgb(graded), 1.0f);
 }

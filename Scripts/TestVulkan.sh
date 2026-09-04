@@ -102,7 +102,8 @@ REQUIRED_MARKERS=(
     "VulkanSceneOutputHandoffV1 producer=pass"
     "ScenePhotometricLightPublicationV1 backend=Vulkan directional=1 local=1 directionalUnit=lux localUnit=lm snapshot=typed grid=typed effectiveExposureEV100=0 exposureScale=1 shaderConsumption=no result=pass"
     "SceneViewportRenderGraphV1 backend=Vulkan passes=5 labels=light-payload-copy,clear,raster,tone-map,output-handoff execution=pass reference=direct comparator=exact-byte-pass"
-    "SceneColorPipelineV1 backend=Vulkan sceneLinear=RGBA16F manualExposureEV100=0"
+    "SceneColorPipelineV2 backend=Vulkan sceneLinear=pre-exposed-finite-RGBA16F exposurePlacement=before-storage toneMapExposure=none finiteClamp=65504 manualExposureEV100=0"
+    "ScenePreExposedHdrV1 backend=Vulkan placement=before-RGBA16F scale=exp2-negative-EV toneMapExposure=none finiteClamp=65504 hdrEV2=exact-half doubleApplication=rejected finiteEverywhere=pass singleApplication=pass result=pass"
     "SceneExposureControlV1 backend=Vulkan ev100=-2,0,+2 graph=exact-byte-pass monotonic=pass constants=immutable-retained-cached"
     "calibrated=camera-fnumber-shutter-iso-pass"
     "calibratedCache=same-ev-distinct-settings-pass"
@@ -254,7 +255,7 @@ for ((ATTEMPT = 1; ATTEMPT <= ITERATIONS; ++ATTEMPT)); do
         echo "Dedicated Vulkan basic-PBR smoke failed with exit code $PBR_STATUS on attempt $ATTEMPT/$ITERATIONS." >&2
         exit "$PBR_STATUS"
     fi
-    if ! grep -Fq 'SceneBasicPbrMaterialIdV1 backend=Vulkan productionPSMain=exercised brdf=GGX-Smith-Schlick-Burley materialIds=stable rowZero=error view=per-pixel-view-space lighting=neutral-preview-nonphotometric sceneLights=unconsumed hdr=unclamped retention=exact-graph-token result=pass' "$PBR_LOG"; then
+    if ! grep -Fq 'SceneBasicPbrMaterialIdV1 backend=Vulkan productionPSMain=exercised brdf=GGX-Smith-Schlick-Burley materialIds=stable rowZero=error view=per-pixel-view-space lighting=neutral-preview-nonphotometric sceneLights=unconsumed hdr=float32-unclamped-before-pre-exposed-finite-storage retention=exact-graph-token result=pass' "$PBR_LOG"; then
         echo "Dedicated Vulkan basic-PBR smoke did not prove the production BRDF/material-ID contract." >&2
         exit 1
     fi
@@ -290,7 +291,7 @@ for ((ATTEMPT = 1; ATTEMPT <= ITERATIONS; ++ATTEMPT)); do
         echo "Dedicated Vulkan light-payload smoke failed with exit code $PAYLOAD_STATUS on attempt $ATTEMPT/$ITERATIONS." >&2
         exit "$PAYLOAD_STATUS"
     fi
-    if ! grep -Fq 'SceneLightPayloadV1 backend=Vulkan layout=versioned-uint4 records=directional-point-spot tables=global-csr-local cpuGpu=exact-pass copy=graph staging=cpu-write gpu=structured-copydest slots=4 allocations=2 reuses=1 retention=exact-graph-token productionPSMain=preserved lightingEvaluation=no result=pass' "$PAYLOAD_LOG"; then
+    if ! grep -Fq 'SceneLightPayloadV2 backend=Vulkan layout=versioned-uint4 records=directional-point-spot tables=global-csr-local preExposure=header-scale cpuGpu=exact-pass copy=graph staging=cpu-write gpu=structured-copydest slots=4 allocations=2 reuses=1 retention=exact-graph-token productionPSMain=preserved lightingEvaluation=no result=pass' "$PAYLOAD_LOG"; then
         echo "Dedicated Vulkan light-payload smoke did not prove exact payload readback and graph-token slot reuse." >&2
         exit 1
     fi

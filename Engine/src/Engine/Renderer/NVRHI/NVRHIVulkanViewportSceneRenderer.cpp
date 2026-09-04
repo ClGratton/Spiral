@@ -15,6 +15,8 @@
 #include "Engine/RenderGraph/RenderGraph.h"
 
 #if defined(GE_HAS_NVRHI_VULKAN)
+    #include <algorithm>
+    #include <cmath>
     #include <cstddef>
     #include <cstring>
     #include <filesystem>
@@ -221,12 +223,15 @@ namespace Engine
             if (!prepared || prepared->SnapshotFrameIndex != snapshot.FrameIndex) return false;
             SceneRasterFrame frame = *prepared;
             if (!frame.HasValidView || frame.Instances.empty()) return false;
+            const RendererColorPipelineSettings colorSettings =
+                Renderer::GetColorPipelineSettings();
             std::string lightGridError;
             if (!BuildClusteredLightGrid(snapshot, 0, width, height, {}, frame.LightGrid, lightGridError))
             { Log::Error("Vulkan Scene viewport could not build clustered light grid: ", lightGridError); return false; }
             Ref<SceneLightPayloadSlot> lightPayload;
             std::string lightPayloadError;
             if (!m_LightPayloadPublication.Acquire(*m_Device, snapshot, 0, frame.LightGrid,
+                colorSettings,
                 m_LightPayloadPublication.GetLastAcceptedGeneration() + 1,
                 lightPayload, lightPayloadError))
             { Log::Error("Vulkan Scene viewport could not publish scene light payload: ", lightPayloadError); return false; }
@@ -299,7 +304,6 @@ namespace Engine
                 for (const MeshGpuPrimitiveRange& primitive : bundle->Primitives) draws.push_back({ bundle, primitive, index });
             }
             if (draws.empty()) { Log::Error("Vulkan Scene viewport resolved a snapshot mesh with no drawable primitives"); return false; }
-            const RendererColorPipelineSettings colorSettings = Renderer::GetColorPipelineSettings();
             Ref<ToneMapPassConstants> toneMapConstants = m_ToneMap.AcquireConstants(colorSettings);
             if (!toneMapConstants) { Log::Error("Vulkan Scene viewport could not allocate tone-map constants"); return false; }
             RHI::ResourceState hdrColorState = RHI::ResourceState::Unknown;
@@ -312,7 +316,21 @@ namespace Engine
                 || !m_Device->QueryResourceState(m_Depth.get(), depthState)
                 || !m_Device->QueryResourceState(lightPayload->Staging.get(), lightStagingState)
                 || !m_Device->QueryResourceState(lightPayload->Gpu.get(), lightGpuState)) return false;
-            RHI::ViewportClear clear; clear.Color[0] = clearColor.R; clear.Color[1] = clearColor.G; clear.Color[2] = clearColor.B; clear.Color[3] = clearColor.A;
+            Math::Vec3 preExposedClear;
+            if (!lightPayload->Payload
+                || lightPayload->Payload->ColorSettings != colorSettings
+                || !TryPreExposeSceneLinear({ clearColor.R, clearColor.G, clearColor.B },
+                    lightPayload->Payload->PreExposure, preExposedClear)
+                || !std::isfinite(clearColor.A))
+            {
+                Log::Error("Vulkan Scene viewport rejected a nonfinite clear or pre-exposure state");
+                return false;
+            }
+            RHI::ViewportClear clear;
+            clear.Color[0] = preExposedClear.X;
+            clear.Color[1] = preExposedClear.Y;
+            clear.Color[2] = preExposedClear.Z;
+            clear.Color[3] = std::clamp(clearColor.A, 0.0f, 1.0f);
             Scope<RenderGraph> graph = CreateScope<RenderGraph>();
             RHI::TextureDescription hdrColorDescription = m_HdrColor->GetDescription(); hdrColorDescription.InitialState = hdrColorState;
             RHI::TextureDescription colorDescription = m_Color->GetDescription(); colorDescription.InitialState = colorState;
@@ -440,7 +458,7 @@ namespace Engine
                 const bool equivalent = readBack && graphReadback.Extent.Width == referenceReadback.Extent.Width && graphReadback.Extent.Height == referenceReadback.Extent.Height
                     && graphReadback.RowPitchBytes == referenceReadback.RowPitchBytes && graphReadback.Data == referenceReadback.Data;
                 Log::Info("SceneViewportRenderGraphV1 backend=Vulkan passes=5 labels=light-payload-copy,clear,raster,tone-map,output-handoff execution=pass reference=direct comparator=exact-byte-", equivalent ? "pass" : "fail", " size=", width, "x", height, " bytes=", graphReadback.Data.size());
-                Log::Info("SceneColorPipelineV1 backend=Vulkan sceneLinear=RGBA16F manualExposureEV100=", colorSettings.ManualExposureEV100,
+                Log::Info("SceneColorPipelineV2 backend=Vulkan sceneLinear=pre-exposed-finite-RGBA16F exposurePlacement=before-storage toneMapExposure=none finiteClamp=65504 manualExposureEV100=", colorSettings.ManualExposureEV100,
                     " exposureMode=", ToString(colorSettings.ExposureMode),
                     " effectiveExposureEV100=", EffectiveExposureEV100(colorSettings),
                     " exposureScale=", ManualExposureScale(colorSettings),

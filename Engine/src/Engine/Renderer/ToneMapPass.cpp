@@ -87,7 +87,7 @@ namespace Engine
             const RendererColorPipelineSettings& settings)
         {
             return {
-                static_cast<float>(EffectiveExposureEV100(settings)),
+                0.0f,
                 kPaperWhiteScale,
                 static_cast<float>(settings.PostToneMapSaturation),
                 static_cast<float>(settings.PostToneMapContrast)
@@ -162,7 +162,7 @@ namespace Engine
             Shutdown();
             return false;
         }
-        Log::Info("SceneColorPipelineV1 hdr=RGBA16F manualExposureEV100=0 toneMap=Khronos-PBR-Neutral postToneMapGrade=saturation-contrast output=sRGB-encoded-RGBA8 result=ready");
+        Log::Info("SceneColorPipelineV2 hdr=pre-exposed-finite-RGBA16F exposure=before-storage toneMapExposure=none toneMap=Khronos-PBR-Neutral postToneMapGrade=saturation-contrast output=sRGB-encoded-RGBA8 result=ready");
         return true;
     }
 

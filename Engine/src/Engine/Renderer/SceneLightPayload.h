@@ -2,6 +2,7 @@
 
 #include "Engine/Core/Base.h"
 #include "Engine/Renderer/ClusteredLightGrid.h"
+#include "Engine/Renderer/ColorPipelineSettings.h"
 #include "Engine/RHI/Device.h"
 
 #include <array>
@@ -19,19 +20,22 @@ namespace Engine
 
     struct SceneLightPayload
     {
-        static constexpr u32 Version = 1;
+        static constexpr u32 Version = 2;
         static constexpr u32 HeaderWordCount = 6;
         static constexpr u32 LightRecordWordCount = 6;
         static constexpr u32 MaximumWordCount = 4u * 1024u * 1024u;
 
         u64 Generation = 0;
+        RendererColorPipelineSettings ColorSettings;
+        ScenePreExposureState PreExposure;
         std::vector<SceneLightPayloadWord> Words;
     };
 
     // Constructs the ABI without modifying outPayload until every source/grid
     // invariant and every checked size calculation has succeeded.
     bool BuildSceneLightPayload(const SceneRenderSnapshot& snapshot,
-        size_t viewIndex, const ClusteredLightGrid& grid, u64 generation,
+        size_t viewIndex, const ClusteredLightGrid& grid,
+        const RendererColorPipelineSettings& colorSettings, u64 generation,
         SceneLightPayload& outPayload, std::string& outError);
 
     struct SceneLightPayloadSlot
@@ -54,7 +58,8 @@ namespace Engine
     public:
         static constexpr size_t Capacity = 4;
         bool Acquire(RHI::Device& device, const SceneRenderSnapshot& snapshot,
-            size_t viewIndex, const ClusteredLightGrid& grid, u64 generation,
+            size_t viewIndex, const ClusteredLightGrid& grid,
+            const RendererColorPipelineSettings& colorSettings, u64 generation,
             Ref<SceneLightPayloadSlot>& outSlot, std::string& outError);
         bool Commit(const Ref<SceneLightPayloadSlot>& slot, std::string& outError);
         [[nodiscard]] Ref<const SceneLightPayload> GetLastAcceptedPayload() const
