@@ -6,6 +6,7 @@
 #include "Engine/Renderer/MeshGpuResourceCache.h"
 #include "Engine/Renderer/PortableShaderContract.h"
 #include "Engine/Renderer/SceneRasterPreparation.h"
+#include "Engine/Renderer/SceneShadowMap.h"
 #include "Engine/Renderer/SceneSurfaceConstants.h"
 #include "Engine/Renderer/SceneLightPayload.h"
 #include "Engine/Renderer/ShaderLibrary.h"
@@ -20,6 +21,7 @@
     #include <cstddef>
     #include <cstring>
     #include <filesystem>
+    #include <limits>
     #include <optional>
 #endif
 
@@ -50,6 +52,33 @@ namespace Engine
 
         struct SceneMeshDraw { Ref<const MeshGpuResourceBundle> Bundle; MeshGpuPrimitiveRange Primitive; size_t ConstantIndex = 0; };
 
+        bool TryCalculateObjectBounds(const MeshArtifact& artifact,
+            SceneObjectBounds& outBounds)
+        {
+            if (artifact.Vertices.empty())
+                return false;
+            SceneObjectBounds bounds {
+                { std::numeric_limits<float>::max(), std::numeric_limits<float>::max(),
+                    std::numeric_limits<float>::max() },
+                { -std::numeric_limits<float>::max(), -std::numeric_limits<float>::max(),
+                    -std::numeric_limits<float>::max() }
+            };
+            for (const MeshArtifactVertex& vertex : artifact.Vertices)
+            {
+                for (size_t component = 0; component < 3; ++component)
+                    if (!std::isfinite(vertex.Position[component]))
+                        return false;
+                bounds.Minimum.X = std::min(bounds.Minimum.X, vertex.Position[0]);
+                bounds.Minimum.Y = std::min(bounds.Minimum.Y, vertex.Position[1]);
+                bounds.Minimum.Z = std::min(bounds.Minimum.Z, vertex.Position[2]);
+                bounds.Maximum.X = std::max(bounds.Maximum.X, vertex.Position[0]);
+                bounds.Maximum.Y = std::max(bounds.Maximum.Y, vertex.Position[1]);
+                bounds.Maximum.Z = std::max(bounds.Maximum.Z, vertex.Position[2]);
+            }
+            outBounds = bounds;
+            return true;
+        }
+
     }
 
     struct NVRHIVulkanViewportSceneRenderer::Impl
@@ -66,11 +95,45 @@ namespace Engine
             const SceneRasterFrame& frame,
             const std::vector<ConstantBufferAllocation>& constants,
             const std::vector<SceneMeshDraw>& draws,
+            const std::vector<SceneMeshDraw>& shadowDraws,
             const Ref<SceneLightPayloadSlot>& lightPayload,
+            RHI::Texture& shadowDepth,
             const ToneMapPassConstants& toneMapConstants)
         {
             Scope<RHI::CommandList> commands = m_Device->CreateCommandList(RHI::QueueType::Graphics, "Scene Viewport Bootstrap Reference");
             if (!commands || !commands->Begin()
+                || !commands->TransitionTexture(shadowDepth, RHI::ResourceState::DepthWrite)
+                || !commands->BindDepthOutput(shadowDepth)) return false;
+            RHI::ViewportClear shadowClear;
+            shadowClear.ClearColor = false;
+            shadowClear.ClearDepth = true;
+            shadowClear.Depth = 1.0f;
+            if (!commands->ClearViewportOutputs(shadowClear)) return false;
+            commands->BeginDebugMarker("Scene Viewport Bootstrap Reference Shadow");
+            if (m_ShadowPipeline && frame.HasValidView && !shadowDraws.empty())
+            {
+                commands->SetGraphicsPipeline(*m_ShadowPipeline);
+                if (!m_TextureRuntime || !m_TextureRuntime->GetBindingTable()
+                    || !commands->BindGraphicsSampledTextureTable(
+                        *m_TextureRuntime->GetBindingTable())) return false;
+                commands->SetViewport({ 0.0f, 0.0f,
+                    static_cast<float>(kSceneShadowMapResolution),
+                    static_cast<float>(kSceneShadowMapResolution), 0.0f, 1.0f });
+                commands->SetScissorRect({ 0, 0,
+                    static_cast<int>(kSceneShadowMapResolution),
+                    static_cast<int>(kSceneShadowMapResolution) });
+                for (const SceneMeshDraw& draw : shadowDraws)
+                {
+                    commands->SetVertexBuffer(0, *draw.Bundle->VertexBuffer);
+                    commands->SetIndexBuffer(*draw.Bundle->IndexBuffer, RHI::IndexFormat::Uint32);
+                    commands->SetGraphicsConstantBuffer(0,
+                        *constants[draw.ConstantIndex].Buffer);
+                    commands->DrawIndexed(draw.Primitive.IndexCount, 1,
+                        draw.Primitive.FirstIndex, draw.Primitive.BaseVertex, 0);
+                }
+            }
+            commands->EndDebugMarker();
+            if (!commands->TransitionTexture(shadowDepth, RHI::ResourceState::ShaderResource)
                 || !commands->TransitionTexture(hdrTexture, RHI::ResourceState::RenderTarget)
                 || !commands->TransitionTexture(depthTexture, RHI::ResourceState::DepthWrite)
                 || !commands->BindViewportOutputs(hdrTexture, &depthTexture)
@@ -82,6 +145,7 @@ namespace Engine
                 if (!m_TextureRuntime || !m_TextureRuntime->GetBindingTable()
                     || !lightPayload || !lightPayload->Gpu
                     || !commands->BindGraphicsSampledTextureTable(*m_TextureRuntime->GetBindingTable())
+                    || !commands->BindGraphicsSampledTexture(shadowDepth)
                     || !commands->BindGraphicsReadOnlyStructuredBuffer(*lightPayload->Gpu)) return false;
                 commands->SetViewport({ 0.0f, 0.0f, static_cast<float>(width), static_cast<float>(height), 0.0f, 1.0f }); commands->SetScissorRect({ 0, 0, static_cast<int>(width), static_cast<int>(height) });
                 for (const SceneMeshDraw& draw : draws) { commands->SetVertexBuffer(0, *draw.Bundle->VertexBuffer); commands->SetIndexBuffer(*draw.Bundle->IndexBuffer, RHI::IndexFormat::Uint32); commands->SetGraphicsConstantBuffer(0, *constants[draw.ConstantIndex].Buffer); commands->DrawIndexed(draw.Primitive.IndexCount, 1, draw.Primitive.FirstIndex, draw.Primitive.BaseVertex, 0); }
@@ -117,7 +181,11 @@ namespace Engine
             ShaderSourceFile source = ShaderLibrary::LoadSource("Engine/Shaders/EditorViewport.hlsl", "Vulkan Scene viewport");
             if (source.Status != ShaderSourceStatus::Loaded)
                 return false;
-            auto makeRequest = [&source, this](RHI::ShaderStage stage, const char* entry) {
+            const std::string viewportConstantsShape =
+                "struct{ViewProjection:float32x4x4:row-major@0,NormalTransform:float32x4x4:row-major@64,BaseColorAndAlphaCutoff:float32x4@128,EmissiveAndStrength:float32x4@144,SurfaceFactors:float32x4@160,CallistoFactors:float32x4@176,TextureIndices0:uint32x4@192,TextureIndices1:uint32x4@208,TextureState:uint32x4@224,MaterialState:uint32x4@240,ModelView:float32x4x4:row-major@256,NormalViewTransform:float32x4x4:row-major@320,ShadowViewProjection:float32x4x4:row-major@384,ShadowParameters:float32x4@448,ShadowState:uint32x4@464}";
+            auto makeRequest = [&source, &viewportConstantsShape, this](
+                                   RHI::ShaderStage stage, const char* entry,
+                                   bool lightPayload, bool shadowReceiver) {
                 PortableShaderRequest request;
                 request.SourceName = source.ResolvedPath.string(); request.Source = source.Source; request.EntryPoint = entry; request.Stage = stage;
 #ifdef _WIN32
@@ -127,30 +195,84 @@ namespace Engine
 #endif
                 request.CompilerIdentity = "Slang"; request.CompilerVersion = "2026.13.1"; request.CompilerPackageHash = GE_SLANG_PACKAGE_SHA256;
                 request.Options = { "-O3" };
-                request.Defines = { "GE_READ_ONLY_TEXTURE_CAPACITY=" + std::to_string(m_TextureTableCapacity), "GE_SCENE_LIGHT_PAYLOAD=" + std::to_string(stage == RHI::ShaderStage::Pixel ? 1 : 0) };
+                request.Defines = {
+                    "GE_READ_ONLY_TEXTURE_CAPACITY=" + std::to_string(m_TextureTableCapacity),
+                    "GE_SCENE_LIGHT_PAYLOAD=" + std::to_string(lightPayload ? 1 : 0),
+                    "GE_SCENE_SHADOW_MAP=" + std::to_string(shadowReceiver ? 1 : 0)
+                };
                 request.ExpectedLayout = {
-                    { "ViewportConstants", 'b', 0, 0, stage, "ConstantBuffer", "struct{ViewProjection:float32x4x4:row-major@0,NormalTransform:float32x4x4:row-major@64,BaseColorAndAlphaCutoff:float32x4@128,EmissiveAndStrength:float32x4@144,SurfaceFactors:float32x4@160,CallistoFactors:float32x4@176,TextureIndices0:uint32x4@192,TextureIndices1:uint32x4@208,TextureState:uint32x4@224,MaterialState:uint32x4@240,ModelView:float32x4x4:row-major@256,NormalViewTransform:float32x4x4:row-major@320}", 1, 384, 0, 0 },
+                    { "ViewportConstants", 'b', 0, 0, stage, "ConstantBuffer", viewportConstantsShape, 1, 480, 0, 0 },
                     { "ReadOnlySamplers", 's', 0, 1, stage, "SamplerState", "sampler", m_TextureTableCapacity, 0, 0, 0 },
                     { "ReadOnlyTextures", 't', 0, 1, stage, "Texture2D", "float32x4", m_TextureTableCapacity, 0, 1, 4 }
                 };
-                if (stage == RHI::ShaderStage::Pixel) request.ExpectedLayout.push_back({ "SceneLightPayload", 't', 0, 3, RHI::ShaderStage::Pixel, "StructuredBuffer", "uint32x4", 1, 0, 1, 4 });
+                if (shadowReceiver)
+                {
+                    request.ExpectedLayout.push_back({ "SceneShadowSampler", 's', 0, 2, RHI::ShaderStage::Pixel, "SamplerState", "sampler", 1, 0, 0, 0 });
+                    request.ExpectedLayout.push_back({ "SceneShadowDepth", 't', 0, 2, RHI::ShaderStage::Pixel, "Texture2D", "float32", 1, 0, 1, 1 });
+                }
+                if (lightPayload) request.ExpectedLayout.push_back({ "SceneLightPayload", 't', 0, 3, RHI::ShaderStage::Pixel, "StructuredBuffer", "uint32x4", 1, 0, 1, 4 });
                 if (stage == RHI::ShaderStage::Vertex) request.ExpectedVertexInputs = {{ "Position", "POSITION", 0, 0, "float32x3", 12, 1, 3 }, { "Normal", "NORMAL", 0, 1, "float32x3", 12, 1, 3 }, { "Color", "COLOR", 0, 2, "float32x3", 12, 1, 3 }, { "UV", "TEXCOORD", 0, 3, "float32x2", 8, 1, 2 }};
                 return request;
             };
             SlangShaderCompiler compiler(std::filesystem::path("output") / "cache" / "shaders");
-            PortableShaderPackage vertex = compiler.Compile(makeRequest(RHI::ShaderStage::Vertex, "VSMain"));
-            PortableShaderPackage pixel = compiler.Compile(makeRequest(RHI::ShaderStage::Pixel, pixelEntry));
+            const PortableShaderRequest vertexRequest = makeRequest(
+                RHI::ShaderStage::Vertex, "VSMain", false, false);
+            const PortableShaderRequest pixelRequest = makeRequest(
+                RHI::ShaderStage::Pixel, pixelEntry, true, true);
+            const PortableShaderRequest shadowVertexRequest = makeRequest(
+                RHI::ShaderStage::Vertex, "VSShadowCaster", false, false);
+            const PortableShaderRequest shadowPixelRequest = makeRequest(
+                RHI::ShaderStage::Pixel, "PSShadowCaster", false, false);
+            PortableShaderPackage vertex = compiler.Compile(vertexRequest);
+            PortableShaderPackage pixel = compiler.Compile(pixelRequest);
+            PortableShaderPackage shadowVertex = compiler.Compile(shadowVertexRequest);
+            PortableShaderPackage shadowPixel = compiler.Compile(shadowPixelRequest);
             std::string error;
-            if (!PortableShaderContract::ValidatePackage(makeRequest(RHI::ShaderStage::Vertex, "VSMain"), vertex, error) || !PortableShaderContract::ValidatePackage(makeRequest(RHI::ShaderStage::Pixel, pixelEntry), pixel, error)) { Log::Error("Vulkan Scene viewport shader package validation failed: ", error); return false; }
+            if (!PortableShaderContract::ValidatePackage(vertexRequest, vertex, error)
+                || !PortableShaderContract::ValidatePackage(pixelRequest, pixel, error)
+                || !PortableShaderContract::ValidatePackage(shadowVertexRequest, shadowVertex, error)
+                || !PortableShaderContract::ValidatePackage(shadowPixelRequest, shadowPixel, error))
+            {
+                const auto logDiagnostics = [](std::string_view label,
+                                                const PortableShaderPackage& package)
+                {
+                    for (const PortableShaderDiagnostic& diagnostic : package.Diagnostics)
+                        Log::Error("Vulkan Scene ", label, " shader diagnostic: ",
+                            diagnostic.Message);
+                };
+                logDiagnostics("vertex", vertex);
+                logDiagnostics("pixel", pixel);
+                logDiagnostics("shadow-vertex", shadowVertex);
+                logDiagnostics("shadow-pixel", shadowPixel);
+                Log::Error("Vulkan Scene viewport shader package validation failed: ", error);
+                return false;
+            }
             RHI::ShaderDescription vs; vs.DebugName = "Vulkan Scene Viewport VS"; vs.SourceName = source.ResolvedPath.string(); vs.EntryPoint = "main"; vs.Stage = RHI::ShaderStage::Vertex; vs.BinaryFormat = RHI::ShaderBinaryFormat::Spirv; vs.Binary = vertex.Spirv; vs.Reflection = vertex.Reflection;
             RHI::ShaderDescription ps = vs; ps.DebugName = "Vulkan Scene Viewport PS"; ps.Stage = RHI::ShaderStage::Pixel; ps.Binary = pixel.Spirv; ps.Reflection = pixel.Reflection;
+            RHI::ShaderDescription shadowVs = vs; shadowVs.DebugName = "Vulkan Scene Shadow Caster VS"; shadowVs.Binary = shadowVertex.Spirv; shadowVs.Reflection = shadowVertex.Reflection;
+            RHI::ShaderDescription shadowPs = ps; shadowPs.DebugName = "Vulkan Scene Shadow Caster PS"; shadowPs.Binary = shadowPixel.Spirv; shadowPs.Reflection = shadowPixel.Reflection;
             m_VertexShader = m_Device->CreateShader(vs); m_PixelShader = m_Device->CreateShader(ps);
-            RHI::PipelineDescription pipeline; pipeline.DebugName = "Vulkan Scene Viewport Pipeline"; pipeline.VertexShader = m_VertexShader.get(); pipeline.PixelShader = m_PixelShader.get(); pipeline.VertexInputs = {{ "POSITION", 0, RHI::Format::R32G32B32Float, 0, offsetof(MeshArtifactVertex, Position) }, { "NORMAL", 0, RHI::Format::R32G32B32Float, 0, offsetof(MeshArtifactVertex, Normal) }, { "COLOR", 0, RHI::Format::R32G32B32Float, 0, offsetof(MeshArtifactVertex, Color) }, { "TEXCOORD", 0, RHI::Format::R32G32Float, 0, offsetof(MeshArtifactVertex, UV) }}; pipeline.VertexStrideBytes = sizeof(MeshArtifactVertex); pipeline.ConstantBufferBindings = {{ 0, 0, RHI::ShaderStage::AllGraphics }}; pipeline.SampledTextureTable = RHI::SampledTextureTableBinding { m_TextureTableCapacity }; pipeline.FixedReadOnlyStructuredBuffer = RHI::FixedReadOnlyStructuredBufferBinding {}; pipeline.ColorFormat = RHI::Format::R16G16B16A16Float; pipeline.DepthFormat = RHI::Format::D32Float; pipeline.DepthTestEnable = true; pipeline.DepthWriteEnable = true; pipeline.RasterCullMode = RHI::CullMode::None;
+            m_ShadowVertexShader = m_Device->CreateShader(shadowVs); m_ShadowPixelShader = m_Device->CreateShader(shadowPs);
+            const std::vector<RHI::VertexInputAttribute> vertexInputs = {{ "POSITION", 0, RHI::Format::R32G32B32Float, 0, offsetof(MeshArtifactVertex, Position) }, { "NORMAL", 0, RHI::Format::R32G32B32Float, 0, offsetof(MeshArtifactVertex, Normal) }, { "COLOR", 0, RHI::Format::R32G32B32Float, 0, offsetof(MeshArtifactVertex, Color) }, { "TEXCOORD", 0, RHI::Format::R32G32Float, 0, offsetof(MeshArtifactVertex, UV) }};
+            RHI::PipelineDescription pipeline; pipeline.DebugName = "Vulkan Scene Viewport Pipeline"; pipeline.VertexShader = m_VertexShader.get(); pipeline.PixelShader = m_PixelShader.get(); pipeline.VertexInputs = vertexInputs; pipeline.VertexStrideBytes = sizeof(MeshArtifactVertex); pipeline.ConstantBufferBindings = {{ 0, 0, RHI::ShaderStage::AllGraphics }}; pipeline.SampledTextureTable = RHI::SampledTextureTableBinding { m_TextureTableCapacity }; pipeline.FixedSampledTexture = RHI::FixedSampledTextureBinding {}; pipeline.FixedSampledTexture->PointSampling = true; pipeline.FixedReadOnlyStructuredBuffer = RHI::FixedReadOnlyStructuredBufferBinding {}; pipeline.ColorFormat = RHI::Format::R16G16B16A16Float; pipeline.DepthFormat = RHI::Format::D32Float; pipeline.DepthTestEnable = true; pipeline.DepthWriteEnable = true; pipeline.RasterCullMode = RHI::CullMode::None;
             m_Pipeline = m_VertexShader && m_PixelShader ? m_Device->CreatePipeline(pipeline) : nullptr;
-            m_TextureRuntime = m_Pipeline ? TextureRuntimePublication::Create(*m_Device,
+            RHI::PipelineDescription shadowPipeline; shadowPipeline.DebugName = "Vulkan Scene Primary Directional Shadow Pipeline"; shadowPipeline.VertexShader = m_ShadowVertexShader.get(); shadowPipeline.PixelShader = m_ShadowPixelShader.get(); shadowPipeline.VertexInputs = vertexInputs; shadowPipeline.VertexStrideBytes = sizeof(MeshArtifactVertex); shadowPipeline.ConstantBufferBindings = {{ 0, 0, RHI::ShaderStage::AllGraphics }}; shadowPipeline.SampledTextureTable = RHI::SampledTextureTableBinding { m_TextureTableCapacity }; shadowPipeline.ColorFormat = RHI::Format::Unknown; shadowPipeline.DepthFormat = RHI::Format::D32Float; shadowPipeline.DepthTestEnable = true; shadowPipeline.DepthWriteEnable = true; shadowPipeline.RasterCullMode = RHI::CullMode::None;
+            m_ShadowPipeline = m_ShadowVertexShader && m_ShadowPixelShader
+                ? m_Device->CreatePipeline(shadowPipeline) : nullptr;
+            m_TextureRuntime = m_Pipeline && m_ShadowPipeline ? TextureRuntimePublication::Create(*m_Device,
                 TextureTargetProfile::RGBAFallback, m_TextureTableCapacity - 1,
                 m_TextureTableCapacity) : nullptr;
-            return m_Pipeline != nullptr && m_TextureRuntime != nullptr && m_ToneMap.Initialize(*m_Device);
+            RHI::TextureDescription shadowDepth;
+            shadowDepth.DebugName = "Vulkan Scene Primary Directional Shadow Depth";
+            shadowDepth.Extent = { kSceneShadowMapResolution, kSceneShadowMapResolution };
+            shadowDepth.TextureFormat = RHI::Format::D32Float;
+            shadowDepth.Usage = static_cast<RHI::TextureUsage>(
+                static_cast<u32>(RHI::TextureUsage::DepthStencil)
+                | static_cast<u32>(RHI::TextureUsage::ShaderResource));
+            m_ShadowDepth = m_TextureRuntime ? m_Device->CreateTexture(shadowDepth) : nullptr;
+            return m_Pipeline != nullptr && m_ShadowPipeline != nullptr
+                && m_TextureRuntime != nullptr && m_ShadowDepth != nullptr
+                && m_ToneMap.Initialize(*m_Device);
         }
 
         Ref<ConstantBufferSet> AcquireConstantBuffers(u64 frameIndex, size_t requiredCount)
@@ -263,6 +385,7 @@ namespace Engine
             Ref<ConstantBufferSet> constantBufferSet = AcquireConstantBuffers(snapshot.FrameIndex, frame.Instances.size());
             if (!constantBufferSet) return false;
             std::vector<ConstantBufferAllocation>& constants = constantBufferSet->Allocations;
+            std::vector<SceneSurfaceConstants> cpuConstants(frame.Instances.size());
             std::vector<RHI::TextureBindingHandle> usedTextureHandles;
             for (size_t instanceIndex = 0; instanceIndex < frame.Instances.size(); ++instanceIndex)
             {
@@ -285,36 +408,69 @@ namespace Engine
                     if ((materialBindings.DeclaredMask & (1u << static_cast<u32>(slot))) != 0
                         && (materialBindings.ErrorMask & (1u << static_cast<u32>(slot))) == 0)
                         usedTextureHandles.push_back(materialBindings.Handles[slot]);
-                SceneSurfaceConstants instanceConstants;
                 if (!TryBuildSceneSurfaceConstants(instance, materialBindings,
-                    materialRow.IsError, instanceConstants))
+                    materialRow.IsError, cpuConstants[instanceIndex]))
                 {
                     Log::Error("Vulkan Scene viewport rejected nonfinite material or surface constants");
                     return false;
                 }
-                std::memcpy(constants[instanceIndex].Mapped, &instanceConstants, sizeof(instanceConstants));
             }
             std::vector<SceneMeshDraw> draws;
+            std::vector<SceneObjectBounds> objectBounds;
+            objectBounds.reserve(frame.Instances.size());
             std::string meshError;
             for (size_t index = 0; index < frame.Instances.size(); ++index)
             {
                 MeshArtifact artifact;
                 if (!Renderer::ResolvePublishedMeshArtifact(frame.Instances[index].MeshAsset, artifact, meshError)) { Log::Error("Vulkan Scene viewport could not resolve snapshot mesh artifact: ", meshError); return false; }
+                SceneObjectBounds bounds;
+                if (!TryCalculateObjectBounds(artifact, bounds))
+                { Log::Error("Vulkan Scene viewport could not calculate finite mesh bounds"); return false; }
+                objectBounds.push_back(bounds);
                 Ref<const MeshGpuResourceBundle> bundle;
                 if (!m_MeshResourceCache.Acquire(*m_Device, artifact, bundle, meshError)) { Log::Error("Vulkan Scene viewport could not acquire snapshot mesh GPU resources: ", meshError); return false; }
                 for (const MeshGpuPrimitiveRange& primitive : bundle->Primitives) draws.push_back({ bundle, primitive, index });
             }
             if (draws.empty()) { Log::Error("Vulkan Scene viewport resolved a snapshot mesh with no drawable primitives"); return false; }
+            Ref<SceneShadowMapFrame> shadowFrame = CreateRef<SceneShadowMapFrame>();
+            std::string shadowError;
+            if (!TryPrepareSceneShadowMap(frame, objectBounds,
+                kSceneShadowMapResolution, *shadowFrame, shadowError))
+            { Log::Error("Vulkan Scene viewport could not prepare its primary shadow map: ", shadowError); return false; }
+            std::vector<SceneShadowCasterMode> casterModes(frame.Instances.size(),
+                SceneShadowCasterMode::Excluded);
+            for (const SceneShadowCaster& caster : shadowFrame->Casters)
+            {
+                if (caster.InstanceIndex >= casterModes.size())
+                    return false;
+                casterModes[caster.InstanceIndex] = caster.Mode;
+            }
+            for (size_t index = 0; index < frame.Instances.size(); ++index)
+            {
+                if (!TryApplySceneShadowMapConstants(frame.Instances[index],
+                    *shadowFrame, casterModes[index], cpuConstants[index]))
+                { Log::Error("Vulkan Scene viewport rejected shadow constants"); return false; }
+                std::memcpy(constants[index].Mapped, &cpuConstants[index],
+                    sizeof(cpuConstants[index]));
+            }
+            std::vector<SceneMeshDraw> shadowDraws;
+            shadowDraws.reserve(draws.size());
+            for (const SceneMeshDraw& draw : draws)
+                if (draw.ConstantIndex < casterModes.size()
+                    && casterModes[draw.ConstantIndex] != SceneShadowCasterMode::Excluded)
+                    shadowDraws.push_back(draw);
             Ref<ToneMapPassConstants> toneMapConstants = m_ToneMap.AcquireConstants(colorSettings);
             if (!toneMapConstants) { Log::Error("Vulkan Scene viewport could not allocate tone-map constants"); return false; }
             RHI::ResourceState hdrColorState = RHI::ResourceState::Unknown;
             RHI::ResourceState colorState = RHI::ResourceState::Unknown;
             RHI::ResourceState depthState = RHI::ResourceState::Unknown;
+            RHI::ResourceState shadowDepthState = RHI::ResourceState::Unknown;
             RHI::ResourceState lightStagingState = RHI::ResourceState::Unknown;
             RHI::ResourceState lightGpuState = RHI::ResourceState::Unknown;
             if (!m_Device->QueryResourceState(m_HdrColor.get(), hdrColorState)
                 || !m_Device->QueryResourceState(m_Color.get(), colorState)
                 || !m_Device->QueryResourceState(m_Depth.get(), depthState)
+                || !m_Device->QueryResourceState(m_ShadowDepth.get(), shadowDepthState)
                 || !m_Device->QueryResourceState(lightPayload->Staging.get(), lightStagingState)
                 || !m_Device->QueryResourceState(lightPayload->Gpu.get(), lightGpuState)) return false;
             Math::Vec3 preExposedClear;
@@ -336,9 +492,11 @@ namespace Engine
             RHI::TextureDescription hdrColorDescription = m_HdrColor->GetDescription(); hdrColorDescription.InitialState = hdrColorState;
             RHI::TextureDescription colorDescription = m_Color->GetDescription(); colorDescription.InitialState = colorState;
             RHI::TextureDescription depthDescription = m_Depth->GetDescription(); depthDescription.InitialState = depthState;
+            RHI::TextureDescription shadowDepthDescription = m_ShadowDepth->GetDescription(); shadowDepthDescription.InitialState = shadowDepthState;
             const RenderGraph::ResourceHandle hdrColor = graph->AddTexture(hdrColorDescription, RenderGraph::ResourceLifetimeKind::Imported);
             const RenderGraph::ResourceHandle color = graph->AddTexture(colorDescription, RenderGraph::ResourceLifetimeKind::Imported);
             const RenderGraph::ResourceHandle depth = graph->AddTexture(depthDescription, RenderGraph::ResourceLifetimeKind::Imported);
+            const RenderGraph::ResourceHandle shadowDepth = graph->AddTexture(shadowDepthDescription, RenderGraph::ResourceLifetimeKind::Imported);
             RHI::BufferDescription lightStagingDescription = lightPayload->Staging->GetDescription(); lightStagingDescription.InitialState = lightStagingState;
             RHI::BufferDescription lightGpuDescription = lightPayload->Gpu->GetDescription(); lightGpuDescription.InitialState = lightGpuState;
             const RenderGraph::ResourceHandle lightStaging = graph->AddBuffer(lightStagingDescription, RenderGraph::ResourceLifetimeKind::Imported);
@@ -352,36 +510,77 @@ namespace Engine
                 RHI::Buffer* gpu = context.GetBuffer(lightGpu);
                 return staging && gpu && context.GetCommandList().CopyBuffer(*gpu, 0, *staging, 0, gpu->GetDescription().SizeBytes);
             });
+            RHI::TextureBindingTable* textureTable = m_TextureRuntime->GetBindingTable();
+            const RenderGraph::PassHandle shadowPass = graph->AddPass(
+                "Scene Primary Directional Shadow Map", RHI::QueueType::Graphics);
+            graph->AddWrite(shadowPass, shadowDepth, RHI::ResourceState::DepthWrite);
+            graph->SetPassCallback(shadowPass,
+                [this, textureTable, shadowDepth, constantBufferSet, shadowDraws](
+                    RenderGraph::ExecutionContext& context)
+            {
+                RHI::Texture* graphShadow = context.GetTexture(shadowDepth);
+                RHI::CommandList& commands = context.GetCommandList();
+                RHI::ViewportClear shadowClear;
+                shadowClear.ClearColor = false;
+                shadowClear.ClearDepth = true;
+                shadowClear.Depth = 1.0f;
+                if (!graphShadow || !commands.BindDepthOutput(*graphShadow)
+                    || !commands.ClearViewportOutputs(shadowClear))
+                    return false;
+                if (shadowDraws.empty())
+                    return true;
+                commands.SetGraphicsPipeline(*m_ShadowPipeline);
+                if (!textureTable
+                    || !commands.BindGraphicsSampledTextureTable(*textureTable))
+                    return false;
+                commands.SetViewport({ 0.0f, 0.0f,
+                    static_cast<float>(kSceneShadowMapResolution),
+                    static_cast<float>(kSceneShadowMapResolution), 0.0f, 1.0f });
+                commands.SetScissorRect({ 0, 0,
+                    static_cast<int>(kSceneShadowMapResolution),
+                    static_cast<int>(kSceneShadowMapResolution) });
+                for (const SceneMeshDraw& draw : shadowDraws)
+                {
+                    commands.SetVertexBuffer(0, *draw.Bundle->VertexBuffer);
+                    commands.SetIndexBuffer(*draw.Bundle->IndexBuffer,
+                        RHI::IndexFormat::Uint32);
+                    commands.SetGraphicsConstantBuffer(0,
+                        *constantBufferSet->Allocations[draw.ConstantIndex].Buffer);
+                    commands.DrawIndexed(draw.Primitive.IndexCount, 1,
+                        draw.Primitive.FirstIndex, draw.Primitive.BaseVertex, 0);
+                }
+                return true;
+            });
             const RenderGraph::PassHandle clearPass = graph->AddPass("Scene Viewport Graph Clear", RHI::QueueType::Graphics);
             graph->AddWrite(clearPass, hdrColor, RHI::ResourceState::RenderTarget); graph->AddWrite(clearPass, depth, RHI::ResourceState::DepthWrite);
-            graph->SetPassCallback(clearPass, [clear](RenderGraph::ExecutionContext& context) { RHI::Texture* graphColor = context.GetTexture({ 0 }); RHI::Texture* graphDepth = context.GetTexture({ 2 }); return graphColor && graphDepth && context.GetCommandList().BindViewportOutputs(*graphColor, graphDepth) && context.GetCommandList().ClearViewportOutputs(clear); });
+            graph->SetPassCallback(clearPass, [hdrColor, depth, clear](RenderGraph::ExecutionContext& context) { RHI::Texture* graphColor = context.GetTexture(hdrColor); RHI::Texture* graphDepth = context.GetTexture(depth); return graphColor && graphDepth && context.GetCommandList().BindViewportOutputs(*graphColor, graphDepth) && context.GetCommandList().ClearViewportOutputs(clear); });
             graph->SetPassWorkerRecordingEligible(clearPass);
             const RenderGraph::PassHandle rasterPass = graph->AddPass("Scene Viewport Graph Raster", RHI::QueueType::Graphics);
             graph->AddWrite(rasterPass, hdrColor, RHI::ResourceState::RenderTarget); graph->AddWrite(rasterPass, depth, RHI::ResourceState::DepthWrite);
             graph->AddRead(rasterPass, lightGpu, RHI::ResourceState::ShaderResource, RHI::ShaderStage::Pixel);
-            RHI::TextureBindingTable* textureTable = m_TextureRuntime->GetBindingTable();
-            graph->SetPassCallback(rasterPass, [this, textureTable, lightGpu, width, height, &frame, constantBufferSet, draws](RenderGraph::ExecutionContext& context)
+            graph->AddRead(rasterPass, shadowDepth, RHI::ResourceState::ShaderResource, RHI::ShaderStage::Pixel);
+            graph->SetPassCallback(rasterPass, [this, textureTable, hdrColor, depth, lightGpu, shadowDepth, width, height, &frame, constantBufferSet, draws](RenderGraph::ExecutionContext& context)
             {
-                RHI::Texture* graphColor = context.GetTexture({ 0 }); RHI::Texture* graphDepth = context.GetTexture({ 2 }); RHI::CommandList& commands = context.GetCommandList();
+                RHI::Texture* graphColor = context.GetTexture(hdrColor); RHI::Texture* graphDepth = context.GetTexture(depth); RHI::Texture* graphShadow = context.GetTexture(shadowDepth); RHI::CommandList& commands = context.GetCommandList();
                 RHI::Buffer* graphLightPayload = context.GetBuffer(lightGpu);
                 if (!graphColor || !graphDepth || !commands.BindViewportOutputs(*graphColor, graphDepth)) return false;
-                commands.SetGraphicsPipeline(*m_Pipeline); if (!textureTable || !graphLightPayload || !commands.BindGraphicsSampledTextureTable(*textureTable) || !commands.BindGraphicsReadOnlyStructuredBuffer(*graphLightPayload)) return false; commands.SetViewport({ 0.0f, 0.0f, static_cast<float>(width), static_cast<float>(height), 0.0f, 1.0f }); commands.SetScissorRect({ 0, 0, static_cast<int>(width), static_cast<int>(height) });
+                commands.SetGraphicsPipeline(*m_Pipeline); if (!textureTable || !graphLightPayload || !graphShadow || !commands.BindGraphicsSampledTextureTable(*textureTable) || !commands.BindGraphicsSampledTexture(*graphShadow) || !commands.BindGraphicsReadOnlyStructuredBuffer(*graphLightPayload)) return false; commands.SetViewport({ 0.0f, 0.0f, static_cast<float>(width), static_cast<float>(height), 0.0f, 1.0f }); commands.SetScissorRect({ 0, 0, static_cast<int>(width), static_cast<int>(height) });
                 for (const SceneMeshDraw& draw : draws) { commands.SetVertexBuffer(0, *draw.Bundle->VertexBuffer); commands.SetIndexBuffer(*draw.Bundle->IndexBuffer, RHI::IndexFormat::Uint32); commands.SetGraphicsConstantBuffer(0, *constantBufferSet->Allocations[draw.ConstantIndex].Buffer); commands.DrawIndexed(draw.Primitive.IndexCount, 1, draw.Primitive.FirstIndex, draw.Primitive.BaseVertex, 0); ++frame.IssuedDrawCount; }
                 return true;
             });
             const RenderGraph::PassHandle toneMapPass = graph->AddPass("Scene Viewport Graph Tone Map", RHI::QueueType::Graphics);
             graph->AddRead(toneMapPass, hdrColor, RHI::ResourceState::ShaderResource, RHI::ShaderStage::Pixel);
             graph->AddWrite(toneMapPass, color, RHI::ResourceState::RenderTarget);
-            graph->SetPassCallback(toneMapPass, [this, width, height, toneMapConstants](RenderGraph::ExecutionContext& context)
+            graph->SetPassCallback(toneMapPass, [this, hdrColor, color, width, height, toneMapConstants](RenderGraph::ExecutionContext& context)
             {
-                RHI::Texture* graphHdr = context.GetTexture({ 0 });
-                RHI::Texture* graphColor = context.GetTexture({ 1 });
+                RHI::Texture* graphHdr = context.GetTexture(hdrColor);
+                RHI::Texture* graphColor = context.GetTexture(color);
                 return graphHdr && graphColor && m_ToneMap.Record(
                     context.GetCommandList(), *graphHdr, *graphColor, width, height, *toneMapConstants);
             });
             const RenderGraph::PassHandle handoffPass = graph->AddPass("Scene Viewport Graph Output Handoff", RHI::QueueType::Graphics);
             graph->AddRead(handoffPass, color, RHI::ResourceState::ShaderResource, RHI::ShaderStage::Pixel);
-            graph->SetPassCallback(handoffPass, [](RenderGraph::ExecutionContext& context) { return context.GetTexture({ 1 }) != nullptr; });
+            graph->SetPassCallback(handoffPass, [color](RenderGraph::ExecutionContext& context) { return context.GetTexture(color) != nullptr; });
             graph->SetPassWorkerRecordingEligible(handoffPass);
             const RenderGraph::CompileResult compiled = graph->Compile();
             const ApplicationCommandLineArgs& args = Application::Get().GetSpecification().CommandLineArgs;
@@ -395,6 +594,7 @@ namespace Engine
                 && m_Device->GetCapabilities().GetFeature(RHI::DeviceFeature::Timestamps).IsUsable();
             const RenderGraph::ExecuteResult executed = graph->BindTexture(hdrColor, *m_HdrColor)
                 && graph->BindTexture(color, *m_Color) && graph->BindTexture(depth, *m_Depth)
+                && graph->BindTexture(shadowDepth, *m_ShadowDepth)
                 && graph->BindBuffer(lightStaging, *lightPayload->Staging) && graph->BindBuffer(lightGpu, *lightPayload->Gpu)
                 ? graph->Execute(*m_Device, compiled, executeOptions) : RenderGraph::ExecuteResult {};
             if (Application::Get().GetSpecification().CommandLineArgs.HasFlag("--scene-viewport-render-graph-smoke")) Log::Info("RenderGraphRecordingV1 backend=Vulkan mode=", executeOptions.RecordingMode == FrameTaskExecutionMode::Parallel ? "worker" : "inline", " workerPasses=", executed.WorkerRecordedPassCount, " overlap=", executed.WorkerRecordingOverlapObserved ? "yes" : "no", " submitted=", executed.AcceptedPassCount, " result=", executed.Success ? "pass" : "fail");
@@ -421,7 +621,7 @@ namespace Engine
                     { Log::Error("Vulkan Scene viewport could not retain material textures: ", textureRetentionError); m_Device->WaitIdle(); return false; }
                 }
                 std::string retentionError;
-                std::vector<Ref<void>> payloads { constantBufferSet, toneMapConstants, lightPayload };
+                std::vector<Ref<void>> payloads { constantBufferSet, toneMapConstants, lightPayload, shadowFrame };
                 for (const SceneMeshDraw& draw : draws) payloads.emplace_back(std::const_pointer_cast<MeshGpuResourceBundle>(draw.Bundle));
                 if (!m_SubmittedGraphFrames.Retain(snapshot.FrameIndex, std::move(graph), compiled, executed,
                     std::move(payloads), &retentionError))
@@ -444,21 +644,28 @@ namespace Engine
             if (Application::Get().GetSpecification().CommandLineArgs.HasFlag("--scene-viewport-render-graph-smoke")) Log::Info("ProductionRenderGraphRetirementV1 backend=Vulkan frame=", snapshot.FrameIndex, " passes=", executed.AcceptedPassCount, " cpuWaitBetween=no pending=", m_SubmittedGraphFrames.GetPendingCount(), " result=pass");
             if (Application::Get().GetSpecification().CommandLineArgs.HasFlag("--scene-viewport-render-graph-smoke")) Log::Info("ClusteredLightGridV1 backend=Vulkan tiles=", frame.LightGrid.TileCountX, "x", frame.LightGrid.TileCountY, " depthSlices=", frame.LightGrid.DepthSliceCount, " lights=", frame.LightGrid.Lights.size(), " global=", frame.LightGrid.GlobalLightIndices.size(), " localReferences=", frame.LightGrid.LocalLightIndices.size(), " overflow=", frame.LightGrid.OverflowedLocalLightReferences, " storage=bounded-csr result=pass");
             if (Application::Get().GetSpecification().CommandLineArgs.HasFlag("--scene-viewport-render-graph-smoke")) Log::Info("ScenePhotometricLightPublicationV2 backend=Vulkan directional=", directionalLightCount, " local=", localLightCount, " directionalUnit=", directionalLightCount > 0 ? "lux" : "none", " localUnit=", localLightCount > 0 ? "lm" : "none", " snapshot=typed grid=typed effectiveExposureEV100=", EffectiveExposureEV100(colorSettings), " exposureScale=", ManualExposureScale(colorSettings), " shaderConsumption=production-PSMain result=pass");
+            if (Application::Get().GetSpecification().CommandLineArgs.HasFlag("--scene-viewport-render-graph-smoke")) Log::Info("SceneShadowMapV1 backend=Vulkan light=", shadowFrame->PrimaryLightEntity, " resolution=", shadowFrame->Resolution, " stabilization=texel-snapped filter=3x3-pcf casters=", shadowFrame->Casters.size(), " opaque=", shadowFrame->OpaqueCasterCount, " masked=", shadowFrame->AlphaTestedCasterCount, " conservativeError=", shadowFrame->ConservativeErrorCasterCount, " componentExcluded=", shadowFrame->ComponentExcludedCount, " blendExcluded=", shadowFrame->BlendExcludedCount, " receiverExclusions=deferred graphLabel=Scene-Primary-Directional-Shadow-Map result=pass");
             const bool comparisonRequested = Application::Get().GetSpecification().CommandLineArgs.HasFlag("--scene-viewport-render-graph-smoke");
             if (comparisonRequested)
             {
                 RHI::TextureDescription referenceColorDescription = m_Color->GetDescription(); referenceColorDescription.DebugName = "Scene Viewport Bootstrap Reference Color";
                 RHI::TextureDescription referenceHdrDescription = m_HdrColor->GetDescription(); referenceHdrDescription.DebugName = "Scene Viewport Bootstrap Reference Linear HDR";
                 RHI::TextureDescription referenceDepthDescription = m_Depth->GetDescription(); referenceDepthDescription.DebugName = "Scene Viewport Bootstrap Reference Depth";
+                RHI::TextureDescription referenceShadowDescription = m_ShadowDepth->GetDescription(); referenceShadowDescription.DebugName = "Scene Viewport Bootstrap Reference Shadow Depth";
                 Scope<RHI::Texture> referenceHdr = m_Device->CreateTexture(referenceHdrDescription);
                 Scope<RHI::Texture> referenceColor = m_Device->CreateTexture(referenceColorDescription);
                 Scope<RHI::Texture> referenceDepth = m_Device->CreateTexture(referenceDepthDescription);
+                Scope<RHI::Texture> referenceShadow = m_Device->CreateTexture(referenceShadowDescription);
                 RHI::TextureReadback graphReadback, referenceReadback;
-                const bool referenceRendered = referenceHdr && referenceColor && referenceDepth && RecordBootstrapReference(*referenceHdr, *referenceColor, *referenceDepth, width, height, clear, frame, constants, draws, lightPayload, *toneMapConstants);
+                const bool referenceRendered = referenceHdr && referenceColor && referenceDepth
+                    && referenceShadow && RecordBootstrapReference(*referenceHdr,
+                        *referenceColor, *referenceDepth, width, height, clear,
+                        frame, constants, draws, shadowDraws, lightPayload,
+                        *referenceShadow, *toneMapConstants);
                 const bool readBack = referenceRendered && ReadbackGraphOutput(*m_Color, graphReadback) && m_Device->ReadbackTexture(*referenceColor, referenceReadback);
                 const bool equivalent = readBack && graphReadback.Extent.Width == referenceReadback.Extent.Width && graphReadback.Extent.Height == referenceReadback.Extent.Height
                     && graphReadback.RowPitchBytes == referenceReadback.RowPitchBytes && graphReadback.Data == referenceReadback.Data;
-                Log::Info("SceneViewportRenderGraphV1 backend=Vulkan passes=5 labels=light-payload-copy,clear,raster,tone-map,output-handoff execution=pass reference=direct comparator=exact-byte-", equivalent ? "pass" : "fail", " size=", width, "x", height, " bytes=", graphReadback.Data.size());
+                Log::Info("SceneViewportRenderGraphV1 backend=Vulkan passes=6 labels=light-payload-copy,primary-directional-shadow-map,clear,raster,tone-map,output-handoff execution=pass reference=direct comparator=exact-byte-", equivalent ? "pass" : "fail", " size=", width, "x", height, " bytes=", graphReadback.Data.size());
                 Log::Info("SceneColorPipelineV2 backend=Vulkan sceneLinear=pre-exposed-finite-RGBA16F exposurePlacement=before-storage toneMapExposure=none finiteClamp=65504 manualExposureEV100=", colorSettings.ManualExposureEV100,
                     " exposureMode=", ToString(colorSettings.ExposureMode),
                     " effectiveExposureEV100=", EffectiveExposureEV100(colorSettings),
@@ -496,15 +703,20 @@ namespace Engine
             m_MeshResourceCache.Clear();
             m_FrameConstantBuffers = {};
             m_ToneMap.Shutdown();
-            m_HdrColor.reset(); m_Color.reset(); m_Depth.reset(); m_Pipeline.reset();
+            m_HdrColor.reset(); m_Color.reset(); m_Depth.reset(); m_ShadowDepth.reset();
+            m_ShadowPipeline.reset(); m_Pipeline.reset();
+            m_ShadowPixelShader.reset(); m_ShadowVertexShader.reset();
             m_PixelShader.reset(); m_VertexShader.reset(); m_Device = nullptr;
         }
         RHI::Device* m_Device = nullptr; MeshGpuResourceCache m_MeshResourceCache { 32 };
         u32 m_TextureTableCapacity = 0;
         Scope<TextureRuntimePublication> m_TextureRuntime;
         ToneMapPass m_ToneMap;
-        Scope<RHI::Shader> m_VertexShader, m_PixelShader; Scope<RHI::Pipeline> m_Pipeline;
-        Scope<RHI::Texture> m_HdrColor, m_Color, m_Depth; SubmittedRenderGraphFrameOwner m_SubmittedGraphFrames;
+        Scope<RHI::Shader> m_VertexShader, m_PixelShader;
+        Scope<RHI::Shader> m_ShadowVertexShader, m_ShadowPixelShader;
+        Scope<RHI::Pipeline> m_Pipeline, m_ShadowPipeline;
+        Scope<RHI::Texture> m_HdrColor, m_Color, m_Depth, m_ShadowDepth;
+        SubmittedRenderGraphFrameOwner m_SubmittedGraphFrames;
         SceneLightPayloadPublication m_LightPayloadPublication;
         std::array<Ref<ConstantBufferSet>, SubmittedRenderGraphFrameOwner::Capacity> m_FrameConstantBuffers;
         u32 m_Width = 0, m_Height = 0; u64 m_OutputGeneration = 0;

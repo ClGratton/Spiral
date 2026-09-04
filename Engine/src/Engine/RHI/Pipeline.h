@@ -82,6 +82,9 @@ namespace Engine::RHI
         u32 RegisterSpace = 2;
         u32 VulkanTextureBindingOffset = 100;
         u32 VulkanSamplerBindingOffset = 300;
+        // Tone mapping uses linear clamp; raw shadow-depth PCF uses explicit
+        // point taps so the filter kernel remains shader-defined.
+        bool PointSampling = false;
     };
 
     // The first read-only structured-buffer consumer is fixed rather than a
@@ -303,11 +306,20 @@ namespace Engine::RHI
 
     inline bool IsValidFixedSampledTexturePipeline(const PipelineDescription& description)
     {
-        return description.FixedSampledTexture && !description.SampledTextureTable
+        return description.FixedSampledTexture
             && IsValidFixedSampledTextureBinding(*description.FixedSampledTexture,
                 description.ConstantBufferBindings)
             && HasValidFixedSampledTextureReflection(*description.FixedSampledTexture,
                 description.VertexShader, description.PixelShader);
+    }
+
+    inline bool IsValidGraphicsOutputContract(const PipelineDescription& description)
+    {
+        // Colorless graphics pipelines are admitted only for a real writable
+        // depth target. This keeps accidental target-less draws fail-closed.
+        return description.ColorFormat != Format::Unknown
+            || (description.DepthFormat != Format::Unknown
+                && description.DepthTestEnable && description.DepthWriteEnable);
     }
 
     inline bool IsValidFixedReadOnlyStructuredBufferPipeline(const PipelineDescription& description)

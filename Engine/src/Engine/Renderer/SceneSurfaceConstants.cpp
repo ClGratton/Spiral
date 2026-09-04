@@ -1,10 +1,12 @@
 #include "Engine/Renderer/SceneSurfaceConstants.h"
 
 #include "Engine/Renderer/SceneRasterPreparation.h"
+#include "Engine/Renderer/SceneShadowMap.h"
 #include "Engine/Renderer/TextureRuntimePublication.h"
 
 #include <cmath>
 #include <cstring>
+#include <limits>
 
 namespace Engine
 {
@@ -64,6 +66,46 @@ namespace Engine
         constants.MaterialState[0] = instance.MaterialId;
         constants.MaterialState[1] = materialErrorRow || instance.MaterialId == 0 ? 1u : 0u;
         outConstants = constants;
+        return true;
+    }
+
+    bool TryApplySceneShadowMapConstants(const SceneRasterInstance& instance,
+        const SceneShadowMapFrame& shadow, SceneShadowCasterMode casterMode,
+        SceneSurfaceConstants& inOutConstants)
+    {
+        if (shadow.Resolution == 0
+            || (shadow.Enabled
+                && (shadow.PrimaryLightIndex == std::numeric_limits<u32>::max()
+                    || !(shadow.WorldUnitsPerTexel > 0.0f)
+                    || !(shadow.ConstantDepthBias > 0.0f)
+                    || !(shadow.SlopeDepthBias >= shadow.ConstantDepthBias))))
+            return false;
+        const Math::Mat4 modelToShadow = shadow.Enabled
+            ? Math::Multiply(instance.CameraRelativeModel,
+                shadow.CameraRelativeToShadowClip)
+            : Math::Mat4::Identity();
+        for (float value : modelToShadow.Values)
+            if (!std::isfinite(value))
+                return false;
+        SceneSurfaceConstants candidate = inOutConstants;
+        std::memcpy(candidate.ShadowViewProjection, modelToShadow.Values,
+            sizeof(candidate.ShadowViewProjection));
+        candidate.ShadowParameters[0] = 1.0f / static_cast<float>(shadow.Resolution);
+        candidate.ShadowParameters[1] = shadow.Enabled ? shadow.ConstantDepthBias : 0.0f;
+        candidate.ShadowParameters[2] = shadow.Enabled ? shadow.SlopeDepthBias : 0.0f;
+        candidate.ShadowParameters[3] = shadow.Enabled ? shadow.WorldUnitsPerTexel : 0.0f;
+        candidate.ShadowState[0] = shadow.Enabled ? 1u : 0u;
+        candidate.ShadowState[1] = shadow.Enabled
+            ? shadow.PrimaryLightIndex : std::numeric_limits<u32>::max();
+        candidate.ShadowState[2] = shadow.Resolution;
+        candidate.ShadowState[3] = static_cast<u32>(casterMode);
+        if (!IsFiniteMatrix(candidate.ShadowViewProjection)
+            || !std::isfinite(candidate.ShadowParameters[0])
+            || !std::isfinite(candidate.ShadowParameters[1])
+            || !std::isfinite(candidate.ShadowParameters[2])
+            || !std::isfinite(candidate.ShadowParameters[3]))
+            return false;
+        inOutConstants = candidate;
         return true;
     }
 }

@@ -12,6 +12,9 @@ cbuffer ViewportConstants : register(b0)
     uint4 MaterialState;
     row_major float4x4 ModelView;
     row_major float4x4 NormalViewTransform;
+    row_major float4x4 ShadowViewProjection;
+    float4 ShadowParameters;
+    uint4 ShadowState;
 };
 
 #ifndef GE_READ_ONLY_TEXTURE_CAPACITY
@@ -27,6 +30,13 @@ SamplerState ReadOnlySamplers[GE_READ_ONLY_TEXTURE_CAPACITY] : register(s0, spac
 // the bounded global/clustered light lists directly from this immutable ABI.
 #if GE_SCENE_LIGHT_PAYLOAD
 StructuredBuffer<uint4> SceneLightPayload : register(t0, space3);
+#endif
+#ifndef GE_SCENE_SHADOW_MAP
+#define GE_SCENE_SHADOW_MAP 0
+#endif
+#if GE_SCENE_SHADOW_MAP
+Texture2D<float> SceneShadowDepth : register(t0, space2);
+SamplerState SceneShadowSampler : register(s0, space2);
 #endif
 
 float4 StoreSceneLinearHdr(float3 sceneLinear, float alpha, float preExposure)
@@ -62,6 +72,7 @@ struct VSOutput
     float3 GeometricNormal : NORMAL0;
     float3 ViewPosition : TEXCOORD1;
     float3 ViewNormal : NORMAL1;
+    float4 ShadowPosition : TEXCOORD2;
 };
 
 VSOutput VSMain(VSInput input)
@@ -71,9 +82,44 @@ VSOutput VSMain(VSInput input)
     output.GeometricNormal = normalize(mul(float4(input.Normal, 0.0f), NormalTransform).xyz);
     output.ViewPosition = mul(float4(input.Position, 1.0f), ModelView).xyz;
     output.ViewNormal = mul(float4(input.Normal, 0.0f), NormalViewTransform).xyz;
+    output.ShadowPosition = mul(float4(input.Position, 1.0f), ShadowViewProjection);
     output.Color = input.Color;
     output.UV = input.UV;
     return output;
+}
+
+struct ShadowVSOutput
+{
+    float4 Position : SV_Position;
+    float2 UV : TEXCOORD0;
+};
+
+ShadowVSOutput VSShadowCaster(VSInput input)
+{
+    ShadowVSOutput output;
+    output.Position = mul(float4(input.Position, 1.0f), ShadowViewProjection);
+    output.UV = input.UV;
+    return output;
+}
+
+void PSShadowCaster(ShadowVSOutput input)
+{
+    if (ShadowState.w == 1u)
+    {
+        const uint declared = TextureState.x;
+        float alpha = 1.0f;
+        if ((declared & (1u << 0u)) != 0u)
+            alpha *= ReadOnlyTextures[TextureIndices0.x]
+                .Sample(ReadOnlySamplers[TextureIndices0.x], input.UV).a;
+        if ((declared & (1u << 4u)) != 0u)
+            alpha *= ReadOnlyTextures[TextureIndices1.x]
+                .Sample(ReadOnlySamplers[TextureIndices1.x], input.UV).x;
+        clip(alpha - BaseColorAndAlphaCutoff.a);
+    }
+    else if (ShadowState.w > 2u)
+    {
+        clip(-1.0f);
+    }
 }
 
 // Smoke-only readback entry point. The production vertex input and b0 payload
@@ -293,9 +339,51 @@ float3 EvaluateDirectBrdf(float3 surfaceBaseColor, float metallic,
     return (diffuseBrdf + specularBrdf) * incidentIlluminance * NoL;
 }
 
+#if GE_SCENE_SHADOW_MAP
+bool ValidateSceneShadowState()
+{
+    if (ShadowState.x > 1u || ShadowState.z < 64u || ShadowState.z > 8192u
+        || !all(isfinite(ShadowParameters)) || !(ShadowParameters.x > 0.0f)
+        || ShadowParameters.y < 0.0f || ShadowParameters.z < ShadowParameters.y
+        || ShadowParameters.w < 0.0f)
+        return false;
+    const float expectedInverseResolution = 1.0f / (float)ShadowState.z;
+    return abs(ShadowParameters.x - expectedInverseResolution) <= 0.0000001f;
+}
+
+float EvaluatePrimaryDirectionalShadow(float4 shadowPosition, float3 N, float3 L)
+{
+    if (ShadowState.x == 0u)
+        return 1.0f;
+    if (!all(isfinite(shadowPosition)) || !(abs(shadowPosition.w) > 0.000001f))
+        return 0.0f;
+    const float3 projected = shadowPosition.xyz / shadowPosition.w;
+    const float2 uv = float2(projected.x * 0.5f + 0.5f,
+        0.5f - projected.y * 0.5f);
+    if (projected.z < 0.0f || projected.z > 1.0f
+        || any(uv < 0.0f) || any(uv > 1.0f))
+        return 1.0f;
+    const float bias = ShadowParameters.y
+        + ShadowParameters.z * (1.0f - saturate(dot(N, L)));
+    const float receiverDepth = projected.z - bias;
+    float visibility = 0.0f;
+    [unroll] for (int y = -1; y <= 1; ++y)
+    {
+        [unroll] for (int x = -1; x <= 1; ++x)
+        {
+            const float sampledDepth = SceneShadowDepth.SampleLevel(
+                SceneShadowSampler, uv + float2(x, y) * ShadowParameters.x, 0.0f);
+            visibility += receiverDepth <= sampledDepth ? 1.0f : 0.0f;
+        }
+    }
+    return visibility / 9.0f;
+}
+#endif
+
 #if GE_SCENE_LIGHT_PAYLOAD
 bool EvaluateSceneLightRecord(uint lightIndex, bool requireDirectional,
-    float3 viewPosition, float3 surfaceBaseColor, float metallic,
+    float3 viewPosition, float4 shadowPosition,
+    float3 surfaceBaseColor, float metallic,
     float perceptualRoughness, float3 N, float3 V, inout float3 direct)
 {
     const uint base = 6u + lightIndex * 7u;
@@ -326,8 +414,20 @@ bool EvaluateSceneLightRecord(uint lightIndex, bool requireDirectional,
         float3 emission;
         if (!TryNormalizeDirection(viewDirectionAndOuter.xyz, emission))
             return false;
+        const float3 L = -emission;
+        float shadowVisibility = 1.0f;
+#if GE_SCENE_SHADOW_MAP
+        if (ShadowState.x == 1u && lightIndex == ShadowState.y)
+        {
+            if (meta.w != 1u)
+                return false;
+            shadowVisibility = EvaluatePrimaryDirectionalShadow(
+                shadowPosition, N, L);
+        }
+#endif
         const float3 contribution = EvaluateDirectBrdf(surfaceBaseColor, metallic,
-            perceptualRoughness, N, V, -emission, coefficientAndInverseRange.xyz);
+            perceptualRoughness, N, V, L,
+            coefficientAndInverseRange.xyz * shadowVisibility);
         direct += contribution;
         return all(isfinite(direct));
     }
@@ -389,6 +489,10 @@ float4 PSMain(VSOutput input) : SV_Target0
         return float4(4.0f, 0.0f, 4.0f, 1.0f);
     preExposure = lightHeader.PreExposure;
 #endif
+#if GE_SCENE_SHADOW_MAP
+    if (!ValidateSceneShadowState())
+        return float4(4.0f, 0.0f, 4.0f, 1.0f);
+#endif
     // Row zero is never a persistent material identity. It is a deliberately
     // obvious deterministic error result in scene-linear HDR.
     if (MaterialState.x == 0u || MaterialState.y != 0u)
@@ -430,7 +534,7 @@ float4 PSMain(VSOutput input) : SV_Target0
     {
         const uint index = LoadPackedScalar(lightHeader.DirectionalOffset, i);
         if (index >= lightHeader.LightCount || !EvaluateSceneLightRecord(index,
-            true, input.ViewPosition, surfaceBaseColor, metallic,
+            true, input.ViewPosition, input.ShadowPosition, surfaceBaseColor, metallic,
             perceptualRoughness, N, V, direct))
             return StoreSceneLinearHdr(float3(4.0f, 0.0f, 4.0f), 1.0f, preExposure);
     }
@@ -460,7 +564,7 @@ float4 PSMain(VSOutput input) : SV_Target0
     {
         const uint index = LoadPackedScalar(lightHeader.LocalOffset, cursor);
         if (index >= lightHeader.LightCount || !EvaluateSceneLightRecord(index,
-            false, input.ViewPosition, surfaceBaseColor, metallic,
+            false, input.ViewPosition, input.ShadowPosition, surfaceBaseColor, metallic,
             perceptualRoughness, N, V, direct))
             return StoreSceneLinearHdr(float3(4.0f, 0.0f, 4.0f), 1.0f, preExposure);
     }

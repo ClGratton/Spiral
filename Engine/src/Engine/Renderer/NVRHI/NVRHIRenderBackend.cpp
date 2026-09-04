@@ -2014,7 +2014,7 @@ float4 PSMain(PixelInput input) : SV_Target
             request.CompilerVersion = "2026.13.1";
             request.CompilerPackageHash = GE_SLANG_PACKAGE_SHA256;
             request.ExpectedLayout = {
-                { "ViewportConstants", 'b', 0, 0, stage, "ConstantBuffer", "struct{ViewProjection:float32x4x4:row-major@0,NormalTransform:float32x4x4:row-major@64,BaseColorAndAlphaCutoff:float32x4@128,EmissiveAndStrength:float32x4@144,SurfaceFactors:float32x4@160,CallistoFactors:float32x4@176,TextureIndices0:uint32x4@192,TextureIndices1:uint32x4@208,TextureState:uint32x4@224,MaterialState:uint32x4@240,ModelView:float32x4x4:row-major@256,NormalViewTransform:float32x4x4:row-major@320}", 1, 384, 0, 0 },
+                { "ViewportConstants", 'b', 0, 0, stage, "ConstantBuffer", "struct{ViewProjection:float32x4x4:row-major@0,NormalTransform:float32x4x4:row-major@64,BaseColorAndAlphaCutoff:float32x4@128,EmissiveAndStrength:float32x4@144,SurfaceFactors:float32x4@160,CallistoFactors:float32x4@176,TextureIndices0:uint32x4@192,TextureIndices1:uint32x4@208,TextureState:uint32x4@224,MaterialState:uint32x4@240,ModelView:float32x4x4:row-major@256,NormalViewTransform:float32x4x4:row-major@320,ShadowViewProjection:float32x4x4:row-major@384,ShadowParameters:float32x4@448,ShadowState:uint32x4@464}", 1, 480, 0, 0 },
                 { "ReadOnlySamplers", 's', 0, 1, stage, "SamplerState", "sampler", tableCapacity, 0, 0, 0 },
                 { "ReadOnlyTextures", 't', 0, 1, stage, "Texture2D", "float32x4", tableCapacity, 0, 1, 4 }
             };
@@ -2538,7 +2538,7 @@ float4 PSVertexStrideSmoke(RHIVertexStrideOutput input) : SV_Target0
             request.CompilerPackageHash = GE_SLANG_PACKAGE_SHA256;
             request.Defines = { "GE_READ_ONLY_TEXTURE_CAPACITY=" + std::to_string(tableCapacity) };
             request.ExpectedLayout = {
-                { "ViewportConstants", 'b', 0, 0, stage, "ConstantBuffer", "struct{ViewProjection:float32x4x4:row-major@0,NormalTransform:float32x4x4:row-major@64,BaseColorAndAlphaCutoff:float32x4@128,EmissiveAndStrength:float32x4@144,SurfaceFactors:float32x4@160,CallistoFactors:float32x4@176,TextureIndices0:uint32x4@192,TextureIndices1:uint32x4@208,TextureState:uint32x4@224,MaterialState:uint32x4@240,ModelView:float32x4x4:row-major@256,NormalViewTransform:float32x4x4:row-major@320}", 1, 384, 0, 0 },
+                { "ViewportConstants", 'b', 0, 0, stage, "ConstantBuffer", "struct{ViewProjection:float32x4x4:row-major@0,NormalTransform:float32x4x4:row-major@64,BaseColorAndAlphaCutoff:float32x4@128,EmissiveAndStrength:float32x4@144,SurfaceFactors:float32x4@160,CallistoFactors:float32x4@176,TextureIndices0:uint32x4@192,TextureIndices1:uint32x4@208,TextureState:uint32x4@224,MaterialState:uint32x4@240,ModelView:float32x4x4:row-major@256,NormalViewTransform:float32x4x4:row-major@320,ShadowViewProjection:float32x4x4:row-major@384,ShadowParameters:float32x4@448,ShadowState:uint32x4@464}", 1, 480, 0, 0 },
                 { "ReadOnlySamplers", 's', 0, 1, stage, "SamplerState", "sampler", tableCapacity, 0, 0, 0 },
                 { "ReadOnlyTextures", 't', 0, 1, stage, "Texture2D", "float32x4", tableCapacity, 0, 1, 4 }
             };
@@ -2622,10 +2622,13 @@ float4 PSVertexStrideSmoke(RHIVertexStrideOutput input) : SV_Target0
             "--scene-light-payload-smoke");
         const bool directLightingProbeRequested = Application::Get().GetSpecification().CommandLineArgs.HasFlag(
             "--scene-photometric-direct-light-smoke");
+        const bool shadowMapProbeRequested = Application::Get().GetSpecification().CommandLineArgs.HasFlag(
+            "--scene-shadow-map-smoke");
         const u32 dedicatedProbeCount = static_cast<u32>(surfaceProbeRequested)
             + static_cast<u32>(pbrProbeRequested)
             + static_cast<u32>(lightPayloadProbeRequested)
-            + static_cast<u32>(directLightingProbeRequested);
+            + static_cast<u32>(directLightingProbeRequested)
+            + static_cast<u32>(shadowMapProbeRequested);
         if (dedicatedProbeCount > 1)
             return false;
         m_VulkanSceneRenderer = CreateScope<NVRHIVulkanViewportSceneRenderer>();
@@ -2683,13 +2686,18 @@ float4 PSVertexStrideSmoke(RHIVertexStrideOutput input) : SV_Target0
                 return false;
             }
         }
-        else if (pbrProbeRequested || directLightingProbeRequested)
+        else if (pbrProbeRequested || directLightingProbeRequested
+            || shadowMapProbeRequested)
         {
-            const std::string sourcePath = directLightingProbeRequested
-                ? "Engine/Generated/VulkanPhotometricDirectLightProbe.mesh"
-                : "Engine/Generated/VulkanBasicPbrProbe.mesh";
+            const std::string sourcePath = shadowMapProbeRequested
+                ? "Engine/Generated/VulkanSceneShadowMapProbe.mesh"
+                : directLightingProbeRequested
+                    ? "Engine/Generated/VulkanPhotometricDirectLightProbe.mesh"
+                    : "Engine/Generated/VulkanBasicPbrProbe.mesh";
             smokeMesh = smokeRegistry.RegisterAsset(AssetType::Mesh, sourcePath,
-                directLightingProbeRequested
+                shadowMapProbeRequested
+                    ? "Vulkan Scene Shadow Map Probe"
+                    : directLightingProbeRequested
                     ? "Vulkan Photometric Direct Light Probe" : "Vulkan Basic PBR Probe");
             MeshArtifact probeArtifact;
             probeArtifact.Asset = smokeMesh;
@@ -2703,7 +2711,7 @@ float4 PSVertexStrideSmoke(RHIVertexStrideOutput input) : SV_Target0
                 result.UV[0] = u; result.UV[1] = v;
                 return result;
             };
-            probeArtifact.Vertices = directLightingProbeRequested
+            probeArtifact.Vertices = (directLightingProbeRequested || shadowMapProbeRequested)
                 ? std::vector<MeshArtifactVertex> {
                     vertex(-1.0f, -1.0f, 0.0f, 1.0f),
                     vertex(-1.0f, 1.0f, 0.0f, 0.0f),
@@ -2725,6 +2733,8 @@ float4 PSVertexStrideSmoke(RHIVertexStrideOutput input) : SV_Target0
             {
                 Log::Error(directLightingProbeRequested
                     ? "Vulkan photometric direct-light probe could not publish its surface artifact: "
+                    : shadowMapProbeRequested
+                        ? "Vulkan shadow-map probe could not publish its surface artifact: "
                     : "Vulkan basic-PBR probe could not publish its panel artifact: ", artifactError);
                 return false;
             }
@@ -2804,19 +2814,26 @@ float4 PSVertexStrideSmoke(RHIVertexStrideOutput input) : SV_Target0
         else
         {
             smokeMaterial = smokeRegistry.RegisterAsset(AssetType::Material,
-                directLightingProbeRequested
+                shadowMapProbeRequested
+                    ? "Engine/Generated/VulkanSceneShadowMapProbe.spiralmat"
+                    : directLightingProbeRequested
                     ? "Engine/Generated/VulkanPhotometricDirectLightProbe.spiralmat"
                     : "Engine/Generated/VulkanSceneSmoke.spiralmat",
-                directLightingProbeRequested
+                shadowMapProbeRequested
+                    ? "Vulkan Scene Shadow Map Probe"
+                    : directLightingProbeRequested
                     ? "Vulkan Photometric Direct Light Probe" : "Vulkan Scene Smoke");
             MaterialAsset material;
-            material.Name = directLightingProbeRequested
+            material.Name = shadowMapProbeRequested
+                ? "Vulkan Scene Shadow Map Probe"
+                : directLightingProbeRequested
                 ? "Vulkan Photometric Direct Light Probe" : "Vulkan Scene Smoke";
-            material.BaseColor = directLightingProbeRequested
+            material.BaseColor = (directLightingProbeRequested || shadowMapProbeRequested)
                 ? Math::Vec3 { 0.5f, 0.5f, 0.5f }
                 : Math::Vec3 { 0.72f, 0.78f, 0.92f };
-            material.Roughness = directLightingProbeRequested ? 0.5f : 0.45f;
-            if (!directLightingProbeRequested)
+            material.Roughness = (directLightingProbeRequested || shadowMapProbeRequested)
+                ? 0.5f : 0.45f;
+            if (!directLightingProbeRequested && !shadowMapProbeRequested)
             {
                 material.Textures.BaseColor = smokeTexture;
                 material.Samplers.BaseColor = MaterialTextureSampler::LinearWrap;
@@ -2891,6 +2908,15 @@ float4 PSVertexStrideSmoke(RHIVertexStrideOutput input) : SV_Target0
         {
             snapshot.Lights.clear();
         }
+        else if (shadowMapProbeRequested)
+        {
+            directionalLight.SourceEntity = 31;
+            directionalLight.Color = { 1.0f, 1.0f, 1.0f };
+            directionalLight.PhotometricValue = 6.0;
+            directionalLight.Transform.RotationDegrees = { 0.0f, 30.0f, 0.0f };
+            directionalLight.CastsShadows = true;
+            snapshot.Lights = { directionalLight };
+        }
         else
         {
             snapshot.Lights = { directionalLight, pointLight };
@@ -2909,6 +2935,28 @@ float4 PSVertexStrideSmoke(RHIVertexStrideOutput input) : SV_Target0
                     return false;
                 snapshot.Meshes.push_back(panel);
             }
+        }
+        else if (shadowMapProbeRequested)
+        {
+            SceneRenderMesh receiver;
+            receiver.SourceEntity = 32;
+            receiver.MeshAsset = smokeMesh;
+            receiver.MaterialAsset = smokeMaterial;
+            receiver.CastsShadows = false;
+            receiver.Transform.Scale = { 0.8f, 0.8f, 1.0f };
+            if (!Math::TryDecomposeWorldPosition({ 0.0, 0.0, 0.5 },
+                snapshot.WorldGridPolicy, receiver.Transform.Position))
+                return false;
+            SceneRenderMesh caster;
+            caster.SourceEntity = 33;
+            caster.MeshAsset = smokeMesh;
+            caster.MaterialAsset = smokeMaterial;
+            caster.CastsShadows = true;
+            caster.Transform.Scale = { 0.12f, 0.12f, 1.0f };
+            if (!Math::TryDecomposeWorldPosition({ -0.3, 0.0, 0.0 },
+                snapshot.WorldGridPolicy, caster.Transform.Position))
+                return false;
+            snapshot.Meshes = { receiver, caster };
         }
         else
         {
@@ -2938,7 +2986,7 @@ float4 PSVertexStrideSmoke(RHIVertexStrideOutput input) : SV_Target0
         RHI::TextureReadback firstDedicatedReadback;
         const bool firstDedicatedRetired = !(
             surfaceProbeRequested || pbrProbeRequested || lightPayloadProbeRequested
-                || directLightingProbeRequested)
+                || directLightingProbeRequested || shadowMapProbeRequested)
             || (firstRaster && m_VulkanSceneRenderer->ReadbackColor(firstDedicatedReadback));
         const bool resizedRaster = firstRaster && firstDedicatedRetired
             && m_VulkanSceneRenderer->RenderCurrentSnapshot(
@@ -3208,6 +3256,73 @@ float4 PSVertexStrideSmoke(RHIVertexStrideOutput input) : SV_Target0
                 " retention=exact-graph-token productionPSMain=separate lightingEvaluation=not-exercised result=",
                 payloadProbeOk ? "pass" : "fail");
             return payloadProbeOk;
+        }
+        if (shadowMapProbeRequested)
+        {
+            const RHI::TextureReadback shadowed = readback;
+            snapshot.FrameIndex = 2;
+            if (snapshot.Meshes.size() != 2)
+                return false;
+            snapshot.Meshes[1].CastsShadows = false;
+            Renderer::PublishSceneRenderSnapshot(snapshot);
+            RHI::TextureReadback unshadowed;
+            const bool unshadowedRendered = Renderer::PrepareCurrentSceneRasterFrame()
+                && m_VulkanSceneRenderer->RenderCurrentSnapshot(64u, 48u, background)
+                && m_VulkanSceneRenderer->ReadbackColor(unshadowed);
+            const bool shapeValid = readbackOk && unshadowedRendered
+                && shadowed.Extent.Width == 64 && shadowed.Extent.Height == 48
+                && unshadowed.Extent.Width == shadowed.Extent.Width
+                && unshadowed.Extent.Height == shadowed.Extent.Height
+                && shadowed.RowPitchBytes >= 64u * 4u
+                && unshadowed.RowPitchBytes >= 64u * 4u
+                && shadowed.Data.size()
+                    >= static_cast<size_t>(shadowed.RowPitchBytes) * 48u
+                && unshadowed.Data.size()
+                    >= static_cast<size_t>(unshadowed.RowPitchBytes) * 48u;
+            const auto brightnessAt = [](const RHI::TextureReadback& value,
+                                          u32 x, u32 y)
+            {
+                const u8* pixel = &value.Data[static_cast<size_t>(y)
+                    * value.RowPitchBytes + static_cast<size_t>(x) * 4u];
+                return static_cast<u32>(pixel[0]) + static_cast<u32>(pixel[1])
+                    + static_cast<u32>(pixel[2]);
+            };
+            u32 darkerPixels = 0;
+            u32 maximumBrightnessDelta = 0;
+            if (shapeValid)
+            {
+                for (u32 y = 18; y <= 30; ++y)
+                {
+                    for (u32 x = 27; x <= 37; ++x)
+                    {
+                        const u32 withShadow = brightnessAt(shadowed, x, y);
+                        const u32 withoutShadow = brightnessAt(unshadowed, x, y);
+                        if (withoutShadow > withShadow + 24u)
+                        {
+                            ++darkerPixels;
+                            maximumBrightnessDelta = std::max(maximumBrightnessDelta,
+                                withoutShadow - withShadow);
+                        }
+                    }
+                }
+            }
+            const u32 shadowedTarget = shapeValid ? brightnessAt(shadowed, 32, 24) : 0u;
+            const u32 unshadowedTarget = shapeValid ? brightnessAt(unshadowed, 32, 24) : 0u;
+            const u32 shadowedControl = shapeValid ? brightnessAt(shadowed, 50, 24) : 0u;
+            const u32 unshadowedControl = shapeValid ? brightnessAt(unshadowed, 50, 24) : 0u;
+            const u32 controlDelta = shadowedControl > unshadowedControl
+                ? shadowedControl - unshadowedControl
+                : unshadowedControl - shadowedControl;
+            const bool shadowOracle = shapeValid && darkerPixels >= 12u
+                && unshadowedTarget > shadowedTarget + 60u
+                && maximumBrightnessDelta > 60u && controlDelta <= 9u;
+            Renderer::SetColorPipelineSettings(previousColorSettings);
+            Log::Info("SceneShadowMapVisualV1 backend=Vulkan fixture=receiver-plus-offset-caster light=directional-30deg resolution=1024 stabilization=texel-snapped filter=3x3-pcf casterToggle=component target=32,24 targetBrightness=",
+                shadowedTarget, ",", unshadowedTarget, " darkerPixels=", darkerPixels,
+                " maximumDelta=", maximumBrightnessDelta, " controlDelta=", controlDelta,
+                " depthOnly=production-pass finalColor=readback-differential result=",
+                shadowOracle ? "pass" : "fail");
+            return shadowOracle;
         }
         if (directLightingProbeRequested)
         {

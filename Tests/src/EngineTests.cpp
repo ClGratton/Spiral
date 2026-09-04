@@ -24,6 +24,7 @@
 #include "Engine/Renderer/PortableShaderContract.h"
 #include "Engine/Renderer/SlangShaderCompiler.h"
 #include "Engine/Renderer/SceneRasterPreparation.h"
+#include "Engine/Renderer/SceneShadowMap.h"
 #include "Engine/Renderer/SceneSurfaceConstants.h"
 #include "Engine/Renderer/SceneLightPayload.h"
 #include "Engine/Renderer/MeshGpuResourceCache.h"
@@ -5046,12 +5047,15 @@ namespace
             instance, invalidBindings, false, preservedConstants)
             && preservedConstants.MaterialState[0] == 91;
         const bool constantBoundary = constantsBuilt && errorConstantsBuilt
-            && sizeof(SceneSurfaceConstants) == 384
+            && sizeof(SceneSurfaceConstants) == 480
             && offsetof(SceneSurfaceConstants, NormalTransform) == 64
             && offsetof(SceneSurfaceConstants, BaseColorAndAlphaCutoff) == 128
             && offsetof(SceneSurfaceConstants, MaterialState) == 240
             && offsetof(SceneSurfaceConstants, ModelView) == 256
             && offsetof(SceneSurfaceConstants, NormalViewTransform) == 320
+            && offsetof(SceneSurfaceConstants, ShadowViewProjection) == 384
+            && offsetof(SceneSurfaceConstants, ShadowParameters) == 448
+            && offsetof(SceneSurfaceConstants, ShadowState) == 464
             && constants.NormalTransform[0] == instance.NormalTransform.Values[0]
             && constants.NormalTransform[5] == instance.NormalTransform.Values[5]
             && constants.ModelView[0] == instance.ModelView.Values[0]
@@ -5068,7 +5072,160 @@ namespace
             && Expect(normalTransformValid && singularWholeFrameRejected,
                 "nonuniform scale publishes the row-vector inverse-transpose while any singular mesh rejects the complete prepared frame")
             && Expect(constantBoundary,
-                "the exact 384-byte Scene payload carries model/view data, bounded finite material rows, valid enums, and the explicit zero/one/zero/zero error state");
+                "the exact 480-byte Scene payload carries model/view and shadow data, bounded finite material rows, valid enums, and the explicit zero/one/zero/zero error state");
+    }
+
+    bool TestSceneShadowMapPreparationIsStableAndExplicit()
+    {
+        using namespace Engine;
+        SceneRasterFrame frame;
+        frame.HasValidView = true;
+        SceneMaterialRow errorRow;
+        errorRow.Id = 0;
+        errorRow.IsError = true;
+        SceneMaterialRow opaqueRow;
+        opaqueRow.Id = 1;
+        opaqueRow.IsError = false;
+        opaqueRow.Material.AlphaMode = MaterialAlphaMode::Opaque;
+        SceneMaterialRow maskedRow = opaqueRow;
+        maskedRow.Id = 2;
+        maskedRow.Material.AlphaMode = MaterialAlphaMode::Mask;
+        SceneMaterialRow blendedRow = opaqueRow;
+        blendedRow.Id = 3;
+        blendedRow.Material.AlphaMode = MaterialAlphaMode::Blend;
+        frame.MaterialRows = { errorRow, opaqueRow, maskedRow, blendedRow };
+        const auto instance = [](u32 materialId, bool casts, Math::Vec3 translation)
+        {
+            SceneRasterInstance result;
+            result.MaterialId = materialId;
+            result.CastsShadows = casts;
+            result.CameraRelativeModel = Math::Translation(translation);
+            return result;
+        };
+        frame.Instances = {
+            instance(1, true, { -2.0f, 0.0f, 4.0f }),
+            instance(2, true, { 0.0f, 0.0f, 4.0f }),
+            instance(3, true, { 2.0f, 0.0f, 4.0f }),
+            instance(1, false, { 0.0f, 2.0f, 4.0f }),
+            instance(0, true, { 0.0f, -2.0f, 4.0f })
+        };
+        ClusteredLightRecord light;
+        light.SourceEntity = 91;
+        light.Type = LightType::Directional;
+        light.WorldDirection = { 0.25f, -0.75f, 0.5f };
+        light.CastsShadows = true;
+        frame.LightGrid.Lights = { light };
+        frame.LightGrid.GlobalLightIndices = { 0 };
+        const std::vector<SceneObjectBounds> bounds(frame.Instances.size(),
+            { { -0.5f, -0.5f, -0.5f }, { 0.5f, 0.5f, 0.5f } });
+
+        SceneShadowMapFrame prepared;
+        std::string error;
+        const bool accepted = TryPrepareSceneShadowMap(
+            frame, bounds, kSceneShadowMapResolution, prepared, error);
+        const bool classified = accepted && error.empty() && prepared.Enabled
+            && prepared.Resolution == kSceneShadowMapResolution
+            && prepared.PrimaryLightIndex == 0 && prepared.PrimaryLightEntity == 91
+            && prepared.EligibleDirectionalLightCount == 1
+            && prepared.OpaqueCasterCount == 1
+            && prepared.AlphaTestedCasterCount == 1
+            && prepared.ConservativeErrorCasterCount == 1
+            && prepared.BlendExcludedCount == 1
+            && prepared.ComponentExcludedCount == 1
+            && prepared.Casters.size() == 3
+            && prepared.Casters[0].InstanceIndex == 0
+            && prepared.Casters[0].Mode == SceneShadowCasterMode::Opaque
+            && prepared.Casters[1].InstanceIndex == 1
+            && prepared.Casters[1].Mode == SceneShadowCasterMode::AlphaTested
+            && prepared.Casters[2].InstanceIndex == 4
+            && prepared.Casters[2].Mode == SceneShadowCasterMode::ConservativeError
+            && prepared.WorldUnitsPerTexel > 0.0f
+            && prepared.ConstantDepthBias > 0.0f
+            && prepared.SlopeDepthBias > prepared.ConstantDepthBias;
+
+        SceneRasterFrame rebased = frame;
+        constexpr float originShift = 123.25f;
+        for (SceneRasterInstance& item : rebased.Instances)
+            item.CameraRelativeModel = Math::Multiply(item.CameraRelativeModel,
+                Math::Translation({ -originShift, 0.0f, 0.0f }));
+        SceneShadowMapFrame rebasedPrepared;
+        const bool rebasedAccepted = TryPrepareSceneShadowMap(
+            rebased, bounds, kSceneShadowMapResolution, rebasedPrepared, error);
+        float maximumClipDelta = 0.0f;
+        if (rebasedAccepted && rebasedPrepared.Casters.size() == prepared.Casters.size())
+        {
+            for (size_t casterIndex = 0; casterIndex < prepared.Casters.size(); ++casterIndex)
+                for (size_t component = 0; component < 16; ++component)
+                    maximumClipDelta = std::max(maximumClipDelta,
+                        std::abs(prepared.Casters[casterIndex].ModelToShadowClip.Values[component]
+                            - rebasedPrepared.Casters[casterIndex].ModelToShadowClip.Values[component]));
+        }
+        const bool stabilized = rebasedAccepted && rebasedPrepared.Enabled
+            && maximumClipDelta <= 2.0f / static_cast<float>(kSceneShadowMapResolution);
+
+        SceneSurfaceConstants shadowConstants;
+        const bool constantsApplied = TryApplySceneShadowMapConstants(
+                frame.Instances[0], prepared, SceneShadowCasterMode::Opaque,
+                shadowConstants)
+            && shadowConstants.ShadowState[0] == 1u
+            && shadowConstants.ShadowState[1] == prepared.PrimaryLightIndex
+            && shadowConstants.ShadowState[2] == kSceneShadowMapResolution
+            && shadowConstants.ShadowState[3]
+                == static_cast<u32>(SceneShadowCasterMode::Opaque)
+            && shadowConstants.ShadowParameters[0]
+                == 1.0f / static_cast<float>(kSceneShadowMapResolution)
+            && shadowConstants.ShadowParameters[1] == prepared.ConstantDepthBias
+            && shadowConstants.ShadowParameters[2] == prepared.SlopeDepthBias
+            && shadowConstants.ShadowParameters[3] == prepared.WorldUnitsPerTexel;
+        SceneSurfaceConstants preservedConstants;
+        preservedConstants.ShadowState[0] = 77u;
+        SceneShadowMapFrame invalidShadow = prepared;
+        invalidShadow.Resolution = 0;
+        const bool invalidConstantsRejected = !TryApplySceneShadowMapConstants(
+                frame.Instances[0], invalidShadow, SceneShadowCasterMode::Opaque,
+                preservedConstants)
+            && preservedConstants.ShadowState[0] == 77u;
+
+        SceneShadowMapFrame preserved;
+        preserved.Enabled = true;
+        preserved.PrimaryLightEntity = 777;
+        std::vector<SceneObjectBounds> invalidBounds = bounds;
+        invalidBounds[0].Minimum.X = std::numeric_limits<float>::quiet_NaN();
+        const bool invalidRejected = !TryPrepareSceneShadowMap(
+                frame, invalidBounds, kSceneShadowMapResolution, preserved, error)
+            && preserved.Enabled && preserved.PrimaryLightEntity == 777
+            && !error.empty();
+
+        SceneRasterFrame unshadowed = frame;
+        unshadowed.LightGrid.Lights[0].CastsShadows = false;
+        SceneShadowMapFrame disabled;
+        const bool disabledAccepted = TryPrepareSceneShadowMap(
+                unshadowed, bounds, kSceneShadowMapResolution, disabled, error)
+            && !disabled.Enabled && disabled.Casters.empty()
+            && disabled.PrimaryLightIndex == std::numeric_limits<u32>::max();
+        SceneSurfaceConstants disabledConstants;
+        const bool disabledConstantsApplied = disabledAccepted
+            && TryApplySceneShadowMapConstants(frame.Instances[0], disabled,
+                SceneShadowCasterMode::Excluded, disabledConstants)
+            && disabledConstants.ShadowState[0] == 0u
+            && disabledConstants.ShadowState[1] == std::numeric_limits<u32>::max()
+            && disabledConstants.ShadowState[2] == kSceneShadowMapResolution
+            && disabledConstants.ShadowState[3]
+                == static_cast<u32>(SceneShadowCasterMode::Excluded)
+            && disabledConstants.ShadowParameters[1] == 0.0f
+            && disabledConstants.ShadowParameters[2] == 0.0f
+            && disabledConstants.ShadowParameters[3] == 0.0f;
+
+        return Expect(classified,
+                "shadow preparation selects one stable directional and classifies every caster/material mode")
+            && Expect(stabilized,
+                "camera-origin rebasing preserves caster clip transforms within one stabilized texel")
+            && Expect(constantsApplied && invalidConstantsRejected,
+                "shadow constants publish the exact receiver/caster ABI and reject invalid input transactionally")
+            && Expect(invalidRejected,
+                "invalid shadow bounds reject transactionally without replacing the previous publication")
+            && Expect(disabledConstantsApplied,
+                "a scene without a shadow-enabled directional publishes explicit disabled frame and shader constants");
     }
 
     bool TestBasicPbrCpuReferenceUsesAcceptedConvention()
@@ -9415,7 +9572,7 @@ float4 main(VertexInput input) : SV_Position
     public:
         explicit SampledTextureTableTestCommandList(Engine::RHI::Device& device) : m_Device(device) {}
         Engine::RHI::QueueType GetQueueType() const override { return Engine::RHI::QueueType::Graphics; }
-        bool Begin() override { if (m_Recording) return false; m_Recording = true; m_Closed = false; m_Pipeline = nullptr; m_Table = nullptr; m_StructuredBuffer = nullptr; m_RetainedStructuredBuffers.clear(); m_VertexBound = false; return true; }
+        bool Begin() override { if (m_Recording) return false; m_Recording = true; m_Closed = false; m_Pipeline = nullptr; m_Table = nullptr; m_FixedTexture = nullptr; m_StructuredBuffer = nullptr; m_RetainedFixedTextures.clear(); m_RetainedStructuredBuffers.clear(); m_VertexBound = false; return true; }
         bool End() override { if (!m_Recording) return false; m_Recording = false; m_Closed = true; return true; }
         void BeginDebugMarker(std::string_view) override {}
         void EndDebugMarker() override {}
@@ -9427,6 +9584,7 @@ float4 main(VertexInput input) : SV_Position
         {
             m_Pipeline = m_Recording && Engine::RHI::IsValidVertexInputLayout(pipeline.GetDescription()) ? &pipeline : nullptr;
             m_Table = nullptr;
+            m_FixedTexture = nullptr;
             m_StructuredBuffer = nullptr;
             m_VertexBound = m_Pipeline && m_Pipeline->GetDescription().VertexInputs.empty();
         }
@@ -9441,6 +9599,23 @@ float4 main(VertexInput input) : SV_Position
                 || m_Pipeline->GetDescription().SampledTextureTable->Capacity != table.GetCapacity()
                 || !table.IsOwnedBy(m_Device)) return false;
             m_Table = &table;
+            return true;
+        }
+        bool BindGraphicsSampledTexture(Engine::RHI::Texture& texture) override
+        {
+            m_FixedTexture = nullptr;
+            Engine::RHI::ResourceState state = Engine::RHI::ResourceState::Unknown;
+            if (!m_Recording || !m_Pipeline
+                || !Engine::RHI::IsValidFixedSampledTexturePipeline(m_Pipeline->GetDescription())
+                || (m_Pipeline->GetDescription().SampledTextureTable && !m_Table)
+                || !m_Device.OwnsResource(&texture)
+                || !m_Device.QueryResourceState(&texture, state)
+                || state != Engine::RHI::ResourceState::ShaderResource
+                || (static_cast<Engine::u32>(texture.GetDescription().Usage)
+                    & static_cast<Engine::u32>(Engine::RHI::TextureUsage::ShaderResource)) == 0)
+                return false;
+            m_FixedTexture = &texture;
+            m_RetainedFixedTextures.push_back(&texture);
             return true;
         }
         bool BindGraphicsReadOnlyStructuredBuffer(Engine::RHI::Buffer& buffer) override
@@ -9479,6 +9654,7 @@ float4 main(VertexInput input) : SV_Position
         {
             if (m_Recording && m_Pipeline && m_VertexBound
                 && (!m_Pipeline->GetDescription().SampledTextureTable || m_Table)
+                && (!m_Pipeline->GetDescription().FixedSampledTexture || m_FixedTexture)
                 && (!m_Pipeline->GetDescription().FixedReadOnlyStructuredBuffer
                     || m_StructuredBuffer)) ++DrawCount;
         }
@@ -9488,6 +9664,7 @@ float4 main(VertexInput input) : SV_Position
         Engine::u32 DrawCount = 0;
         Engine::u32 VertexBindingCount = 0;
         size_t RetainedStructuredBufferCount() const { return m_RetainedStructuredBuffers.size(); }
+        size_t RetainedFixedTextureCount() const { return m_RetainedFixedTextures.size(); }
         bool Ready() const { return m_Closed; }
     private:
         Engine::RHI::Device& m_Device;
@@ -9496,7 +9673,9 @@ float4 main(VertexInput input) : SV_Position
         bool m_VertexBound = false;
         Engine::RHI::Pipeline* m_Pipeline = nullptr;
         Engine::RHI::TextureBindingTable* m_Table = nullptr;
+        Engine::RHI::Texture* m_FixedTexture = nullptr;
         Engine::RHI::Buffer* m_StructuredBuffer = nullptr;
+        std::vector<Engine::RHI::Texture*> m_RetainedFixedTextures;
         std::vector<Engine::RHI::Buffer*> m_RetainedStructuredBuffers;
     };
 
@@ -9507,8 +9686,11 @@ float4 main(VertexInput input) : SV_Position
         Engine::Scope<Engine::RHI::Pipeline> CreatePipeline(const Engine::RHI::PipelineDescription& description) override
         {
             if (!Engine::RHI::IsValidVertexInputLayout(description)
+                || !Engine::RHI::IsValidGraphicsOutputContract(description)
                 || (description.SampledTextureTable
                     && !Engine::RHI::IsValidSampledTextureTablePipeline(description))
+                || (description.FixedSampledTexture
+                    && !Engine::RHI::IsValidFixedSampledTexturePipeline(description))
                 || !Engine::RHI::IsValidFixedReadOnlyStructuredBufferPipelineContract(description))
                 return nullptr;
             ++NativePipelineCreationCount;
@@ -9948,6 +10130,32 @@ float4 main(VertexInput input) : SV_Position
         wrongSamplerKindDescription.Reflection[1].ResourceKind = "SamplerComparisonState";
         SampledTextureTableTestShader wrongSamplerKindPixel(wrongSamplerKindDescription);
         wrongSamplerKind.PixelShader = &wrongSamplerKindPixel;
+        ShaderDescription combinedPixelDescription = pixelDescription;
+        combinedPixelDescription.Reflection.push_back(
+            { "SceneShadowDepth", 't', 0, 2, ShaderStage::Pixel,
+                "Texture2D", "float32", 1, 0, 1, 1 });
+        combinedPixelDescription.Reflection.push_back(
+            { "SceneShadowSampler", 's', 0, 2, ShaderStage::Pixel,
+                "SamplerState", "sampler", 1, 0, 0, 0 });
+        SampledTextureTableTestShader combinedPixel(combinedPixelDescription);
+        PipelineDescription combined = declaration;
+        combined.PixelShader = &combinedPixel;
+        combined.FixedSampledTexture = FixedSampledTextureBinding {};
+        combined.FixedSampledTexture->PointSampling = true;
+        PipelineDescription invalidFixedSpace = combined;
+        invalidFixedSpace.FixedSampledTexture->RegisterSpace = 1;
+        PipelineDescription missingFixedSampler = combined;
+        ShaderDescription missingFixedSamplerDescription = combinedPixelDescription;
+        missingFixedSamplerDescription.Reflection.pop_back();
+        SampledTextureTableTestShader missingFixedSamplerPixel(missingFixedSamplerDescription);
+        missingFixedSampler.PixelShader = &missingFixedSamplerPixel;
+        PipelineDescription depthOnly = combined;
+        depthOnly.ColorFormat = Format::Unknown;
+        depthOnly.DepthFormat = Format::D32Float;
+        depthOnly.DepthTestEnable = true;
+        depthOnly.DepthWriteEnable = true;
+        PipelineDescription invalidDepthOnly = depthOnly;
+        invalidDepthOnly.DepthWriteEnable = false;
         Engine::Scope<Pipeline> pipeline = device.CreatePipeline(declaration);
         Engine::Scope<Pipeline> rejectedSpace = device.CreatePipeline(collidingSpace);
         Engine::Scope<Pipeline> rejectedOffsets = device.CreatePipeline(collidingOffsets);
@@ -9959,6 +10167,11 @@ float4 main(VertexInput input) : SV_Position
         Engine::Scope<Pipeline> rejectedSamplerArray = device.CreatePipeline(missingSamplerArray);
         Engine::Scope<Pipeline> rejectedTextureKind = device.CreatePipeline(wrongTextureKind);
         Engine::Scope<Pipeline> rejectedSamplerKind = device.CreatePipeline(wrongSamplerKind);
+        Engine::Scope<Pipeline> combinedPipeline = device.CreatePipeline(combined);
+        Engine::Scope<Pipeline> rejectedFixedSpace = device.CreatePipeline(invalidFixedSpace);
+        Engine::Scope<Pipeline> rejectedMissingFixedSampler = device.CreatePipeline(missingFixedSampler);
+        Engine::Scope<Pipeline> depthOnlyPipeline = device.CreatePipeline(depthOnly);
+        Engine::Scope<Pipeline> rejectedDepthOnly = device.CreatePipeline(invalidDepthOnly);
         Engine::Scope<CommandList> list = device.CreateCommandList(QueueType::Graphics, "sampled-table-contract");
         auto* recording = dynamic_cast<SampledTextureTableTestCommandList*>(list.get());
         const bool bindingFlow = list && recording && table && foreignTable && differentCapacityTable && list->Begin()
@@ -9969,6 +10182,19 @@ float4 main(VertexInput input) : SV_Position
             && list->BindGraphicsSampledTextureTable(*table)
             && (list->DrawIndexed(3, 1, 0, 0, 0), recording->DrawCount == 1)
             && list->End();
+        Engine::Scope<CommandList> combinedList = device.CreateCommandList(
+            QueueType::Graphics, "sampled-table-plus-fixed-depth-contract");
+        auto* combinedRecording = dynamic_cast<SampledTextureTableTestCommandList*>(combinedList.get());
+        const bool combinedBindingFlow = combinedList && combinedRecording
+            && combinedPipeline && combinedList->Begin()
+            && (combinedList->SetGraphicsPipeline(*combinedPipeline), true)
+            && !combinedList->BindGraphicsSampledTexture(*error)
+            && combinedList->BindGraphicsSampledTextureTable(*table)
+            && combinedList->BindGraphicsSampledTexture(*error)
+            && (combinedList->DrawIndexed(3, 1, 0, 0, 0),
+                combinedRecording->DrawCount == 1
+                    && combinedRecording->RetainedFixedTextureCount() == 1)
+            && combinedList->End();
 
         return Expect(IsValidSampledTextureTablePipeline(declaration),
                 "sampled texture table reserves space one and Vulkan offsets one/two with matching reflected bounded arrays")
@@ -9977,7 +10203,15 @@ float4 main(VertexInput input) : SV_Position
                     && !rejectedTextureKind && !rejectedSamplerKind,
                 "pipeline creation rejects invalid capacities and missing or mismatched reflected texture/sampler arrays")
             && Expect(bindingFlow,
-                "recording rejects absent-pipeline, foreign-table, and capacity-mismatched binds before exact declared-table consumption");
+                "recording rejects absent-pipeline, foreign-table, and capacity-mismatched binds before exact declared-table consumption")
+            && Expect(IsValidFixedSampledTexturePipeline(combined)
+                    && combined.FixedSampledTexture->PointSampling
+                    && combinedBindingFlow && !rejectedFixedSpace
+                    && !rejectedMissingFixedSampler,
+                "one point-sampled fixed texture coexists with the bounded material table and requires table-first exact binding")
+            && Expect(IsValidGraphicsOutputContract(depthOnly) && depthOnlyPipeline
+                    && !IsValidGraphicsOutputContract(invalidDepthOnly) && !rejectedDepthOnly,
+                "a colorless graphics pipeline is admitted only as a depth-testing depth-writing pass");
     }
 
     bool TestFixedReadOnlyStructuredBufferBindingContract()
@@ -10830,6 +11064,7 @@ int main(int argc, char** argv)
         FAST_TEST("Per-view sector-snapped origin tracking", TestPerViewSectorSnappedOriginTracking),
         FAST_TEST("Scene raster origin epoch invariance", TestSceneRasterOriginEpochInvariance),
         FAST_TEST("Scene surface basis and material rows publish deterministically", TestSceneSurfaceBasisAndMaterialRows),
+        FAST_TEST("Scene shadow map preparation is stabilized and classifies caster modes", TestSceneShadowMapPreparationIsStableAndExplicit),
         FAST_TEST("Basic PBR CPU reference uses accepted convention", TestBasicPbrCpuReferenceUsesAcceptedConvention),
         FAST_TEST("Clustered light grid builds bounded deterministic assignments", TestClusteredLightGridBuildsBoundedDeterministicAssignments),
         FAST_TEST("Scene light payload packs complete typed records transactionally", TestSceneLightPayloadPacksTransactionally),

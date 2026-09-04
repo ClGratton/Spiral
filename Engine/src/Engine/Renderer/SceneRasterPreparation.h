@@ -29,6 +29,7 @@ namespace Engine
         Math::Mat4 NormalTransform;
         Math::Mat4 ModelView;
         Math::Mat4 NormalViewTransform;
+        bool CastsShadows = true;
         // Frame-local row zero is always the default/error material and never
         // aliases a persistent asset, entity, or future visibility ID.
         u32 MaterialId = 0;

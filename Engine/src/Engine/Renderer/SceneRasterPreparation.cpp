@@ -111,6 +111,7 @@ namespace Engine
             instance.SourceEntity = mesh.SourceEntity;
             instance.MeshAsset = mesh.MeshAsset;
             instance.MaterialAsset = mesh.MaterialAsset;
+            instance.CastsShadows = mesh.CastsShadows;
             const auto material = std::lower_bound(materialIds.begin(), materialIds.end(), mesh.MaterialAsset,
                 [](const std::pair<AssetHandle, u32>& entry, AssetHandle value) { return entry.first < value; });
             instance.MaterialId = material != materialIds.end() && material->first == mesh.MaterialAsset

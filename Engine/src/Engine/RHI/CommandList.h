@@ -59,6 +59,14 @@ namespace Engine::RHI
         virtual void EndDebugMarker() = 0;
         // Renderer-owned targets only. Presentation retains swapchain/ImGui ownership.
         virtual bool BindViewportOutputs(Texture& colorTarget, Texture* depthTarget) = 0;
+        // Dedicated depth-only rendering for shadow maps and selected prepasses.
+        // Backends that have not implemented a native depth-only framebuffer
+        // reject explicitly instead of allocating a hidden color attachment.
+        virtual bool BindDepthOutput(Texture& depthTarget)
+        {
+            (void)depthTarget;
+            return false;
+        }
         virtual bool ClearViewportOutputs(const ViewportClear& clear) = 0;
         virtual bool TransitionTexture(Texture& texture, ResourceState destinationState) = 0;
         // Graph pre-recording supplies compiler-owned state intent. Implementations

@@ -27,6 +27,7 @@ Adapter/feature negotiation, portable shader targets, descriptor fallback, and q
 | Material IDs | Material/BRDF IDs enrich lighting through structured tables; they are distinct from visibility IDs. |
 | Color pipeline | Tone mapping is a calibrated color-science stage before grading, with explicit profiles and validation scenes. |
 | Clustered lighting | Keep directional lights global; assign point/spot volumes to bounded logarithmic view clusters with explicit overflow. |
+| Direct shadows | Begin with one stable primary-directional D32 map, explicit caster/material policy, point-sampled shader PCF, and exact graph/reference verification. |
 
 ## 1. Visibility ID Contract
 
@@ -519,7 +520,17 @@ Stored directions point in the light's emission direction; identity rotation emi
 attenuation = max(1-(distance/range)^4, 0)^2 / max(distance^2, 0.01^2)
 ```
 
-and range-zero or exact-center samples contribute zero. The accepted GGX/height-correlated-Smith/Schlick/Burley BRDF consumes the resulting incident illuminance; emissive remains additive and exposure is applied once at finite HDR storage. ORM occlusion is still reserved for indirect light. Shadows, volumetric scattering, IES profiles, physically calibrated spectral conversion, GPU cluster construction, D3D12 execution, and MoltenVK execution are not established by this slice.
+and range-zero or exact-center samples contribute zero. The accepted GGX/height-correlated-Smith/Schlick/Burley BRDF consumes the resulting incident illuminance; emissive remains additive and exposure is applied once at finite HDR storage. ORM occlusion is still reserved for indirect light. Shadowing is governed separately by section 15E; volumetric scattering, IES profiles, physically calibrated spectral conversion, GPU cluster construction, D3D12 execution, and MoltenVK execution are not established by this direct-light slice.
+
+## 15E. Stable Primary-Directional Shadow Contract
+
+The first shadow implementation selects the first shadow-enabled directional in the immutable global-light order. It fits all current visible raster-instance receiver bounds in camera-relative light space, quantizes a square orthographic extent, snaps the light-space center to the 1024-by-1024 map's texel grid, and publishes one finite D3D-style zero-to-one depth transform with explicit constant and slope bias. A missing eligible light or empty receiver set publishes a valid disabled shadow state rather than stale matrices.
+
+Caster policy is explicit and deterministic. Opaque materials cast; masked materials reuse the declared base/opacity texture alpha and cutoff; blend materials and components with `CastsShadows=false` are excluded; and invalid/error material rows cast conservatively while retaining counted reason diagnostics. This initial receiver fit does not yet perform receiver-aware caster exclusion, cascade partitioning, atlas allocation, proxy selection, or cached-shadow residency.
+
+The production graph inserts the named depth-only `Scene Primary Directional Shadow Map` pass after light-payload copy and before Scene clear/raster. It writes a D32 target, then production `PSMain` reads that map at fixed point-sampled `t0/s0,space2` and applies shader-defined 3-by-3 PCF only to the selected directional contribution. The material texture table remains available during alpha-tested shadow draws. Vulkan realizes the fixed sampled binding beside the existing material table; D3D12 uses an R32 typeless resource with D32 DSV/R32 SRV views and a static fixed sampler, avoiding a 2,049th shader-visible sampler when the 2,048-entry material table is full.
+
+The graph/direct comparator must render an independent reference shadow map and replay the same prepared shadow draws; it may not sample depth produced by the graph under test. Four retained six-pass frames require capacity for 24 timestamp-query states. Linux/Vulkan acceptance additionally requires an independent readback fixture in which an offset caster darkens the receiver, a control region stays unchanged, and disabling component casting removes the shadow. Shared D3D12 source is not Windows runtime qualification. Cascades, atlases, receiver-aware exclusions, proxy/cached shadows, transparent colored transmission, and sparse ray-traced residuals remain later work.
 
 ## 16. Material ID And BRDF Table Contract
 

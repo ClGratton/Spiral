@@ -103,6 +103,22 @@ namespace Engine::RHI
             }
         }
 
+        DXGI_FORMAT TextureResourceFormat(const TextureDescription& description)
+        {
+            // A D32 resource sampled as R32 must be typeless at creation while
+            // retaining typed DSV/SRV views.
+            return description.TextureFormat == Format::D32Float
+                    && HasTextureUsage(description.Usage, TextureUsage::DepthStencil)
+                    && HasTextureUsage(description.Usage, TextureUsage::ShaderResource)
+                ? DXGI_FORMAT_R32_TYPELESS : ConvertFormat(description.TextureFormat);
+        }
+
+        DXGI_FORMAT TextureShaderResourceFormat(Format format)
+        {
+            return format == Format::D32Float
+                ? DXGI_FORMAT_R32_FLOAT : ConvertFormat(format);
+        }
+
         D3D12_RESOURCE_FLAGS ConvertTextureFlags(TextureUsage usage)
         {
             D3D12_RESOURCE_FLAGS flags = D3D12_RESOURCE_FLAG_NONE;
@@ -439,8 +455,9 @@ namespace Engine::RHI
                 if (!device || m_Description.Extent.Width == 0 || m_Description.Extent.Height == 0)
                     return false;
 
-                const DXGI_FORMAT format = ConvertFormat(m_Description.TextureFormat);
-                if (format == DXGI_FORMAT_UNKNOWN)
+                const DXGI_FORMAT viewFormat = ConvertFormat(m_Description.TextureFormat);
+                const DXGI_FORMAT resourceFormat = TextureResourceFormat(m_Description);
+                if (viewFormat == DXGI_FORMAT_UNKNOWN || resourceFormat == DXGI_FORMAT_UNKNOWN)
                 {
                     Log::Error("Could not create D3D12 RHI texture '", m_Description.DebugName, "': unsupported format");
                     return false;
@@ -459,7 +476,7 @@ namespace Engine::RHI
                 textureDesc.Height = m_Description.Extent.Height;
                 textureDesc.DepthOrArraySize = static_cast<UINT16>(m_Description.ArrayLayers);
                 textureDesc.MipLevels = static_cast<UINT16>(m_Description.MipLevels);
-                textureDesc.Format = format;
+                textureDesc.Format = resourceFormat;
                 textureDesc.SampleDesc.Count = m_Description.SampleCount == 0 ? 1 : m_Description.SampleCount;
                 textureDesc.SampleDesc.Quality = 0;
                 textureDesc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
@@ -469,14 +486,14 @@ namespace Engine::RHI
                 D3D12_CLEAR_VALUE* clearValuePtr = nullptr;
                 if (HasTextureUsage(m_Description.Usage, TextureUsage::DepthStencil))
                 {
-                    clearValue.Format = format;
+                    clearValue.Format = viewFormat;
                     clearValue.DepthStencil.Depth = 1.0f;
                     clearValue.DepthStencil.Stencil = 0;
                     clearValuePtr = &clearValue;
                 }
                 else if (HasTextureUsage(m_Description.Usage, TextureUsage::RenderTarget))
                 {
-                    clearValue.Format = format;
+                    clearValue.Format = viewFormat;
                     clearValue.Color[0] = 0.0f;
                     clearValue.Color[1] = 0.0f;
                     clearValue.Color[2] = 0.0f;
@@ -556,7 +573,11 @@ namespace Engine::RHI
                 }
                 else
                 {
-                    device->CreateDepthStencilView(m_Resource.Get(), nullptr, handle);
+                    D3D12_DEPTH_STENCIL_VIEW_DESC description {};
+                    description.Format = ConvertFormat(m_Description.TextureFormat);
+                    description.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2D;
+                    description.Flags = D3D12_DSV_FLAG_NONE;
+                    device->CreateDepthStencilView(m_Resource.Get(), &description, handle);
                     m_DepthStencilDescriptorHeap = std::move(descriptorHeap);
                     m_DepthStencilView = handle;
                 }
@@ -658,12 +679,11 @@ namespace Engine::RHI
                 return static_cast<u32>(m_Description.ConstantBufferBindings.size())
                     + (m_Description.SampledTextureTable ? 2u : 0u);
             }
-            u32 GetFixedSamplerRootParameterIndex() const { return GetFixedTextureRootParameterIndex() + 1; }
             u32 GetFixedStructuredBufferRootParameterIndex() const
             {
                 return static_cast<u32>(m_Description.ConstantBufferBindings.size())
                     + (m_Description.SampledTextureTable ? 2u : 0u)
-                    + (m_Description.FixedSampledTexture ? 2u : 0u);
+                    + (m_Description.FixedSampledTexture ? 1u : 0u);
             }
 
         private:
@@ -672,7 +692,7 @@ namespace Engine::RHI
                 std::vector<D3D12_ROOT_PARAMETER> rootParameters;
                 rootParameters.reserve(m_Description.ConstantBufferBindings.size()
                     + (m_Description.SampledTextureTable ? 2u : 0u)
-                    + (m_Description.FixedSampledTexture ? 2u : 0u)
+                    + (m_Description.FixedSampledTexture ? 1u : 0u)
                     + (m_Description.FixedReadOnlyStructuredBuffer ? 1u : 0u));
                 for (const RootConstantBufferBinding& binding : m_Description.ConstantBufferBindings)
                 {
@@ -684,7 +704,7 @@ namespace Engine::RHI
                     rootParameters.push_back(rootParameter);
                 }
 
-                std::array<D3D12_DESCRIPTOR_RANGE, 4> tableRanges {};
+                std::array<D3D12_DESCRIPTOR_RANGE, 3> tableRanges {};
                 if (m_Description.SampledTextureTable)
                 {
                     tableRanges[0].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
@@ -722,17 +742,6 @@ namespace Engine::RHI
                     texture.DescriptorTable = { 1, &tableRanges[2] };
                     texture.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
                     rootParameters.push_back(texture);
-
-                    tableRanges[3].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER;
-                    tableRanges[3].NumDescriptors = 1;
-                    tableRanges[3].BaseShaderRegister = m_Description.FixedSampledTexture->SamplerRegister;
-                    tableRanges[3].RegisterSpace = m_Description.FixedSampledTexture->RegisterSpace;
-                    tableRanges[3].OffsetInDescriptorsFromTableStart = 0;
-                    D3D12_ROOT_PARAMETER sampler {};
-                    sampler.ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-                    sampler.DescriptorTable = { 1, &tableRanges[3] };
-                    sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-                    rootParameters.push_back(sampler);
                 }
 
                 if (m_Description.FixedReadOnlyStructuredBuffer)
@@ -750,6 +759,26 @@ namespace Engine::RHI
                 D3D12_ROOT_SIGNATURE_DESC rootSignatureDesc {};
                 rootSignatureDesc.NumParameters = static_cast<UINT>(rootParameters.size());
                 rootSignatureDesc.pParameters = rootParameters.empty() ? nullptr : rootParameters.data();
+                D3D12_STATIC_SAMPLER_DESC fixedSampler {};
+                if (m_Description.FixedSampledTexture)
+                {
+                    fixedSampler.Filter = m_Description.FixedSampledTexture->PointSampling
+                        ? D3D12_FILTER_MIN_MAG_MIP_POINT : D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+                    fixedSampler.AddressU = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+                    fixedSampler.AddressV = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+                    fixedSampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+                    fixedSampler.MipLODBias = 0.0f;
+                    fixedSampler.MaxAnisotropy = 1;
+                    fixedSampler.ComparisonFunc = D3D12_COMPARISON_FUNC_ALWAYS;
+                    fixedSampler.BorderColor = D3D12_STATIC_BORDER_COLOR_OPAQUE_BLACK;
+                    fixedSampler.MinLOD = 0.0f;
+                    fixedSampler.MaxLOD = D3D12_FLOAT32_MAX;
+                    fixedSampler.ShaderRegister = m_Description.FixedSampledTexture->SamplerRegister;
+                    fixedSampler.RegisterSpace = m_Description.FixedSampledTexture->RegisterSpace;
+                    fixedSampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+                    rootSignatureDesc.NumStaticSamplers = 1;
+                    rootSignatureDesc.pStaticSamplers = &fixedSampler;
+                }
                 rootSignatureDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT
                     | D3D12_ROOT_SIGNATURE_FLAG_DENY_HULL_SHADER_ROOT_ACCESS
                     | D3D12_ROOT_SIGNATURE_FLAG_DENY_DOMAIN_SHADER_ROOT_ACCESS
@@ -854,8 +883,9 @@ namespace Engine::RHI
                 pipelineDesc.DepthStencilState.StencilEnable = FALSE;
                 pipelineDesc.InputLayout = { inputElements.empty() ? nullptr : inputElements.data(), static_cast<UINT>(inputElements.size()) };
                 pipelineDesc.PrimitiveTopologyType = ConvertPrimitiveTopologyType(m_Description.Topology);
-                pipelineDesc.NumRenderTargets = 1;
-                pipelineDesc.RTVFormats[0] = ConvertFormat(m_Description.ColorFormat);
+                pipelineDesc.NumRenderTargets = m_Description.ColorFormat == Format::Unknown ? 0 : 1;
+                if (pipelineDesc.NumRenderTargets != 0)
+                    pipelineDesc.RTVFormats[0] = ConvertFormat(m_Description.ColorFormat);
                 pipelineDesc.DSVFormat = ConvertFormat(m_Description.DepthFormat);
                 pipelineDesc.SampleDesc.Count = 1;
                 pipelineDesc.SampleDesc.Quality = 0;
@@ -1012,9 +1042,9 @@ namespace Engine::RHI
                 m_SamplerHeap.Reset();
                 m_BoundTableTextures.clear();
                 m_BoundFixedTexture = nullptr;
+                m_RetainedFixedTextureResources.clear();
                 m_TableBindingActive = false;
                 m_FixedBindingActive = false;
-                m_FixedBindingUsedThisRecording = false;
                 m_StructuredBufferResource.Reset();
                 m_RetainedStructuredBufferResources.clear();
                 m_BoundStructuredBuffer = nullptr;
@@ -1138,9 +1168,29 @@ namespace Engine::RHI
                 return true;
             }
 
+            bool BindDepthOutput(Texture& depthTarget) override
+            {
+                auto* depth = dynamic_cast<NVRHID3D12Texture*>(&depthTarget);
+                if (!m_CommandList || m_State != State::Recording || !depth
+                    || !HasTextureUsage(depthTarget.GetDescription().Usage, TextureUsage::DepthStencil)
+                    || !m_TextureOwnershipTracker || !m_TextureOwnershipTracker->CanUse(depth))
+                    return false;
+                if (!TransitionTexture(depthTarget, ResourceState::DepthWrite))
+                    return false;
+                const D3D12_CPU_DESCRIPTOR_HANDLE dsv = depth->GetDepthStencilView();
+                if (!dsv.ptr)
+                    return false;
+                m_CommandList->OMSetRenderTargets(0, nullptr, FALSE, &dsv);
+                m_BoundColorRtv = {};
+                m_BoundDepthDsv = dsv;
+                return true;
+            }
+
             bool ClearViewportOutputs(const ViewportClear& clear) override
             {
-                if (!m_CommandList || !m_BoundColorRtv.ptr || (clear.ClearDepth && !m_BoundDepthDsv.ptr))
+                if (!m_CommandList || (!m_BoundColorRtv.ptr && !m_BoundDepthDsv.ptr)
+                    || (clear.ClearColor && !m_BoundColorRtv.ptr)
+                    || (clear.ClearDepth && !m_BoundDepthDsv.ptr))
                     return false;
                 if (clear.ClearColor)
                     m_CommandList->ClearRenderTargetView(m_BoundColorRtv, clear.Color, 0, nullptr);
@@ -1396,12 +1446,15 @@ namespace Engine::RHI
                     return false;
 
                 const u32 capacity = table.GetCapacity();
+                const u32 srvDescriptorCount = capacity
+                    + (m_ActivePipeline->GetDescription().FixedSampledTexture ? 1u : 0u);
                 D3D12_DESCRIPTOR_HEAP_DESC srvHeapDescription {};
                 srvHeapDescription.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-                srvHeapDescription.NumDescriptors = capacity;
+                srvHeapDescription.NumDescriptors = srvDescriptorCount;
                 srvHeapDescription.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
                 D3D12_DESCRIPTOR_HEAP_DESC samplerHeapDescription = srvHeapDescription;
                 samplerHeapDescription.Type = D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER;
+                samplerHeapDescription.NumDescriptors = capacity;
                 ComPtr<ID3D12DescriptorHeap> srvHeap;
                 ComPtr<ID3D12DescriptorHeap> samplerHeap;
                 if (FAILED(m_Device->CreateDescriptorHeap(&srvHeapDescription, IID_PPV_ARGS(&srvHeap)))
@@ -1423,7 +1476,7 @@ namespace Engine::RHI
                         || texture->GetTrackedState() != ResourceState::ShaderResource)
                         return false;
                     const TextureDescription& description = texture->GetDescription();
-                    const DXGI_FORMAT format = ConvertFormat(description.TextureFormat);
+                    const DXGI_FORMAT format = TextureShaderResourceFormat(description.TextureFormat);
                     if (format == DXGI_FORMAT_UNKNOWN || description.ArrayLayers != 1 || description.SampleCount != 1)
                         return false;
                     D3D12_SHADER_RESOURCE_VIEW_DESC srvDescription {};
@@ -1458,6 +1511,8 @@ namespace Engine::RHI
                 m_BoundTableTextures.insert(m_BoundTableTextures.end(),
                     std::make_move_iterator(retained.begin()), std::make_move_iterator(retained.end()));
                 m_TableBindingActive = true;
+                m_FixedBindingActive = false;
+                m_BoundFixedTexture = nullptr;
                 return true;
             }
 
@@ -1473,54 +1528,50 @@ namespace Engine::RHI
                     || !HasTextureUsage(texture.GetDescription().Usage, TextureUsage::ShaderResource)
                     || texture.GetDescription().ArrayLayers != 1 || texture.GetDescription().SampleCount != 1)
                     return false;
-                if (m_FixedBindingUsedThisRecording
-                    && m_FixedTextureResource.Get() != native->GetResource())
+                const bool combined = m_ActivePipeline->GetDescription().SampledTextureTable.has_value();
+                if (combined && (!m_TableBindingActive || !m_SrvHeap || !m_SamplerHeap))
                     return false;
-
-                if (!m_FixedSrvHeap || !m_FixedSamplerHeap)
+                if (!combined)
                 {
                     D3D12_DESCRIPTOR_HEAP_DESC srvHeapDescription {};
                     srvHeapDescription.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
                     srvHeapDescription.NumDescriptors = 1;
                     srvHeapDescription.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
-                    D3D12_DESCRIPTOR_HEAP_DESC samplerHeapDescription = srvHeapDescription;
-                    samplerHeapDescription.Type = D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER;
                     ComPtr<ID3D12DescriptorHeap> srvHeap;
-                    ComPtr<ID3D12DescriptorHeap> samplerHeap;
-                    if (FAILED(m_Device->CreateDescriptorHeap(&srvHeapDescription, IID_PPV_ARGS(&srvHeap)))
-                        || FAILED(m_Device->CreateDescriptorHeap(&samplerHeapDescription, IID_PPV_ARGS(&samplerHeap))))
+                    if (FAILED(m_Device->CreateDescriptorHeap(&srvHeapDescription, IID_PPV_ARGS(&srvHeap))))
                         return false;
                     m_FixedSrvHeap = std::move(srvHeap);
-                    m_FixedSamplerHeap = std::move(samplerHeap);
+                    m_RetainedSrvHeaps.push_back(m_FixedSrvHeap);
                 }
 
-                const DXGI_FORMAT format = ConvertFormat(texture.GetDescription().TextureFormat);
+                const DXGI_FORMAT format = TextureShaderResourceFormat(
+                    texture.GetDescription().TextureFormat);
                 if (format == DXGI_FORMAT_UNKNOWN) return false;
+                const UINT srvIncrement = m_Device->GetDescriptorHandleIncrementSize(
+                    D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+                const u32 descriptorOffset = combined
+                    ? m_ActivePipeline->GetDescription().SampledTextureTable->Capacity : 0u;
+                D3D12_CPU_DESCRIPTOR_HANDLE srvCpu = combined
+                    ? m_SrvHeap->GetCPUDescriptorHandleForHeapStart()
+                    : m_FixedSrvHeap->GetCPUDescriptorHandleForHeapStart();
+                srvCpu.ptr += static_cast<SIZE_T>(descriptorOffset) * srvIncrement;
                 D3D12_SHADER_RESOURCE_VIEW_DESC srvDescription {};
                 srvDescription.Format = format;
                 srvDescription.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
                 srvDescription.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
                 srvDescription.Texture2D.MipLevels = texture.GetDescription().MipLevels;
-                m_Device->CreateShaderResourceView(native->GetResource(), &srvDescription,
-                    m_FixedSrvHeap->GetCPUDescriptorHandleForHeapStart());
+                m_Device->CreateShaderResourceView(native->GetResource(), &srvDescription, srvCpu);
 
-                D3D12_SAMPLER_DESC samplerDescription {};
-                samplerDescription.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
-                samplerDescription.AddressU = samplerDescription.AddressV = samplerDescription.AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
-                samplerDescription.ComparisonFunc = D3D12_COMPARISON_FUNC_ALWAYS;
-                samplerDescription.MaxLOD = D3D12_FLOAT32_MAX;
-                samplerDescription.MaxAnisotropy = 1;
-                m_Device->CreateSampler(&samplerDescription, m_FixedSamplerHeap->GetCPUDescriptorHandleForHeapStart());
-
-                ID3D12DescriptorHeap* heaps[] { m_FixedSrvHeap.Get(), m_FixedSamplerHeap.Get() };
-                m_CommandList->SetDescriptorHeaps(2, heaps);
+                ID3D12DescriptorHeap* heaps[] { combined ? m_SrvHeap.Get() : m_FixedSrvHeap.Get() };
+                if (!combined)
+                    m_CommandList->SetDescriptorHeaps(1, heaps);
+                D3D12_GPU_DESCRIPTOR_HANDLE srvGpu = heaps[0]->GetGPUDescriptorHandleForHeapStart();
+                srvGpu.ptr += static_cast<UINT64>(descriptorOffset) * srvIncrement;
                 m_CommandList->SetGraphicsRootDescriptorTable(m_ActivePipeline->GetFixedTextureRootParameterIndex(),
-                    m_FixedSrvHeap->GetGPUDescriptorHandleForHeapStart());
-                m_CommandList->SetGraphicsRootDescriptorTable(m_ActivePipeline->GetFixedSamplerRootParameterIndex(),
-                    m_FixedSamplerHeap->GetGPUDescriptorHandleForHeapStart());
+                    srvGpu);
                 m_FixedTextureResource = native->GetResource();
+                m_RetainedFixedTextureResources.push_back(m_FixedTextureResource);
                 m_BoundFixedTexture = native;
-                m_FixedBindingUsedThisRecording = true;
                 m_FixedBindingActive = true;
                 return true;
             }
@@ -1702,7 +1753,10 @@ namespace Engine::RHI
                     && (!m_ActivePipeline->GetDescription().SampledTextureTable
                         || (m_TableBindingActive && m_SrvHeap && m_SamplerHeap))
                     && (!m_ActivePipeline->GetDescription().FixedSampledTexture
-                        || (m_FixedBindingActive && m_FixedSrvHeap && m_FixedSamplerHeap && m_BoundFixedTexture))
+                        || (m_FixedBindingActive && m_BoundFixedTexture
+                            && (m_ActivePipeline->GetDescription().SampledTextureTable
+                                ? (m_SrvHeap && m_SamplerHeap)
+                                : m_FixedSrvHeap)))
                     && (!m_ActivePipeline->GetDescription().FixedReadOnlyStructuredBuffer
                         || (m_StructuredBufferBindingActive && m_StructuredBufferResource
                             && m_BoundStructuredBuffer))
@@ -1869,8 +1923,8 @@ namespace Engine::RHI
             std::vector<ComPtr<ID3D12DescriptorHeap>> m_RetainedSrvHeaps;
             std::vector<ComPtr<ID3D12DescriptorHeap>> m_RetainedSamplerHeaps;
             ComPtr<ID3D12DescriptorHeap> m_FixedSrvHeap;
-            ComPtr<ID3D12DescriptorHeap> m_FixedSamplerHeap;
             ComPtr<ID3D12Resource> m_FixedTextureResource;
+            std::vector<ComPtr<ID3D12Resource>> m_RetainedFixedTextureResources;
             ComPtr<ID3D12Resource> m_StructuredBufferResource;
             std::vector<ComPtr<ID3D12Resource>> m_RetainedStructuredBufferResources;
             std::vector<Ref<Texture>> m_BoundTableTextures;
@@ -1879,7 +1933,6 @@ namespace Engine::RHI
             bool m_TableBindingActive = false;
             bool m_FixedBindingActive = false;
             bool m_StructuredBufferBindingActive = false;
-            bool m_FixedBindingUsedThisRecording = false;
             D3D12_CPU_DESCRIPTOR_HANDLE m_BoundColorRtv {};
             D3D12_CPU_DESCRIPTOR_HANDLE m_BoundDepthDsv {};
             std::string m_DebugName;
@@ -2076,6 +2129,7 @@ namespace Engine::RHI
             Scope<Pipeline> CreatePipeline(const PipelineDescription& description) override
             {
                 if (!IsValidVertexInputLayout(description)) return nullptr;
+                if (!IsValidGraphicsOutputContract(description)) return nullptr;
                 if (description.SampledTextureTable && !IsValidSampledTextureTablePipeline(description)) return nullptr;
                 if (description.FixedSampledTexture && !IsValidFixedSampledTexturePipeline(description)) return nullptr;
                 if (!IsValidFixedReadOnlyStructuredBufferPipelineContract(description)) return nullptr;

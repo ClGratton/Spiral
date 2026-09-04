@@ -360,10 +360,10 @@ namespace Engine::RHI
                 m_BindingSet = nullptr;
                 m_TableBindingState.reset();
                 m_FixedBindingSet = nullptr;
+                m_RetainedFixedBindingSets.clear();
                 m_StructuredBindingSet = nullptr;
                 m_RetainedStructuredBindingSets.clear();
                 m_FixedSampler = nullptr;
-                m_FixedTextureUsedThisRecording = nullptr;
                 m_BoundStructuredBuffer = nullptr;
                 m_ConstantBuffer = nullptr;
                 m_TextureTable = nullptr;
@@ -409,10 +409,27 @@ namespace Engine::RHI
                 m_Framebuffer = m_Device->createFramebuffer(framebuffer);
                 return m_Framebuffer != nullptr;
             }
+            bool BindDepthOutput(Texture& depth) override
+            {
+                m_Color = nullptr;
+                m_Depth = dynamic_cast<VulkanTexture*>(&depth);
+                if (m_State != State::Recording || !m_Depth
+                    || !HasTextureUsage(depth.GetDescription().Usage, TextureUsage::DepthStencil)
+                    || !CanUseTexture(&depth))
+                    return false;
+                nvrhi::FramebufferDesc framebuffer;
+                framebuffer.setDepthAttachment(m_Depth->Native());
+                m_Framebuffer = m_Device->createFramebuffer(framebuffer);
+                return m_Framebuffer != nullptr;
+            }
             bool ClearViewportOutputs(const ViewportClear& clear) override
             {
-                if (m_State != State::Recording || !m_Color || !m_TextureOwnershipTracker
-                    || !CanUseTexture(m_Color) || (m_Depth && !CanUseTexture(m_Depth))) return false;
+                if (m_State != State::Recording || !m_TextureOwnershipTracker
+                    || (!m_Color && !m_Depth)
+                    || (m_Color && !CanUseTexture(m_Color))
+                    || (m_Depth && !CanUseTexture(m_Depth))
+                    || (clear.ClearColor && !m_Color)
+                    || (clear.ClearDepth && !m_Depth)) return false;
                 if (clear.ClearColor) m_List->clearTextureFloat(m_Color->Native(), nvrhi::AllSubresources, nvrhi::Color(clear.Color[0], clear.Color[1], clear.Color[2], clear.Color[3]));
                 if (clear.ClearDepth && m_Depth) m_List->clearDepthStencilTexture(m_Depth->Native(), nvrhi::AllSubresources, true, clear.Depth, false, clear.Stencil);
                 return true;
@@ -620,22 +637,29 @@ namespace Engine::RHI
                     || !HasTextureUsage(texture.GetDescription().Usage, TextureUsage::ShaderResource)
                     || texture.GetDescription().ArrayLayers != 1 || texture.GetDescription().SampleCount != 1)
                     return false;
-                if (m_FixedTextureUsedThisRecording
-                    && m_FixedTextureUsedThisRecording != native->Native())
-                    return false;
                 if (m_CachedFixedBindingSet && m_CachedFixedTexture == native->Native()
                     && m_CachedFixedLayout == m_Pipeline->FixedBindings())
                 {
                     m_FixedBindingSet = m_CachedFixedBindingSet;
                     m_FixedSampler = m_CachedFixedSampler;
-                    m_FixedTextureUsedThisRecording = native->Native();
+                    m_RetainedFixedBindingSets.push_back(m_FixedBindingSet);
                     return true;
                 }
-                if (!m_CachedFixedSampler)
+                const bool pointSampling =
+                    m_Pipeline->GetDescription().FixedSampledTexture->PointSampling;
+                if (!m_CachedFixedSampler
+                    || !m_CachedFixedSamplerModeValid
+                    || m_CachedFixedPointSampling != pointSampling)
                 {
+                    m_CachedFixedBindingSet = nullptr;
+                    m_CachedFixedTexture = nullptr;
+                    m_CachedFixedLayout = nullptr;
                     nvrhi::SamplerDesc samplerDescription;
-                    samplerDescription.setAllFilters(true).setAllAddressModes(nvrhi::SamplerAddressMode::Clamp);
+                    samplerDescription.setAllFilters(!pointSampling)
+                        .setAllAddressModes(nvrhi::SamplerAddressMode::Clamp);
                     m_CachedFixedSampler = m_Device->createSampler(samplerDescription);
+                    m_CachedFixedPointSampling = pointSampling;
+                    m_CachedFixedSamplerModeValid = m_CachedFixedSampler != nullptr;
                 }
                 if (!m_CachedFixedSampler) return false;
                 nvrhi::BindingSetDesc bindings;
@@ -646,7 +670,7 @@ namespace Engine::RHI
                 m_CachedFixedLayout = m_Pipeline->FixedBindings();
                 m_FixedBindingSet = m_CachedFixedBindingSet;
                 m_FixedSampler = m_CachedFixedSampler;
-                m_FixedTextureUsedThisRecording = native->Native();
+                m_RetainedFixedBindingSets.push_back(m_FixedBindingSet);
                 return m_FixedBindingSet != nullptr;
             }
             bool BindGraphicsReadOnlyStructuredBuffer(Buffer& buffer) override
@@ -963,6 +987,7 @@ namespace Engine::RHI
             nvrhi::BindingSetHandle m_BindingSet;
             Ref<VulkanSampledTextureTableState> m_TableBindingState;
             nvrhi::BindingSetHandle m_FixedBindingSet;
+            std::vector<nvrhi::BindingSetHandle> m_RetainedFixedBindingSets;
             nvrhi::BindingSetHandle m_StructuredBindingSet;
             std::vector<nvrhi::BindingSetHandle> m_RetainedStructuredBindingSets;
             nvrhi::SamplerHandle m_FixedSampler;
@@ -970,7 +995,8 @@ namespace Engine::RHI
             nvrhi::SamplerHandle m_CachedFixedSampler;
             nvrhi::ITexture* m_CachedFixedTexture = nullptr;
             nvrhi::IBindingLayout* m_CachedFixedLayout = nullptr;
-            nvrhi::ITexture* m_FixedTextureUsedThisRecording = nullptr;
+            bool m_CachedFixedPointSampling = false;
+            bool m_CachedFixedSamplerModeValid = false;
             VulkanBuffer* m_ConstantBuffer = nullptr;
             TextureBindingTable* m_TextureTable = nullptr;
             VulkanBuffer* m_BoundStructuredBuffer = nullptr;
@@ -1148,6 +1174,8 @@ namespace Engine::RHI
             {
                 if (!IsValidVertexInputLayout(description))
                 { Log::Error("Vulkan graphics pipeline rejected by portable vertex-layout validation"); return nullptr; }
+                if (!IsValidGraphicsOutputContract(description))
+                { Log::Error("Vulkan graphics pipeline rejected by portable output validation"); return nullptr; }
                 if (description.SampledTextureTable && !IsValidSampledTextureTablePipeline(description))
                 { Log::Error("Vulkan sampled-table pipeline rejected by portable declaration/reflection validation"); return nullptr; }
                 if (description.FixedSampledTexture && !IsValidFixedSampledTexturePipeline(description))
