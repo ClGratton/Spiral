@@ -16,6 +16,7 @@ namespace Engine
     struct MeshArtifactVertex
     {
         float Position[3] {};
+        float Normal[3] {};
         float Color[3] { 1.0f, 1.0f, 1.0f };
         float UV[2] {};
     };
@@ -62,6 +63,11 @@ namespace Engine
     bool CreateDefaultSceneMeshArtifact(AssetHandle asset, MeshArtifact& outArtifact, std::string& outError);
     bool StoreDefaultSceneMeshArtifact(AssetHandle asset, std::string& outError);
     bool EnsureDefaultSceneMeshArtifact(AssetRegistry& registry, AssetHandle& outAsset, std::string& outError);
+    // Fills an all-zero normal field per primitive from its triangle winding.
+    // Authored finite unit normals are preserved within the admitted artifact
+    // tolerance; mixed, non-finite, non-unit, or degenerate primitive data
+    // fails without mutating the artifact.
+    bool EnsureMeshArtifactGeometricNormals(MeshArtifact& artifact, std::string& outError);
     bool ValidateMeshArtifact(const MeshArtifact& artifact, std::string& outError);
     bool StoreMeshArtifact(const std::filesystem::path& path, const MeshArtifact& artifact, std::string& outError);
     bool LoadMeshArtifact(const std::filesystem::path& path, MeshArtifact& outArtifact, std::string& outError);

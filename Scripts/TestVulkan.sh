@@ -185,6 +185,43 @@ for ((ATTEMPT = 1; ATTEMPT <= ITERATIONS; ++ATTEMPT)); do
         exit "$STATUS"
     fi
 
+    SURFACE_LOG="$LOG_BASE-surface-basis-attempt-$ATTEMPT.log"
+    set +e
+    (cd "$ROOT" && perl -e '
+        my $timeout = shift;
+        my $child = fork();
+        die "fork failed: $!\n" unless defined $child;
+        if ($child == 0) {
+            setpgrp(0, 0) or die "setpgrp failed: $!\n";
+            exec @ARGV or die "exec failed: $!\n";
+        }
+        $SIG{ALRM} = sub {
+            warn "Vulkan surface-basis child timed out after ${timeout}s; terminating process group\n";
+            kill "TERM", -$child;
+            sleep 1;
+            kill "KILL", -$child;
+            waitpid($child, 0);
+            exit 124;
+        };
+        alarm $timeout;
+        waitpid($child, 0);
+        alarm 0;
+        my $status = $?;
+        exit(128 + ($status & 127)) if $status & 127;
+        exit($status >> 8);
+    ' "$CHILD_TIMEOUT_SECONDS" "$EDITOR" --vulkan-render-smoke --vulkan-scene-viewport-raster-smoke --scene-surface-basis-material-id-smoke) 2>&1 | tee "$SURFACE_LOG"
+    SURFACE_STATUS=${PIPESTATUS[0]}
+    set -e
+    if [[ $SURFACE_STATUS -ne 0 ]]; then
+        echo "Dedicated Vulkan surface-basis smoke failed with exit code $SURFACE_STATUS on attempt $ATTEMPT/$ITERATIONS." >&2
+        exit "$SURFACE_STATUS"
+    fi
+    if ! grep -Fq 'SceneSurfaceBasisMaterialIdV1 backend=Vulkan invocation=dedicated productionPSMain=preserved authoredNormal=1,2,3-normalized scale=1.3,0.7,2 rotationDegrees=0,0,23' "$SURFACE_LOG" \
+        || ! grep -Eq 'expectedDirection=-?[0-9]+([.][0-9]+)?,-?[0-9]+([.][0-9]+)?,-?[0-9]+([.][0-9]+)? readback=[0-9]+,[0-9]+,[0-9]+ expected=[0-9]+,[0-9]+,[0-9]+ tolerance=4 materialId=1 normalTransform=S\^-1\*R interface=production-scene retention=exact-graph-token result=pass' "$SURFACE_LOG"; then
+        echo "Dedicated Vulkan surface-basis smoke did not prove oblique normal transformation and material-ID readback." >&2
+        exit 1
+    fi
+
     for MARKER in "${REQUIRED_MARKERS[@]}"; do
         if ! grep -Fq "$MARKER" "$LOG_FILE"; then
             echo "Vulkan render smoke did not emit required marker on attempt $ATTEMPT/$ITERATIONS: $MARKER" >&2

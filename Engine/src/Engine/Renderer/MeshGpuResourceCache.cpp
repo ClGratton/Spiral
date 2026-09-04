@@ -38,6 +38,7 @@ namespace Engine
                     const MeshArtifactVertex& right = other.Vertices[index];
                     for (size_t component = 0; component < 3; ++component)
                         if (std::bit_cast<u32>(left.Position[component]) != std::bit_cast<u32>(right.Position[component])
+                            || std::bit_cast<u32>(left.Normal[component]) != std::bit_cast<u32>(right.Normal[component])
                             || std::bit_cast<u32>(left.Color[component]) != std::bit_cast<u32>(right.Color[component])) return false;
                     for (size_t component = 0; component < 2; ++component)
                         if (std::bit_cast<u32>(left.UV[component]) != std::bit_cast<u32>(right.UV[component])) return false;

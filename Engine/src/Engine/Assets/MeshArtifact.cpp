@@ -2,6 +2,8 @@
 
 #include "Engine/Assets/AssetRegistry.h"
 
+#include <algorithm>
+#include <array>
 #include <atomic>
 #include <cmath>
 #include <cstdio>
@@ -22,15 +24,35 @@ namespace Engine
 {
     namespace
     {
-        constexpr u32 kMeshArtifactVersion = 1;
-        constexpr u64 kMeshArtifactVertexStrideBytes = 32;
+        constexpr u32 kMeshArtifactVersion = 2;
+        constexpr u64 kLegacyMeshArtifactVertexStrideBytes = 32;
+        constexpr u64 kMeshArtifactVertexStrideBytes = 44;
         constexpr u64 kMeshArtifactIndexStrideBytes = 4;
         constexpr u64 kMaxMeshArtifactVertices = 16ull * 1024ull * 1024ull;
         constexpr u64 kMaxMeshArtifactIndices = 48ull * 1024ull * 1024ull;
+        constexpr double kMeshArtifactNormalLengthTolerance = 0.0001;
 
         bool IsFinite(float value)
         {
             return std::isfinite(value);
+        }
+
+        bool IsZeroNormal(const MeshArtifactVertex& vertex)
+        {
+            return vertex.Normal[0] == 0.0f && vertex.Normal[1] == 0.0f && vertex.Normal[2] == 0.0f;
+        }
+
+        bool Normalize(float normal[3])
+        {
+            const double lengthSquared = static_cast<double>(normal[0]) * normal[0]
+                + static_cast<double>(normal[1]) * normal[1]
+                + static_cast<double>(normal[2]) * normal[2];
+            if (!std::isfinite(lengthSquared) || lengthSquared <= 0.0)
+                return false;
+            const double inverseLength = 1.0 / std::sqrt(lengthSquared);
+            for (size_t component = 0; component < 3; ++component)
+                normal[component] = static_cast<float>(normal[component] * inverseLength);
+            return IsFinite(normal[0]) && IsFinite(normal[1]) && IsFinite(normal[2]);
         }
 
         bool ReadExpected(std::istream& input, std::string_view expected)
@@ -84,31 +106,23 @@ namespace Engine
         MeshArtifact candidate;
         candidate.Asset = asset;
         candidate.SourcePath = std::string(kDefaultSceneMeshSourcePath);
+        const auto vertex = [](std::array<float, 3> position, std::array<float, 3> normal,
+                               std::array<float, 3> color, std::array<float, 2> uv)
+        {
+            MeshArtifactVertex result;
+            std::copy(position.begin(), position.end(), result.Position);
+            std::copy(normal.begin(), normal.end(), result.Normal);
+            std::copy(color.begin(), color.end(), result.Color);
+            std::copy(uv.begin(), uv.end(), result.UV);
+            return result;
+        };
         candidate.Vertices = {
-            {{ -0.75f, -0.75f, -0.75f }, { 0.22f, 0.68f, 1.00f }, { 0.0f, 1.0f }},
-            {{ -0.75f,  0.75f, -0.75f }, { 0.22f, 0.68f, 1.00f }, { 0.0f, 0.0f }},
-            {{  0.75f,  0.75f, -0.75f }, { 0.22f, 0.68f, 1.00f }, { 1.0f, 0.0f }},
-            {{  0.75f, -0.75f, -0.75f }, { 0.22f, 0.68f, 1.00f }, { 1.0f, 1.0f }},
-            {{  0.75f, -0.75f,  0.75f }, { 0.95f, 0.72f, 0.28f }, { 0.0f, 1.0f }},
-            {{  0.75f,  0.75f,  0.75f }, { 0.95f, 0.72f, 0.28f }, { 0.0f, 0.0f }},
-            {{ -0.75f,  0.75f,  0.75f }, { 0.95f, 0.72f, 0.28f }, { 1.0f, 0.0f }},
-            {{ -0.75f, -0.75f,  0.75f }, { 0.95f, 0.72f, 0.28f }, { 1.0f, 1.0f }},
-            {{ -0.75f, -0.75f,  0.75f }, { 0.26f, 0.88f, 0.55f }, { 0.0f, 1.0f }},
-            {{ -0.75f,  0.75f,  0.75f }, { 0.26f, 0.88f, 0.55f }, { 0.0f, 0.0f }},
-            {{ -0.75f,  0.75f, -0.75f }, { 0.26f, 0.88f, 0.55f }, { 1.0f, 0.0f }},
-            {{ -0.75f, -0.75f, -0.75f }, { 0.26f, 0.88f, 0.55f }, { 1.0f, 1.0f }},
-            {{  0.75f, -0.75f, -0.75f }, { 0.88f, 0.35f, 0.37f }, { 0.0f, 1.0f }},
-            {{  0.75f,  0.75f, -0.75f }, { 0.88f, 0.35f, 0.37f }, { 0.0f, 0.0f }},
-            {{  0.75f,  0.75f,  0.75f }, { 0.88f, 0.35f, 0.37f }, { 1.0f, 0.0f }},
-            {{  0.75f, -0.75f,  0.75f }, { 0.88f, 0.35f, 0.37f }, { 1.0f, 1.0f }},
-            {{ -0.75f,  0.75f, -0.75f }, { 0.72f, 0.52f, 0.96f }, { 0.0f, 1.0f }},
-            {{ -0.75f,  0.75f,  0.75f }, { 0.72f, 0.52f, 0.96f }, { 0.0f, 0.0f }},
-            {{  0.75f,  0.75f,  0.75f }, { 0.72f, 0.52f, 0.96f }, { 1.0f, 0.0f }},
-            {{  0.75f,  0.75f, -0.75f }, { 0.72f, 0.52f, 0.96f }, { 1.0f, 1.0f }},
-            {{ -0.75f, -0.75f,  0.75f }, { 0.24f, 0.75f, 0.82f }, { 0.0f, 1.0f }},
-            {{ -0.75f, -0.75f, -0.75f }, { 0.24f, 0.75f, 0.82f }, { 0.0f, 0.0f }},
-            {{  0.75f, -0.75f, -0.75f }, { 0.24f, 0.75f, 0.82f }, { 1.0f, 0.0f }},
-            {{  0.75f, -0.75f,  0.75f }, { 0.24f, 0.75f, 0.82f }, { 1.0f, 1.0f }}
+            vertex({-0.75f,-0.75f,-0.75f},{0,0,-1},{0.22f,0.68f,1.00f},{0,1}), vertex({-0.75f,0.75f,-0.75f},{0,0,-1},{0.22f,0.68f,1.00f},{0,0}), vertex({0.75f,0.75f,-0.75f},{0,0,-1},{0.22f,0.68f,1.00f},{1,0}), vertex({0.75f,-0.75f,-0.75f},{0,0,-1},{0.22f,0.68f,1.00f},{1,1}),
+            vertex({0.75f,-0.75f,0.75f},{0,0,1},{0.95f,0.72f,0.28f},{0,1}), vertex({0.75f,0.75f,0.75f},{0,0,1},{0.95f,0.72f,0.28f},{0,0}), vertex({-0.75f,0.75f,0.75f},{0,0,1},{0.95f,0.72f,0.28f},{1,0}), vertex({-0.75f,-0.75f,0.75f},{0,0,1},{0.95f,0.72f,0.28f},{1,1}),
+            vertex({-0.75f,-0.75f,0.75f},{-1,0,0},{0.26f,0.88f,0.55f},{0,1}), vertex({-0.75f,0.75f,0.75f},{-1,0,0},{0.26f,0.88f,0.55f},{0,0}), vertex({-0.75f,0.75f,-0.75f},{-1,0,0},{0.26f,0.88f,0.55f},{1,0}), vertex({-0.75f,-0.75f,-0.75f},{-1,0,0},{0.26f,0.88f,0.55f},{1,1}),
+            vertex({0.75f,-0.75f,-0.75f},{1,0,0},{0.88f,0.35f,0.37f},{0,1}), vertex({0.75f,0.75f,-0.75f},{1,0,0},{0.88f,0.35f,0.37f},{0,0}), vertex({0.75f,0.75f,0.75f},{1,0,0},{0.88f,0.35f,0.37f},{1,0}), vertex({0.75f,-0.75f,0.75f},{1,0,0},{0.88f,0.35f,0.37f},{1,1}),
+            vertex({-0.75f,0.75f,-0.75f},{0,1,0},{0.72f,0.52f,0.96f},{0,1}), vertex({-0.75f,0.75f,0.75f},{0,1,0},{0.72f,0.52f,0.96f},{0,0}), vertex({0.75f,0.75f,0.75f},{0,1,0},{0.72f,0.52f,0.96f},{1,0}), vertex({0.75f,0.75f,-0.75f},{0,1,0},{0.72f,0.52f,0.96f},{1,1}),
+            vertex({-0.75f,-0.75f,0.75f},{0,-1,0},{0.24f,0.75f,0.82f},{0,1}), vertex({-0.75f,-0.75f,-0.75f},{0,-1,0},{0.24f,0.75f,0.82f},{0,0}), vertex({0.75f,-0.75f,-0.75f},{0,-1,0},{0.24f,0.75f,0.82f},{1,0}), vertex({0.75f,-0.75f,0.75f},{0,-1,0},{0.24f,0.75f,0.82f},{1,1})
         };
         candidate.Indices = {
             0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7, 8, 9, 10, 8, 10, 11,
@@ -119,6 +133,109 @@ namespace Engine
             return false;
 
         outArtifact = std::move(candidate);
+        outError.clear();
+        return true;
+    }
+
+    bool EnsureMeshArtifactGeometricNormals(MeshArtifact& artifact, std::string& outError)
+    {
+        std::vector<MeshArtifactVertex> candidate = artifact.Vertices;
+        for (const MeshArtifactPrimitive& primitive : artifact.Primitives)
+        {
+            if (primitive.VertexByteOffset % sizeof(MeshArtifactVertex) != 0
+                || primitive.VertexByteSize % sizeof(MeshArtifactVertex) != 0
+                || primitive.IndexByteOffset % sizeof(u32) != 0
+                || primitive.IndexByteSize % sizeof(u32) != 0)
+            {
+                outError = "mesh normal generation requires current element-aligned primitive ranges";
+                return false;
+            }
+            const size_t firstVertex = static_cast<size_t>(primitive.VertexByteOffset / sizeof(MeshArtifactVertex));
+            const size_t vertexCount = static_cast<size_t>(primitive.VertexByteSize / sizeof(MeshArtifactVertex));
+            const size_t firstIndex = static_cast<size_t>(primitive.IndexByteOffset / sizeof(u32));
+            const size_t indexCount = static_cast<size_t>(primitive.IndexByteSize / sizeof(u32));
+            if (firstVertex > candidate.size() || vertexCount > candidate.size() - firstVertex
+                || firstIndex > artifact.Indices.size() || indexCount > artifact.Indices.size() - firstIndex
+                || indexCount == 0 || indexCount % 3 != 0)
+            {
+                outError = "mesh normal generation received an invalid primitive range";
+                return false;
+            }
+            bool anyZero = false;
+            bool anyNonzero = false;
+            for (size_t index = firstVertex; index < firstVertex + vertexCount; ++index)
+            {
+                const MeshArtifactVertex& vertex = candidate[index];
+                const double lengthSquared = static_cast<double>(vertex.Normal[0]) * vertex.Normal[0]
+                    + static_cast<double>(vertex.Normal[1]) * vertex.Normal[1]
+                    + static_cast<double>(vertex.Normal[2]) * vertex.Normal[2];
+                if (!std::isfinite(lengthSquared))
+                {
+                    outError = "mesh primitive has a non-finite authored geometric normal";
+                    return false;
+                }
+                if (IsZeroNormal(vertex))
+                    anyZero = true;
+                else
+                {
+                    anyNonzero = true;
+                    if (std::abs(lengthSquared - 1.0) > kMeshArtifactNormalLengthTolerance)
+                    {
+                        outError = "mesh primitive has a non-unit authored geometric normal";
+                        return false;
+                    }
+                }
+            }
+            if (anyZero && anyNonzero)
+            {
+                outError = "mesh primitive mixes authored and missing geometric normals";
+                return false;
+            }
+            if (!anyZero)
+                continue;
+
+            std::vector<std::array<double, 3>> accumulated(vertexCount);
+            for (size_t index = firstIndex; index < firstIndex + indexCount; index += 3)
+            {
+                const u32 ia = artifact.Indices[index], ib = artifact.Indices[index + 1], ic = artifact.Indices[index + 2];
+                if (ia < firstVertex || ib < firstVertex || ic < firstVertex
+                    || ia >= firstVertex + vertexCount || ib >= firstVertex + vertexCount || ic >= firstVertex + vertexCount)
+                {
+                    outError = "mesh normal generation found an index outside its primitive";
+                    return false;
+                }
+                const MeshArtifactVertex& a = candidate[ia];
+                const MeshArtifactVertex& b = candidate[ib];
+                const MeshArtifactVertex& c = candidate[ic];
+                const double ab[3] { b.Position[0] - a.Position[0], b.Position[1] - a.Position[1], b.Position[2] - a.Position[2] };
+                const double ac[3] { c.Position[0] - a.Position[0], c.Position[1] - a.Position[1], c.Position[2] - a.Position[2] };
+                const std::array<double, 3> face {
+                    ab[1] * ac[2] - ab[2] * ac[1],
+                    ab[2] * ac[0] - ab[0] * ac[2],
+                    ab[0] * ac[1] - ab[1] * ac[0]
+                };
+                const double lengthSquared = face[0] * face[0] + face[1] * face[1] + face[2] * face[2];
+                if (!std::isfinite(lengthSquared) || lengthSquared <= 0.0)
+                {
+                    outError = "mesh normal generation rejects degenerate triangles";
+                    return false;
+                }
+                for (u32 vertexIndex : { ia, ib, ic })
+                    for (size_t component = 0; component < 3; ++component)
+                        accumulated[vertexIndex - firstVertex][component] += face[component];
+            }
+            for (size_t index = 0; index < vertexCount; ++index)
+            {
+                for (size_t component = 0; component < 3; ++component)
+                    candidate[firstVertex + index].Normal[component] = static_cast<float>(accumulated[index][component]);
+                if (!Normalize(candidate[firstVertex + index].Normal))
+                {
+                    outError = "mesh normal generation found an unreferenced or cancelling vertex normal";
+                    return false;
+                }
+            }
+        }
+        artifact.Vertices = std::move(candidate);
         outError.clear();
         return true;
     }
@@ -186,6 +303,22 @@ namespace Engine
                     outError = "mesh artifact has a non-finite position";
                     return false;
                 }
+            double normalLengthSquared = 0.0;
+            for (float component : vertex.Normal)
+            {
+                if (!IsFinite(component))
+                {
+                    outError = "mesh artifact has a non-finite geometric normal";
+                    return false;
+                }
+                normalLengthSquared += static_cast<double>(component) * component;
+            }
+            if (!std::isfinite(normalLengthSquared)
+                || std::abs(normalLengthSquared - 1.0) > kMeshArtifactNormalLengthTolerance)
+            {
+                outError = "mesh artifact geometric normal is not normalized";
+                return false;
+            }
             for (float component : vertex.Color)
                 if (!IsFinite(component))
                 {
@@ -268,7 +401,7 @@ namespace Engine
         output << "SpiralMeshArtifact " << kMeshArtifactVersion << '\n';
         output << "Source " << std::quoted(artifact.SourcePath) << '\n';
         output << "MeshAsset " << artifact.Asset << '\n';
-        output << "VertexLayout PositionColorUV32F\n";
+        output << "VertexLayout PositionNormalColorUV32F\n";
         output << "VertexStrideBytes " << kMeshArtifactVertexStrideBytes << '\n';
         output << "VertexCount " << artifact.Vertices.size() << '\n';
         output << "IndexFormat UInt32\n";
@@ -283,6 +416,7 @@ namespace Engine
         for (const MeshArtifactVertex& vertex : artifact.Vertices)
         {
             output << vertex.Position[0] << ' ' << vertex.Position[1] << ' ' << vertex.Position[2] << ' '
+                << vertex.Normal[0] << ' ' << vertex.Normal[1] << ' ' << vertex.Normal[2] << ' '
                 << vertex.Color[0] << ' ' << vertex.Color[1] << ' ' << vertex.Color[2] << ' '
                 << vertex.UV[0] << ' ' << vertex.UV[1] << '\n';
         }
@@ -325,11 +459,13 @@ namespace Engine
         u64 primitiveCount = 0;
         std::string layout;
         std::string indexFormat;
-        if (!ReadExpected(input, "SpiralMeshArtifact") || !(input >> version) || version != kMeshArtifactVersion
+        if (!ReadExpected(input, "SpiralMeshArtifact") || !(input >> version) || (version != 1 && version != kMeshArtifactVersion)
             || !ReadExpected(input, "Source") || !(input >> std::quoted(candidate.SourcePath))
             || !ReadExpected(input, "MeshAsset") || !(input >> candidate.Asset)
-            || !ReadExpected(input, "VertexLayout") || !(input >> layout) || layout != "PositionColorUV32F"
-            || !ReadExpected(input, "VertexStrideBytes") || !(input >> vertexCount) || vertexCount != kMeshArtifactVertexStrideBytes
+            || !ReadExpected(input, "VertexLayout") || !(input >> layout)
+            || (version == 1 ? layout != "PositionColorUV32F" : layout != "PositionNormalColorUV32F")
+            || !ReadExpected(input, "VertexStrideBytes") || !(input >> vertexCount)
+            || vertexCount != (version == 1 ? kLegacyMeshArtifactVertexStrideBytes : kMeshArtifactVertexStrideBytes)
             || !ReadExpected(input, "VertexCount") || !(input >> vertexCount) || vertexCount == 0 || vertexCount > kMaxMeshArtifactVertices
             || !ReadExpected(input, "IndexFormat") || !(input >> indexFormat) || indexFormat != "UInt32"
             || !ReadExpected(input, "IndexStrideBytes") || !(input >> indexCount) || indexCount != kMeshArtifactIndexStrideBytes
@@ -348,6 +484,20 @@ namespace Engine
                 outError = "cooked mesh artifact primitive range is malformed";
                 return false;
             }
+        if (version == 1)
+        {
+            for (MeshArtifactPrimitive& primitive : candidate.Primitives)
+            {
+                if (primitive.VertexByteOffset % kLegacyMeshArtifactVertexStrideBytes != 0
+                    || primitive.VertexByteSize % kLegacyMeshArtifactVertexStrideBytes != 0)
+                {
+                    outError = "legacy cooked mesh artifact primitive range is malformed";
+                    return false;
+                }
+                primitive.VertexByteOffset = primitive.VertexByteOffset / kLegacyMeshArtifactVertexStrideBytes * kMeshArtifactVertexStrideBytes;
+                primitive.VertexByteSize = primitive.VertexByteSize / kLegacyMeshArtifactVertexStrideBytes * kMeshArtifactVertexStrideBytes;
+            }
+        }
         if (!ReadExpected(input, "Vertices"))
         {
             outError = "cooked mesh artifact is missing vertex data";
@@ -356,8 +506,17 @@ namespace Engine
 
         candidate.Vertices.resize(static_cast<size_t>(vertexCount));
         for (MeshArtifactVertex& vertex : candidate.Vertices)
-            if (!(input >> vertex.Position[0] >> vertex.Position[1] >> vertex.Position[2]
-                >> vertex.Color[0] >> vertex.Color[1] >> vertex.Color[2]
+            if (!(input >> vertex.Position[0] >> vertex.Position[1] >> vertex.Position[2]))
+            {
+                outError = "cooked mesh artifact vertex data is malformed";
+                return false;
+            }
+            else if (version == 2 && !(input >> vertex.Normal[0] >> vertex.Normal[1] >> vertex.Normal[2]))
+            {
+                outError = "cooked mesh artifact geometric normal data is malformed";
+                return false;
+            }
+            else if (!(input >> vertex.Color[0] >> vertex.Color[1] >> vertex.Color[2]
                 >> vertex.UV[0] >> vertex.UV[1]))
             {
                 outError = "cooked mesh artifact vertex data is malformed";
@@ -376,7 +535,9 @@ namespace Engine
                 outError = "cooked mesh artifact index data is malformed";
                 return false;
             }
-        if (!ReadExpected(input, "End") || !ValidateMeshArtifact(candidate, outError))
+        if (!ReadExpected(input, "End")
+            || (version == 1 && !EnsureMeshArtifactGeometricNormals(candidate, outError))
+            || !ValidateMeshArtifact(candidate, outError))
             return false;
 
         std::string trailing;

@@ -5,6 +5,7 @@
 #include "Engine/Renderer/TextureGpuResourceCache.h"
 #include "Engine/Renderer/TextureRuntimePublication.h"
 #include "Engine/Renderer/Renderer.h"
+#include "Engine/Renderer/SceneSurfaceConstants.h"
 
 #include "Engine/Core/Log.h"
 #include "Engine/Core/Application.h"
@@ -156,6 +157,7 @@ namespace Engine
             if (args.HasFlag("--vulkan-scene-viewport-raster-smoke") && !RunVulkanSceneViewportRasterSmoke())
             {
                 Log::Error("Vulkan Scene viewport raster smoke failed");
+                m_VulkanSceneRenderer.reset();
                 m_VulkanContext->Shutdown();
                 m_VulkanContext.reset();
                 return false;
@@ -1618,23 +1620,12 @@ float4 PSMain(PixelInput input) : SV_Target { return ReadOnlyTextures[1].SampleL
     {
         constexpr u32 width = 64, height = 12, bandHeight = 4, tableCapacity = 8;
         const bool vulkan = device.GetCapabilities().ActiveBackend == RHI::Backend::NVRHIVulkan;
-        struct Vertex { float Position[3]; float Color[3]; float UV[2]; };
-        struct Constants
-        {
-            float ViewProjection[16];
-            float BaseColorAndAlphaCutoff[4];
-            float EmissiveAndStrength[4];
-            float SurfaceFactors[4];
-            float CallistoFactors[4];
-            u32 TextureIndices0[4];
-            u32 TextureIndices1[4];
-            u32 TextureState[4];
-        };
-        static_assert(sizeof(Constants) == 176);
+        struct Vertex { float Position[3]; float Normal[3]; float Color[3]; float UV[2]; };
+        using Constants = SceneSurfaceConstants;
         const std::array<Vertex, 3> vertices {{
-            {{ -1.0f, -1.0f, 0.5f }, {}, {}},
-            {{ -1.0f, 3.0f, 0.5f }, {}, {}},
-            {{ 3.0f, -1.0f, 0.5f }, {}, {}}
+            {{ -1.0f, -1.0f, 0.5f }, { 0.0f, 0.0f, 1.0f }, {}, {}},
+            {{ -1.0f, 3.0f, 0.5f }, { 0.0f, 0.0f, 1.0f }, {}, {}},
+            {{ 3.0f, -1.0f, 0.5f }, { 0.0f, 0.0f, 1.0f }, {}, {}}
         }};
         const std::array<u16, 3> indices {{ 0, 1, 2 }};
 
@@ -1658,7 +1649,7 @@ float4 PSMain(PixelInput input) : SV_Target { return ReadOnlyTextures[1].SampleL
             request.CompilerVersion = "2026.13.1";
             request.CompilerPackageHash = GE_SLANG_PACKAGE_SHA256;
             request.ExpectedLayout = {
-                { "ViewportConstants", 'b', 0, 0, stage, "ConstantBuffer", "struct{ViewProjection:float32x4x4:row-major@0,BaseColorAndAlphaCutoff:float32x4@64,EmissiveAndStrength:float32x4@80,SurfaceFactors:float32x4@96,CallistoFactors:float32x4@112,TextureIndices0:uint32x4@128,TextureIndices1:uint32x4@144,TextureState:uint32x4@160}", 1, 176, 0, 0 },
+                { "ViewportConstants", 'b', 0, 0, stage, "ConstantBuffer", "struct{ViewProjection:float32x4x4:row-major@0,NormalTransform:float32x4x4:row-major@64,BaseColorAndAlphaCutoff:float32x4@128,EmissiveAndStrength:float32x4@144,SurfaceFactors:float32x4@160,CallistoFactors:float32x4@176,TextureIndices0:uint32x4@192,TextureIndices1:uint32x4@208,TextureState:uint32x4@224,MaterialState:uint32x4@240}", 1, 256, 0, 0 },
                 { "ReadOnlySamplers", 's', 0, 1, stage, "SamplerState", "sampler", tableCapacity, 0, 0, 0 },
                 { "ReadOnlyTextures", 't', 0, 1, stage, "Texture2D", "float32x4", tableCapacity, 0, 1, 4 }
             };
@@ -1666,8 +1657,9 @@ float4 PSMain(PixelInput input) : SV_Target { return ReadOnlyTextures[1].SampleL
             {
                 request.ExpectedVertexInputs = {
                     { "Position", "POSITION", 0, 0, "float32x3", 12, 1, 3 },
-                    { "Color", "COLOR", 0, 1, "float32x3", 12, 1, 3 },
-                    { "UV", "TEXCOORD", 0, 2, "float32x2", 8, 1, 2 }
+                    { "Normal", "NORMAL", 0, 1, "float32x3", 12, 1, 3 },
+                    { "Color", "COLOR", 0, 2, "float32x3", 12, 1, 3 },
+                    { "UV", "TEXCOORD", 0, 3, "float32x2", 8, 1, 2 }
                 };
             }
             return request;
@@ -1713,6 +1705,7 @@ float4 PSMain(PixelInput input) : SV_Target { return ReadOnlyTextures[1].SampleL
         pipelineDescription.PixelShader = pixelShader.get();
         pipelineDescription.VertexInputs = {
             { "POSITION", 0, RHI::Format::R32G32B32Float, 0, offsetof(Vertex, Position) },
+            { "NORMAL", 0, RHI::Format::R32G32B32Float, 0, offsetof(Vertex, Normal) },
             { "COLOR", 0, RHI::Format::R32G32B32Float, 0, offsetof(Vertex, Color) },
             { "TEXCOORD", 0, RHI::Format::R32G32Float, 0, offsetof(Vertex, UV) }
         };
@@ -1825,6 +1818,8 @@ float4 PSMain(PixelInput input) : SV_Target { return ReadOnlyTextures[1].SampleL
             Constants constants {};
             constants.ViewProjection[0] = constants.ViewProjection[5]
                 = constants.ViewProjection[10] = constants.ViewProjection[15] = 1.0f;
+            constants.NormalTransform[0] = constants.NormalTransform[5]
+                = constants.NormalTransform[10] = constants.NormalTransform[15] = 1.0f;
             constants.TextureIndices0[0] = bindings.Handles[0].Index;
             constants.TextureIndices0[1] = bindings.Handles[1].Index;
             constants.TextureIndices0[2] = bindings.Handles[2].Index;
@@ -2102,18 +2097,7 @@ float4 PSMain(PixelInput input) : SV_Target { return ReadOnlyTextures[1].SampleL
             ? RHI::SelectReadOnlyTextureTableCapacity(device->GetCapabilities()) : 0;
         struct Vertex { float Position[3]; float Color[3]; float UV[2]; float Normal[3]; };
         static_assert(sizeof(Vertex) == 44 && offsetof(Vertex, Normal) == 32);
-        struct Constants
-        {
-            float ViewProjection[16];
-            float BaseColorAndAlphaCutoff[4];
-            float EmissiveAndStrength[4];
-            float SurfaceFactors[4];
-            float CallistoFactors[4];
-            u32 TextureIndices0[4];
-            u32 TextureIndices1[4];
-            u32 TextureState[4];
-        };
-        static_assert(sizeof(Constants) == 176);
+        using Constants = SceneSurfaceConstants;
         const std::array<Vertex, 3> vertices {{
             {{ -0.7f, -0.6f, 0.5f }, { 0.2f, 0.4f, 0.6f }, { 0.25f, 0.75f }, { 0.8f, 0.1f, 0.3f }},
             {{ 0.7f, -0.6f, 0.5f }, { 0.2f, 0.4f, 0.6f }, { 0.25f, 0.75f }, { 0.8f, 0.1f, 0.3f }},
@@ -2123,6 +2107,8 @@ float4 PSMain(PixelInput input) : SV_Target { return ReadOnlyTextures[1].SampleL
         Constants constants {};
         constants.ViewProjection[0] = constants.ViewProjection[5]
             = constants.ViewProjection[10] = constants.ViewProjection[15] = 1.0f;
+        constants.NormalTransform[0] = constants.NormalTransform[5]
+            = constants.NormalTransform[10] = constants.NormalTransform[15] = 1.0f;
         constants.BaseColorAndAlphaCutoff[0] = 0.4f;
         constants.BaseColorAndAlphaCutoff[1] = 0.1f;
         constants.BaseColorAndAlphaCutoff[2] = 0.075f;
@@ -2187,7 +2173,7 @@ float4 PSVertexStrideSmoke(RHIVertexStrideOutput input) : SV_Target0
             request.CompilerPackageHash = GE_SLANG_PACKAGE_SHA256;
             request.Defines = { "GE_READ_ONLY_TEXTURE_CAPACITY=" + std::to_string(tableCapacity) };
             request.ExpectedLayout = {
-                { "ViewportConstants", 'b', 0, 0, stage, "ConstantBuffer", "struct{ViewProjection:float32x4x4:row-major@0,BaseColorAndAlphaCutoff:float32x4@64,EmissiveAndStrength:float32x4@80,SurfaceFactors:float32x4@96,CallistoFactors:float32x4@112,TextureIndices0:uint32x4@128,TextureIndices1:uint32x4@144,TextureState:uint32x4@160}", 1, 176, 0, 0 },
+                { "ViewportConstants", 'b', 0, 0, stage, "ConstantBuffer", "struct{ViewProjection:float32x4x4:row-major@0,NormalTransform:float32x4x4:row-major@64,BaseColorAndAlphaCutoff:float32x4@128,EmissiveAndStrength:float32x4@144,SurfaceFactors:float32x4@160,CallistoFactors:float32x4@176,TextureIndices0:uint32x4@192,TextureIndices1:uint32x4@208,TextureState:uint32x4@224,MaterialState:uint32x4@240}", 1, 256, 0, 0 },
                 { "ReadOnlySamplers", 's', 0, 1, stage, "SamplerState", "sampler", tableCapacity, 0, 0, 0 },
                 { "ReadOnlyTextures", 't', 0, 1, stage, "Texture2D", "float32x4", tableCapacity, 0, 1, 4 }
             };
@@ -2263,15 +2249,54 @@ float4 PSVertexStrideSmoke(RHIVertexStrideOutput input) : SV_Target0
         RHI::Device* device = m_VulkanContext ? m_VulkanContext->GetRHIDevice() : nullptr;
         if (!device)
             return false;
+        const bool surfaceProbeRequested = Application::Get().GetSpecification().CommandLineArgs.HasFlag(
+            "--scene-surface-basis-material-id-smoke");
         m_VulkanSceneRenderer = CreateScope<NVRHIVulkanViewportSceneRenderer>();
-        if (!m_VulkanSceneRenderer->Initialize(device))
+        if (!(surfaceProbeRequested
+                ? m_VulkanSceneRenderer->InitializeSurfaceBasisProbe(device)
+                : m_VulkanSceneRenderer->Initialize(device)))
             return false;
 
         AssetRegistry smokeRegistry;
         AssetHandle smokeMesh = kInvalidAssetHandle;
         AssetHandle smokeTexture = kInvalidAssetHandle;
         std::string artifactError;
-        if (!EnsureDefaultSceneMeshArtifact(smokeRegistry, smokeMesh, artifactError))
+        if (surfaceProbeRequested)
+        {
+            const std::string sourcePath = "Engine/Generated/VulkanSurfaceBasisProbe.mesh";
+            smokeMesh = smokeRegistry.RegisterAsset(AssetType::Mesh, sourcePath, "Vulkan Surface Basis Probe");
+            MeshArtifact probeArtifact;
+            probeArtifact.Asset = smokeMesh;
+            probeArtifact.SourcePath = sourcePath;
+            constexpr float normalX = 0.26726124f;
+            constexpr float normalY = 0.53452248f;
+            constexpr float normalZ = 0.80178373f;
+            const auto vertex = [=](float x, float y, float z, float u, float v)
+            {
+                MeshArtifactVertex result;
+                result.Position[0] = x; result.Position[1] = y; result.Position[2] = z;
+                result.Normal[0] = normalX; result.Normal[1] = normalY; result.Normal[2] = normalZ;
+                result.Color[0] = result.Color[1] = result.Color[2] = 1.0f;
+                result.UV[0] = u; result.UV[1] = v;
+                return result;
+            };
+            probeArtifact.Vertices = {
+                vertex(-1.0f, -1.0f, 0.125f, 0.0f, 1.0f),
+                vertex(-1.0f, 3.0f, 0.125f, 0.0f, 0.0f),
+                vertex(3.0f, -1.0f, 0.125f, 1.0f, 1.0f)
+            };
+            probeArtifact.Indices = { 0, 1, 2 };
+            probeArtifact.Primitives = {{ 0, 0, 0,
+                sizeof(MeshArtifactVertex) * probeArtifact.Vertices.size(),
+                0, sizeof(u32) * probeArtifact.Indices.size() }};
+            if (smokeMesh == kInvalidAssetHandle
+                || !StoreMeshArtifact(GetCookedMeshArtifactPath(smokeMesh), probeArtifact, artifactError))
+            {
+                Log::Error("Vulkan surface-basis probe could not publish its authored-normal artifact: ", artifactError);
+                return false;
+            }
+        }
+        else if (!EnsureDefaultSceneMeshArtifact(smokeRegistry, smokeMesh, artifactError))
         {
             Log::Error("Vulkan Scene viewport smoke could not publish its default mesh artifact: ", artifactError);
             return false;
@@ -2326,6 +2351,11 @@ float4 PSVertexStrideSmoke(RHIVertexStrideOutput input) : SV_Target0
         mesh.MeshAsset = smokeMesh;
         mesh.MaterialAsset = smokeMaterial;
         mesh.Transform.Position = view.Camera.TranslationOriginPosition;
+        if (surfaceProbeRequested)
+        {
+            mesh.Transform.Scale = { 1.3f, 0.7f, 2.0f };
+            mesh.Transform.RotationDegrees = { 0.0f, 0.0f, 23.0f };
+        }
         snapshot.Meshes.push_back(mesh);
         Renderer::PublishSceneRenderSnapshot(snapshot);
         if (!Renderer::PrepareCurrentSceneRasterFrame())
@@ -2336,10 +2366,71 @@ float4 PSVertexStrideSmoke(RHIVertexStrideOutput input) : SV_Target0
         const ClearColor background { 0.04f, 0.05f, 0.06f, 1.0f };
         const bool firstRaster = m_VulkanSceneRenderer->RenderCurrentSnapshot(48, 36, background);
         const u64 firstGeneration = m_VulkanSceneRenderer->GetOutputGeneration();
-        const bool resizedRaster = firstRaster && m_VulkanSceneRenderer->RenderCurrentSnapshot(64, 48, background);
+        RHI::TextureReadback firstSurfaceProbeReadback;
+        const bool firstSurfaceProbeRetired = !surfaceProbeRequested
+            || (firstRaster && m_VulkanSceneRenderer->ReadbackColor(firstSurfaceProbeReadback));
+        const bool resizedRaster = firstRaster && firstSurfaceProbeRetired
+            && m_VulkanSceneRenderer->RenderCurrentSnapshot(64, 48, background);
         const u64 outputGeneration = m_VulkanSceneRenderer->GetOutputGeneration();
         RHI::TextureReadback readback;
         const bool readbackOk = resizedRaster && m_VulkanSceneRenderer->ReadbackColor(readback);
+        if (surfaceProbeRequested)
+        {
+            const std::shared_ptr<const SceneRasterFrame> surfaceFrame = Renderer::GetPreparedSceneRasterFrame();
+            const u8* surfacePixel = readbackOk && readback.RowPitchBytes >= readback.Extent.Width * 4
+                && readback.Data.size() >= static_cast<size_t>(readback.RowPitchBytes) * readback.Extent.Height
+                ? &readback.Data[static_cast<size_t>(readback.Extent.Height / 2) * readback.RowPitchBytes
+                    + static_cast<size_t>(readback.Extent.Width / 2) * 4]
+                : nullptr;
+            constexpr double pi = 3.14159265358979323846;
+            constexpr double authoredLength = 3.7416573867739413856;
+            double expectedX = (1.0 / authoredLength) / 1.3;
+            double expectedY = (2.0 / authoredLength) / 0.7;
+            double expectedZ = (3.0 / authoredLength) / 2.0;
+            const double roll = 23.0 * pi / 180.0;
+            const double rotatedX = expectedX * std::cos(roll) - expectedY * std::sin(roll);
+            const double rotatedY = expectedX * std::sin(roll) + expectedY * std::cos(roll);
+            expectedX = rotatedX;
+            expectedY = rotatedY;
+            const double expectedLength = std::sqrt(
+                expectedX * expectedX + expectedY * expectedY + expectedZ * expectedZ);
+            expectedX /= expectedLength;
+            expectedY /= expectedLength;
+            expectedZ /= expectedLength;
+            const auto expectedByte = [](double direction)
+            {
+                const double displayLinear = std::clamp(0.46 + direction * 0.25, 0.0, 1.0);
+                const double encoded = displayLinear <= 0.0031308
+                    ? displayLinear * 12.92
+                    : 1.055 * std::pow(displayLinear, 1.0 / 2.4) - 0.055;
+                return static_cast<u8>(std::clamp(
+                    static_cast<int>(std::lround(encoded * 255.0)), 0, 255));
+            };
+            const std::array<u8, 3> expectedPixel {
+                expectedByte(expectedX), expectedByte(expectedY), expectedByte(expectedZ)
+            };
+            const bool surfaceProbeOk = surfacePixel && surfaceFrame
+                && surfaceFrame->MaterialRows.size() == 2
+                && surfaceFrame->MaterialRows[1].SourceAsset == smokeMaterial
+                && !surfaceFrame->MaterialRows[1].IsError
+                && surfaceFrame->Instances.size() == 1
+                && surfaceFrame->Instances[0].MaterialId == 1
+                && std::abs(static_cast<int>(surfacePixel[0]) - expectedPixel[0]) <= 4
+                && std::abs(static_cast<int>(surfacePixel[1]) - expectedPixel[1]) <= 4
+                && std::abs(static_cast<int>(surfacePixel[2]) - expectedPixel[2]) <= 4
+                && surfacePixel[3] == 255;
+            Renderer::SetColorPipelineSettings(previousColorSettings);
+            Log::Info("SceneSurfaceBasisMaterialIdV1 backend=Vulkan invocation=dedicated productionPSMain=preserved authoredNormal=1,2,3-normalized scale=1.3,0.7,2 rotationDegrees=0,0,23 expectedDirection=",
+                expectedX, ",", expectedY, ",", expectedZ,
+                " readback=", surfacePixel ? static_cast<u32>(surfacePixel[0]) : 0, ",",
+                surfacePixel ? static_cast<u32>(surfacePixel[1]) : 0, ",",
+                surfacePixel ? static_cast<u32>(surfacePixel[2]) : 0,
+                " expected=", static_cast<u32>(expectedPixel[0]), ",",
+                static_cast<u32>(expectedPixel[1]), ",", static_cast<u32>(expectedPixel[2]),
+                " tolerance=4 materialId=1 normalTransform=S^-1*R interface=production-scene retention=exact-graph-token result=",
+                surfaceProbeOk ? "pass" : "fail");
+            return surfaceProbeOk;
+        }
         // Linear clear color after EV100=0 PBR-neutral mapping and explicit
         // sRGB output encoding.
         const std::array<u8, 4> expectedBackground { 25, 39, 48, 255 };

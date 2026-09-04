@@ -30,6 +30,16 @@ if ($VulkanResult.ExitCode -ne 0) {
     throw "Vulkan render smoke failed with exit code $($VulkanResult.ExitCode)."
 }
 
+$SurfaceResult = Invoke-BoundedProcess -FilePath $Executable -Arguments @("--vulkan-render-smoke", "--vulkan-scene-viewport-raster-smoke", "--scene-surface-basis-material-id-smoke") -Label "Dedicated Vulkan surface-basis smoke" -TimeoutSeconds $ChildTimeoutSeconds
+if ($SurfaceResult.TimedOut -or $SurfaceResult.ExitCode -ne 0) {
+    throw "Dedicated Vulkan surface-basis smoke failed."
+}
+$SurfaceLog = $SurfaceResult.Output -join "`n"
+if (($SurfaceLog -notmatch 'SceneSurfaceBasisMaterialIdV1 backend=Vulkan invocation=dedicated productionPSMain=preserved authoredNormal=1,2,3-normalized scale=1.3,0.7,2 rotationDegrees=0,0,23') -or
+    ($SurfaceLog -notmatch 'expectedDirection=-?[0-9]+(?:\.[0-9]+)?,-?[0-9]+(?:\.[0-9]+)?,-?[0-9]+(?:\.[0-9]+)? readback=[0-9]+,[0-9]+,[0-9]+ expected=[0-9]+,[0-9]+,[0-9]+ tolerance=4 materialId=1 normalTransform=S\^-1\*R interface=production-scene retention=exact-graph-token result=pass')) {
+    throw "Dedicated Vulkan surface-basis smoke did not prove oblique normal transformation and material-ID readback."
+}
+
 foreach ($Candidate in @("inter-frame", "submission-gate")) {
     $PacingResult = Invoke-BoundedProcess -FilePath $Executable -Arguments @("--vulkan-render-smoke", "--smooth-frametime-candidate-smoke", "--smooth-frametime-candidate=$Candidate", "--smooth-frametime-target-fps=5") -Label "Vulkan Smooth Frametime $Candidate" -TimeoutSeconds $ChildTimeoutSeconds
     if ($PacingResult.TimedOut -or $PacingResult.ExitCode -ne 0) { throw "Vulkan Smooth Frametime $Candidate smoke failed." }

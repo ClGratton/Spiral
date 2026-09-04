@@ -6,6 +6,7 @@
 #include "Engine/Renderer/MeshGpuResourceCache.h"
 #include "Engine/Renderer/PortableShaderContract.h"
 #include "Engine/Renderer/SceneRasterPreparation.h"
+#include "Engine/Renderer/SceneSurfaceConstants.h"
 #include "Engine/Renderer/ShaderLibrary.h"
 #include "Engine/Renderer/SlangShaderCompiler.h"
 #include "Engine/Renderer/TextureRuntimePublication.h"
@@ -25,20 +26,6 @@ namespace Engine
     {
         constexpr u32 kConstantBufferSize = 256;
 
-        struct Constants
-        {
-            float ViewProjection[16];
-            float BaseColorAndAlphaCutoff[4];
-            float EmissiveAndStrength[4];
-            float SurfaceFactors[4];
-            float CallistoFactors[4];
-            u32 TextureIndices0[4];
-            u32 TextureIndices1[4];
-            u32 TextureState[4];
-        };
-
-        static_assert(sizeof(Constants) <= kConstantBufferSize);
-
         struct ConstantBufferAllocation
         {
             Scope<RHI::Buffer> Buffer;
@@ -56,39 +43,6 @@ namespace Engine
 
             std::vector<ConstantBufferAllocation> Allocations;
         };
-
-        Constants BuildConstants(
-            const SceneRasterInstance& instance, const MaterialTextureBindingSet& bindings)
-        {
-            Constants constants {};
-            std::memcpy(constants.ViewProjection,
-                instance.ModelViewProjection.Values, sizeof(constants.ViewProjection));
-            constants.BaseColorAndAlphaCutoff[0] = bindings.Material.BaseColor.X;
-            constants.BaseColorAndAlphaCutoff[1] = bindings.Material.BaseColor.Y;
-            constants.BaseColorAndAlphaCutoff[2] = bindings.Material.BaseColor.Z;
-            constants.BaseColorAndAlphaCutoff[3] = bindings.Material.AlphaCutoff;
-            constants.EmissiveAndStrength[0] = bindings.Material.EmissiveColor.X;
-            constants.EmissiveAndStrength[1] = bindings.Material.EmissiveColor.Y;
-            constants.EmissiveAndStrength[2] = bindings.Material.EmissiveColor.Z;
-            constants.EmissiveAndStrength[3] = bindings.Material.EmissiveStrength;
-            constants.SurfaceFactors[0] = bindings.Material.Metallic;
-            constants.SurfaceFactors[1] = bindings.Material.Roughness;
-            constants.SurfaceFactors[2] = bindings.Material.NormalScale;
-            constants.SurfaceFactors[3] = bindings.Material.OcclusionStrength;
-            constants.CallistoFactors[0] = bindings.Material.DiffuseFresnelIntensity;
-            constants.CallistoFactors[1] = bindings.Material.RetroreflectionIntensity;
-            constants.CallistoFactors[2] = bindings.Material.DiffuseFresnelFalloff;
-            constants.CallistoFactors[3] = bindings.Material.RetroreflectionFalloff;
-            for (size_t index = 0; index < 4; ++index)
-                constants.TextureIndices0[index] = bindings.Handles[index].Index;
-            constants.TextureIndices1[0] = bindings.Handles[4].Index;
-            constants.TextureIndices1[1] = bindings.Handles[5].Index;
-            constants.TextureState[0] = bindings.DeclaredMask;
-            constants.TextureState[1] = bindings.ErrorMask;
-            constants.TextureState[2] = static_cast<u32>(bindings.Material.AlphaMode);
-            constants.TextureState[3] = static_cast<u32>(bindings.Material.ShadingModel);
-            return constants;
-        }
 
         struct SceneMeshDraw { Ref<const MeshGpuResourceBundle> Bundle; MeshGpuPrimitiveRange Primitive; size_t ConstantIndex = 0; };
 
@@ -141,7 +95,7 @@ namespace Engine
                 && commands->End() && m_Device->SubmitAndWait(*commands);
         }
 
-        bool Initialize(RHI::Device* device)
+        bool Initialize(RHI::Device* device, const char* pixelEntry)
         {
             m_Device = device;
             if (!m_Device)
@@ -165,22 +119,22 @@ namespace Engine
                 request.CompilerIdentity = "Slang"; request.CompilerVersion = "2026.13.1"; request.CompilerPackageHash = GE_SLANG_PACKAGE_SHA256;
                 request.Defines = { "GE_READ_ONLY_TEXTURE_CAPACITY=" + std::to_string(m_TextureTableCapacity) };
                 request.ExpectedLayout = {
-                    { "ViewportConstants", 'b', 0, 0, stage, "ConstantBuffer", "struct{ViewProjection:float32x4x4:row-major@0,BaseColorAndAlphaCutoff:float32x4@64,EmissiveAndStrength:float32x4@80,SurfaceFactors:float32x4@96,CallistoFactors:float32x4@112,TextureIndices0:uint32x4@128,TextureIndices1:uint32x4@144,TextureState:uint32x4@160}", 1, 176, 0, 0 },
+                    { "ViewportConstants", 'b', 0, 0, stage, "ConstantBuffer", "struct{ViewProjection:float32x4x4:row-major@0,NormalTransform:float32x4x4:row-major@64,BaseColorAndAlphaCutoff:float32x4@128,EmissiveAndStrength:float32x4@144,SurfaceFactors:float32x4@160,CallistoFactors:float32x4@176,TextureIndices0:uint32x4@192,TextureIndices1:uint32x4@208,TextureState:uint32x4@224,MaterialState:uint32x4@240}", 1, 256, 0, 0 },
                     { "ReadOnlySamplers", 's', 0, 1, stage, "SamplerState", "sampler", m_TextureTableCapacity, 0, 0, 0 },
                     { "ReadOnlyTextures", 't', 0, 1, stage, "Texture2D", "float32x4", m_TextureTableCapacity, 0, 1, 4 }
                 };
-                if (stage == RHI::ShaderStage::Vertex) request.ExpectedVertexInputs = {{ "Position", "POSITION", 0, 0, "float32x3", 12, 1, 3 }, { "Color", "COLOR", 0, 1, "float32x3", 12, 1, 3 }, { "UV", "TEXCOORD", 0, 2, "float32x2", 8, 1, 2 }};
+                if (stage == RHI::ShaderStage::Vertex) request.ExpectedVertexInputs = {{ "Position", "POSITION", 0, 0, "float32x3", 12, 1, 3 }, { "Normal", "NORMAL", 0, 1, "float32x3", 12, 1, 3 }, { "Color", "COLOR", 0, 2, "float32x3", 12, 1, 3 }, { "UV", "TEXCOORD", 0, 3, "float32x2", 8, 1, 2 }};
                 return request;
             };
             SlangShaderCompiler compiler(std::filesystem::path("output") / "cache" / "shaders");
             PortableShaderPackage vertex = compiler.Compile(makeRequest(RHI::ShaderStage::Vertex, "VSMain"));
-            PortableShaderPackage pixel = compiler.Compile(makeRequest(RHI::ShaderStage::Pixel, "PSMain"));
+            PortableShaderPackage pixel = compiler.Compile(makeRequest(RHI::ShaderStage::Pixel, pixelEntry));
             std::string error;
-            if (!PortableShaderContract::ValidatePackage(makeRequest(RHI::ShaderStage::Vertex, "VSMain"), vertex, error) || !PortableShaderContract::ValidatePackage(makeRequest(RHI::ShaderStage::Pixel, "PSMain"), pixel, error)) { Log::Error("Vulkan Scene viewport shader package validation failed: ", error); return false; }
+            if (!PortableShaderContract::ValidatePackage(makeRequest(RHI::ShaderStage::Vertex, "VSMain"), vertex, error) || !PortableShaderContract::ValidatePackage(makeRequest(RHI::ShaderStage::Pixel, pixelEntry), pixel, error)) { Log::Error("Vulkan Scene viewport shader package validation failed: ", error); return false; }
             RHI::ShaderDescription vs; vs.DebugName = "Vulkan Scene Viewport VS"; vs.SourceName = source.ResolvedPath.string(); vs.EntryPoint = "main"; vs.Stage = RHI::ShaderStage::Vertex; vs.BinaryFormat = RHI::ShaderBinaryFormat::Spirv; vs.Binary = vertex.Spirv; vs.Reflection = vertex.Reflection;
             RHI::ShaderDescription ps = vs; ps.DebugName = "Vulkan Scene Viewport PS"; ps.Stage = RHI::ShaderStage::Pixel; ps.Binary = pixel.Spirv; ps.Reflection = pixel.Reflection;
             m_VertexShader = m_Device->CreateShader(vs); m_PixelShader = m_Device->CreateShader(ps);
-            RHI::PipelineDescription pipeline; pipeline.DebugName = "Vulkan Scene Viewport Pipeline"; pipeline.VertexShader = m_VertexShader.get(); pipeline.PixelShader = m_PixelShader.get(); pipeline.VertexInputs = {{ "POSITION", 0, RHI::Format::R32G32B32Float, 0, offsetof(MeshArtifactVertex, Position) }, { "COLOR", 0, RHI::Format::R32G32B32Float, 0, offsetof(MeshArtifactVertex, Color) }, { "TEXCOORD", 0, RHI::Format::R32G32Float, 0, offsetof(MeshArtifactVertex, UV) }}; pipeline.VertexStrideBytes = sizeof(MeshArtifactVertex); pipeline.ConstantBufferBindings = {{ 0, 0, RHI::ShaderStage::AllGraphics }}; pipeline.SampledTextureTable = RHI::SampledTextureTableBinding { m_TextureTableCapacity }; pipeline.ColorFormat = RHI::Format::R16G16B16A16Float; pipeline.DepthFormat = RHI::Format::D32Float; pipeline.DepthTestEnable = true; pipeline.DepthWriteEnable = true; pipeline.RasterCullMode = RHI::CullMode::None;
+            RHI::PipelineDescription pipeline; pipeline.DebugName = "Vulkan Scene Viewport Pipeline"; pipeline.VertexShader = m_VertexShader.get(); pipeline.PixelShader = m_PixelShader.get(); pipeline.VertexInputs = {{ "POSITION", 0, RHI::Format::R32G32B32Float, 0, offsetof(MeshArtifactVertex, Position) }, { "NORMAL", 0, RHI::Format::R32G32B32Float, 0, offsetof(MeshArtifactVertex, Normal) }, { "COLOR", 0, RHI::Format::R32G32B32Float, 0, offsetof(MeshArtifactVertex, Color) }, { "TEXCOORD", 0, RHI::Format::R32G32Float, 0, offsetof(MeshArtifactVertex, UV) }}; pipeline.VertexStrideBytes = sizeof(MeshArtifactVertex); pipeline.ConstantBufferBindings = {{ 0, 0, RHI::ShaderStage::AllGraphics }}; pipeline.SampledTextureTable = RHI::SampledTextureTableBinding { m_TextureTableCapacity }; pipeline.ColorFormat = RHI::Format::R16G16B16A16Float; pipeline.DepthFormat = RHI::Format::D32Float; pipeline.DepthTestEnable = true; pipeline.DepthWriteEnable = true; pipeline.RasterCullMode = RHI::CullMode::None;
             m_Pipeline = m_VertexShader && m_PixelShader ? m_Device->CreatePipeline(pipeline) : nullptr;
             m_TextureRuntime = m_Pipeline ? TextureRuntimePublication::Create(*m_Device,
                 TextureTargetProfile::RGBAFallback, m_TextureTableCapacity - 1,
@@ -295,14 +249,23 @@ namespace Engine
                 const SceneRasterInstance& instance = frame.Instances[instanceIndex];
                 MaterialTextureBindingSet materialBindings;
                 std::string materialError;
-                if (!m_TextureRuntime->ResolveMaterialTextures(instance.MaterialAsset, materialBindings, materialError))
+                if (instance.MaterialId >= frame.MaterialRows.size()) return false;
+                const SceneMaterialRow& materialRow = frame.MaterialRows[instance.MaterialId];
+                if (materialRow.IsError)
+                {
+                    materialBindings.Material = materialRow.Material;
+                    materialBindings.Handles.fill(m_TextureRuntime->GetErrorHandle());
+                    materialBindings.CatalogGeneration = materialRow.CatalogGeneration;
+                }
+                else if (!m_TextureRuntime->ResolveMaterialTextures(instance.MaterialAsset, materialBindings, materialError))
                 { Log::Error("Vulkan Scene viewport could not resolve snapshot material: ", materialError); return false; }
+                if (materialBindings.CatalogGeneration != frame.MaterialCatalogGeneration) return false;
                 if (!materialError.empty()) Log::Warn("Vulkan Scene material uses error resources: ", materialError);
                 for (size_t slot = 0; slot < materialBindings.Handles.size(); ++slot)
                     if ((materialBindings.DeclaredMask & (1u << static_cast<u32>(slot))) != 0
                         && (materialBindings.ErrorMask & (1u << static_cast<u32>(slot))) == 0)
                         usedTextureHandles.push_back(materialBindings.Handles[slot]);
-                const Constants instanceConstants = BuildConstants(instance, materialBindings);
+                const SceneSurfaceConstants instanceConstants = BuildSceneSurfaceConstants(instance, materialBindings, materialRow.IsError);
                 std::memcpy(constants[instanceIndex].Mapped, &instanceConstants, sizeof(instanceConstants));
             }
             std::vector<SceneMeshDraw> draws;
@@ -462,7 +425,8 @@ namespace Engine
 
     NVRHIVulkanViewportSceneRenderer::NVRHIVulkanViewportSceneRenderer() = default;
     NVRHIVulkanViewportSceneRenderer::~NVRHIVulkanViewportSceneRenderer() { Shutdown(); }
-    bool NVRHIVulkanViewportSceneRenderer::Initialize(RHI::Device* device) { m_Impl = CreateScope<Impl>(); if (m_Impl->Initialize(device)) return true; m_Impl.reset(); return false; }
+    bool NVRHIVulkanViewportSceneRenderer::Initialize(RHI::Device* device) { m_Impl = CreateScope<Impl>(); if (m_Impl->Initialize(device, "PSMain")) return true; m_Impl.reset(); return false; }
+    bool NVRHIVulkanViewportSceneRenderer::InitializeSurfaceBasisProbe(RHI::Device* device) { m_Impl = CreateScope<Impl>(); if (m_Impl->Initialize(device, "PSSurfaceBasisMaterialProbe")) return true; m_Impl.reset(); return false; }
     void NVRHIVulkanViewportSceneRenderer::Shutdown() { if (m_Impl) { m_Impl->Shutdown(); m_Impl.reset(); } }
     bool NVRHIVulkanViewportSceneRenderer::RenderCurrentSnapshot(u32 width, u32 height, const ClearColor& clearColor)
     {

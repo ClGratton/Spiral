@@ -1,6 +1,7 @@
 cbuffer ViewportConstants : register(b0)
 {
     row_major float4x4 ViewProjection;
+    row_major float4x4 NormalTransform;
     float4 BaseColorAndAlphaCutoff;
     float4 EmissiveAndStrength;
     float4 SurfaceFactors;
@@ -8,6 +9,7 @@ cbuffer ViewportConstants : register(b0)
     uint4 TextureIndices0;
     uint4 TextureIndices1;
     uint4 TextureState;
+    uint4 MaterialState;
 };
 
 #ifndef GE_READ_ONLY_TEXTURE_CAPACITY
@@ -20,6 +22,7 @@ SamplerState ReadOnlySamplers[GE_READ_ONLY_TEXTURE_CAPACITY] : register(s0, spac
 struct VSInput
 {
     float3 Position : POSITION;
+    float3 Normal : NORMAL;
     float3 Color : COLOR;
     float2 UV : TEXCOORD;
 };
@@ -29,15 +32,26 @@ struct VSOutput
     float4 Position : SV_Position;
     float3 Color : COLOR0;
     float2 UV : TEXCOORD0;
+    float3 GeometricNormal : NORMAL0;
 };
 
 VSOutput VSMain(VSInput input)
 {
     VSOutput output;
     output.Position = mul(float4(input.Position, 1.0f), ViewProjection);
+    output.GeometricNormal = normalize(mul(float4(input.Normal, 0.0f), NormalTransform).xyz);
     output.Color = input.Color;
     output.UV = input.UV;
     return output;
+}
+
+// Smoke-only readback entry point. The production vertex input and b0 payload
+// are unchanged; ordinary Editor output continues to compile PSMain.
+float4 PSSurfaceBasisMaterialProbe(VSOutput input) : SV_Target0
+{
+    if (MaterialState.x != 1u || MaterialState.y != 0u)
+        return float4(0.7f, 0.0f, 0.0f, 1.0f);
+    return float4(0.5f + input.GeometricNormal * 0.25f, 1.0f);
 }
 
 float4 PSMain(VSOutput input) : SV_Target0

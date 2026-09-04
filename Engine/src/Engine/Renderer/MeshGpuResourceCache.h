@@ -23,8 +23,8 @@ namespace Engine
     };
 
     // This bundle is intentionally Ref-owned so an accepted RenderGraph frame
-    // can retain its exact mesh generation after cache eviction. Retiring that
-    // payload with the frame is a later viewport-integration responsibility.
+    // retains its exact mesh generation after cache eviction through the
+    // submitted frame's final accepted graph completion token.
     struct MeshGpuResourceBundle
     {
         Ref<RHI::Buffer> VertexBuffer;

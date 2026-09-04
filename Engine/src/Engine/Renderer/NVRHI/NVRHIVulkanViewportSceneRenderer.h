@@ -19,6 +19,9 @@ namespace Engine
         ~NVRHIVulkanViewportSceneRenderer();
 
         bool Initialize(RHI::Device* device);
+        // Test-only pipeline selection. It retains the production Scene vertex,
+        // resource, and constant interfaces while replacing only the pixel entry.
+        bool InitializeSurfaceBasisProbe(RHI::Device* device);
         void Shutdown();
         bool RenderCurrentSnapshot(u32 width, u32 height, const ClearColor& clearColor);
         bool Render(const SceneRenderSnapshot& snapshot, u32 width, u32 height, const ClearColor& clearColor);

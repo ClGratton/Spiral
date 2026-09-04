@@ -24,12 +24,14 @@
 #include "Engine/Renderer/PortableShaderContract.h"
 #include "Engine/Renderer/SlangShaderCompiler.h"
 #include "Engine/Renderer/SceneRasterPreparation.h"
+#include "Engine/Renderer/SceneSurfaceConstants.h"
 #include "Engine/Renderer/MeshGpuResourceCache.h"
 #include "Engine/Renderer/TextureArtifactUploadPlan.h"
 #include "Engine/Renderer/TextureGpuResourceCache.h"
 #include "Engine/Renderer/TextureTablePublication.h"
 #include "Engine/Renderer/TextureRuntimePublication.h"
 #include "Engine/Assets/MeshArtifact.h"
+#include "Engine/Assets/GltfImporter.h"
 #include "Engine/Assets/MaterialAsset.h"
 #include "Engine/Assets/TextureArtifact.h"
 #include "Engine/Assets/AssetRegistry.h"
@@ -2213,6 +2215,7 @@ namespace
         artifact.Asset = 71;
         artifact.SourcePath = "Assets/Geometry/../Triangle.gltf";
         Engine::MeshArtifactVertex first, second, third;
+        first.Normal[2] = second.Normal[2] = third.Normal[2] = 1.0f;
         second.Position[0] = 1.0f;
         third.Position[1] = 1.0f;
         artifact.Vertices = { first, second, third };
@@ -3047,17 +3050,20 @@ namespace
         first.Position[1] = 0.0f;
         first.Position[2] = 0.0f;
         first.Color[0] = 1.0f;
+        first.Normal[2] = 1.0f;
         MeshArtifactVertex second;
         second.Position[0] = 1.0f;
         second.Position[1] = 0.0f;
         second.Position[2] = 0.0f;
         second.Color[1] = 1.0f;
+        second.Normal[2] = 1.0f;
         second.UV[0] = 1.0f;
         MeshArtifactVertex third;
         third.Position[0] = 0.0f;
         third.Position[1] = 1.0f;
         third.Position[2] = 0.0f;
         third.Color[2] = 1.0f;
+        third.Normal[2] = 1.0f;
         third.UV[1] = 1.0f;
         artifact.Vertices = { first, second, third };
         artifact.Indices = { 0, 1, 2 };
@@ -3070,7 +3076,14 @@ namespace
             && defaultSceneArtifact.Vertices.size() == 24 && defaultSceneArtifact.Indices.size() == 36
             && defaultSceneArtifact.Primitives.size() == 1
             && defaultSceneArtifact.Primitives.front().VertexByteSize == sizeof(MeshArtifactVertex) * 24ull
-            && defaultSceneArtifact.Primitives.front().IndexByteSize == sizeof(u32) * 36ull;
+            && defaultSceneArtifact.Primitives.front().IndexByteSize == sizeof(u32) * 36ull
+            && std::all_of(defaultSceneArtifact.Vertices.begin(), defaultSceneArtifact.Vertices.end(),
+                [](const MeshArtifactVertex& vertex)
+                {
+                    const float lengthSquared = vertex.Normal[0] * vertex.Normal[0]
+                        + vertex.Normal[1] * vertex.Normal[1] + vertex.Normal[2] * vertex.Normal[2];
+                    return std::isfinite(lengthSquared) && std::abs(lengthSquared - 1.0f) < 0.0001f;
+                });
         const MeshArtifact defaultScenePreserved = defaultSceneArtifact;
         const bool invalidDefaultHandleRejected = !CreateDefaultSceneMeshArtifact(kInvalidAssetHandle, defaultSceneArtifact, error)
             && defaultSceneArtifact.Asset == defaultScenePreserved.Asset && defaultSceneArtifact.Indices == defaultScenePreserved.Indices;
@@ -3082,7 +3095,26 @@ namespace
             && loaded.Primitives.front().IndexByteOffset == 0 && loaded.Primitives.front().IndexByteSize == sizeof(u32) * 3ull;
         const bool roundTrip = storedAndLoaded
             && loaded.Asset == artifact.Asset && loaded.SourcePath == artifact.SourcePath
-            && loaded.Vertices.size() == 3 && loaded.Indices == artifact.Indices && primitiveRoundTrip;
+            && loaded.Vertices.size() == 3 && loaded.Indices == artifact.Indices && primitiveRoundTrip
+            && loaded.Vertices[0].Normal[2] == 1.0f;
+
+        const std::filesystem::path legacyPath = TestFilePath("mesh-artifact-v1.spiralmesh");
+        {
+            std::ofstream legacy(legacyPath, std::ios::out | std::ios::trunc);
+            legacy << "SpiralMeshArtifact 1\nSource \"Assets/Legacy Triangle.gltf\"\nMeshAsset 18\n"
+                << "VertexLayout PositionColorUV32F\nVertexStrideBytes 32\nVertexCount 3\n"
+                << "IndexFormat UInt32\nIndexStrideBytes 4\nIndexCount 3\nPrimitiveCount 1\n"
+                << "Primitive 0 0 0 96 0 12\nVertices\n"
+                << "0 0 0 1 1 1 0 0\n1 0 0 1 1 1 1 0\n0 1 0 1 1 1 0 1\n"
+                << "Indices\n0\n1\n2\nEnd\n";
+        }
+        MeshArtifact migrated = loaded;
+        const bool legacyMigrated = LoadMeshArtifact(legacyPath, migrated, error)
+            && migrated.Asset == 18 && migrated.Vertices.size() == 3
+            && migrated.Primitives[0].VertexByteSize == sizeof(MeshArtifactVertex) * 3ull
+            && migrated.Vertices[0].Normal[0] == 0.0f
+            && migrated.Vertices[0].Normal[1] == 0.0f
+            && migrated.Vertices[0].Normal[2] == 1.0f;
 
         const MeshArtifact preserved = loaded;
         {
@@ -3095,6 +3127,33 @@ namespace
         MeshArtifact invalid = artifact;
         invalid.Indices = { 0, 1, 3 };
         const bool invalidRejected = !ValidateMeshArtifact(invalid, error);
+        MeshArtifact invalidNormal = artifact;
+        invalidNormal.Vertices[1].Normal[2] = std::numeric_limits<float>::quiet_NaN();
+        const MeshArtifact invalidNormalPreserved = loaded;
+        const bool invalidNormalRejected = !ValidateMeshArtifact(invalidNormal, error)
+            && !StoreMeshArtifact(path, invalidNormal, error)
+            && loaded.Asset == invalidNormalPreserved.Asset
+            && loaded.Vertices[0].Normal[2] == invalidNormalPreserved.Vertices[0].Normal[2];
+        const auto ensureRejectsAuthoredNormalsWithoutMutation = [&](MeshArtifact candidate)
+        {
+            const MeshArtifact before = candidate;
+            const bool rejected = !EnsureMeshArtifactGeometricNormals(candidate, error);
+            return rejected && candidate.Vertices.size() == before.Vertices.size()
+                && std::memcmp(candidate.Vertices.data(), before.Vertices.data(),
+                    candidate.Vertices.size() * sizeof(MeshArtifactVertex)) == 0;
+        };
+        MeshArtifact nonfiniteNan = artifact;
+        nonfiniteNan.Vertices[0].Normal[0] = std::numeric_limits<float>::quiet_NaN();
+        MeshArtifact nonfiniteInfinity = artifact;
+        nonfiniteInfinity.Vertices[1].Normal[1] = std::numeric_limits<float>::infinity();
+        MeshArtifact nonunit = artifact;
+        nonunit.Vertices[2].Normal[2] = 2.0f;
+        MeshArtifact mixedMissing = artifact;
+        std::fill(std::begin(mixedMissing.Vertices[1].Normal), std::end(mixedMissing.Vertices[1].Normal), 0.0f);
+        const bool authoredNormalPolicyRejected = ensureRejectsAuthoredNormalsWithoutMutation(nonfiniteNan)
+            && ensureRejectsAuthoredNormalsWithoutMutation(nonfiniteInfinity)
+            && ensureRejectsAuthoredNormalsWithoutMutation(nonunit)
+            && ensureRejectsAuthoredNormalsWithoutMutation(mixedMissing);
 
         AssetRegistry registry;
         const AssetHandle registered = registry.RegisterAsset(AssetType::Mesh, artifact.SourcePath, "Triangle");
@@ -3148,17 +3207,243 @@ namespace
             && defaultSceneResolved.Indices.size() == 36;
 
         std::filesystem::remove(path, filesystemError);
+        std::filesystem::remove(legacyPath, filesystemError);
         std::filesystem::remove(resolvedPath, filesystemError);
         std::filesystem::remove(defaultScenePath, filesystemError);
         return Expect(defaultSceneArtifactValid && invalidDefaultHandleRejected && defaultScenePublished,
                 "the default scene cube is one validated UInt32 cooked artifact with transactional construction")
-            && Expect(roundTrip, "versioned cooked mesh artifacts round trip deterministically")
-            && Expect(malformedRejected && invalidRejected && unsupportedRejected,
-                "mesh artifact loading rejects malformed unsupported and invalid data without mutating the destination")
+            && Expect(roundTrip && legacyMigrated,
+                "schema-2 mesh artifacts round trip and schema-1 geometry migrates deterministic winding normals")
+            && Expect(malformedRejected && invalidRejected && invalidNormalRejected
+                    && authoredNormalPolicyRejected && unsupportedRejected,
+                "mesh artifact loading and public normal completion reject malformed nonfinite non-unit mixed and unsupported data transactionally")
             && Expect(missingRejected && resolvedSuccessfully && provenanceRejected && wrongTypeRejected,
                 "mesh artifact resolution rejects missing wrong-type and mismatched provenance without partial publication")
             && Expect(publishedResolverSucceeded && immutableResolverRetainsPublishedCatalog && replacementFailurePreservesCallerOutput,
                 "renderer-facing mesh resolution uses immutable registry publication and preserves caller output on failure");
+    }
+
+    bool TestGltfGeometricNormalImportPolicy()
+    {
+        using namespace Engine;
+        const auto writeFixture = [](std::string_view name,
+                                     const std::array<float, 9>& positions,
+                                     const std::vector<float>& normals,
+                                     std::string_view normalType,
+                                     size_t normalCount)
+        {
+            const std::filesystem::path gltf = TestFilePath(std::string(name) + ".gltf");
+            const std::filesystem::path binary = TestFilePath(std::string(name) + ".bin");
+            {
+                std::ofstream bytes(binary, std::ios::binary | std::ios::trunc);
+                bytes.write(reinterpret_cast<const char*>(positions.data()), sizeof(positions));
+                if (!normals.empty())
+                    bytes.write(reinterpret_cast<const char*>(normals.data()),
+                        static_cast<std::streamsize>(normals.size() * sizeof(float)));
+            }
+            {
+                std::ofstream json(gltf, std::ios::trunc);
+                const size_t byteLength = sizeof(positions) + normals.size() * sizeof(float);
+                json << "{\"asset\":{\"version\":\"2.0\"},\"buffers\":[{\"uri\":\""
+                    << binary.filename().generic_string() << "\",\"byteLength\":" << byteLength << "}],"
+                    << "\"bufferViews\":[{\"buffer\":0,\"byteOffset\":0,\"byteLength\":36}";
+                if (!normals.empty())
+                    json << ",{\"buffer\":0,\"byteOffset\":36,\"byteLength\":"
+                        << normals.size() * sizeof(float) << "}";
+                json << "],\"accessors\":[{\"bufferView\":0,\"componentType\":5126,\"count\":3,"
+                    << "\"type\":\"VEC3\",\"min\":[0,0,0],\"max\":[1,1,0]}";
+                if (!normals.empty())
+                    json << ",{\"bufferView\":1,\"componentType\":5126,\"count\":" << normalCount
+                        << ",\"type\":\"" << normalType << "\"}";
+                json << "],\"meshes\":[{\"primitives\":[{\"attributes\":{\"POSITION\":0";
+                if (!normals.empty()) json << ",\"NORMAL\":1";
+                json << "},\"mode\":4}]}]}";
+            }
+            return std::pair { gltf, binary };
+        };
+        const auto writeQuantizedFixture = [](std::string_view name,
+                                               int componentType,
+                                               bool normalized,
+                                               bool extensionUsed,
+                                               bool extensionRequired,
+                                               size_t byteStride,
+                                               const std::vector<u8>& normalBytes)
+        {
+            const std::filesystem::path gltf = TestFilePath(std::string(name) + ".gltf");
+            const std::filesystem::path binary = TestFilePath(std::string(name) + ".bin");
+            const std::array<float, 9> positions {{ 0,0,0, 1,0,0, 0,1,0 }};
+            {
+                std::ofstream bytes(binary, std::ios::binary | std::ios::trunc);
+                bytes.write(reinterpret_cast<const char*>(positions.data()), sizeof(positions));
+                bytes.write(reinterpret_cast<const char*>(normalBytes.data()),
+                    static_cast<std::streamsize>(normalBytes.size()));
+            }
+            {
+                std::ofstream json(gltf, std::ios::trunc);
+                json << "{\"asset\":{\"version\":\"2.0\"}";
+                if (extensionUsed)
+                    json << ",\"extensionsUsed\":[\"KHR_mesh_quantization\"]";
+                if (extensionRequired)
+                    json << ",\"extensionsRequired\":[\"KHR_mesh_quantization\"]";
+                json << ",\"buffers\":[{\"uri\":\"" << binary.filename().generic_string()
+                    << "\",\"byteLength\":" << sizeof(positions) + normalBytes.size() << "}],"
+                    << "\"bufferViews\":[{\"buffer\":0,\"byteOffset\":0,\"byteLength\":36},"
+                    << "{\"buffer\":0,\"byteOffset\":36,\"byteLength\":" << normalBytes.size()
+                    << ",\"byteStride\":" << byteStride << "}],"
+                    << "\"accessors\":[{\"bufferView\":0,\"componentType\":5126,\"count\":3,"
+                    << "\"type\":\"VEC3\",\"min\":[0,0,0],\"max\":[1,1,0]},"
+                    << "{\"bufferView\":1,\"componentType\":" << componentType
+                    << ",\"count\":3,\"type\":\"VEC3\",\"normalized\":"
+                    << (normalized ? "true" : "false") << "}],"
+                    << "\"meshes\":[{\"primitives\":[{\"attributes\":{\"POSITION\":0,\"NORMAL\":1},\"mode\":4}]}]}";
+            }
+            return std::pair { gltf, binary };
+        };
+
+        const std::array<float, 9> triangle {{ 0,0,0, 1,0,0, 0,1,0 }};
+        const std::array<float, 9> clockwiseTriangle {{ 0,0,0, 0,1,0, 1,0,0 }};
+        const std::array<float, 9> degenerate {{ 0,0,0, 1,0,0, 2,0,0 }};
+        const auto authoredFiles = writeFixture("gltf-authored-normal", triangle,
+            { 0,1,0, 0,1,0, 0,1,0 }, "VEC3", 3);
+        const auto fallbackFiles = writeFixture("gltf-fallback-normal", triangle, {}, "VEC3", 0);
+        const auto clockwiseFiles = writeFixture("gltf-clockwise-fallback-normal", clockwiseTriangle, {}, "VEC3", 0);
+        const auto malformedFiles = writeFixture("gltf-malformed-normal", triangle,
+            { 0,1, 0,1, 0,1 }, "VEC3", 2);
+        const auto malformedTypeFiles = writeFixture("gltf-malformed-normal-type", triangle,
+            { 0,1,0, 0,1,0, 0,1,0 }, "VEC2", 3);
+        const auto nonfiniteFiles = writeFixture("gltf-nonfinite-normal", triangle,
+            { 0,std::numeric_limits<float>::infinity(),0, 0,1,0, 0,1,0 }, "VEC3", 3);
+        const auto degenerateFiles = writeFixture("gltf-degenerate-normal", degenerate, {}, "VEC3", 0);
+        const std::vector<u8> signedByteNormals {
+            127,0,0,0, 127,0,0,0, 127,0,0,0
+        };
+        const std::vector<u8> signedShortNormals {
+            0,0, 0,128, 0,0, 0,0,
+            0,0, 0,128, 0,0, 0,0,
+            0,0, 0,128, 0,0, 0,0
+        };
+        const auto quantizedByteFiles = writeQuantizedFixture("gltf-quantized-byte-normal",
+            5120, true, true, true, 4, signedByteNormals);
+        const auto quantizedShortFiles = writeQuantizedFixture("gltf-quantized-short-normal",
+            5122, true, true, true, 8, signedShortNormals);
+        const auto quantizedMissingExtensionFiles = writeQuantizedFixture("gltf-quantized-missing-extension",
+            5120, true, false, false, 4, signedByteNormals);
+        const auto quantizedOptionalExtensionFiles = writeQuantizedFixture("gltf-quantized-optional-extension",
+            5120, true, true, false, 4, signedByteNormals);
+        const auto quantizedRequiredOnlyFiles = writeQuantizedFixture("gltf-quantized-required-only",
+            5120, true, false, true, 4, signedByteNormals);
+        const auto unsignedQuantizedFiles = writeQuantizedFixture("gltf-unsigned-quantized-normal",
+            5121, true, true, true, 4, signedByteNormals);
+        const auto unnormalizedQuantizedFiles = writeQuantizedFixture("gltf-unnormalized-quantized-normal",
+            5120, false, true, true, 4, signedByteNormals);
+
+        AssetRegistry registry;
+        const GltfImportResult authored = GltfImporter::Import(authoredFiles.first, registry);
+        MeshArtifact authoredArtifact;
+        std::string error;
+        const bool authoredPreserved = authored.Succeeded
+            && ResolveMeshArtifact(registry, authored.MeshAsset, authoredArtifact, error)
+            && authoredArtifact.Vertices.size() == 3
+            && std::all_of(authoredArtifact.Vertices.begin(), authoredArtifact.Vertices.end(),
+                [](const MeshArtifactVertex& vertex)
+                { return vertex.Normal[0] == 0.0f && vertex.Normal[1] == 1.0f && vertex.Normal[2] == 0.0f; });
+        const GltfImportResult fallback = GltfImporter::Import(fallbackFiles.first, registry);
+        MeshArtifact fallbackArtifact;
+        const bool windingFallback = fallback.Succeeded
+            && ResolveMeshArtifact(registry, fallback.MeshAsset, fallbackArtifact, error)
+            && fallbackArtifact.Vertices.size() == 3
+            && std::all_of(fallbackArtifact.Vertices.begin(), fallbackArtifact.Vertices.end(),
+                [](const MeshArtifactVertex& vertex)
+                { return vertex.Normal[0] == 0.0f && vertex.Normal[1] == 0.0f && vertex.Normal[2] == 1.0f; });
+        const GltfImportResult clockwise = GltfImporter::Import(clockwiseFiles.first, registry);
+        MeshArtifact clockwiseArtifact;
+        const bool oppositeWindingFallback = clockwise.Succeeded
+            && ResolveMeshArtifact(registry, clockwise.MeshAsset, clockwiseArtifact, error)
+            && clockwiseArtifact.Vertices.size() == 3
+            && std::all_of(clockwiseArtifact.Vertices.begin(), clockwiseArtifact.Vertices.end(),
+                [](const MeshArtifactVertex& vertex)
+                { return vertex.Normal[0] == 0.0f && vertex.Normal[1] == 0.0f && vertex.Normal[2] == -1.0f; });
+
+        const GltfImportResult quantizedByte = GltfImporter::Import(quantizedByteFiles.first, registry);
+        MeshArtifact quantizedByteArtifact;
+        const bool signedByteConverted = quantizedByte.Succeeded
+            && ResolveMeshArtifact(registry, quantizedByte.MeshAsset, quantizedByteArtifact, error)
+            && std::all_of(quantizedByteArtifact.Vertices.begin(), quantizedByteArtifact.Vertices.end(),
+                [](const MeshArtifactVertex& vertex)
+                { return vertex.Normal[0] == 1.0f && vertex.Normal[1] == 0.0f && vertex.Normal[2] == 0.0f; });
+        const GltfImportResult quantizedShort = GltfImporter::Import(quantizedShortFiles.first, registry);
+        MeshArtifact quantizedShortArtifact;
+        const bool signedShortConverted = quantizedShort.Succeeded
+            && ResolveMeshArtifact(registry, quantizedShort.MeshAsset, quantizedShortArtifact, error)
+            && std::all_of(quantizedShortArtifact.Vertices.begin(), quantizedShortArtifact.Vertices.end(),
+                [](const MeshArtifactVertex& vertex)
+                { return vertex.Normal[0] == 0.0f && vertex.Normal[1] == -1.0f && vertex.Normal[2] == 0.0f; });
+
+        const GltfImportResult malformed = GltfImporter::Import(malformedFiles.first, registry);
+        const GltfImportResult malformedType = GltfImporter::Import(malformedTypeFiles.first, registry);
+        const GltfImportResult nonfinite = GltfImporter::Import(nonfiniteFiles.first, registry);
+        const GltfImportResult degenerateResult = GltfImporter::Import(degenerateFiles.first, registry);
+        const GltfImportResult quantizedMissingExtension = GltfImporter::Import(
+            quantizedMissingExtensionFiles.first, registry);
+        const GltfImportResult quantizedOptionalExtension = GltfImporter::Import(
+            quantizedOptionalExtensionFiles.first, registry);
+        const GltfImportResult quantizedRequiredOnly = GltfImporter::Import(
+            quantizedRequiredOnlyFiles.first, registry);
+        const GltfImportResult unsignedQuantized = GltfImporter::Import(unsignedQuantizedFiles.first, registry);
+        const GltfImportResult unnormalizedQuantized = GltfImporter::Import(
+            unnormalizedQuantizedFiles.first, registry);
+        const bool failuresTransactional = !malformed.Succeeded && !malformedType.Succeeded
+            && !nonfinite.Succeeded && !degenerateResult.Succeeded
+            && !quantizedMissingExtension.Succeeded && !quantizedOptionalExtension.Succeeded
+            && !quantizedRequiredOnly.Succeeded && !unsignedQuantized.Succeeded
+            && !unnormalizedQuantized.Succeeded
+            && registry.FindAssetByPath(AssetType::Mesh,
+                AssetRegistry::NormalizeSourcePath(malformedFiles.first.generic_string())) == kInvalidAssetHandle
+            && registry.FindAssetByPath(AssetType::Mesh,
+                AssetRegistry::NormalizeSourcePath(malformedTypeFiles.first.generic_string())) == kInvalidAssetHandle
+            && registry.FindAssetByPath(AssetType::Mesh,
+                AssetRegistry::NormalizeSourcePath(nonfiniteFiles.first.generic_string())) == kInvalidAssetHandle
+            && registry.FindAssetByPath(AssetType::Mesh,
+                AssetRegistry::NormalizeSourcePath(degenerateFiles.first.generic_string())) == kInvalidAssetHandle
+            && registry.FindAssetByPath(AssetType::Mesh,
+                AssetRegistry::NormalizeSourcePath(quantizedMissingExtensionFiles.first.generic_string())) == kInvalidAssetHandle
+            && registry.FindAssetByPath(AssetType::Mesh,
+                AssetRegistry::NormalizeSourcePath(quantizedOptionalExtensionFiles.first.generic_string())) == kInvalidAssetHandle
+            && registry.FindAssetByPath(AssetType::Mesh,
+                AssetRegistry::NormalizeSourcePath(quantizedRequiredOnlyFiles.first.generic_string())) == kInvalidAssetHandle
+            && registry.FindAssetByPath(AssetType::Mesh,
+                AssetRegistry::NormalizeSourcePath(unsignedQuantizedFiles.first.generic_string())) == kInvalidAssetHandle
+            && registry.FindAssetByPath(AssetType::Mesh,
+                AssetRegistry::NormalizeSourcePath(unnormalizedQuantizedFiles.first.generic_string())) == kInvalidAssetHandle
+            && authored.Succeeded && fallback.Succeeded && clockwise.Succeeded
+            && signedByteConverted && signedShortConverted;
+
+        std::error_code filesystemError;
+        for (const auto& files : { authoredFiles, fallbackFiles, clockwiseFiles, malformedFiles,
+                 malformedTypeFiles, nonfiniteFiles, degenerateFiles, quantizedByteFiles,
+                 quantizedShortFiles, quantizedMissingExtensionFiles, quantizedOptionalExtensionFiles,
+                 quantizedRequiredOnlyFiles, unsignedQuantizedFiles, unnormalizedQuantizedFiles })
+        {
+            std::filesystem::remove(files.first, filesystemError);
+            std::filesystem::remove(files.second, filesystemError);
+        }
+        if (authored.Succeeded)
+            std::filesystem::remove(authored.CookedPath, filesystemError);
+        if (fallback.Succeeded)
+            std::filesystem::remove(fallback.CookedPath, filesystemError);
+        if (clockwise.Succeeded)
+            std::filesystem::remove(clockwise.CookedPath, filesystemError);
+        if (quantizedByte.Succeeded)
+            std::filesystem::remove(quantizedByte.CookedPath, filesystemError);
+        if (quantizedShort.Succeeded)
+            std::filesystem::remove(quantizedShort.CookedPath, filesystemError);
+        return Expect(authoredPreserved, "valid authored glTF NORMAL values survive cooking")
+            && Expect(signedByteConverted && signedShortConverted,
+                "KHR_mesh_quantization normalized signed BYTE and SHORT NORMAL accessors convert exactly")
+            && Expect(windingFallback && oppositeWindingFallback,
+                "missing NORMAL data derives deterministic opposite normals for counter-clockwise and clockwise winding")
+            && Expect(failuresTransactional,
+                "malformed, non-finite, illegal quantized NORMAL and degenerate fallback inputs publish no partial result");
     }
 
     bool TestTextureArtifactFallbackCooking()
@@ -4387,6 +4672,130 @@ namespace
             && Expect(canonicalExtremeValid, "tracker-derived canonical snapshot/raster conversion preserves nonzero local deltas when extreme absolute doubles alias")
             && Expect(!invalidRaster.HasValidView && invalidRaster.Instances.empty(),
                 "a snapshot without a valid view cannot produce raster instances");
+    }
+
+    bool TestSceneSurfaceBasisAndMaterialRows()
+    {
+        using namespace Engine;
+        AssetRegistry registry;
+        const AssetHandle wrongTypeMaterial = registry.RegisterAsset(
+            AssetType::Texture, "Tests/Generated/row-padding-a.rgba8", "padding a");
+        registry.RegisterAsset(AssetType::Texture, "Tests/Generated/row-padding-b.rgba8", "padding b");
+        const AssetHandle firstMaterial = registry.RegisterAsset(
+            AssetType::Material, "Tests/Generated/first-row.spiralmat", "First row");
+        const AssetHandle secondMaterial = registry.RegisterAsset(
+            AssetType::Material, "Tests/Generated/second-row.spiralmat", "Second row");
+        const AssetHandle missingLibraryMaterial = registry.RegisterAsset(
+            AssetType::Material, "Tests/Generated/missing-row.spiralmat", "Missing library row");
+        MaterialAsset first;
+        first.Name = "First row";
+        first.BaseColor = { 0.2f, 0.3f, 0.4f };
+        MaterialAsset second = first;
+        second.Name = "Second row";
+        second.BaseColor = { 0.7f, 0.6f, 0.5f };
+        MaterialLibrary materials;
+        const bool catalogReady = firstMaterial != kInvalidAssetHandle
+            && secondMaterial != kInvalidAssetHandle
+            && wrongTypeMaterial != kInvalidAssetHandle
+            && missingLibraryMaterial != kInvalidAssetHandle
+            && materials.Set(firstMaterial, first) && materials.Set(secondMaterial, second);
+        Renderer::PublishArtifactResolvers(registry, materials);
+
+        SceneRenderSnapshot snapshot;
+        snapshot.FrameIndex = 401;
+        SceneRenderView view;
+        view.Camera.Valid = true;
+        view.Camera.ViewProjection = Math::Mat4::Identity();
+        view.Camera.HasCanonicalTranslationOrigin = Math::TryDecomposeWorldPosition(
+            {}, snapshot.WorldGridPolicy, view.Camera.TranslationOriginPosition);
+        snapshot.Views.push_back(view);
+        const auto mesh = [](EntityId entity, AssetHandle material, Math::Vec3 scale = { 1,1,1 })
+        {
+            SceneRenderMesh result;
+            result.SourceEntity = entity;
+            result.MeshAsset = 700;
+            result.MaterialAsset = material;
+            result.Transform.Scale = scale;
+            return result;
+        };
+        snapshot.Meshes = {
+            mesh(11, secondMaterial, { 2.0f, 3.0f, 4.0f }),
+            mesh(12, 999999), mesh(13, firstMaterial),
+            mesh(14, secondMaterial), mesh(15, kInvalidAssetHandle),
+            mesh(16, wrongTypeMaterial), mesh(17, missingLibraryMaterial)
+        };
+        const SceneRasterFrame firstFrame = PrepareSceneRasterFrame(snapshot);
+        SceneRenderSnapshot reordered = snapshot;
+        reordered.FrameIndex = 402;
+        std::reverse(reordered.Meshes.begin(), reordered.Meshes.end());
+        const SceneRasterFrame secondFrame = PrepareSceneRasterFrame(reordered);
+        SceneRenderSnapshot singularSnapshot = snapshot;
+        singularSnapshot.FrameIndex = 403;
+        singularSnapshot.Meshes.push_back(mesh(18, firstMaterial, { 1.0f, 0.0f, 1.0f }));
+        const SceneRasterFrame singularFrame = PrepareSceneRasterFrame(singularSnapshot);
+        Renderer::ClearArtifactResolvers();
+
+        const auto materialIdFor = [](const SceneRasterFrame& frame, EntityId entity)
+        {
+            const auto found = std::find_if(frame.Instances.begin(), frame.Instances.end(),
+                [entity](const SceneRasterInstance& instance) { return instance.SourceEntity == entity; });
+            return found == frame.Instances.end() ? std::numeric_limits<u32>::max() : found->MaterialId;
+        };
+        const bool stableRows = catalogReady && firstFrame.HasValidView && secondFrame.HasValidView
+            && firstFrame.MaterialRows.size() == 3 && secondFrame.MaterialRows.size() == 3
+            && firstFrame.MaterialRows[0].Id == 0 && firstFrame.MaterialRows[0].IsError
+            && firstFrame.MaterialRows[0].SourceAsset == kInvalidAssetHandle
+            && firstFrame.MaterialRows[1].SourceAsset == std::min(firstMaterial, secondMaterial)
+            && firstFrame.MaterialRows[2].SourceAsset == std::max(firstMaterial, secondMaterial)
+            && !firstFrame.MaterialRows[1].IsError && !firstFrame.MaterialRows[2].IsError
+            && firstMaterial > 2 && secondMaterial > 2
+            && materialIdFor(firstFrame, 11) == (secondMaterial < firstMaterial ? 1u : 2u)
+            && materialIdFor(firstFrame, 14) == (secondMaterial < firstMaterial ? 1u : 2u)
+            && materialIdFor(firstFrame, 13) == (firstMaterial < secondMaterial ? 1u : 2u)
+            && materialIdFor(firstFrame, 12) == 0 && materialIdFor(firstFrame, 15) == 0
+            && materialIdFor(firstFrame, 16) == 0 && materialIdFor(firstFrame, 17) == 0
+            && materialIdFor(secondFrame, 11) == (secondMaterial < firstMaterial ? 1u : 2u)
+            && materialIdFor(secondFrame, 14) == (secondMaterial < firstMaterial ? 1u : 2u)
+            && materialIdFor(secondFrame, 13) == (firstMaterial < secondMaterial ? 1u : 2u)
+            && materialIdFor(secondFrame, 12) == 0 && materialIdFor(secondFrame, 15) == 0
+            && materialIdFor(secondFrame, 16) == 0 && materialIdFor(secondFrame, 17) == 0;
+
+        const SceneRasterInstance& instance = firstFrame.Instances.front();
+        Math::Mat4 preserved = Math::Mat4::Identity();
+        const bool normalTransformValid = std::abs(instance.NormalTransform.Values[0] - 0.5f) < 0.00001f
+            && std::abs(instance.NormalTransform.Values[5] - 1.0f / 3.0f) < 0.00001f
+            && std::abs(instance.NormalTransform.Values[10] - 0.25f) < 0.00001f
+            && instance.NormalTransform.Values[12] == 0.0f
+            && !BuildSceneNormalTransform({ 1.0f, 0.0f, 1.0f }, {}, preserved)
+            && preserved.Values[0] == 1.0f && preserved.Values[5] == 1.0f && preserved.Values[10] == 1.0f;
+
+        MaterialTextureBindingSet bindings;
+        bindings.Material = firstFrame.MaterialRows[instance.MaterialId].Material;
+        const SceneSurfaceConstants constants = BuildSceneSurfaceConstants(instance, bindings, false);
+        const auto errorInstance = std::find_if(firstFrame.Instances.begin(), firstFrame.Instances.end(),
+            [](const SceneRasterInstance& candidate) { return candidate.MaterialId == 0; });
+        MaterialTextureBindingSet errorBindings;
+        errorBindings.Material = firstFrame.MaterialRows[0].Material;
+        const SceneSurfaceConstants errorConstants = errorInstance == firstFrame.Instances.end()
+            ? SceneSurfaceConstants {}
+            : BuildSceneSurfaceConstants(*errorInstance, errorBindings, true);
+        const bool constantBoundary = sizeof(SceneSurfaceConstants) == 256
+            && offsetof(SceneSurfaceConstants, NormalTransform) == 64
+            && offsetof(SceneSurfaceConstants, BaseColorAndAlphaCutoff) == 128
+            && offsetof(SceneSurfaceConstants, MaterialState) == 240
+            && constants.NormalTransform[0] == instance.NormalTransform.Values[0]
+            && constants.NormalTransform[5] == instance.NormalTransform.Values[5]
+            && constants.MaterialState[0] == instance.MaterialId && constants.MaterialState[1] == 0
+            && errorConstants.MaterialState[0] == 0 && errorConstants.MaterialState[1] == 1
+            && errorConstants.MaterialState[2] == 0 && errorConstants.MaterialState[3] == 0;
+        const bool singularWholeFrameRejected = !singularFrame.HasValidView
+            && singularFrame.Instances.empty() && singularFrame.MaterialRows.empty();
+        return Expect(stableRows,
+                "sorted unique material handles publish stable rows while duplicate invalid wrong-type and missing-library handles use row zero")
+            && Expect(normalTransformValid && singularWholeFrameRejected,
+                "nonuniform scale publishes the row-vector inverse-transpose while any singular mesh rejects the complete prepared frame")
+            && Expect(constantBoundary,
+                "the exact 256-byte Scene constants carry valid rows and the explicit zero/one/zero/zero error state");
     }
 
     bool TestClusteredLightGridBuildsBoundedDeterministicAssignments()
@@ -7003,21 +7412,29 @@ float4 main(VertexInput input) : SV_Position
         int payloadDestructions = 0;
         Ref<Payload> payload = CreateRef<Payload>(payloadDestructions);
         std::weak_ptr<Payload> weakPayload = payload;
+        Ref<SceneSurfaceConstants> surfaceConstants = CreateRef<SceneSurfaceConstants>();
+        surfaceConstants->MaterialState[0] = 7;
+        std::weak_ptr<SceneSurfaceConstants> weakSurfaceConstants = surfaceConstants;
         Submission first = submit("A");
         const std::vector<CompletionToken> firstTokens = first.Executed.Completions;
         std::string error;
-        const bool retained = owner.Retain(41, std::move(first.Graph), first.Compiled, first.Executed, { payload }, &error);
+        const bool retained = owner.Retain(41, std::move(first.Graph), first.Compiled, first.Executed,
+            { payload, surfaceConstants }, &error);
         payload.reset();
+        surfaceConstants.reset();
         const auto pending = owner.Poll(device);
         const bool pendingRetained = retained && pending.Success && pending.Retired.empty() && pending.PendingCount == 1
-            && !weakPayload.expired() && payloadDestructions == 0 && device.WaitCount == 0;
+            && !weakPayload.expired() && !weakSurfaceConstants.expired()
+            && weakSurfaceConstants.lock()->MaterialState[0] == 7
+            && payloadDestructions == 0 && device.WaitCount == 0;
         for (const CompletionToken& token : firstTokens)
             device.SetCompletion(token, CompletionStatus::Complete);
         const auto retired = owner.Poll(device);
         const bool exactRetirement = retired.Success && retired.PendingCount == 0 && retired.Retired.size() == 1
             && retired.Retired[0].FrameIndex == 41
             && retired.Retired[0].PassLabels == std::vector<std::string>({ "First A", "Second A" })
-            && retired.Retired[0].Completions.size() == 2 && weakPayload.expired() && payloadDestructions == 1
+            && retired.Retired[0].Completions.size() == 2 && weakPayload.expired()
+            && weakSurfaceConstants.expired() && payloadDestructions == 1
             && device.WaitCount == 0;
 
         Submission partial = submit("partial", true);
@@ -9178,6 +9595,7 @@ int main(int argc, char** argv)
         FAST_TEST("Frame task graph rejects invalid dependencies", TestFrameTaskGraphRejectsInvalidDependencies),
         INTEGRATION_TEST("Scene round trip", TestSceneRoundTrip),
         INTEGRATION_TEST("Cooked mesh artifacts validate and resolve transactionally", TestMeshArtifactValidationAndResolution),
+        INTEGRATION_TEST("glTF geometric normals preserve authored data and derive deterministic fallback", TestGltfGeometricNormalImportPolicy),
         INTEGRATION_TEST("Texture artifacts cook the deterministic RGBA fallback transactionally", TestTextureArtifactFallbackCooking),
         INTEGRATION_TEST("KTX2 Basis textures cook deterministic compressed targets transactionally", TestKtx2BasisCooking),
         INTEGRATION_TEST("Texture artifact variants coexist and resolve transactionally", TestTextureArtifactVariantSetResolution),
@@ -9193,6 +9611,7 @@ int main(int argc, char** argv)
         FAST_TEST("Generated world-grid normalization preserves canonical reference results", TestGeneratedWorldGridNormalizationProperties),
         FAST_TEST("Per-view sector-snapped origin tracking", TestPerViewSectorSnappedOriginTracking),
         FAST_TEST("Scene raster origin epoch invariance", TestSceneRasterOriginEpochInvariance),
+        FAST_TEST("Scene surface basis and material rows publish deterministically", TestSceneSurfaceBasisAndMaterialRows),
         FAST_TEST("Clustered light grid builds bounded deterministic assignments", TestClusteredLightGridBuildsBoundedDeterministicAssignments),
         INTEGRATION_TEST("Photometric light schema publication and diagnostics are transactional", TestPhotometricLightAuthoringPublicationAndDiagnostics),
         FAST_TEST("Scene render snapshot extraction and retained epochs", TestSceneRenderSnapshotExtractionAndRetainedEpochs),

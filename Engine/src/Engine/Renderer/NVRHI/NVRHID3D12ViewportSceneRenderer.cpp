@@ -8,6 +8,7 @@
 #include "Engine/RenderGraph/RenderGraph.h"
 #include "Engine/Renderer/AsyncShaderPackageService.h"
 #include "Engine/Renderer/MeshGpuResourceCache.h"
+#include "Engine/Renderer/SceneSurfaceConstants.h"
 #include "Engine/Renderer/NVRHI/D3D12DebugMarkers.h"
 #include "Engine/Renderer/NVRHI/D3D12ViewportShaderReloadCoordinator.h"
 #include "Engine/Renderer/ShaderLibrary.h"
@@ -35,53 +36,6 @@ namespace Engine
         {
             const std::string_view overridePath = Application::Get().GetSpecification().CommandLineArgs.GetOptionValue("--viewport-shader-path");
             return overridePath.empty() ? kViewportShaderPath : overridePath;
-        }
-
-        struct ViewportConstants
-        {
-            float ViewProjection[16];
-            float BaseColorAndAlphaCutoff[4];
-            float EmissiveAndStrength[4];
-            float SurfaceFactors[4];
-            float CallistoFactors[4];
-            u32 TextureIndices0[4];
-            u32 TextureIndices1[4];
-            u32 TextureState[4];
-        };
-
-        static_assert(sizeof(ViewportConstants) <= kViewportConstantBufferSize);
-
-        ViewportConstants BuildViewportConstants(
-            const SceneRasterInstance& instance, const MaterialTextureBindingSet& bindings)
-        {
-            ViewportConstants constants {};
-            std::memcpy(constants.ViewProjection,
-                instance.ModelViewProjection.Values, sizeof(constants.ViewProjection));
-            constants.BaseColorAndAlphaCutoff[0] = bindings.Material.BaseColor.X;
-            constants.BaseColorAndAlphaCutoff[1] = bindings.Material.BaseColor.Y;
-            constants.BaseColorAndAlphaCutoff[2] = bindings.Material.BaseColor.Z;
-            constants.BaseColorAndAlphaCutoff[3] = bindings.Material.AlphaCutoff;
-            constants.EmissiveAndStrength[0] = bindings.Material.EmissiveColor.X;
-            constants.EmissiveAndStrength[1] = bindings.Material.EmissiveColor.Y;
-            constants.EmissiveAndStrength[2] = bindings.Material.EmissiveColor.Z;
-            constants.EmissiveAndStrength[3] = bindings.Material.EmissiveStrength;
-            constants.SurfaceFactors[0] = bindings.Material.Metallic;
-            constants.SurfaceFactors[1] = bindings.Material.Roughness;
-            constants.SurfaceFactors[2] = bindings.Material.NormalScale;
-            constants.SurfaceFactors[3] = bindings.Material.OcclusionStrength;
-            constants.CallistoFactors[0] = bindings.Material.DiffuseFresnelIntensity;
-            constants.CallistoFactors[1] = bindings.Material.RetroreflectionIntensity;
-            constants.CallistoFactors[2] = bindings.Material.DiffuseFresnelFalloff;
-            constants.CallistoFactors[3] = bindings.Material.RetroreflectionFalloff;
-            for (size_t index = 0; index < 4; ++index)
-                constants.TextureIndices0[index] = bindings.Handles[index].Index;
-            constants.TextureIndices1[0] = bindings.Handles[4].Index;
-            constants.TextureIndices1[1] = bindings.Handles[5].Index;
-            constants.TextureState[0] = bindings.DeclaredMask;
-            constants.TextureState[1] = bindings.ErrorMask;
-            constants.TextureState[2] = static_cast<u32>(bindings.Material.AlphaMode);
-            constants.TextureState[3] = static_cast<u32>(bindings.Material.ShadingModel);
-            return constants;
         }
 
         struct ConstantBufferAllocation
@@ -398,10 +352,27 @@ namespace Engine
                     {
                         MaterialTextureBindingSet materialBindings;
                         std::string materialError;
-                        if (!m_TextureRuntime->ResolveMaterialTextures(
+                        if (rasterFrame.Instances[index].MaterialId >= rasterFrame.MaterialRows.size())
+                        {
+                            renderSucceeded = false;
+                            break;
+                        }
+                        const SceneMaterialRow& materialRow = rasterFrame.MaterialRows[rasterFrame.Instances[index].MaterialId];
+                        if (materialRow.IsError)
+                        {
+                            materialBindings.Material = materialRow.Material;
+                            materialBindings.Handles.fill(m_TextureRuntime->GetErrorHandle());
+                            materialBindings.CatalogGeneration = materialRow.CatalogGeneration;
+                        }
+                        else if (!m_TextureRuntime->ResolveMaterialTextures(
                             rasterFrame.Instances[index].MaterialAsset, materialBindings, materialError))
                         {
                             Log::Error("D3D12 Scene viewport could not resolve snapshot material: ", materialError);
+                            renderSucceeded = false;
+                            break;
+                        }
+                        if (materialBindings.CatalogGeneration != rasterFrame.MaterialCatalogGeneration)
+                        {
                             renderSucceeded = false;
                             break;
                         }
@@ -411,8 +382,8 @@ namespace Engine
                             if ((materialBindings.DeclaredMask & (1u << static_cast<u32>(slot))) != 0
                                 && (materialBindings.ErrorMask & (1u << static_cast<u32>(slot))) == 0)
                                 usedTextureHandles.push_back(materialBindings.Handles[slot]);
-                        const ViewportConstants constants = BuildViewportConstants(
-                            rasterFrame.Instances[index], materialBindings);
+                        const SceneSurfaceConstants constants = BuildSceneSurfaceConstants(
+                            rasterFrame.Instances[index], materialBindings, materialRow.IsError);
                         std::memcpy((*constantBuffers)[index].Mapped, &constants, sizeof(constants));
                     }
                     if (!renderSucceeded)
@@ -658,7 +629,7 @@ namespace Engine
             request.DownstreamCompilerPackageHash = GE_DXC_PACKAGE_SHA256;
             request.Defines = { "GE_READ_ONLY_TEXTURE_CAPACITY=" + std::to_string(m_TextureTableCapacity) };
             request.ExpectedLayout = {
-                { "ViewportConstants", 'b', 0, 0, stage, "ConstantBuffer", "struct{ViewProjection:float32x4x4:row-major@0,BaseColorAndAlphaCutoff:float32x4@64,EmissiveAndStrength:float32x4@80,SurfaceFactors:float32x4@96,CallistoFactors:float32x4@112,TextureIndices0:uint32x4@128,TextureIndices1:uint32x4@144,TextureState:uint32x4@160}", 1, 176, 0, 0 },
+                { "ViewportConstants", 'b', 0, 0, stage, "ConstantBuffer", "struct{ViewProjection:float32x4x4:row-major@0,NormalTransform:float32x4x4:row-major@64,BaseColorAndAlphaCutoff:float32x4@128,EmissiveAndStrength:float32x4@144,SurfaceFactors:float32x4@160,CallistoFactors:float32x4@176,TextureIndices0:uint32x4@192,TextureIndices1:uint32x4@208,TextureState:uint32x4@224,MaterialState:uint32x4@240}", 1, 256, 0, 0 },
                 { "ReadOnlySamplers", 's', 0, 1, stage, "SamplerState", "sampler", m_TextureTableCapacity, 0, 0, 0 },
                 { "ReadOnlyTextures", 't', 0, 1, stage, "Texture2D", "float32x4", m_TextureTableCapacity, 0, 1, 4 }
             };
@@ -666,8 +637,9 @@ namespace Engine
             {
                 request.ExpectedVertexInputs = {
                     { "Position", "POSITION", 0, 0, "float32x3", 12, 1, 3 },
-                    { "Color", "COLOR", 0, 1, "float32x3", 12, 1, 3 },
-                    { "UV", "TEXCOORD", 0, 2, "float32x2", 8, 1, 2 }
+                    { "Normal", "NORMAL", 0, 1, "float32x3", 12, 1, 3 },
+                    { "Color", "COLOR", 0, 2, "float32x3", 12, 1, 3 },
+                    { "UV", "TEXCOORD", 0, 3, "float32x2", 8, 1, 2 }
                 };
             }
             return request;
@@ -833,6 +805,7 @@ namespace Engine
             pipelineDesc.PixelShader = pixelShader.get();
             pipelineDesc.VertexInputs = {
                 { "POSITION", 0, RHI::Format::R32G32B32Float, 0, offsetof(MeshArtifactVertex, Position) },
+                { "NORMAL", 0, RHI::Format::R32G32B32Float, 0, offsetof(MeshArtifactVertex, Normal) },
                 { "COLOR", 0, RHI::Format::R32G32B32Float, 0, offsetof(MeshArtifactVertex, Color) },
                 { "TEXCOORD", 0, RHI::Format::R32G32Float, 0, offsetof(MeshArtifactVertex, UV) }
             };

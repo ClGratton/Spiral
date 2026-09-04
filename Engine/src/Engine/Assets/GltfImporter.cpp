@@ -8,6 +8,7 @@
 #include "cgltf.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cctype>
 #include <filesystem>
 #include <limits>
@@ -60,27 +61,36 @@ namespace Engine
             return stem.empty() ? "Mesh " + std::to_string(meshIndex) : stem + " Mesh " + std::to_string(meshIndex);
         }
 
-        const cgltf_accessor* FindPositionAccessor(const cgltf_primitive& primitive)
+        const cgltf_accessor* FindAttributeAccessor(const cgltf_primitive& primitive, cgltf_attribute_type type)
         {
             for (cgltf_size attributeIndex = 0; attributeIndex < primitive.attributes_count; ++attributeIndex)
             {
                 const cgltf_attribute& attribute = primitive.attributes[attributeIndex];
-                if (attribute.type == cgltf_attribute_type_position)
+                if (attribute.type == type)
                     return attribute.data;
             }
 
             return nullptr;
         }
 
+        bool HasExtension(char* const* extensions, cgltf_size extensionCount, std::string_view name)
+        {
+            for (cgltf_size index = 0; index < extensionCount; ++index)
+                if (extensions[index] && name == extensions[index])
+                    return true;
+            return false;
+        }
+
         bool AppendPrimitive(
             const cgltf_primitive& primitive,
             u32 sourceMeshIndex,
             u32 sourcePrimitiveIndex,
+            bool meshQuantizationDeclaredRequired,
             MeshArtifact& artifact,
             GltfMeshImportInfo& importedMesh,
             std::string& outError)
         {
-            const cgltf_accessor* positionAccessor = FindPositionAccessor(primitive);
+            const cgltf_accessor* positionAccessor = FindAttributeAccessor(primitive, cgltf_attribute_type_position);
             if (primitive.type != cgltf_primitive_type_triangles || !positionAccessor
                 || positionAccessor->type != cgltf_type_vec3 || positionAccessor->component_type != cgltf_component_type_r_32f)
             {
@@ -99,6 +109,19 @@ namespace Engine
             const u32 vertexOffset = static_cast<u32>(artifact.Vertices.size());
             const u32 indexOffset = static_cast<u32>(artifact.Indices.size());
             artifact.Vertices.reserve(artifact.Vertices.size() + positionAccessor->count);
+            const cgltf_accessor* normalAccessor = FindAttributeAccessor(primitive, cgltf_attribute_type_normal);
+            const bool quantizedNormal = normalAccessor
+                && (normalAccessor->component_type == cgltf_component_type_r_8
+                    || normalAccessor->component_type == cgltf_component_type_r_16);
+            if (normalAccessor && (normalAccessor->type != cgltf_type_vec3
+                || normalAccessor->count != positionAccessor->count
+                || (normalAccessor->component_type != cgltf_component_type_r_32f
+                    && !(quantizedNormal && normalAccessor->normalized
+                        && meshQuantizationDeclaredRequired))))
+            {
+                outError = "glTF NORMAL must be FLOAT or normalized signed BYTE/SHORT with required KHR_mesh_quantization";
+                return false;
+            }
             for (cgltf_size vertexIndex = 0; vertexIndex < positionAccessor->count; ++vertexIndex)
             {
                 MeshArtifactVertex vertex;
@@ -106,6 +129,25 @@ namespace Engine
                 {
                     outError = "could not read glTF POSITION data";
                     return false;
+                }
+                if (normalAccessor)
+                {
+                    if (!cgltf_accessor_read_float(normalAccessor, vertexIndex, vertex.Normal, 3))
+                    {
+                        outError = "could not read glTF NORMAL data";
+                        return false;
+                    }
+                    const double lengthSquared = static_cast<double>(vertex.Normal[0]) * vertex.Normal[0]
+                        + static_cast<double>(vertex.Normal[1]) * vertex.Normal[1]
+                        + static_cast<double>(vertex.Normal[2]) * vertex.Normal[2];
+                    if (!std::isfinite(lengthSquared) || lengthSquared <= 0.0)
+                    {
+                        outError = "glTF NORMAL accessor contains non-finite or zero-length data";
+                        return false;
+                    }
+                    const double inverseLength = 1.0 / std::sqrt(lengthSquared);
+                    for (float& component : vertex.Normal)
+                        component = static_cast<float>(component * inverseLength);
                 }
                 artifact.Vertices.push_back(vertex);
             }
@@ -199,6 +241,12 @@ namespace Engine
             return result;
         }
 
+        const bool meshQuantizationUsed = HasExtension(document->extensions_used,
+            document->extensions_used_count, "KHR_mesh_quantization");
+        const bool meshQuantizationRequired = HasExtension(document->extensions_required,
+            document->extensions_required_count, "KHR_mesh_quantization");
+        const bool meshQuantizationDeclaredRequired = meshQuantizationUsed && meshQuantizationRequired;
+
         result.Meshes.reserve(document->meshes_count);
         MeshArtifact artifact;
         artifact.SourcePath = result.SourcePath;
@@ -213,12 +261,16 @@ namespace Engine
             {
                 const cgltf_primitive& primitive = sourceMesh.primitives[primitiveIndex];
                 if (meshIndex > std::numeric_limits<u32>::max() || primitiveIndex > std::numeric_limits<u32>::max()
-                    || !AppendPrimitive(primitive, static_cast<u32>(meshIndex), static_cast<u32>(primitiveIndex), artifact, importedMesh, result.Error))
+                    || !AppendPrimitive(primitive, static_cast<u32>(meshIndex), static_cast<u32>(primitiveIndex),
+                        meshQuantizationDeclaredRequired, artifact, importedMesh, result.Error))
                     return result;
             }
 
             result.Meshes.push_back(std::move(importedMesh));
         }
+
+        if (!EnsureMeshArtifactGeometricNormals(artifact, result.Error))
+            return result;
 
         const std::string assetName = result.Meshes.size() == 1
             ? result.Meshes.front().Name
