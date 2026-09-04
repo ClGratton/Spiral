@@ -1024,3 +1024,39 @@ SceneDebugVisualizationV1 backend=Vulkan modes=Lit,MaterialId,GeometricNormal,Sh
 Headed acceptance uses only schema-3 typed controls, not mouse/keyboard/virtual-pointer synthesis. It must select the real mesh, cycle the four views, toggle selected bounds, hide the mesh while observing that the sky remains, restore the exact initial state, and retain unchanged project/scene/asset/material bytes. Launch only through `Scripts/LaunchHeadedEditor.sh`; require its `HeadedEditorLaunchV3` source/image provenance and stable DP-3/workspace-2 receipt before visual inspection. This qualifies the Linux/Vulkan raster diagnostics and selected-AABB overlay only. It does not claim visibility-buffer IDs, picking, wireframe, general gizmos, overdraw, physics/navmesh debug, RenderDoc/PIX/Nsight capture-label readability, D3D12 runtime, or MoltenVK runtime.
 
 The 2026-09-04 acceptance passed a warning-free Debug GMake `Editor`/`EngineTests` build, both focused debug contracts, the query-retirement bound, material-control V3, the exact 30-request scene-control V3 sequence (19 succeeded, 11 rejected, two verified rollbacks, ten history mutations), 115/115 Integration tests, style/Bash/diff gates, and `Scripts/TestVulkan.sh Debug gmake --skip-build` on the RTX 3080 Ti. The native marker reported `overlayPixels=996`, `fullOpacityBlendPixels=336`, exact `graphPasses=8-on,7-off`, and `emptyVisibleMeshes=sky-retained`. The real canonical headed session used PID 632356/address `0x5559af2e61c0`, exact executable SHA-256 `a5c4f9f976316c11cbbbd83629a87e45a8821d7e99d0fb4aca1e0424afb9a3aa`, NVRHI Vulkan, and twenty stable DP-3/workspace-2 samples. Typed captures under `output/verification/debug-visualization-20260904/headed-v3` visibly distinguish every mode and show the analytic sky remaining when `Prototype Mesh.Visible` is false; the exact initial `Lit`/bounds-on/visible/casts-shadows/EV0 state was restored before normal shutdown after 38,327 frames.
+
+## Phase 3E Linux/Vulkan RenderDoc Production Labels
+
+Build the current source first through the ordinary coherent build gate, close every instance of that exact Editor executable, provide RenderDoc 1.45 with a complete `qrenderdoc` dynamic-library closure, and select a new artifact directory. The capture-only verifier does not build, install, overwrite an earlier artifact, or open the RenderDoc UI:
+
+```bash
+bash Scripts/VerifyRenderDocSceneLabels.sh \
+  --qrenderdoc "$PWD/output/tools/renderdoc-1.45/package/usr/bin/qrenderdoc" \
+  --renderdoc-library "$PWD/output/tools/renderdoc-1.45/package/usr/lib/librenderdoc.so" \
+  --vulkan-layer-manifest "$PWD/output/tools/renderdoc-1.45/package/etc/vulkan/implicit_layer.d/renderdoc_capture.json" \
+  --runtime-lib-dir "$PWD/output/tools/renderdoc-1.45/runtime/root/usr/lib" \
+  --editor "$PWD/bin/Debug-linux-x86_64-gmake/Editor/Editor" \
+  --repo "$PWD" \
+  --artifacts "$PWD/output/verification/renderdoc-scene-labels-<run>" \
+  --timeout 120
+```
+
+The RenderDoc library and manifest options may be omitted only when they occupy the ordinary prefix-derived locations beside an installed or extracted qrenderdoc. `--runtime-lib-dir` is repeatable and optional for a system installation; the shown uninstalled package needs its extracted Qt runtime directory. The shell supervisor rejects an already-running exact Editor, unresolved or mismatched `qrenderdoc`/`librenderdoc` closure, invalid paths or manifest metadata, and output collisions before launch. It creates `renderdoc-vulkan-layer/implicit_layer.d/renderdoc_capture.json` under the artifact directory from the supplied official version-45 manifest, changes only the copy's `library_path` to the selected absolute library, supplies its directory through the injected child's `VK_IMPLICIT_LAYER_PATH`, sets the manifest's enable variable, and removes inherited RenderDoc/loader disable variables from the supervised process environment. It never invokes RenderDoc layer registration or changes user/system Vulkan configuration. It isolates qrenderdoc data/config/cache under the artifact directory with analytics and update checks disabled, bounds the complete process group, and cleans injected children on success, failure, or timeout. The qrenderdoc Python entry point uses `ExecuteAndInject` with `--renderer-vulkan --vulkan-render-smoke --scene-viewport-render-graph-smoke`, immediately queues exactly one next-frame capture when target control connects so the bounded smoke cannot outrun a `RegisterAPI` notification, requires the resulting local `NewCapture` to identify Vulkan, preserves the source as `spiral-renderdoc-scene-labels.rdc`, reopens it, and recursively evaluates `ActionDescription.GetName` against the capture's structured data.
+
+The only accepted production-label projections are:
+
+```text
+Scene Light Payload Copy
+Scene Primary Directional Shadow Map
+Scene Viewport Graph Clear
+Scene Sky Atmosphere
+Scene Viewport Graph Raster
+Scene Viewport Graph Tone Map
+Scene Viewport Graph Output Handoff
+```
+
+or that exact sequence with `Scene Debug Overlay` inserted immediately before `Scene Viewport Graph Output Handoff`. Smoke-only direct-reference labels do not satisfy the check. `spiral-renderdoc-scene-labels.json` records schema `SpiralRenderDocSceneLabelsV1`, tool version/commit, qrenderdoc/RenderDoc-library/source-manifest/effective-manifest/Editor paths and hashes, the artifact-local implicit-layer path, launch inputs, capture API/frame/hash, every recursively observed action name, the exact filtered sequence, and pass/fail detail. The `.rdc`, JSON, corrected manifest, and qrenderdoc log remain together in the caller-selected artifact directory for review.
+
+A successful deterministic fake-RHI test or normal Vulkan smoke proves marker lifecycle and source integration, not external capture readability. Check the Linux/Vulkan roadmap item only after the matching artifact passes from the exact current executable; keep the remaining cross-backend/tool item unchecked until its own native evidence exists. This Linux/Vulkan procedure makes no D3D12/PIX, Nsight, MoltenVK, other-device, or production-performance claim.
+
+The 2026-09-04 local acceptance used RenderDoc 1.45 commit `2fc0bc04cb95499635f63986a55bc6f67849dd9f` and the exact Debug Editor SHA-256 `ab9b3b497da2d3aebe66771a4951f0b124acfb82eb1d0091fc6a6dbc6880ec76` on the RTX 3080 Ti. Artifact `output/verification/renderdoc-scene-labels-20260904-v3/spiral-renderdoc-scene-labels.rdc` is 493,845 bytes with SHA-256 `44535d648e2a5bc0ff098a4f777e4246bd2561ec1ec24c4233639fb26e9d6c26`. The replay enumerated 124 actions and filtered exactly `Scene Light Payload Copy`, `Scene Primary Directional Shadow Map`, `Scene Viewport Graph Clear`, `Scene Sky Atmosphere`, `Scene Viewport Graph Raster`, `Scene Viewport Graph Tone Map`, `Scene Debug Overlay`, and `Scene Viewport Graph Output Handoff`, in that order. Both nonpresenting and presenting Vulkan API registrations were observed; the capture was frame zero and the schema receipt reports `result=pass`.

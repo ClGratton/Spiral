@@ -95,6 +95,7 @@ $RequiredMarkers = @(
     "NVRHI D3D12 device created on adapter:",
     "Selected D3D12 adapter for profile 'Phase 3 D3D12 Bootstrap V1':",
     "D3D12 capability state: Ray Tracing advertised=",
+    "D3D12 capability state: Debug Markers advertised=yes, enabled=yes, implemented=yes, exercised=no",
     "D3D12 capability state: Timestamps advertised=yes, enabled=yes, implemented=yes, exercised=no",
     "Editor renderer capability diagnostics ready: profile=Phase 3 D3D12 Bootstrap V1, qualification=Bootstrap",
     "Renderer capability group: group=Phase3FrameTimingV1, profile=Phase 3 Frame Timing V1, preferredPath=GpuTimestamps, selectedPath=CpuSteadyClock, implemented=yes, exercised=no",
@@ -285,7 +286,7 @@ foreach ($Pattern in $CanonicalOriginPatterns) {
         throw "D3D12 scene-origin diagnostics did not prove the expected canonical mesh/origin boundary transition: $Pattern"
     }
 }
-$DiagnosticsPattern = "Editor renderer capability diagnostics rendered: profile=Phase 3 D3D12 Bootstrap V1, adapter=.+, qualification=Bootstrap, formats=[1-9][0-9]*, features=12, groups=2, candidates=[1-9][0-9]*"
+$DiagnosticsPattern = "Editor renderer capability diagnostics rendered: profile=Phase 3 D3D12 Bootstrap V1, adapter=.+, qualification=Bootstrap, formats=[1-9][0-9]*, features=13, groups=2, candidates=[1-9][0-9]*"
 if ($JoinedLog -notmatch $DiagnosticsPattern) {
     throw "D3D12 render smoke did not emit a complete editor capability diagnostics marker."
 }

@@ -94,6 +94,21 @@ Linux CI repeats the strict smoke through Mesa lavapipe and Xvfb:
 bash Scripts/TestVulkan.sh Debug gmake
 ```
 
+After a coherent Debug build, an optional user-supplied RenderDoc 1.45 can verify the exact production Scene pass labels without becoming a repository dependency. The command is capture-only and requires an unused artifact directory:
+
+```bash
+bash Scripts/VerifyRenderDocSceneLabels.sh \
+  --qrenderdoc /absolute/path/to/qrenderdoc \
+  --renderdoc-library /absolute/path/to/librenderdoc.so \
+  --vulkan-layer-manifest /absolute/path/to/renderdoc_capture.json \
+  --runtime-lib-dir /optional/path/to/extracted/runtime/libs \
+  --editor "$PWD/bin/Debug-linux-x86_64-gmake/Editor/Editor" \
+  --repo "$PWD" \
+  --artifacts "$PWD/output/verification/renderdoc-scene-labels-<run>"
+```
+
+See [Docs/VERIFICATION.md](Docs/VERIFICATION.md#phase-3e-linuxvulkan-renderdoc-production-labels) for the exact seven/eight-pass acceptance sequence, artifact schema, and platform limits.
+
 On macOS, `Scripts/Setup.sh` installs Homebrew's Vulkan loader and MoltenVK runtime when missing. The same strict smoke selects MoltenVK through the loader, enables Vulkan portability enumeration, wraps the device with NVRHI, recreates the swapchain after resize, and requires a successful post-resize present:
 
 ```bash

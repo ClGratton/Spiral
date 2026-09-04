@@ -576,7 +576,7 @@ namespace Engine
             RecordingContext candidate;
             candidate.EffectiveQueue = effective;
             candidate.PassIndex = passIndex;
-            candidate.CommandList = device.CreateCommandList(requested, "RenderGraph Execution");
+            candidate.CommandList = device.CreateCommandList(requested, m_Passes[passIndex].DebugName);
             if (!candidate.CommandList) return nullptr;
             m_RecordingContexts.emplace_back(std::move(candidate));
             contextIndex = static_cast<u32>(m_RecordingContexts.size() - 1);
@@ -617,21 +617,24 @@ namespace Engine
                 const CompiledPass& compiledPass = *std::find_if(compiled.Passes.begin(), compiled.Passes.end(), [passIndex](const CompiledPass& value) { return value.Pass.Index == passIndex; });
                 bool ok = context.CommandList->Begin();
                 if (ok) ok = beginTimestampScope(passIndex, *context.CommandList);
-                for (u32 barrierIndex = compiledPass.FirstBarrier; ok && barrierIndex < compiledPass.FirstBarrier + compiledPass.BarrierCount; ++barrierIndex)
                 {
-                    const Barrier& barrier = compiled.Barriers[barrierIndex];
-                    ok = m_Resources[barrier.Resource.Index].Kind == ResourceKind::Texture
-                        ? context.CommandList->TransitionTexture(*m_BoundTextures[barrier.Resource.Index], barrier.Before, barrier.After)
-                        : context.CommandList->TransitionBuffer(*m_BoundBuffers[barrier.Resource.Index], barrier.Before, barrier.After);
-                }
-                std::vector<bool> declared(m_Resources.size(), false); for (const ResourceUse& use : m_Passes[passIndex].Uses) declared[use.Resource.Index] = true;
-                if (ok)
-                {
-                    ExecutionContext execution(*context.CommandList, m_BoundTextures, m_BoundBuffers, declared);
-                    context.CommandList->BeginDebugMarker(m_Passes[passIndex].DebugName);
-                    try { ok = m_Callbacks[passIndex](execution); }
-                    catch (...) { recordingErrors[passIndex] = "A graph pass callback threw an exception."; ok = false; }
-                    context.CommandList->EndDebugMarker();
+                    std::optional<RHI::ScopedDebugMarker> marker;
+                    if (ok)
+                        marker.emplace(*context.CommandList, m_Passes[passIndex].DebugName);
+                    for (u32 barrierIndex = compiledPass.FirstBarrier; ok && barrierIndex < compiledPass.FirstBarrier + compiledPass.BarrierCount; ++barrierIndex)
+                    {
+                        const Barrier& barrier = compiled.Barriers[barrierIndex];
+                        ok = m_Resources[barrier.Resource.Index].Kind == ResourceKind::Texture
+                            ? context.CommandList->TransitionTexture(*m_BoundTextures[barrier.Resource.Index], barrier.Before, barrier.After)
+                            : context.CommandList->TransitionBuffer(*m_BoundBuffers[barrier.Resource.Index], barrier.Before, barrier.After);
+                    }
+                    std::vector<bool> declared(m_Resources.size(), false); for (const ResourceUse& use : m_Passes[passIndex].Uses) declared[use.Resource.Index] = true;
+                    if (ok)
+                    {
+                        ExecutionContext execution(*context.CommandList, m_BoundTextures, m_BoundBuffers, declared);
+                        try { ok = m_Callbacks[passIndex](execution); }
+                        catch (...) { recordingErrors[passIndex] = "A graph pass callback threw an exception."; ok = false; }
+                    }
                 }
                 if (ok) ok = endTimestampScope(passIndex, *context.CommandList);
                 if (ok) ok = context.CommandList->End();
@@ -714,60 +717,63 @@ namespace Engine
             }
             if (!context->CommandList->Begin() || !beginTimestampScope(compiledPass.Pass.Index, *context->CommandList))
             { result.Error = "Could not begin a GPU-retired graph recording context or timestamp scope."; discardContext(); return result; }
-            for (const QueueTransition* transition : acquires[compiledPass.Pass.Index])
+            const auto recordPass = [&]() -> bool
             {
-                const RHI::CompletionToken releaseToken = passTokens[transition->Producer.Index];
-                if (!releaseToken.IsValid()) { result.Error = "A graph ownership acquire has no accepted release token."; discardContext(); return result; }
-                const bool acquired = m_Resources[transition->Resource.Index].Kind == ResourceKind::Texture
-                    ? context->CommandList->AcquireTextureOwnership({ m_BoundTextures[transition->Resource.Index], transition->SourceQueue, transition->DestinationQueue, transition->Before, transition->After, releaseToken })
-                    : context->CommandList->AcquireBufferOwnership({ m_BoundBuffers[transition->Resource.Index], transition->SourceQueue, transition->DestinationQueue, transition->Before, transition->After, releaseToken });
-                if (!acquired) { result.Error = "Could not record a compiled graph ownership acquire."; discardContext(); return result; }
-                if (std::find_if(dependencies.begin(), dependencies.end(), [&](const RHI::CompletionToken& token) { return token.DeviceId == releaseToken.DeviceId && token.SubmissionId == releaseToken.SubmissionId; }) == dependencies.end()) dependencies.push_back(releaseToken);
-            }
-            for (u32 barrierIndex = compiledPass.FirstBarrier; barrierIndex < compiledPass.FirstBarrier + compiledPass.BarrierCount; ++barrierIndex)
-            {
-                const Barrier& barrier = compiled.Barriers[barrierIndex];
-                // A cross-effective ownership acquire records the destination
-                // state transition itself. Re-emitting the compiler barrier
-                // would be an ordinary use while the tracker is pending (and
-                // is therefore both redundant and invalid on Vulkan).
-                const bool ownershipAcquireTransitionsBarrier = std::any_of(acquires[compiledPass.Pass.Index].begin(),
-                    acquires[compiledPass.Pass.Index].end(), [&](const QueueTransition* transition)
-                    {
-                        return transition->Resource.Index == barrier.Resource.Index
-                            && transition->Before == barrier.Before && transition->After == barrier.After;
-                    });
-                if (ownershipAcquireTransitionsBarrier)
-                    continue;
-                const bool transitioned = m_Resources[barrier.Resource.Index].Kind == ResourceKind::Texture
-                    ? context->CommandList->TransitionTexture(*m_BoundTextures[barrier.Resource.Index], barrier.Before, barrier.After)
-                    : context->CommandList->TransitionBuffer(*m_BoundBuffers[barrier.Resource.Index], barrier.Before, barrier.After);
-                if (!transitioned) { result.Error = "Could not record a compiled graph transition."; discardContext(); return result; }
-            }
-            const PassDescription& pass = m_Passes[compiledPass.Pass.Index];
-            std::vector<bool> declared(m_Resources.size(), false);
-            for (const ResourceUse& use : pass.Uses) declared[use.Resource.Index] = true;
-            ExecutionContext execution(*context->CommandList, m_BoundTextures, m_BoundBuffers, declared);
-            context->CommandList->BeginDebugMarker(pass.DebugName);
-            bool callbackSucceeded = false;
-            try
-            {
-                callbackSucceeded = m_Callbacks[compiledPass.Pass.Index](execution);
-            }
-            catch (...)
-            {
-                context->CommandList->EndDebugMarker();
-                result.Error = "A graph pass callback threw an exception."; discardContext(); return result;
-            }
-            context->CommandList->EndDebugMarker();
-            if (!callbackSucceeded) { result.Error = "A graph pass callback failed."; discardContext(); return result; }
-            for (const QueueTransition* transition : releases[compiledPass.Pass.Index])
-            {
-                const bool released = m_Resources[transition->Resource.Index].Kind == ResourceKind::Texture
-                    ? context->CommandList->ReleaseTextureOwnership({ m_BoundTextures[transition->Resource.Index], transition->SourceQueue, transition->DestinationQueue, transition->Before, transition->After })
-                    : context->CommandList->ReleaseBufferOwnership({ m_BoundBuffers[transition->Resource.Index], transition->SourceQueue, transition->DestinationQueue, transition->Before, transition->After });
-                if (!released) { result.Error = "Could not record a compiled graph ownership release."; discardContext(); return result; }
-            }
+                RHI::ScopedDebugMarker marker(*context->CommandList, compiledPass.DebugName);
+                for (const QueueTransition* transition : acquires[compiledPass.Pass.Index])
+                {
+                    const RHI::CompletionToken releaseToken = passTokens[transition->Producer.Index];
+                    if (!releaseToken.IsValid()) { result.Error = "A graph ownership acquire has no accepted release token."; return false; }
+                    const bool acquired = m_Resources[transition->Resource.Index].Kind == ResourceKind::Texture
+                        ? context->CommandList->AcquireTextureOwnership({ m_BoundTextures[transition->Resource.Index], transition->SourceQueue, transition->DestinationQueue, transition->Before, transition->After, releaseToken })
+                        : context->CommandList->AcquireBufferOwnership({ m_BoundBuffers[transition->Resource.Index], transition->SourceQueue, transition->DestinationQueue, transition->Before, transition->After, releaseToken });
+                    if (!acquired) { result.Error = "Could not record a compiled graph ownership acquire."; return false; }
+                    if (std::find_if(dependencies.begin(), dependencies.end(), [&](const RHI::CompletionToken& token) { return token.DeviceId == releaseToken.DeviceId && token.SubmissionId == releaseToken.SubmissionId; }) == dependencies.end()) dependencies.push_back(releaseToken);
+                }
+                for (u32 barrierIndex = compiledPass.FirstBarrier; barrierIndex < compiledPass.FirstBarrier + compiledPass.BarrierCount; ++barrierIndex)
+                {
+                    const Barrier& barrier = compiled.Barriers[barrierIndex];
+                    // A cross-effective ownership acquire records the destination
+                    // state transition itself. Re-emitting the compiler barrier
+                    // would be an ordinary use while the tracker is pending (and
+                    // is therefore both redundant and invalid on Vulkan).
+                    const bool ownershipAcquireTransitionsBarrier = std::any_of(acquires[compiledPass.Pass.Index].begin(),
+                        acquires[compiledPass.Pass.Index].end(), [&](const QueueTransition* transition)
+                        {
+                            return transition->Resource.Index == barrier.Resource.Index
+                                && transition->Before == barrier.Before && transition->After == barrier.After;
+                        });
+                    if (ownershipAcquireTransitionsBarrier)
+                        continue;
+                    const bool transitioned = m_Resources[barrier.Resource.Index].Kind == ResourceKind::Texture
+                        ? context->CommandList->TransitionTexture(*m_BoundTextures[barrier.Resource.Index], barrier.Before, barrier.After)
+                        : context->CommandList->TransitionBuffer(*m_BoundBuffers[barrier.Resource.Index], barrier.Before, barrier.After);
+                    if (!transitioned) { result.Error = "Could not record a compiled graph transition."; return false; }
+                }
+                const PassDescription& pass = m_Passes[compiledPass.Pass.Index];
+                std::vector<bool> declared(m_Resources.size(), false);
+                for (const ResourceUse& use : pass.Uses) declared[use.Resource.Index] = true;
+                ExecutionContext execution(*context->CommandList, m_BoundTextures, m_BoundBuffers, declared);
+                try
+                {
+                    if (!m_Callbacks[compiledPass.Pass.Index](execution))
+                    { result.Error = "A graph pass callback failed."; return false; }
+                }
+                catch (...)
+                {
+                    result.Error = "A graph pass callback threw an exception.";
+                    return false;
+                }
+                for (const QueueTransition* transition : releases[compiledPass.Pass.Index])
+                {
+                    const bool released = m_Resources[transition->Resource.Index].Kind == ResourceKind::Texture
+                        ? context->CommandList->ReleaseTextureOwnership({ m_BoundTextures[transition->Resource.Index], transition->SourceQueue, transition->DestinationQueue, transition->Before, transition->After })
+                        : context->CommandList->ReleaseBufferOwnership({ m_BoundBuffers[transition->Resource.Index], transition->SourceQueue, transition->DestinationQueue, transition->Before, transition->After });
+                    if (!released) { result.Error = "Could not record a compiled graph ownership release."; return false; }
+                }
+                return true;
+            };
+            if (!recordPass()) { discardContext(); return result; }
             if (!endTimestampScope(compiledPass.Pass.Index, *context->CommandList) || !context->CommandList->End())
             { result.Error = "Could not close graph recording or its timestamp scope."; discardContext(); return result; }
             const RHI::CompletionToken token = device.Submit(*context->CommandList, dependencies);

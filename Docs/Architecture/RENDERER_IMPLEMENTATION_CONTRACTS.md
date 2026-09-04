@@ -550,6 +550,14 @@ Selected bounds are computed from the resolved mesh artifact's finite object-spa
 
 A valid camera with zero visible mesh instances is not a failed Scene. Raster and shadow draw lists may be empty, but light-payload copy, shadow clear, Scene clear, sky, raster, tone map, and output handoff still execute; hiding the only mesh must never hide the sky. Linux/Vulkan acceptance requires production-shader readbacks for all four modes, a retained-bounds-on/live-bounds-off frame-coherence transition, post-tone-map overlay pixels, exact 8-pass and 7-pass graph/reference markers, and a nonuniform sky readback after all meshes are removed. D3D12 shares reviewed renderer/shader integration but remains unqualified until Windows execution. This first slice does not add physics shapes, light gizmos, skeletons, navmesh, wireframe, overdraw, visibility-buffer inspection, picking, or capture-tool qualification.
 
+## 15H. Production Capture-Label Contract
+
+The production base sequence is exactly `Scene Light Payload Copy`, `Scene Primary Directional Shadow Map`, `Scene Viewport Graph Clear`, `Scene Sky Atmosphere`, `Scene Viewport Graph Raster`, `Scene Viewport Graph Tone Map`, and `Scene Viewport Graph Output Handoff`. A frame with visible selected bounds inserts exactly `Scene Debug Overlay` between tone mapping and output handoff. These are RenderGraph pass identities, per-pass command-list debug names, GPU timestamp identities, and backend marker names; a capture verifier may not substitute the differently prefixed smoke-only direct-reference labels.
+
+The RenderGraph executor owns marker placement. A pass marker encloses its ownership acquires, compiled barriers, callback commands, and ownership releases and must close before `CommandList::End`, including callback-false, exception, and worker-recording discard paths. RHI command lists reject close while marker nesting is nonempty and clear stale marker storage only when a new recording begins successfully. Vulkan forwards markers through NVRHI only when its optional instance-level `VK_EXT_debug_utils` advertisement was enabled before instance creation. D3D12 translates the same RHI calls to PIX command-list events; renderer code does not reach upward or bypass RHI to label production graph passes.
+
+Deterministic fake-RHI tests prove exact command-list-name forwarding, scope ordering, balanced false/throw paths, and caller/worker recording behavior. External readability remains a separate runtime gate for each named backend/device/tool: Linux/Vulkan RenderDoc evidence does not qualify D3D12/PIX, Nsight, MoltenVK, or another device class.
+
 ## 16. Material ID And BRDF Table Contract
 
 Material IDs are a core part of the "not plastic" material strategy.

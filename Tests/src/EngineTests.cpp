@@ -8656,6 +8656,7 @@ float4 main(VertexInput input) : SV_Position
             if (m_Recording) return false;
             m_Recording = true;
             m_Closed = false;
+            m_DebugMarkerNames.clear();
             m_TextureTransitions.clear();
             m_BufferTransitions.clear();
             m_BufferOwnershipOperations.clear();
@@ -8671,13 +8672,25 @@ float4 main(VertexInput input) : SV_Position
         }
         bool End() override
         {
-            if (!m_Recording) return false;
+            if (!m_Recording || !m_DebugMarkerNames.empty()) return false;
             m_Recording = false;
             m_Closed = true;
             return true;
         }
-        void BeginDebugMarker(std::string_view) override {}
-        void EndDebugMarker() override {}
+        void BeginDebugMarker(std::string_view name) override
+        {
+            if (!m_Recording) return;
+            m_DebugMarkerNames.emplace_back(name);
+            std::scoped_lock lock(m_InstrumentationMutex);
+            m_Events.push_back("marker-begin:" + m_DebugMarkerNames.back());
+        }
+        void EndDebugMarker() override
+        {
+            if (!m_Recording || m_DebugMarkerNames.empty()) return;
+            std::scoped_lock lock(m_InstrumentationMutex);
+            m_Events.push_back("marker-end:" + m_DebugMarkerNames.back());
+            m_DebugMarkerNames.pop_back();
+        }
         bool BindViewportOutputs(Engine::RHI::Texture&, Engine::RHI::Texture*) override { return m_Recording; }
         bool ClearViewportOutputs(const Engine::RHI::ViewportClear&) override { return m_Recording; }
         bool TransitionTexture(Engine::RHI::Texture& texture, Engine::RHI::ResourceState state) override
@@ -8729,6 +8742,8 @@ float4 main(VertexInput input) : SV_Position
             if (!m_Recording || !release.Resource || std::any_of(m_BufferOwnershipOperations.begin(), m_BufferOwnershipOperations.end(),
                 [&](const auto& operation) { return operation.Resource == release.Resource; })) return false;
             m_BufferOwnershipOperations.push_back({ BufferOwnershipOperationKind::Release, release, {} });
+            std::scoped_lock lock(m_InstrumentationMutex);
+            m_Events.push_back("buffer-release:" + release.Resource->GetDescription().DebugName);
             return true;
         }
         bool AcquireBufferOwnership(const Engine::RHI::BufferOwnershipAcquire& acquire) override
@@ -8736,6 +8751,8 @@ float4 main(VertexInput input) : SV_Position
             if (!m_Recording || !acquire.Resource || std::any_of(m_BufferOwnershipOperations.begin(), m_BufferOwnershipOperations.end(),
                 [&](const auto& operation) { return operation.Resource == acquire.Resource; })) return false;
             m_BufferOwnershipOperations.push_back({ BufferOwnershipOperationKind::Acquire, {}, acquire });
+            std::scoped_lock lock(m_InstrumentationMutex);
+            m_Events.push_back("buffer-acquire:" + acquire.Resource->GetDescription().DebugName);
             return true;
         }
         bool ReleaseTextureOwnership(const Engine::RHI::TextureOwnershipRelease& release) override
@@ -8743,6 +8760,8 @@ float4 main(VertexInput input) : SV_Position
             if (!m_Recording || !release.Resource || std::any_of(m_TextureOwnershipOperations.begin(), m_TextureOwnershipOperations.end(),
                 [&](const auto& operation) { return operation.Resource == release.Resource; })) return false;
             m_TextureOwnershipOperations.push_back({ TextureOwnershipOperationKind::Release, release, {} });
+            std::scoped_lock lock(m_InstrumentationMutex);
+            m_Events.push_back("texture-release:" + release.Resource->GetDescription().DebugName);
             return true;
         }
         bool AcquireTextureOwnership(const Engine::RHI::TextureOwnershipAcquire& acquire) override
@@ -8750,6 +8769,8 @@ float4 main(VertexInput input) : SV_Position
             if (!m_Recording || !acquire.Resource || std::any_of(m_TextureOwnershipOperations.begin(), m_TextureOwnershipOperations.end(),
                 [&](const auto& operation) { return operation.Resource == acquire.Resource; })) return false;
             m_TextureOwnershipOperations.push_back({ TextureOwnershipOperationKind::Acquire, {}, acquire });
+            std::scoped_lock lock(m_InstrumentationMutex);
+            m_Events.push_back("texture-acquire:" + acquire.Resource->GetDescription().DebugName);
             return true;
         }
         void SetGraphicsPipeline(Engine::RHI::Pipeline&) override {}
@@ -8835,6 +8856,7 @@ float4 main(VertexInput input) : SV_Position
         std::mutex& m_InstrumentationMutex;
         bool m_Recording = false;
         bool m_Closed = false;
+        std::vector<std::string> m_DebugMarkerNames;
         std::vector<TextureTransition> m_TextureTransitions;
         std::vector<BufferTransition> m_BufferTransitions;
         std::vector<BufferOwnershipOperation> m_BufferOwnershipOperations;
@@ -8903,9 +8925,10 @@ float4 main(VertexInput input) : SV_Position
         { return Engine::CreateScope<RenderGraphTestQueryPool>(m_OwnerId, description); }
         bool OwnsQueryPool(const Engine::RHI::QueryPool* pool) const override
         { const auto* timestamp = dynamic_cast<const RenderGraphTestQueryPool*>(pool); return timestamp && timestamp->GetOwnerId() == m_OwnerId; }
-        Engine::Scope<Engine::RHI::CommandList> CreateCommandList(Engine::RHI::QueueType queue, std::string_view) override
+        Engine::Scope<Engine::RHI::CommandList> CreateCommandList(Engine::RHI::QueueType queue, std::string_view name) override
         {
             const Engine::u32 id = ++CreatedCommandListCount;
+            CreatedCommandListNames.emplace_back(name);
             return Engine::CreateScope<RenderGraphTestCommandList>(m_OwnerId, id, queue, BeginCount, BegunCommandListIds, Events, m_InstrumentationMutex);
         }
         bool UploadBuffer(Engine::RHI::Buffer&, const void*, Engine::u64, Engine::u64) override { return false; }
@@ -9028,6 +9051,7 @@ float4 main(VertexInput input) : SV_Position
         Engine::u32 CreatedCommandListCount = 0;
         std::vector<Engine::u32> BegunCommandListIds;
         std::vector<Engine::u32> SubmittedCommandListIds;
+        std::vector<std::string> CreatedCommandListNames;
         std::vector<Engine::RHI::CompletionToken> DependencyOrder;
         std::vector<std::string> Events;
         std::vector<Engine::RHI::Buffer*> PublishedBufferOwnershipOperations;
@@ -9198,9 +9222,9 @@ float4 main(VertexInput input) : SV_Position
         };
 
         const std::vector<std::string> expectedEvents {
-            "query:reset", "query:write:0", "callback:Timed A", "query:write:1", "query:resolve",
-            "query:reset", "query:write:0", "callback:Timed B", "query:write:1", "query:resolve",
-            "query:reset", "query:write:0", "callback:Timed C", "query:write:1", "query:resolve"
+            "query:reset", "query:write:0", "marker-begin:Timed A", "callback:Timed A", "marker-end:Timed A", "query:write:1", "query:resolve",
+            "query:reset", "query:write:0", "marker-begin:Timed B", "callback:Timed B", "marker-end:Timed B", "query:write:1", "query:resolve",
+            "query:reset", "query:write:0", "marker-begin:Timed C", "callback:Timed C", "marker-end:Timed C", "query:write:1", "query:resolve"
         };
         Submission caller = submit(false);
         const bool callerOrdering = caller.Executed.Success && device.Events == expectedEvents;
@@ -9436,26 +9460,71 @@ float4 main(VertexInput input) : SV_Position
     {
         using namespace Engine;
         using namespace Engine::RHI;
-        RenderGraph graph;
         const TextureDescription description = MakeExecutionTexture("failure", ResourceState::Common);
-        const auto resource = graph.AddTexture(description, RenderGraph::ResourceLifetimeKind::Imported);
-        const auto failing = graph.AddPass("Failing");
-        const auto later = graph.AddPass("Later");
-        graph.AddRead(failing, resource, ResourceState::Common, ShaderStage::Pixel);
-        graph.AddRead(later, resource, ResourceState::Common, ShaderStage::Pixel);
-        graph.AddDependency(failing, later);
-        int failingCallbacks = 0;
-        int laterCallbacks = 0;
-        graph.SetPassCallback(failing, [&failingCallbacks](RenderGraph::ExecutionContext&) { ++failingCallbacks; return false; });
-        graph.SetPassCallback(later, [&laterCallbacks](RenderGraph::ExecutionContext&) { ++laterCallbacks; return true; });
-        RenderGraphTestTexture texture(8101, description, ResourceState::Common);
-        RenderGraphTestDevice device(8101);
-        const bool bound = graph.BindTexture(resource, texture);
-        const RenderGraph::ExecuteResult result = graph.Execute(device, graph.Compile());
-        return Expect(bound && !result.Success && result.Error.find("callback failed") != std::string::npos, "callback failure fails graph execution explicitly")
-            && Expect(failingCallbacks == 1 && laterCallbacks == 0, "callback failure prevents every later callback")
-            && Expect(device.BeginCount == 1 && device.SubmitCount == 0, "callback failure records no submission")
-            && Expect(!result.Completion.IsValid(), "callback failure publishes no completion token or success");
+        const auto runFailure = [&](bool throws)
+        {
+            const u64 deviceId = throws ? 8102 : 8101;
+            RenderGraph graph;
+            const auto resource = graph.AddTexture(description,
+                RenderGraph::ResourceLifetimeKind::Imported);
+            const auto failing = graph.AddPass(throws ? "Throwing" : "Failing");
+            const auto later = graph.AddPass("Later");
+            graph.AddRead(failing, resource, ResourceState::Common, ShaderStage::Pixel);
+            graph.AddRead(later, resource, ResourceState::Common, ShaderStage::Pixel);
+            graph.AddDependency(failing, later);
+            RenderGraphTestTexture texture(deviceId, description, ResourceState::Common);
+            RenderGraphTestDevice device(deviceId);
+            int failingCallbacks = 0;
+            int laterCallbacks = 0;
+            graph.SetPassCallback(failing,
+                [&](RenderGraph::ExecutionContext&) -> bool
+                {
+                    ++failingCallbacks;
+                    device.Events.push_back(throws
+                        ? "callback:Throwing" : "callback:Failing");
+                    if (throws)
+                        throw std::runtime_error("expected RenderGraph callback failure");
+                    return false;
+                });
+            graph.SetPassCallback(later,
+                [&laterCallbacks](RenderGraph::ExecutionContext&)
+                {
+                    ++laterCallbacks;
+                    return true;
+                });
+            const bool bound = graph.BindTexture(resource, texture);
+            const RenderGraph::ExecuteResult result = graph.Execute(device, graph.Compile());
+            const std::string label = throws ? "Throwing" : "Failing";
+            const std::vector<std::string> expectedEvents {
+                "marker-begin:" + label, "callback:" + label,
+                "marker-end:" + label
+            };
+            return bound && !result.Success
+                && result.Error.find(throws ? "threw an exception" : "callback failed")
+                    != std::string::npos
+                && failingCallbacks == 1 && laterCallbacks == 0
+                && device.BeginCount == 1 && device.SubmitCount == 0
+                && !result.Completion.IsValid()
+                && device.CreatedCommandListNames == std::vector<std::string>({ label })
+                && device.Events == expectedEvents;
+        };
+
+        RenderGraphTestDevice imbalanceDevice(8103);
+        Scope<CommandList> imbalance = imbalanceDevice.CreateCommandList(
+            QueueType::Graphics, "Marker imbalance");
+        const bool imbalanceRejected = imbalance && imbalance->Begin()
+            && (imbalance->BeginDebugMarker("Unbalanced"), true)
+            && !imbalance->End();
+        if (imbalance)
+            imbalance->EndDebugMarker();
+        const bool recovered = imbalance && imbalance->End();
+
+        return Expect(runFailure(false),
+                "false callback failure closes its exact marker and submits no suffix")
+            && Expect(runFailure(true),
+                "throwing callback failure closes its exact marker and submits no suffix")
+            && Expect(imbalanceRejected && recovered,
+                "the deterministic command-list fake rejects an unbalanced close and recovers only after marker balance");
     }
 
     bool TestRenderGraphExecutorOrdersBarriersAndRestrictsContext()
@@ -9503,8 +9572,9 @@ float4 main(VertexInput input) : SV_Position
         const RenderGraph::CompileResult compiled = graph.Compile();
         const RenderGraph::ExecuteResult result = graph.Execute(device, compiled);
         const std::vector<std::string> expectedEvents {
-            "texture:color:RenderTarget", "callback:Writer", "texture:color:CopySource",
-            "buffer:data:CopySource", "callback:Reader"
+            "marker-begin:Writer", "texture:color:RenderTarget", "callback:Writer", "marker-end:Writer",
+            "marker-begin:Reader", "texture:color:CopySource", "buffer:data:CopySource",
+            "callback:Reader", "marker-end:Reader"
         };
         ResourceState finalTexture = ResourceState::Unknown;
         ResourceState finalBuffer = ResourceState::Unknown;
@@ -9513,7 +9583,9 @@ float4 main(VertexInput input) : SV_Position
         return Expect(bound && compiled.Success && compiled.Barriers.size() == 3 && result.Success, "compiled two-pass texture and buffer graph executes successfully")
             && Expect(restricted, "execution context rejects undeclared and wrong-kind resource access")
             && Expect(acceptedPrefixVisible, "each accepted pass publishes its prefix state before dependent recording")
-            && Expect(device.Events == expectedEvents, "barriers and callbacks execute in deterministic compiled order")
+            && Expect(device.Events == expectedEvents, "exact pass markers enclose barriers and callbacks in deterministic compiled order")
+            && Expect(device.CreatedCommandListNames == std::vector<std::string>({ "Writer", "Reader" }),
+                "each graph command list forwards its exact compiled pass name")
             && Expect(device.SubmitCount == 2 && result.Completions.size() == 2 && result.Completion.IsValid(), "successful execution submits each compiled pass deterministically")
             && Expect(finalStates, "successful submission publishes the compiled final texture and buffer states");
     }
@@ -9756,10 +9828,10 @@ float4 main(VertexInput input) : SV_Position
             graph.AddRead(copy, texture, ResourceState::CopySource, ShaderStage::Compute);
             graph.AddRead(copy, firstBuffer, ResourceState::CopySource, ShaderStage::Compute);
             graph.AddRead(copy, secondBuffer, ResourceState::CopySource, ShaderStage::Compute);
-            int callbacks = 0;
-            graph.SetPassCallback(graphics, [&](RenderGraph::ExecutionContext&) { ++callbacks; return true; });
-            graph.SetPassCallback(copy, [&](RenderGraph::ExecutionContext&) { ++callbacks; return true; });
             RenderGraphTestDevice device(8401 + independent, false, independent);
+            int callbacks = 0;
+            graph.SetPassCallback(graphics, [&](RenderGraph::ExecutionContext&) { ++callbacks; device.Events.push_back("callback:Graphics"); return true; });
+            graph.SetPassCallback(copy, [&](RenderGraph::ExecutionContext&) { ++callbacks; device.Events.push_back("callback:Copy"); return true; });
             RenderGraphTestTexture physicalTexture(8401 + independent, textureDescription, ResourceState::CopyDest);
             RenderGraphTestBuffer firstPhysicalBuffer(8401 + independent, firstBufferDescription, ResourceState::CopyDest);
             RenderGraphTestBuffer secondPhysicalBuffer(8401 + independent, secondBufferDescription, ResourceState::CopyDest);
@@ -9774,6 +9846,19 @@ float4 main(VertexInput input) : SV_Position
                 && device.QueryResourceState(&physicalTexture, textureState)
                 && device.QueryResourceState(&firstPhysicalBuffer, firstBufferState)
                 && device.QueryResourceState(&secondPhysicalBuffer, secondBufferState);
+            const std::vector<std::string> expectedEvents = independent
+                ? std::vector<std::string> {
+                    "marker-begin:Graphics", "callback:Graphics",
+                    "texture-release:cross-texture", "buffer-release:cross-buffer-a",
+                    "buffer-release:cross-buffer-b", "marker-end:Graphics",
+                    "marker-begin:Copy", "texture-acquire:cross-texture",
+                    "buffer-acquire:cross-buffer-a", "buffer-acquire:cross-buffer-b",
+                    "callback:Copy", "marker-end:Copy" }
+                : std::vector<std::string> {
+                    "marker-begin:Graphics", "callback:Graphics", "marker-end:Graphics",
+                    "marker-begin:Copy", "texture:cross-texture:CopySource",
+                    "buffer:cross-buffer-a:CopySource", "buffer:cross-buffer-b:CopySource",
+                    "callback:Copy", "marker-end:Copy" };
             return Expect(result.Success && result.AcceptedPassCount == 2 && result.Completions.size() == 2 && callbacks == 2,
                     independent ? "independent graphics-to-copy graph accepts both queue submissions" : "graphics fallback graph accepts both ordered submissions")
                 && Expect(device.GpuWaitDependencyCount == (independent ? 1 : 0) && device.ElidedDependencyCount == (independent ? 0 : 1),
@@ -9794,7 +9879,10 @@ float4 main(VertexInput input) : SV_Position
                         && device.PublishedTextureOwnershipOperations[0] == &physicalTexture
                         && device.PublishedTextureOwnershipOperations[1] == &physicalTexture
                     : device.PublishedBufferOwnershipOperations.empty() && device.PublishedTextureOwnershipOperations.empty(),
-                    "cross-queue releases and acquires publish in recorded order with one deduplicated producer token");
+                    "cross-queue releases and acquires publish in recorded order with one deduplicated producer token")
+                && Expect(device.CreatedCommandListNames == std::vector<std::string>({ "Graphics", "Copy" })
+                        && device.Events == expectedEvents,
+                    "exact pass markers enclose callbacks, barriers, releases, and acquires before command-list close");
         };
         RenderGraphTestDevice invalidDevice(8403, false, true);
         RenderGraphTestBuffer firstInvalidBuffer(8403, firstBufferDescription, ResourceState::CopyDest);
@@ -9856,6 +9944,19 @@ float4 main(VertexInput input) : SV_Position
         if (!jobs.IsRunning()) jobs.Initialize(2);
         const u32 caller = jobs.GetCurrentWorkerIndex();
         const TextureDescription description = MakeExecutionTexture("worker-recording", ResourceState::Common);
+        const auto hasExactMarkerPairs = [](const RenderGraphTestDevice& device,
+            const std::vector<std::string>& labels)
+        {
+            for (const std::string& label : labels)
+            {
+                if (std::count(device.Events.begin(), device.Events.end(),
+                        "marker-begin:" + label) != 1
+                    || std::count(device.Events.begin(), device.Events.end(),
+                        "marker-end:" + label) != 1)
+                    return false;
+            }
+            return true;
+        };
 
         RenderGraph defaultGraph;
         const auto defaultResource = defaultGraph.AddTexture(description, RenderGraph::ResourceLifetimeKind::Imported);
@@ -9981,8 +10082,24 @@ float4 main(VertexInput input) : SV_Position
             // must still be discarded: only the accepted prefix publishes a
             // token or wrapper state.
             return !result.Success && result.AcceptedPassCount == 1 && result.Completions.size() == 1
-                && prefixCallbacks == 1 && suffixCallbacks == 1 && device.SubmitCount == 1 && device.CreatedCommandListCount == 3;
+                && prefixCallbacks == 1 && suffixCallbacks == 1 && device.SubmitCount == 1
+                && device.CreatedCommandListCount == 3
+                && device.CreatedCommandListNames == std::vector<std::string>({
+                    "Eligible prefix", "Eligible failure", "Eligible suffix" })
+                && hasExactMarkerPairs(device, { "Eligible prefix",
+                    "Eligible failure", "Eligible suffix" });
         };
+
+        const bool workerMarkers = overlapDevice.CreatedCommandListNames
+                == std::vector<std::string>({ "Eligible independent first",
+                    "Eligible independent second" })
+            && hasExactMarkerPairs(overlapDevice, { "Eligible independent first",
+                "Eligible independent second" })
+            && dependencyDevice.CreatedCommandListNames
+                == std::vector<std::string>({ "Eligible producer",
+                    "Eligible same effective consumer" })
+            && hasExactMarkerPairs(dependencyDevice, { "Eligible producer",
+                "Eligible same effective consumer" });
 
         return Expect(defaultResult.Success && defaultResult.WorkerRecordedPassCount == 0 && defaultWorker == caller,
                 "callbacks remain caller-affine unless the pass explicitly opts into worker recording")
@@ -10001,6 +10118,8 @@ float4 main(VertexInput input) : SV_Position
             && Expect(!mismatchResult.Success && mismatchResult.AcceptedPassCount == 0 && mismatchDevice.SubmitCount == 0
                 && mismatchTexture.GetState() == ResourceState::CopySource,
                 "a stale expected-before state rejects submission without publishing the recorded destination")
+            && Expect(workerMarkers,
+                "worker-recorded command lists forward exact pass names and balance one marker pair per pass")
             && Expect(testFailure(false) && testFailure(true), "later false and throwing pre-recorded callbacks submit only the earlier prefix and discard suffix contexts");
     }
 

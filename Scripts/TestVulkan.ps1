@@ -122,7 +122,9 @@ $RequiredMarkers = @(
     "Vulkan capability profile: Phase 3 Vulkan Bootstrap Presentation V1, qualification=Bootstrap",
     "Vulkan capability state: Timeline Synchronization advertised=yes, enabled=yes, implemented=yes",
     "Vulkan capability state: Timestamps advertised=yes, enabled=yes, implemented=yes, exercised=no",
+    "Vulkan capability state: Debug Markers advertised=",
     "Vulkan capability state: Buffer Device Address advertised=",
+    "Vulkan debug-marker extension:",
     "Editor renderer capability diagnostics ready: profile=Phase 3 Vulkan Bootstrap Presentation V1, qualification=Bootstrap",
     "Renderer capability group: group=Phase3FrameTimingV1, profile=Phase 3 Frame Timing V1, preferredPath=GpuTimestamps, selectedPath=CpuSteadyClock, implemented=yes, exercised=no",
     "Renderer capability group: group=Phase3TransientResourcesV1, profile=Phase 3 Transient Resources V1, preferredPath=PlacedAliasedTransient, selectedPath=NonAliasedGpuRetiredPool, implemented=yes, exercised=no",
@@ -259,7 +261,7 @@ if ($JoinedLog -notmatch 'RHIBufferOwnershipSmokeV1 backend=Vulkan, mode=(indepe
 if ($JoinedLog -notmatch 'RHITextureOwnershipSmokeV1 backend=Vulkan, mode=(independent, release=accepted, acquire=gpu-wait, cpuWaitBetween=no, bytes=pass, finalOwner=Copy, finalState=CopySource, recovery=pass, retirement=pass, result=pass|graphics-fallback, transfer=rejected, pending=no, result=pass)') {
     throw "Vulkan smoke did not prove topology-adaptive texture ownership transfer or truthful fallback rejection."
 }
-$DiagnosticsPattern = "Editor renderer capability diagnostics rendered: profile=Phase 3 Vulkan Bootstrap Presentation V1, adapter=.+, qualification=Bootstrap, formats=[1-9][0-9]*, features=12, groups=2, candidates=[1-9][0-9]*"
+$DiagnosticsPattern = "Editor renderer capability diagnostics rendered: profile=Phase 3 Vulkan Bootstrap Presentation V1, adapter=.+, qualification=Bootstrap, formats=[1-9][0-9]*, features=13, groups=2, candidates=[1-9][0-9]*"
 if ($JoinedLog -notmatch $DiagnosticsPattern) {
     throw "Vulkan render smoke did not emit a complete editor capability diagnostics marker."
 }

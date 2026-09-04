@@ -20,6 +20,7 @@
     #include <directx/d3d12sdklayers.h>
     #include <nvrhi/d3d12.h>
     #include <nvrhi/validation.h>
+    #include <pix.h>
 
     #if defined(DeviceCapabilities)
         #undef DeviceCapabilities
@@ -1051,12 +1052,14 @@ namespace Engine::RHI
                 m_StructuredBufferBindingActive = false;
                 m_BoundColorRtv = {};
                 m_BoundDepthDsv = {};
+                m_DebugMarkerNames.clear();
                 return true;
             }
 
             bool End() override
             {
-                if (!m_OwnedCommandList || m_State != State::Recording)
+                if (!m_OwnedCommandList || m_State != State::Recording
+                    || !m_DebugMarkerNames.empty())
                     return false;
 
                 for (PendingTimestampTransaction& transaction : m_TimestampTransactions)
@@ -1138,11 +1141,20 @@ namespace Engine::RHI
 
             void BeginDebugMarker(std::string_view name) override
             {
-                (void)name;
+                if (m_State != State::Recording || !m_CommandList)
+                    return;
+                m_DebugMarkerNames.emplace_back(name);
+                PIXBeginEvent(m_CommandList, PIX_COLOR(60, 170, 220), "%s",
+                    m_DebugMarkerNames.back().c_str());
             }
 
             void EndDebugMarker() override
             {
+                if (m_State != State::Recording || !m_CommandList
+                    || m_DebugMarkerNames.empty())
+                    return;
+                PIXEndEvent(m_CommandList);
+                m_DebugMarkerNames.pop_back();
             }
 
             bool BindViewportOutputs(Texture& colorTarget, Texture* depthTarget) override
@@ -1950,6 +1962,7 @@ namespace Engine::RHI
             std::vector<NativeQueryState> m_PublishedTimestampStates;
             std::vector<RecordedBufferOwnershipOperation> m_OwnershipOperations;
             std::vector<RecordedTextureOwnershipOperation> m_TextureOwnershipOperations;
+            std::vector<std::string> m_DebugMarkerNames;
             bool m_AllowPendingTexture = false;
             State m_State = State::Initial;
         };
@@ -3307,6 +3320,9 @@ namespace Engine::RHI
                 m_Capabilities.GetFeature(DeviceFeature::NeuralShaders) = MakeCapabilityState(
                     neuralShadersAdvertised, false, false, false,
                     "Reported by NVRHI; no engine neural-shader path is enabled or implemented");
+                m_Capabilities.GetFeature(DeviceFeature::DebugMarkers) = MakeCapabilityState(
+                    true, true, true, false,
+                    "D3D12 command-list PIX events are implemented; external capture readability is qualified separately");
                 m_Capabilities.GetFeature(DeviceFeature::Timestamps) = MakeCapabilityState(
                     m_GraphicsQueue != nullptr, m_GraphicsTimestampFrequency != 0, m_GraphicsTimestampFrequency != 0, false,
                     m_GraphicsTimestampFrequency == 0

@@ -121,6 +121,8 @@ namespace Engine::RHI
 #if defined(GE_HAS_NVRHI_VULKAN)
             m_PortabilityEnumerationEnabled = false;
             m_PortabilitySubsetEnabled = false;
+            m_DebugUtilsAdvertised = false;
+            m_DebugUtilsEnabled = false;
             m_Window = static_cast<GLFWwindow*>(nativeWindow);
             if (!m_Window || glfwGetWindowAttrib(m_Window, GLFW_CLIENT_API) != GLFW_NO_API)
             {
@@ -171,6 +173,21 @@ namespace Engine::RHI
             VULKAN_HPP_DEFAULT_DISPATCHER.vkEnumerateInstanceExtensionProperties(
                 nullptr, &availableExtensionCount, availableExtensions.data());
 
+            m_DebugUtilsAdvertised = HasExtension(availableExtensions,
+                VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+            if (m_DebugUtilsAdvertised)
+            {
+                const bool alreadyRequired = std::any_of(m_InstanceExtensions.begin(),
+                    m_InstanceExtensions.end(), [](const char* extension)
+                    {
+                        return std::strcmp(extension,
+                            VK_EXT_DEBUG_UTILS_EXTENSION_NAME) == 0;
+                    });
+                if (!alreadyRequired)
+                    m_InstanceExtensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+                m_DebugUtilsEnabled = true;
+            }
+
 #if defined(VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME)
             if (HasExtension(availableExtensions, VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME))
             {
@@ -214,6 +231,11 @@ namespace Engine::RHI
 
             if (m_PortabilityEnumerationEnabled)
                 Log::Info("Vulkan portability enumeration enabled");
+            Log::Info("Vulkan debug-marker extension: ",
+                m_DebugUtilsAdvertised ? "advertised" : "not-advertised",
+                ", enabled=", m_DebugUtilsEnabled ? "yes" : "no",
+                ", externalLabelPath=", m_DebugUtilsEnabled ? "enabled" : "unavailable",
+                ", externalReadability=unqualified");
 
             if (glfwCreateWindowSurface(m_Instance, m_Window, nullptr, &m_Surface) != VK_SUCCESS)
             {
@@ -279,6 +301,11 @@ namespace Engine::RHI
             m_Capabilities.GetFeature(DeviceFeature::NeuralShaders) = MakeCapabilityState(
                 nvrhiNeuralShadersAdvertised, false, false, false,
                 "NVRHI advertisement only; the bootstrap profile does not enable or implement neural shaders");
+            m_Capabilities.GetFeature(DeviceFeature::DebugMarkers) = MakeCapabilityState(
+                m_DebugUtilsAdvertised, m_DebugUtilsEnabled, true, false,
+                m_DebugUtilsEnabled
+                    ? "Optional VK_EXT_debug_utils is enabled and supplied to NVRHI; external capture readability is qualified separately"
+                    : "Engine marker nesting is implemented, but VK_EXT_debug_utils was not advertised so external Vulkan labels are unavailable");
             const bool timestampsUsable = m_SelectedQueueProperties.timestampValidBits > 0
                 && m_SelectedProperties.limits.timestampPeriod > 0.0f;
             m_Capabilities.GetFeature(DeviceFeature::Timestamps) = MakeCapabilityState(
@@ -954,6 +981,8 @@ namespace Engine::RHI
         bool m_Synchronization2Enabled = false;
         bool m_BufferDeviceAddressAdvertised = false;
         bool m_BufferDeviceAddressEnabled = false;
+        bool m_DebugUtilsAdvertised = false;
+        bool m_DebugUtilsEnabled = false;
         bool m_PortabilityEnumerationEnabled = false;
         bool m_PortabilitySubsetEnabled = false;
         std::vector<FormatCapability> m_SelectedFormats;

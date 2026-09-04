@@ -23,6 +23,7 @@ namespace Engine::RHI
         MeshShaders,
         WorkGraphs,
         NeuralShaders,
+        DebugMarkers,
         Timestamps,
         TimelineSynchronization,
         DynamicRendering,

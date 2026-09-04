@@ -167,6 +167,7 @@ namespace Engine::RHI
             case DeviceFeature::MeshShaders: return "Mesh Shaders";
             case DeviceFeature::WorkGraphs: return "Work Graphs";
             case DeviceFeature::NeuralShaders: return "Neural Shaders";
+            case DeviceFeature::DebugMarkers: return "Debug Markers";
             case DeviceFeature::Timestamps: return "Timestamps";
             case DeviceFeature::TimelineSynchronization: return "Timeline Synchronization";
             case DeviceFeature::DynamicRendering: return "Dynamic Rendering";

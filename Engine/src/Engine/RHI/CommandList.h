@@ -132,4 +132,27 @@ namespace Engine::RHI
         virtual bool WriteTimestamp(QueryPool& queryPool, u32 queryIndex) = 0;
         virtual bool ResolveQueryPool(QueryPool& queryPool, u32 firstQuery, u32 queryCount) = 0;
     };
+
+    // Keeps backend marker nesting balanced across early returns and exceptions.
+    // The command list must outlive the scope and already be recording.
+    class ScopedDebugMarker final
+    {
+    public:
+        ScopedDebugMarker(CommandList& commandList, std::string_view name)
+            : m_CommandList(commandList)
+        {
+            m_CommandList.BeginDebugMarker(name);
+        }
+
+        ~ScopedDebugMarker()
+        {
+            m_CommandList.EndDebugMarker();
+        }
+
+        ScopedDebugMarker(const ScopedDebugMarker&) = delete;
+        ScopedDebugMarker& operator=(const ScopedDebugMarker&) = delete;
+
+    private:
+        CommandList& m_CommandList;
+    };
 }

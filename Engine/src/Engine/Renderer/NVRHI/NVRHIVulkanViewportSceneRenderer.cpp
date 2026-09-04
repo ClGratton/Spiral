@@ -117,67 +117,77 @@ namespace Engine
             shadowClear.ClearDepth = true;
             shadowClear.Depth = 1.0f;
             if (!commands->ClearViewportOutputs(shadowClear)) return false;
-            commands->BeginDebugMarker("Scene Viewport Bootstrap Reference Shadow");
-            if (m_ShadowPipeline && frame.HasValidView && !shadowDraws.empty())
             {
-                commands->SetGraphicsPipeline(*m_ShadowPipeline);
-                if (!m_TextureRuntime || !m_TextureRuntime->GetBindingTable()
-                    || !commands->BindGraphicsSampledTextureTable(
-                        *m_TextureRuntime->GetBindingTable())) return false;
-                commands->SetViewport({ 0.0f, 0.0f,
-                    static_cast<float>(kSceneShadowMapResolution),
-                    static_cast<float>(kSceneShadowMapResolution), 0.0f, 1.0f });
-                commands->SetScissorRect({ 0, 0,
-                    static_cast<int>(kSceneShadowMapResolution),
-                    static_cast<int>(kSceneShadowMapResolution) });
-                for (const SceneMeshDraw& draw : shadowDraws)
+                RHI::ScopedDebugMarker marker(*commands,
+                    "Scene Viewport Bootstrap Reference Shadow");
+                if (m_ShadowPipeline && frame.HasValidView && !shadowDraws.empty())
                 {
-                    commands->SetVertexBuffer(0, *draw.Bundle->VertexBuffer);
-                    commands->SetIndexBuffer(*draw.Bundle->IndexBuffer, RHI::IndexFormat::Uint32);
-                    commands->SetGraphicsConstantBuffer(0,
-                        *constants[draw.ConstantIndex].Buffer);
-                    commands->DrawIndexed(draw.Primitive.IndexCount, 1,
-                        draw.Primitive.FirstIndex, draw.Primitive.BaseVertex, 0);
+                    commands->SetGraphicsPipeline(*m_ShadowPipeline);
+                    if (!m_TextureRuntime || !m_TextureRuntime->GetBindingTable()
+                        || !commands->BindGraphicsSampledTextureTable(
+                            *m_TextureRuntime->GetBindingTable())) return false;
+                    commands->SetViewport({ 0.0f, 0.0f,
+                        static_cast<float>(kSceneShadowMapResolution),
+                        static_cast<float>(kSceneShadowMapResolution), 0.0f, 1.0f });
+                    commands->SetScissorRect({ 0, 0,
+                        static_cast<int>(kSceneShadowMapResolution),
+                        static_cast<int>(kSceneShadowMapResolution) });
+                    for (const SceneMeshDraw& draw : shadowDraws)
+                    {
+                        commands->SetVertexBuffer(0, *draw.Bundle->VertexBuffer);
+                        commands->SetIndexBuffer(*draw.Bundle->IndexBuffer, RHI::IndexFormat::Uint32);
+                        commands->SetGraphicsConstantBuffer(0,
+                            *constants[draw.ConstantIndex].Buffer);
+                        commands->DrawIndexed(draw.Primitive.IndexCount, 1,
+                            draw.Primitive.FirstIndex, draw.Primitive.BaseVertex, 0);
+                    }
                 }
             }
-            commands->EndDebugMarker();
             if (!commands->TransitionTexture(shadowDepth, RHI::ResourceState::ShaderResource)
                 || !commands->TransitionTexture(hdrTexture, RHI::ResourceState::RenderTarget)
                 || !commands->TransitionTexture(depthTexture, RHI::ResourceState::DepthWrite)
                 || !commands->BindViewportOutputs(hdrTexture, &depthTexture)
                 || !commands->ClearViewportOutputs(clear)) return false;
-            commands->BeginDebugMarker("Scene Viewport Bootstrap Reference Sky Atmosphere");
-            if (!m_SkyAtmosphere.Record(*commands, hdrTexture, width, height,
-                skyConstants)) return false;
-            commands->EndDebugMarker();
-            commands->BeginDebugMarker("Scene Viewport Bootstrap Reference Raster");
-            if (!commands->BindViewportOutputs(hdrTexture, &depthTexture))
-                return false;
-            if (m_Pipeline && frame.HasValidView && !frame.Instances.empty())
             {
-                commands->SetGraphicsPipeline(*m_Pipeline);
-                if (!m_TextureRuntime || !m_TextureRuntime->GetBindingTable()
-                    || !lightPayload || !lightPayload->Gpu
-                    || !commands->BindGraphicsSampledTextureTable(*m_TextureRuntime->GetBindingTable())
-                    || !commands->BindGraphicsSampledTexture(shadowDepth)
-                    || !commands->BindGraphicsReadOnlyStructuredBuffer(*lightPayload->Gpu)) return false;
-                commands->SetViewport({ 0.0f, 0.0f, static_cast<float>(width), static_cast<float>(height), 0.0f, 1.0f }); commands->SetScissorRect({ 0, 0, static_cast<int>(width), static_cast<int>(height) });
-                for (const SceneMeshDraw& draw : draws) { commands->SetVertexBuffer(0, *draw.Bundle->VertexBuffer); commands->SetIndexBuffer(*draw.Bundle->IndexBuffer, RHI::IndexFormat::Uint32); commands->SetGraphicsConstantBuffer(0, *constants[draw.ConstantIndex].Buffer); commands->DrawIndexed(draw.Primitive.IndexCount, 1, draw.Primitive.FirstIndex, draw.Primitive.BaseVertex, 0); }
+                RHI::ScopedDebugMarker marker(*commands,
+                    "Scene Viewport Bootstrap Reference Sky Atmosphere");
+                if (!m_SkyAtmosphere.Record(*commands, hdrTexture, width, height,
+                    skyConstants)) return false;
             }
-            commands->EndDebugMarker();
+            {
+                RHI::ScopedDebugMarker marker(*commands,
+                    "Scene Viewport Bootstrap Reference Raster");
+                if (!commands->BindViewportOutputs(hdrTexture, &depthTexture))
+                    return false;
+                if (m_Pipeline && frame.HasValidView && !frame.Instances.empty())
+                {
+                    commands->SetGraphicsPipeline(*m_Pipeline);
+                    if (!m_TextureRuntime || !m_TextureRuntime->GetBindingTable()
+                        || !lightPayload || !lightPayload->Gpu
+                        || !commands->BindGraphicsSampledTextureTable(*m_TextureRuntime->GetBindingTable())
+                        || !commands->BindGraphicsSampledTexture(shadowDepth)
+                        || !commands->BindGraphicsReadOnlyStructuredBuffer(*lightPayload->Gpu)) return false;
+                    commands->SetViewport({ 0.0f, 0.0f, static_cast<float>(width), static_cast<float>(height), 0.0f, 1.0f }); commands->SetScissorRect({ 0, 0, static_cast<int>(width), static_cast<int>(height) });
+                    for (const SceneMeshDraw& draw : draws) { commands->SetVertexBuffer(0, *draw.Bundle->VertexBuffer); commands->SetIndexBuffer(*draw.Bundle->IndexBuffer, RHI::IndexFormat::Uint32); commands->SetGraphicsConstantBuffer(0, *constants[draw.ConstantIndex].Buffer); commands->DrawIndexed(draw.Primitive.IndexCount, 1, draw.Primitive.FirstIndex, draw.Primitive.BaseVertex, 0); }
+                }
+            }
             RHI::Texture* toneMapOutput = debugOverlayConstants
                 ? toneMappedTexture : &colorTexture;
-            if (!toneMapOutput
-                || !commands->TransitionTexture(hdrTexture,
-                    RHI::ResourceState::ShaderResource)
-                || !commands->TransitionTexture(*toneMapOutput,
-                    RHI::ResourceState::RenderTarget)
-                || !m_ToneMap.Record(*commands, hdrTexture, *toneMapOutput,
-                    width, height, toneMapConstants))
-                return false;
+            {
+                RHI::ScopedDebugMarker marker(*commands,
+                    "Scene Viewport Bootstrap Reference Tone Map");
+                if (!toneMapOutput
+                    || !commands->TransitionTexture(hdrTexture,
+                        RHI::ResourceState::ShaderResource)
+                    || !commands->TransitionTexture(*toneMapOutput,
+                        RHI::ResourceState::RenderTarget)
+                    || !m_ToneMap.Record(*commands, hdrTexture, *toneMapOutput,
+                        width, height, toneMapConstants))
+                    return false;
+            }
             if (debugOverlayConstants)
             {
-                commands->BeginDebugMarker(
+                RHI::ScopedDebugMarker marker(*commands,
                     "Scene Viewport Bootstrap Reference Debug Overlay");
                 if (!commands->TransitionTexture(*toneMapOutput,
                         RHI::ResourceState::ShaderResource)
@@ -186,7 +196,6 @@ namespace Engine
                     || !m_DebugOverlay.Record(*commands, *toneMapOutput,
                         colorTexture, width, height, *debugOverlayConstants))
                     return false;
-                commands->EndDebugMarker();
             }
             return commands->TransitionTexture(colorTexture,
                     RHI::ResourceState::CopySource)
