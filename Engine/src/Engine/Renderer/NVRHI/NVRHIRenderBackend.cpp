@@ -2014,7 +2014,7 @@ float4 PSMain(PixelInput input) : SV_Target
             request.CompilerVersion = "2026.13.1";
             request.CompilerPackageHash = GE_SLANG_PACKAGE_SHA256;
             request.ExpectedLayout = {
-                { "ViewportConstants", 'b', 0, 0, stage, "ConstantBuffer", "struct{ViewProjection:float32x4x4:row-major@0,NormalTransform:float32x4x4:row-major@64,BaseColorAndAlphaCutoff:float32x4@128,EmissiveAndStrength:float32x4@144,SurfaceFactors:float32x4@160,CallistoFactors:float32x4@176,TextureIndices0:uint32x4@192,TextureIndices1:uint32x4@208,TextureState:uint32x4@224,MaterialState:uint32x4@240,ModelView:float32x4x4:row-major@256,NormalViewTransform:float32x4x4:row-major@320,ShadowViewProjection:float32x4x4:row-major@384,ShadowParameters:float32x4@448,ShadowState:uint32x4@464}", 1, 480, 0, 0 },
+                { "ViewportConstants", 'b', 0, 0, stage, "ConstantBuffer", "struct{ViewProjection:float32x4x4:row-major@0,NormalTransform:float32x4x4:row-major@64,BaseColorAndAlphaCutoff:float32x4@128,EmissiveAndStrength:float32x4@144,SurfaceFactors:float32x4@160,CallistoFactors:float32x4@176,TextureIndices0:uint32x4@192,TextureIndices1:uint32x4@208,TextureState:uint32x4@224,MaterialState:uint32x4@240,ModelView:float32x4x4:row-major@256,NormalViewTransform:float32x4x4:row-major@320,ShadowViewProjection:float32x4x4:row-major@384,ShadowParameters:float32x4@448,ShadowState:uint32x4@464,SkyIrradianceUpper:float32x4@480,SkyIrradianceLower:float32x4@496}", 1, 512, 0, 0 },
                 { "ReadOnlySamplers", 's', 0, 1, stage, "SamplerState", "sampler", tableCapacity, 0, 0, 0 },
                 { "ReadOnlyTextures", 't', 0, 1, stage, "Texture2D", "float32x4", tableCapacity, 0, 1, 4 }
             };
@@ -2538,7 +2538,7 @@ float4 PSVertexStrideSmoke(RHIVertexStrideOutput input) : SV_Target0
             request.CompilerPackageHash = GE_SLANG_PACKAGE_SHA256;
             request.Defines = { "GE_READ_ONLY_TEXTURE_CAPACITY=" + std::to_string(tableCapacity) };
             request.ExpectedLayout = {
-                { "ViewportConstants", 'b', 0, 0, stage, "ConstantBuffer", "struct{ViewProjection:float32x4x4:row-major@0,NormalTransform:float32x4x4:row-major@64,BaseColorAndAlphaCutoff:float32x4@128,EmissiveAndStrength:float32x4@144,SurfaceFactors:float32x4@160,CallistoFactors:float32x4@176,TextureIndices0:uint32x4@192,TextureIndices1:uint32x4@208,TextureState:uint32x4@224,MaterialState:uint32x4@240,ModelView:float32x4x4:row-major@256,NormalViewTransform:float32x4x4:row-major@320,ShadowViewProjection:float32x4x4:row-major@384,ShadowParameters:float32x4@448,ShadowState:uint32x4@464}", 1, 480, 0, 0 },
+                { "ViewportConstants", 'b', 0, 0, stage, "ConstantBuffer", "struct{ViewProjection:float32x4x4:row-major@0,NormalTransform:float32x4x4:row-major@64,BaseColorAndAlphaCutoff:float32x4@128,EmissiveAndStrength:float32x4@144,SurfaceFactors:float32x4@160,CallistoFactors:float32x4@176,TextureIndices0:uint32x4@192,TextureIndices1:uint32x4@208,TextureState:uint32x4@224,MaterialState:uint32x4@240,ModelView:float32x4x4:row-major@256,NormalViewTransform:float32x4x4:row-major@320,ShadowViewProjection:float32x4x4:row-major@384,ShadowParameters:float32x4@448,ShadowState:uint32x4@464,SkyIrradianceUpper:float32x4@480,SkyIrradianceLower:float32x4@496}", 1, 512, 0, 0 },
                 { "ReadOnlySamplers", 's', 0, 1, stage, "SamplerState", "sampler", tableCapacity, 0, 0, 0 },
                 { "ReadOnlyTextures", 't', 0, 1, stage, "Texture2D", "float32x4", tableCapacity, 0, 1, 4 }
             };
@@ -2624,11 +2624,14 @@ float4 PSVertexStrideSmoke(RHIVertexStrideOutput input) : SV_Target0
             "--scene-photometric-direct-light-smoke");
         const bool shadowMapProbeRequested = Application::Get().GetSpecification().CommandLineArgs.HasFlag(
             "--scene-shadow-map-smoke");
+        const bool skyAtmosphereProbeRequested = Application::Get().GetSpecification().CommandLineArgs.HasFlag(
+            "--scene-sky-atmosphere-smoke");
         const u32 dedicatedProbeCount = static_cast<u32>(surfaceProbeRequested)
             + static_cast<u32>(pbrProbeRequested)
             + static_cast<u32>(lightPayloadProbeRequested)
             + static_cast<u32>(directLightingProbeRequested)
-            + static_cast<u32>(shadowMapProbeRequested);
+            + static_cast<u32>(shadowMapProbeRequested)
+            + static_cast<u32>(skyAtmosphereProbeRequested);
         if (dedicatedProbeCount > 1)
             return false;
         m_VulkanSceneRenderer = CreateScope<NVRHIVulkanViewportSceneRenderer>();
@@ -2860,7 +2863,9 @@ float4 PSVertexStrideSmoke(RHIVertexStrideOutput input) : SV_Target0
         directionalLight.Transform.Position = view.Camera.TranslationOriginPosition;
         directionalLight.PhotometricValue = 30000.0;
         directionalLight.Color = { 0.25f, 0.5f, 1.0f };
-        directionalLight.Transform.RotationDegrees = { 17.0f, -31.0f, 0.0f };
+        // The ordinary regression fixture retains a clear-color background;
+        // the dedicated production-pass fixture below owns sky visibility.
+        directionalLight.Transform.RotationDegrees = { 0.0f, -31.0f, 0.0f };
         directionalLight.CastsShadows = false;
         SceneRenderLight pointLight;
         pointLight.SourceEntity = 3;
@@ -2915,6 +2920,15 @@ float4 PSVertexStrideSmoke(RHIVertexStrideOutput input) : SV_Target0
             directionalLight.PhotometricValue = 6.0;
             directionalLight.Transform.RotationDegrees = { 0.0f, 30.0f, 0.0f };
             directionalLight.CastsShadows = true;
+            snapshot.Lights = { directionalLight };
+        }
+        else if (skyAtmosphereProbeRequested)
+        {
+            directionalLight.SourceEntity = 51;
+            directionalLight.Color = { 1.0f, 1.0f, 1.0f };
+            directionalLight.PhotometricValue = 100000.0;
+            directionalLight.Transform.RotationDegrees = { 25.0f, 180.0f, 0.0f };
+            directionalLight.CastsShadows = false;
             snapshot.Lights = { directionalLight };
         }
         else
@@ -2975,31 +2989,90 @@ float4 PSVertexStrideSmoke(RHIVertexStrideOutput input) : SV_Target0
         Renderer::PublishSceneRenderSnapshot(snapshot);
         if (!Renderer::PrepareCurrentSceneRasterFrame())
             return false;
+        bool liveCatalogPublished = dedicatedProbeCount != 0;
+        u64 retainedCatalogGeneration = 0;
+        u64 liveCatalogGeneration = 0;
+        if (dedicatedProbeCount == 0)
+        {
+            const std::shared_ptr<const SceneRasterFrame> retainedFrame =
+                Renderer::GetPreparedSceneRasterFrame();
+            MaterialLibrary liveEditedMaterials = materials;
+            MaterialAsset* liveEditedMaterial =
+                liveEditedMaterials.Get(smokeMaterial);
+            retainedCatalogGeneration = retainedFrame
+                ? retainedFrame->MaterialCatalogGeneration : 0;
+            if (retainedFrame && retainedFrame->ArtifactResolvers
+                && liveEditedMaterial)
+            {
+                liveEditedMaterial->Roughness = 0.83f;
+                Renderer::PublishArtifactResolvers(
+                    smokeRegistry, liveEditedMaterials);
+                liveCatalogGeneration =
+                    Renderer::GetPublishedArtifactResolverGeneration();
+                liveCatalogPublished = liveCatalogGeneration
+                    > retainedCatalogGeneration;
+            }
+        }
         const RendererColorPipelineSettings previousColorSettings = Renderer::GetColorPipelineSettings();
-        if (!Renderer::SetColorPipelineSettings({ 0.0 }))
+        if (!Renderer::SetColorPipelineSettings({
+            skyAtmosphereProbeRequested ? 11.0 : 0.0 }))
             return false;
         const ClearColor background { 0.04f, 0.05f, 0.06f, 1.0f };
+        const u32 firstWidth = skyAtmosphereProbeRequested ? 256u : 48u;
+        const u32 firstHeight = skyAtmosphereProbeRequested ? 144u
+            : pbrProbeRequested ? 24u : directLightingProbeRequested ? 48u : 36u;
+        const u32 secondWidth = skyAtmosphereProbeRequested ? 320u : 64u;
+        const u32 secondHeight = skyAtmosphereProbeRequested ? 180u
+            : pbrProbeRequested ? 32u : directLightingProbeRequested ? 64u : 48u;
         const bool firstRaster = m_VulkanSceneRenderer->RenderCurrentSnapshot(
-            48u, pbrProbeRequested ? 24u
-                : directLightingProbeRequested ? 48u : 36u, background);
+            firstWidth, firstHeight, background);
         const u64 firstGeneration = m_VulkanSceneRenderer->GetOutputGeneration();
         RHI::TextureReadback firstDedicatedReadback;
         const bool firstDedicatedRetired = !(
             surfaceProbeRequested || pbrProbeRequested || lightPayloadProbeRequested
-                || directLightingProbeRequested || shadowMapProbeRequested)
+                || directLightingProbeRequested || shadowMapProbeRequested
+                || skyAtmosphereProbeRequested)
             || (firstRaster && m_VulkanSceneRenderer->ReadbackColor(firstDedicatedReadback));
         const bool resizedRaster = firstRaster && firstDedicatedRetired
             && m_VulkanSceneRenderer->RenderCurrentSnapshot(
-                64u, pbrProbeRequested ? 32u
-                    : directLightingProbeRequested ? 64u : 48u, background);
+                secondWidth, secondHeight, background);
         const u64 outputGeneration = m_VulkanSceneRenderer->GetOutputGeneration();
         RHI::TextureReadback hdrReadback;
         bool hdrReadbackOk = !(pbrProbeRequested || lightPayloadProbeRequested
-                || directLightingProbeRequested)
+                || directLightingProbeRequested || skyAtmosphereProbeRequested)
             || (resizedRaster && m_VulkanSceneRenderer->ReadbackHdr(hdrReadback));
         RHI::TextureReadback readback;
         bool readbackOk = resizedRaster && hdrReadbackOk
             && m_VulkanSceneRenderer->ReadbackColor(readback);
+        bool nextLiveCatalogPrepared = dedicatedProbeCount != 0;
+        if (dedicatedProbeCount == 0)
+        {
+            SceneRenderSnapshot nextSnapshot = snapshot;
+            nextSnapshot.FrameIndex = 2;
+            Renderer::PublishSceneRenderSnapshot(std::move(nextSnapshot));
+            const bool nextPrepared =
+                Renderer::PrepareCurrentSceneRasterFrame();
+            const std::shared_ptr<const SceneRasterFrame> nextFrame =
+                Renderer::GetPreparedSceneRasterFrame();
+            const auto editedRow = nextFrame
+                ? std::find_if(nextFrame->MaterialRows.begin(),
+                    nextFrame->MaterialRows.end(),
+                    [smokeMaterial](const SceneMaterialRow& row)
+                    { return row.SourceAsset == smokeMaterial; })
+                : std::vector<SceneMaterialRow>::const_iterator {};
+            nextLiveCatalogPrepared = nextPrepared && nextFrame
+                && nextFrame->MaterialCatalogGeneration
+                    == liveCatalogGeneration
+                && editedRow != nextFrame->MaterialRows.end()
+                && editedRow->Material.Roughness == 0.83f;
+            const bool liveCatalogContinuity = liveCatalogPublished
+                && firstRaster && resizedRaster && readbackOk
+                && nextLiveCatalogPrepared;
+            Log::Info("SceneArtifactSnapshotContinuityV1 backend=Vulkan publication=after-prepare inFlight=retained-generation-rendered nextFrame=new-generation-prepared retainedGeneration=",
+                retainedCatalogGeneration, " liveGeneration=",
+                liveCatalogGeneration, " result=",
+                liveCatalogContinuity ? "pass" : "fail");
+        }
         bool finalRaster = resizedRaster;
         if (lightPayloadProbeRequested)
         {
@@ -3323,6 +3396,156 @@ float4 PSVertexStrideSmoke(RHIVertexStrideOutput input) : SV_Target0
                 " depthOnly=production-pass finalColor=readback-differential result=",
                 shadowOracle ? "pass" : "fail");
             return shadowOracle;
+        }
+        if (skyAtmosphereProbeRequested)
+        {
+            const std::shared_ptr<const SceneRasterFrame> skyFrame =
+                Renderer::GetPreparedSceneRasterFrame();
+            snapshot.FrameIndex = 2;
+            snapshot.Lights.clear();
+            Renderer::PublishSceneRenderSnapshot(snapshot);
+            RHI::TextureReadback noSkyReadback;
+            const bool noSkyRendered = Renderer::PrepareCurrentSceneRasterFrame()
+                && m_VulkanSceneRenderer->RenderCurrentSnapshot(
+                    secondWidth, secondHeight, background)
+                && m_VulkanSceneRenderer->ReadbackColor(noSkyReadback);
+            const bool ldrShape = readbackOk
+                && readback.Extent.Width == secondWidth
+                && readback.Extent.Height == secondHeight
+                && readback.RowPitchBytes >= secondWidth * 4u
+                && readback.Data.size() >= static_cast<size_t>(
+                    readback.RowPitchBytes) * secondHeight;
+            const bool noSkyShape = noSkyRendered
+                && noSkyReadback.Extent.Width == secondWidth
+                && noSkyReadback.Extent.Height == secondHeight
+                && noSkyReadback.RowPitchBytes >= secondWidth * 4u
+                && noSkyReadback.Data.size() >= static_cast<size_t>(
+                    noSkyReadback.RowPitchBytes) * secondHeight;
+            const bool hdrShape = hdrReadbackOk
+                && hdrReadback.Extent.Width == secondWidth
+                && hdrReadback.Extent.Height == secondHeight
+                && hdrReadback.TextureFormat == RHI::Format::R16G16B16A16Float
+                && hdrReadback.RowPitchBytes >= secondWidth * 8u
+                && hdrReadback.Data.size() >= static_cast<size_t>(
+                    hdrReadback.RowPitchBytes) * secondHeight;
+            const auto ldrPixel = [&readback](u32 x, u32 y)
+            {
+                return &readback.Data[static_cast<size_t>(y)
+                    * readback.RowPitchBytes + static_cast<size_t>(x) * 4u];
+            };
+            const auto brightness = [](const u8* pixel)
+            {
+                return static_cast<u32>(pixel[0]) + static_cast<u32>(pixel[1])
+                    + static_cast<u32>(pixel[2]);
+            };
+            const u8* upper = ldrShape ? ldrPixel(40u, 25u) : nullptr;
+            const u8* ground = ldrShape ? ldrPixel(40u, 155u) : nullptr;
+            u32 sunBrightness = 0;
+            u32 sunX = 0;
+            u32 sunY = 0;
+            if (ldrShape)
+            {
+                for (u32 y = 4; y <= 36; ++y)
+                {
+                    for (u32 x = 140; x <= 180; ++x)
+                    {
+                        const u32 candidate = brightness(ldrPixel(x, y));
+                        if (candidate > sunBrightness)
+                        {
+                            sunBrightness = candidate;
+                            sunX = x;
+                            sunY = y;
+                        }
+                    }
+                }
+            }
+            bool hdrFinite = hdrShape;
+            u32 saturatedSunPixels = 0;
+            u32 saturatedPixels = 0;
+            for (u32 y = 0; hdrFinite && y < secondHeight; ++y)
+            {
+                const size_t row = static_cast<size_t>(y)
+                    * hdrReadback.RowPitchBytes;
+                for (u32 x = 0; hdrFinite && x < secondWidth; ++x)
+                {
+                    bool saturatedRgb = true;
+                    for (u32 channel = 0; channel < 4; ++channel)
+                    {
+                        const size_t offset = row + static_cast<size_t>(x) * 8u
+                            + static_cast<size_t>(channel) * 2u;
+                        const u16 value = static_cast<u16>(hdrReadback.Data[offset])
+                            | static_cast<u16>(static_cast<u16>(
+                                hdrReadback.Data[offset + 1u]) << 8u);
+                        if ((value & 0x7c00u) == 0x7c00u)
+                        {
+                            hdrFinite = false;
+                            break;
+                        }
+                        if (channel < 3 && value != 0x7bffu)
+                            saturatedRgb = false;
+                    }
+                    if (hdrFinite && saturatedRgb)
+                    {
+                        ++saturatedPixels;
+                        if (x >= 140u && x <= 180u && y >= 4u && y <= 36u)
+                            ++saturatedSunPixels;
+                    }
+                }
+            }
+            const u32 upperBrightness = upper ? brightness(upper) : 0u;
+            const u32 groundBrightness = ground ? brightness(ground) : 0u;
+            const u8* litSurface = ldrShape ? ldrPixel(160u, 90u) : nullptr;
+            const u8* unlitSurface = noSkyShape
+                ? &noSkyReadback.Data[static_cast<size_t>(90u)
+                    * noSkyReadback.RowPitchBytes + static_cast<size_t>(160u) * 4u]
+                : nullptr;
+            const u32 litSurfaceBrightness = litSurface
+                ? brightness(litSurface) : 0u;
+            const u32 unlitSurfaceBrightness = unlitSurface
+                ? brightness(unlitSurface) : 0u;
+            const bool frameValid = skyFrame
+                && skyFrame->SkyAtmosphere.Enabled
+                && skyFrame->SkyAtmosphere.SunEntity == 51
+                && skyFrame->SkyAtmosphere.SunLightIndex == 0
+                && skyFrame->SkyAtmosphere.Turbidity == kBasicSkyTurbidity
+                && skyFrame->SkyAtmosphere.GroundAlbedo == kBasicSkyGroundAlbedo
+                && skyFrame->SkyAtmosphere.UpperDiffuseIrradiance.X
+                    > skyFrame->SkyAtmosphere.LowerDiffuseIrradiance.X
+                && skyFrame->SkyAtmosphere.UpperDiffuseIrradiance.Y
+                    > skyFrame->SkyAtmosphere.LowerDiffuseIrradiance.Y
+                && skyFrame->SkyAtmosphere.UpperDiffuseIrradiance.Z
+                    > skyFrame->SkyAtmosphere.LowerDiffuseIrradiance.Z;
+            const bool visual = upper && ground && upper[3] == 255
+                && ground[3] == 255 && upper[2] > upper[0]
+                && upperBrightness > groundBrightness + 20u
+                && sunBrightness > upperBrightness + 10u
+                && saturatedSunPixels > 0u
+                && saturatedPixels == saturatedSunPixels
+                && litSurface && unlitSurface
+                && litSurfaceBrightness > unlitSurfaceBrightness + 10u;
+            const bool skyOracle = resizedRaster && firstGeneration == 1
+                && outputGeneration == 2 && frameValid && hdrFinite
+                && noSkyRendered && visual;
+            Renderer::SetColorPipelineSettings(previousColorSettings);
+            Log::Info("SceneSkyAtmosphereVisualV1 backend=Vulkan model=Preetham1999 turbidity=3 groundAlbedo=0.1 sun=first-directional angularRadiusDegrees=0.266 exposureEV100=11 skyDome=production-pass diffuseIrradiance=first-order-zonal ormOcclusion=indirect-only upper=",
+                upper ? static_cast<u32>(upper[0]) : 0u, ",",
+                upper ? static_cast<u32>(upper[1]) : 0u, ",",
+                upper ? static_cast<u32>(upper[2]) : 0u,
+                " upperBrightness=", upperBrightness, " ground=",
+                ground ? static_cast<u32>(ground[0]) : 0u, ",",
+                ground ? static_cast<u32>(ground[1]) : 0u, ",",
+                ground ? static_cast<u32>(ground[2]) : 0u,
+                " groundBrightness=", groundBrightness,
+                " sunPeak=", sunBrightness, " sunPixel=", sunX, ",", sunY,
+                " sunHdrSaturatedPixels=", saturatedSunPixels,
+                " totalHdrSaturatedPixels=", saturatedPixels,
+                " surfaceAmbientBrightness=", litSurfaceBrightness, ",",
+                unlitSurfaceBrightness,
+                " hdrFinite=", hdrFinite ? "pass" : "fail",
+                " resize=", firstGeneration == 1 && outputGeneration == 2
+                    ? "pass" : "fail", " result=",
+                skyOracle ? "pass" : "fail");
+            return skyOracle;
         }
         if (directLightingProbeRequested)
         {
@@ -4502,6 +4725,7 @@ float4 PSVertexStrideSmoke(RHIVertexStrideOutput input) : SV_Target0
                 ? "pass" : "fail",
             " result=", preExposedHdrOk ? "pass" : "fail");
         return resizedRaster && readbackOk && geometryOk && backgroundOk && resizeOk
+            && liveCatalogPublished && nextLiveCatalogPrepared
             && exposureRenders && exposureReadbacks && monotonic && constantCacheOk
             && exactExposureHdrExact && singleExposureOutput && doubleExposureRejected
             && calibratedRendered && calibratedPixelOk && calibratedConstantsOk && calibratedCacheIdentityOk

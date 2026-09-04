@@ -15,6 +15,8 @@ cbuffer ViewportConstants : register(b0)
     row_major float4x4 ShadowViewProjection;
     float4 ShadowParameters;
     uint4 ShadowState;
+    float4 SkyIrradianceUpper;
+    float4 SkyIrradianceLower;
 };
 
 #ifndef GE_READ_ONLY_TEXTURE_CAPACITY
@@ -493,6 +495,13 @@ float4 PSMain(VSOutput input) : SV_Target0
     if (!ValidateSceneShadowState())
         return float4(4.0f, 0.0f, 4.0f, 1.0f);
 #endif
+    if (!all(isfinite(SkyIrradianceUpper))
+        || !all(isfinite(SkyIrradianceLower))
+        || any(SkyIrradianceUpper.rgb < 0.0f)
+        || any(SkyIrradianceLower.rgb < 0.0f)
+        || (SkyIrradianceUpper.w != 0.0f && SkyIrradianceUpper.w != 1.0f)
+        || SkyIrradianceLower.w != 0.0f)
+        return float4(4.0f, 0.0f, 4.0f, 1.0f);
     // Row zero is never a persistent material identity. It is a deliberately
     // obvious deterministic error result in scene-linear HDR.
     if (MaterialState.x == 0u || MaterialState.y != 0u)
@@ -568,7 +577,14 @@ float4 PSMain(VSOutput input) : SV_Target0
             perceptualRoughness, N, V, direct))
             return StoreSceneLinearHdr(float3(4.0f, 0.0f, 4.0f), 1.0f, preExposure);
     }
-    const float3 shaded = direct + emissive;
+    const float skyWeight = saturate(input.GeometricNormal.y * 0.5f + 0.5f);
+    const float3 skyIrradiance = lerp(SkyIrradianceLower.rgb,
+        SkyIrradianceUpper.rgb, skyWeight) * SkyIrradianceUpper.w;
+    const float ambientOcclusion = lerp(1.0f, saturate(ormSample.r),
+        saturate(SurfaceFactors.w));
+    const float3 skyDiffuse = surfaceBaseColor * (1.0f - metallic)
+        * skyIrradiance * ambientOcclusion / 3.14159265359f;
+    const float3 shaded = direct + skyDiffuse + emissive;
 #else
     // Shader-tool probes without the Scene payload retain deterministic
     // illumination, but every production Scene permutation defines it.

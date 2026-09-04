@@ -163,6 +163,21 @@ namespace Engine
     RHI::TextureBindingHandle TextureRuntimePublication::Resolve(AssetHandle asset,
         RHI::TextureSampler sampler, std::string& outError)
     {
+        const Ref<const ArtifactResolverSnapshot> artifactResolvers =
+            Renderer::GetPublishedArtifactResolverSnapshot();
+        if (!artifactResolvers)
+        {
+            outError = "renderer has no published artifact resolver snapshot";
+            return m_Publication ? m_Publication->GetErrorHandle()
+                : RHI::TextureBindingHandle {};
+        }
+        return Resolve(*artifactResolvers, asset, sampler, outError);
+    }
+
+    RHI::TextureBindingHandle TextureRuntimePublication::Resolve(
+        const ArtifactResolverSnapshot& artifactResolvers, AssetHandle asset,
+        RHI::TextureSampler sampler, std::string& outError)
+    {
         if (!m_Publication)
         {
             outError = "texture runtime publication has been released";
@@ -182,7 +197,8 @@ namespace Engine
             return errorHandle;
         }
 
-        const u64 currentGeneration = Renderer::GetPublishedArtifactResolverGeneration();
+        const u64 currentGeneration =
+            Renderer::GetArtifactResolverSnapshotGeneration(artifactResolvers);
         if (entry && entry->CatalogGeneration == currentGeneration)
         {
             outError.clear();
@@ -192,7 +208,8 @@ namespace Engine
         TextureArtifactVariantSet variants;
         u64 resolvedGeneration = 0;
         if (!Renderer::ResolvePublishedTextureArtifactVariantSet(
-            asset, m_PreferredTarget, variants, resolvedGeneration, outError))
+            artifactResolvers, asset, m_PreferredTarget, variants,
+            resolvedGeneration, outError))
         {
             if (entry && !entry->HasAcceptedUse)
             {
@@ -287,6 +304,22 @@ namespace Engine
     bool TextureRuntimePublication::ResolveMaterialTextures(AssetHandle materialAsset,
         MaterialTextureBindingSet& outBindings, std::string& outError)
     {
+        const Ref<const ArtifactResolverSnapshot> artifactResolvers =
+            Renderer::GetPublishedArtifactResolverSnapshot();
+        if (!artifactResolvers)
+        {
+            outError = "renderer has no published artifact resolver snapshot";
+            return false;
+        }
+        return ResolveMaterialTextures(*artifactResolvers, materialAsset,
+            outBindings, outError);
+    }
+
+    bool TextureRuntimePublication::ResolveMaterialTextures(
+        const ArtifactResolverSnapshot& artifactResolvers,
+        AssetHandle materialAsset, MaterialTextureBindingSet& outBindings,
+        std::string& outError)
+    {
         if (!m_Publication)
         {
             outError = "material texture resolution requires a live texture publication";
@@ -295,8 +328,9 @@ namespace Engine
 
         MaterialTextureBindingSet candidate;
         candidate.Handles.fill(m_Publication->GetErrorHandle());
-        if (!Renderer::ResolvePublishedMaterialAsset(
-            materialAsset, candidate.Material, candidate.CatalogGeneration, outError))
+        if (!Renderer::ResolvePublishedMaterialAsset(artifactResolvers,
+            materialAsset, candidate.Material, candidate.CatalogGeneration,
+            outError))
             return false;
 
         std::string diagnostics;
@@ -314,7 +348,8 @@ namespace Engine
             RHI::TextureSampler sampler = RHI::TextureSampler::LinearWrap;
             const bool resolved = MapSampler(candidate.Material.GetSampler(slot), sampler)
                 && Renderer::ResolvePublishedTextureArtifactVariantSet(
-                    textureAsset, m_PreferredTarget, variants, textureGeneration, slotError)
+                    artifactResolvers, textureAsset, m_PreferredTarget, variants,
+                    textureGeneration, slotError)
                 && textureGeneration == candidate.CatalogGeneration
                 && HasExpectedSemantics(slot, variants.Preferred);
             if (!resolved)
@@ -326,7 +361,8 @@ namespace Engine
                 continue;
             }
 
-            candidate.Handles[index] = Resolve(textureAsset, sampler, slotError);
+            candidate.Handles[index] = Resolve(
+                artifactResolvers, textureAsset, sampler, slotError);
             if (IsError(candidate.Handles[index]))
             {
                 candidate.ErrorMask |= 1u << static_cast<u32>(index);
@@ -336,11 +372,6 @@ namespace Engine
             }
         }
 
-        if (Renderer::GetPublishedArtifactResolverGeneration() != candidate.CatalogGeneration)
-        {
-            outError = "material texture catalog changed during one binding-set resolution";
-            return false;
-        }
         outBindings = std::move(candidate);
         outError = std::move(diagnostics);
         return true;

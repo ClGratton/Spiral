@@ -6,6 +6,7 @@
 #include "Engine/Math/Math.h"
 #include "Engine/Math/WorldGrid.h"
 #include "Engine/Renderer/ClusteredLightGrid.h"
+#include "Engine/Renderer/SceneSkyAtmosphere.h"
 #include "Engine/Scene/Entity.h"
 #include "Engine/Scene/SceneRenderSnapshot.h"
 
@@ -15,6 +16,8 @@
 
 namespace Engine
 {
+    class ArtifactResolverSnapshot;
+
     struct SceneRasterInstance
     {
         EntityId SourceEntity = kInvalidEntityId;
@@ -60,6 +63,10 @@ namespace Engine
         Availability RasterAvailability = Availability::Ready;
         std::string Diagnostic;
         ClusteredLightGrid LightGrid;
+        SceneSkyAtmosphereFrame SkyAtmosphere;
+        // Exact immutable asset/material generation used by preparation and
+        // every later GPU resolution for this frame.
+        Ref<const ArtifactResolverSnapshot> ArtifactResolvers;
         u64 MaterialCatalogGeneration = 0;
         std::vector<SceneMaterialRow> MaterialRows;
         std::vector<SceneRasterInstance> Instances;

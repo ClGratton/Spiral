@@ -12,6 +12,8 @@
 
 namespace Engine
 {
+    class ArtifactResolverSnapshot;
+
     constexpr size_t kMaterialTextureBindingCount = 6;
 
     struct MaterialTextureBindingSet
@@ -41,6 +43,10 @@ namespace Engine
         // the error handle without sampling semantically mismatched content.
         bool ResolveMaterialTextures(AssetHandle materialAsset,
             MaterialTextureBindingSet& outBindings, std::string& outError);
+        bool ResolveMaterialTextures(
+            const ArtifactResolverSnapshot& artifactResolvers,
+            AssetHandle materialAsset, MaterialTextureBindingSet& outBindings,
+            std::string& outError);
 
         // The caller aggregates all handles read by one accepted submission.
         // Error handles and duplicates are ignored because the table owns its
@@ -72,6 +78,10 @@ namespace Engine
         Entry* FindEntry(AssetHandle asset, RHI::TextureSampler sampler);
         Entry* FindEntry(RHI::TextureBindingHandle handle);
         bool IsError(RHI::TextureBindingHandle handle) const;
+        RHI::TextureBindingHandle Resolve(
+            const ArtifactResolverSnapshot& artifactResolvers,
+            AssetHandle asset, RHI::TextureSampler sampler,
+            std::string& outError);
 
         RHI::Device& m_Device;
         TextureTargetProfile m_PreferredTarget = TextureTargetProfile::RGBAFallback;

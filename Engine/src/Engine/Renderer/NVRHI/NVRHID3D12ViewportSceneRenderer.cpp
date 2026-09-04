@@ -15,6 +15,7 @@
 #include "Engine/Renderer/NVRHI/D3D12ViewportShaderReloadCoordinator.h"
 #include "Engine/Renderer/ShaderLibrary.h"
 #include "Engine/Renderer/SlangShaderCompiler.h"
+#include "Engine/Renderer/SkyAtmospherePass.h"
 #include "Engine/Renderer/TextureRuntimePublication.h"
 #include "Engine/Renderer/ToneMapPass.h"
 
@@ -148,6 +149,7 @@ namespace Engine
             const std::vector<SceneMeshDraw>& shadowDraws,
             const Ref<SceneLightPayloadSlot>& lightPayload,
             RHI::Texture& shadowDepth,
+            const SkyAtmospherePassConstants& skyConstants,
             const ToneMapPassConstants& toneMapConstants)
         {
             Scope<RHI::CommandList> commands = m_RHIDevice->CreateCommandList(RHI::QueueType::Graphics, "Scene Viewport Bootstrap Reference");
@@ -190,7 +192,13 @@ namespace Engine
                 || !commands->TransitionTexture(depthTexture, RHI::ResourceState::DepthWrite)
                 || !commands->BindViewportOutputs(hdrTexture, &depthTexture)
                 || !commands->ClearViewportOutputs(clear)) return false;
+            commands->BeginDebugMarker("Scene Viewport Bootstrap Reference Sky Atmosphere");
+            if (!m_SkyAtmosphere.Record(*commands, hdrTexture, width, height,
+                skyConstants)) return false;
+            commands->EndDebugMarker();
             commands->BeginDebugMarker("Scene Viewport Bootstrap Reference Raster");
+            if (!commands->BindViewportOutputs(hdrTexture, &depthTexture))
+                return false;
             if (m_Pipeline && rasterFrame.HasValidView && !rasterFrame.Instances.empty())
             {
                 commands->SetGraphicsPipeline(*m_Pipeline);
@@ -253,6 +261,7 @@ namespace Engine
             m_ShadowDepth = m_TextureRuntime
                 ? m_RHIDevice->CreateTexture(shadowDepth) : nullptr;
             return m_TextureRuntime != nullptr && m_ShadowDepth != nullptr
+                && m_SkyAtmosphere.Initialize(*m_RHIDevice)
                 && m_ToneMap.Initialize(*m_RHIDevice);
         }
 
@@ -268,6 +277,7 @@ namespace Engine
             m_LightPayloadPublication.ClearAfterDeviceIdle();
             m_MeshResourceCache.Clear();
             m_FrameConstantBuffers.clear();
+            m_SkyAtmosphere.Shutdown();
             m_ToneMap.Shutdown();
             m_HdrColor.reset();
             m_ShadowDepth.reset();
@@ -406,7 +416,8 @@ namespace Engine
             const std::shared_ptr<const SceneRasterFrame> prepared = Renderer::GetPreparedSceneRasterFrame();
             if (snapshot)
             {
-                if (!prepared || prepared->SnapshotFrameIndex != snapshot->FrameIndex)
+                if (!prepared || prepared->SnapshotFrameIndex != snapshot->FrameIndex
+                    || !prepared->ArtifactResolvers)
                     return false;
                 rasterFrame = *prepared;
                 std::string lightGridError;
@@ -492,7 +503,9 @@ namespace Engine
                             materialBindings.CatalogGeneration = materialRow.CatalogGeneration;
                         }
                         else if (!m_TextureRuntime->ResolveMaterialTextures(
-                            rasterFrame.Instances[index].MaterialAsset, materialBindings, materialError))
+                            *rasterFrame.ArtifactResolvers,
+                            rasterFrame.Instances[index].MaterialAsset,
+                            materialBindings, materialError))
                         {
                             Log::Error("D3D12 Scene viewport could not resolve snapshot material: ", materialError);
                             renderSucceeded = false;
@@ -525,7 +538,10 @@ namespace Engine
                     for (size_t index = 0; index < rasterFrame.Instances.size(); ++index)
                     {
                         MeshArtifact artifact;
-                        if (!Renderer::ResolvePublishedMeshArtifact(rasterFrame.Instances[index].MeshAsset, artifact, meshError))
+                        if (!Renderer::ResolvePublishedMeshArtifact(
+                            *rasterFrame.ArtifactResolvers,
+                            rasterFrame.Instances[index].MeshAsset, artifact,
+                            meshError))
                         {
                             Log::Error("D3D12 Scene viewport could not resolve snapshot mesh artifact: ", meshError);
                             renderSucceeded = false;
@@ -580,6 +596,12 @@ namespace Engine
                             Log::Error("D3D12 Scene viewport rejected shadow constants");
                             return false;
                         }
+                        if (!TryApplySceneSkyIrradianceConstants(
+                            rasterFrame.SkyAtmosphere, cpuConstants[index]))
+                        {
+                            Log::Error("D3D12 Scene viewport rejected sky irradiance constants");
+                            return false;
+                        }
                         std::memcpy((*constantBuffers)[index].Mapped, &cpuConstants[index],
                             sizeof(cpuConstants[index]));
                     }
@@ -598,6 +620,17 @@ namespace Engine
             Ref<ToneMapPassConstants> toneMapConstants = m_ToneMap.AcquireConstants(colorSettings);
             if (!toneMapConstants)
                 return false;
+            std::string skyConstantsError;
+            Ref<SkyAtmospherePassConstants> skyConstants =
+                m_SkyAtmosphere.AcquireConstants(Application::Get().GetFrameIndex(),
+                    rasterFrame.SkyAtmosphere, preExposure.Scale,
+                    skyConstantsError);
+            if (!skyConstants)
+            {
+                Log::Error("D3D12 Scene viewport could not acquire sky constants: ",
+                    skyConstantsError);
+                return false;
+            }
 
             Scope<RenderGraph> graph = CreateScope<RenderGraph>();
             RHI::TextureDescription hdrColorDescription = m_HdrColor->GetDescription();
@@ -697,6 +730,17 @@ namespace Engine
                     && context.GetCommandList().ClearViewportOutputs(clear);
             });
             graph->SetPassWorkerRecordingEligible(clearPass);
+            const RenderGraph::PassHandle skyPass = graph->AddPass(
+                "Scene Sky Atmosphere", RHI::QueueType::Graphics);
+            graph->AddWrite(skyPass, hdrColor, RHI::ResourceState::RenderTarget);
+            graph->SetPassCallback(skyPass,
+                [this, hdrColor, width, height, skyConstants](
+                    RenderGraph::ExecutionContext& context)
+            {
+                RHI::Texture* graphHdr = context.GetTexture(hdrColor);
+                return graphHdr && m_SkyAtmosphere.Record(context.GetCommandList(),
+                    *graphHdr, width, height, *skyConstants);
+            });
             const RenderGraph::PassHandle rasterPass = graph->AddPass("Scene Viewport Graph Raster", RHI::QueueType::Graphics);
             graph->AddWrite(rasterPass, hdrColor, RHI::ResourceState::RenderTarget);
             graph->AddWrite(rasterPass, depth, RHI::ResourceState::DepthWrite);
@@ -798,6 +842,7 @@ namespace Engine
                 std::vector<Ref<void>> payloads;
                 if (constantBufferSet)
                     payloads.emplace_back(constantBufferSet);
+                payloads.emplace_back(skyConstants);
                 payloads.emplace_back(toneMapConstants);
                 if (lightPayload)
                     payloads.emplace_back(lightPayload);
@@ -855,6 +900,15 @@ namespace Engine
                     " componentExcluded=", shadowFrame->ComponentExcludedCount,
                     " blendExcluded=", shadowFrame->BlendExcludedCount,
                     " receiverExclusions=deferred graphLabel=Scene-Primary-Directional-Shadow-Map result=pass");
+            if (args.HasFlag("--scene-viewport-render-graph-smoke"))
+                Log::Info("SceneSkyAtmosphereV1 backend=D3D12 model=Preetham1999 enabled=",
+                    rasterFrame.SkyAtmosphere.Enabled ? "yes" : "no", " sunEntity=",
+                    rasterFrame.SkyAtmosphere.SunEntity, " sunLightIndex=",
+                    rasterFrame.SkyAtmosphere.SunLightIndex, " turbidity=",
+                    rasterFrame.SkyAtmosphere.Turbidity, " groundAlbedo=",
+                    rasterFrame.SkyAtmosphere.GroundAlbedo, " angularRadiusDegrees=",
+                    kBasicSunAngularRadiusDegrees,
+                    " skyDome=procedural-fullscreen diffuseIrradiance=first-order-zonal graphLabel=Scene-Sky-Atmosphere result=pass");
             const bool comparisonRequested = Application::Get().GetSpecification().CommandLineArgs.HasFlag("--scene-viewport-render-graph-smoke");
             if (comparisonRequested)
             {
@@ -876,14 +930,15 @@ namespace Engine
                     && referenceDepth && referenceShadow && RecordBootstrapReference(
                         *referenceHdr, *referenceColor, *referenceDepth, width, height,
                         clear, rasterFrame, constantBuffers, draws, shadowDraws,
-                        lightPayload, *referenceShadow, *toneMapConstants);
+                        lightPayload, *referenceShadow, *skyConstants,
+                        *toneMapConstants);
                 const bool readBack = referenceRendered && ReadbackGraphOutput(colorTexture, graphReadback)
                     && m_RHIDevice->ReadbackTexture(*referenceColor, referenceReadback);
                 const bool equivalent = readBack && graphReadback.Extent.Width == referenceReadback.Extent.Width
                     && graphReadback.Extent.Height == referenceReadback.Extent.Height
                     && graphReadback.RowPitchBytes == referenceReadback.RowPitchBytes
                     && graphReadback.Data == referenceReadback.Data;
-                Log::Info("SceneViewportRenderGraphV1 backend=D3D12 passes=6 labels=light-payload-copy,primary-directional-shadow-map,clear,raster,tone-map,output-handoff execution=pass reference=direct comparator=exact-byte-",
+                Log::Info("SceneViewportRenderGraphV1 backend=D3D12 passes=7 labels=light-payload-copy,primary-directional-shadow-map,clear,sky-atmosphere,raster,tone-map,output-handoff execution=pass reference=direct comparator=exact-byte-",
                     equivalent ? "pass" : "fail", " size=", width, "x", height, " bytes=", graphReadback.Data.size());
                 Log::Info("SceneColorPipelineV2 backend=D3D12 sceneLinear=pre-exposed-finite-RGBA16F exposurePlacement=before-storage toneMapExposure=none finiteClamp=65504 manualExposureEV100=", colorSettings.ManualExposureEV100,
                     " exposureMode=", ToString(colorSettings.ExposureMode),
@@ -949,7 +1004,7 @@ namespace Engine
                 "GE_SCENE_SHADOW_MAP=" + std::to_string(shadowReceiver ? 1 : 0)
             };
             request.ExpectedLayout = {
-                { "ViewportConstants", 'b', 0, 0, stage, "ConstantBuffer", "struct{ViewProjection:float32x4x4:row-major@0,NormalTransform:float32x4x4:row-major@64,BaseColorAndAlphaCutoff:float32x4@128,EmissiveAndStrength:float32x4@144,SurfaceFactors:float32x4@160,CallistoFactors:float32x4@176,TextureIndices0:uint32x4@192,TextureIndices1:uint32x4@208,TextureState:uint32x4@224,MaterialState:uint32x4@240,ModelView:float32x4x4:row-major@256,NormalViewTransform:float32x4x4:row-major@320,ShadowViewProjection:float32x4x4:row-major@384,ShadowParameters:float32x4@448,ShadowState:uint32x4@464}", 1, 480, 0, 0 },
+                { "ViewportConstants", 'b', 0, 0, stage, "ConstantBuffer", "struct{ViewProjection:float32x4x4:row-major@0,NormalTransform:float32x4x4:row-major@64,BaseColorAndAlphaCutoff:float32x4@128,EmissiveAndStrength:float32x4@144,SurfaceFactors:float32x4@160,CallistoFactors:float32x4@176,TextureIndices0:uint32x4@192,TextureIndices1:uint32x4@208,TextureState:uint32x4@224,MaterialState:uint32x4@240,ModelView:float32x4x4:row-major@256,NormalViewTransform:float32x4x4:row-major@320,ShadowViewProjection:float32x4x4:row-major@384,ShadowParameters:float32x4@448,ShadowState:uint32x4@464,SkyIrradianceUpper:float32x4@480,SkyIrradianceLower:float32x4@496}", 1, 512, 0, 0 },
                 { "ReadOnlySamplers", 's', 0, 1, stage, "SamplerState", "sampler", m_TextureTableCapacity, 0, 0, 0 },
                 { "ReadOnlyTextures", 't', 0, 1, stage, "Texture2D", "float32x4", m_TextureTableCapacity, 0, 1, 4 }
             };
@@ -1330,6 +1385,7 @@ namespace Engine
         MeshGpuResourceCache m_MeshResourceCache { 32 };
         u32 m_TextureTableCapacity = 0;
         Scope<TextureRuntimePublication> m_TextureRuntime;
+        SkyAtmospherePass m_SkyAtmosphere;
         ToneMapPass m_ToneMap;
         Scope<RHI::Texture> m_HdrColor;
         Scope<RHI::Texture> m_ShadowDepth;

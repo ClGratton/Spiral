@@ -2,6 +2,7 @@
 
 #include "Engine/Renderer/SceneRasterPreparation.h"
 #include "Engine/Renderer/SceneShadowMap.h"
+#include "Engine/Renderer/SceneSkyAtmosphere.h"
 #include "Engine/Renderer/TextureRuntimePublication.h"
 
 #include <cmath>
@@ -105,6 +106,32 @@ namespace Engine
             || !std::isfinite(candidate.ShadowParameters[2])
             || !std::isfinite(candidate.ShadowParameters[3]))
             return false;
+        inOutConstants = candidate;
+        return true;
+    }
+
+    bool TryApplySceneSkyIrradianceConstants(
+        const SceneSkyAtmosphereFrame& sky,
+        SceneSurfaceConstants& inOutConstants)
+    {
+        if (!IsValidSceneSkyAtmosphereFrame(sky))
+            return false;
+        SceneSurfaceConstants candidate = inOutConstants;
+        for (size_t index = 0; index < 4; ++index)
+        {
+            candidate.SkyIrradianceUpper[index] = 0.0f;
+            candidate.SkyIrradianceLower[index] = 0.0f;
+        }
+        if (sky.Enabled)
+        {
+            candidate.SkyIrradianceUpper[0] = sky.UpperDiffuseIrradiance.X;
+            candidate.SkyIrradianceUpper[1] = sky.UpperDiffuseIrradiance.Y;
+            candidate.SkyIrradianceUpper[2] = sky.UpperDiffuseIrradiance.Z;
+            candidate.SkyIrradianceUpper[3] = 1.0f;
+            candidate.SkyIrradianceLower[0] = sky.LowerDiffuseIrradiance.X;
+            candidate.SkyIrradianceLower[1] = sky.LowerDiffuseIrradiance.Y;
+            candidate.SkyIrradianceLower[2] = sky.LowerDiffuseIrradiance.Z;
+        }
         inOutConstants = candidate;
         return true;
     }

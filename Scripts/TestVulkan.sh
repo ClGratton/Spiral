@@ -98,13 +98,16 @@ REQUIRED_MARKERS=(
     "VulkanRHIIndexedDrawV1 package=pass reflection=pass pipeline=pass constants=pass draw=pass submit=pass readback=pass interior=pass background=pass"
     "RHIVertexStrideV1 backend=Vulkan attributes=4 stride=44 fetch=exact result=pass"
     "RHIFixedStructuredBufferV1 backend=Vulkan declaration=exact pixel=t0-space3-uint4 stride=16 malformedReflection=rejected malformedBuffer=rejected missing=rejected wrongUsage=rejected pipelineInvalidation=rejected-stale coexistence=sampled-table-preserved readback=33,82,154,255 expected=33,82,154,255 result=pass"
+    "SceneArtifactSnapshotContinuityV1 backend=Vulkan publication=after-prepare inFlight=retained-generation-rendered nextFrame=new-generation-prepared"
     "VulkanSceneOutputCaptureV1 outputGeneration="
     "VulkanSceneOutputHandoffV1 producer=pass"
     "ScenePhotometricLightPublicationV2 backend=Vulkan directional=1 local=1 directionalUnit=lux localUnit=lm snapshot=typed grid=typed effectiveExposureEV100=0 exposureScale=1 shaderConsumption=production-PSMain result=pass"
     "SceneShadowMapV1 backend=Vulkan"
     "stabilization=texel-snapped filter=3x3-pcf"
     "receiverExclusions=deferred graphLabel=Scene-Primary-Directional-Shadow-Map result=pass"
-    "SceneViewportRenderGraphV1 backend=Vulkan passes=6 labels=light-payload-copy,primary-directional-shadow-map,clear,raster,tone-map,output-handoff execution=pass reference=direct comparator=exact-byte-pass"
+    "SceneSkyAtmosphereV1 backend=Vulkan model=Preetham1999"
+    "skyDome=procedural-fullscreen diffuseIrradiance=first-order-zonal graphLabel=Scene-Sky-Atmosphere result=pass"
+    "SceneViewportRenderGraphV1 backend=Vulkan passes=7 labels=light-payload-copy,primary-directional-shadow-map,clear,sky-atmosphere,raster,tone-map,output-handoff execution=pass reference=direct comparator=exact-byte-pass"
     "SceneColorPipelineV2 backend=Vulkan sceneLinear=pre-exposed-finite-RGBA16F exposurePlacement=before-storage toneMapExposure=none finiteClamp=65504 manualExposureEV100=0"
     "ScenePreExposedHdrV1 backend=Vulkan placement=before-RGBA16F scale=exp2-negative-EV toneMapExposure=none finiteClamp=65504 hdrEV2=exact-half doubleApplication=rejected finiteEverywhere=pass singleApplication=pass result=pass"
     "SceneExposureControlV1 backend=Vulkan ev100=-2,0,+2 graph=exact-byte-pass monotonic=pass constants=immutable-retained-cached"
@@ -335,6 +338,42 @@ for ((ATTEMPT = 1; ATTEMPT <= ITERATIONS; ++ATTEMPT)); do
         exit 1
     fi
 
+    SKY_LOG="$LOG_BASE-sky-atmosphere-attempt-$ATTEMPT.log"
+    set +e
+    (cd "$ROOT" && perl -e '
+        my $timeout = shift;
+        my $child = fork();
+        die "fork failed: $!\n" unless defined $child;
+        if ($child == 0) {
+            setpgrp(0, 0) or die "setpgrp failed: $!\n";
+            exec @ARGV or die "exec failed: $!\n";
+        }
+        $SIG{ALRM} = sub {
+            warn "Vulkan sky-atmosphere child timed out after ${timeout}s; terminating process group\n";
+            kill "TERM", -$child;
+            sleep 1;
+            kill "KILL", -$child;
+            waitpid($child, 0);
+            exit 124;
+        };
+        alarm $timeout;
+        waitpid($child, 0);
+        alarm 0;
+        my $status = $?;
+        exit(128 + ($status & 127)) if $status & 127;
+        exit($status >> 8);
+    ' "$CHILD_TIMEOUT_SECONDS" "$EDITOR" --vulkan-render-smoke --vulkan-scene-viewport-raster-smoke --scene-sky-atmosphere-smoke) 2>&1 | tee "$SKY_LOG"
+    SKY_STATUS=${PIPESTATUS[0]}
+    set -e
+    if [[ $SKY_STATUS -ne 0 ]]; then
+        echo "Dedicated Vulkan sky-atmosphere smoke failed with exit code $SKY_STATUS on attempt $ATTEMPT/$ITERATIONS." >&2
+        exit "$SKY_STATUS"
+    fi
+    if ! grep -Eq 'SceneSkyAtmosphereVisualV1 backend=Vulkan model=Preetham1999 turbidity=3 groundAlbedo=0.1 sun=first-directional angularRadiusDegrees=0.266 exposureEV100=11 skyDome=production-pass diffuseIrradiance=first-order-zonal ormOcclusion=indirect-only upper=[0-9]+,[0-9]+,[0-9]+ upperBrightness=[1-9][0-9]* ground=[0-9]+,[0-9]+,[0-9]+ groundBrightness=[0-9]+ sunPeak=[1-9][0-9]* sunPixel=[0-9]+,[0-9]+ sunHdrSaturatedPixels=[1-9][0-9]* totalHdrSaturatedPixels=[1-9][0-9]* surfaceAmbientBrightness=[1-9][0-9]*,[0-9]+ hdrFinite=pass resize=pass result=pass' "$SKY_LOG"; then
+        echo "Dedicated Vulkan sky-atmosphere smoke did not prove finite production sky, sun disk, ground response, and resize survival." >&2
+        exit 1
+    fi
+
     PAYLOAD_LOG="$LOG_BASE-light-payload-attempt-$ATTEMPT.log"
     set +e
     (cd "$ROOT" && perl -e '
@@ -392,12 +431,12 @@ for ((ATTEMPT = 1; ATTEMPT <= ITERATIONS; ++ATTEMPT)); do
         echo "Vulkan render smoke did not publish VulkanCompletionHistoryV1 diagnostics on attempt $ATTEMPT/$ITERATIONS." >&2
         exit 1
     fi
-    TIMESTAMP_SCOPE_COUNT=$(grep -Ec 'RenderGraphTimestampScopesV1 backend=Vulkan frame=[0-9]+ scopes=6 raw=ready cpuWaitBetween=no result=pass' "$LOG_FILE" || true)
+    TIMESTAMP_SCOPE_COUNT=$(grep -Ec 'RenderGraphTimestampScopesV1 backend=Vulkan frame=[0-9]+ scopes=7 raw=ready cpuWaitBetween=no result=pass' "$LOG_FILE" || true)
     if [[ "$TIMESTAMP_SCOPE_COUNT" -lt 2 ]]; then
         echo "Vulkan render smoke did not prove completion-gated raw timestamp scopes across consecutive frames on attempt $ATTEMPT/$ITERATIONS." >&2
         exit 1
     fi
-    GPU_TIMING_COUNT=$(grep -Ec 'RendererGpuTimingV1 backend=NVRHI Vulkan frame=[0-9]+ passes=6 wholeMs=[0-9]+([.][0-9]+)? status=Ready capability=GpuTimestamps result=pass' "$LOG_FILE" || true)
+    GPU_TIMING_COUNT=$(grep -Ec 'RendererGpuTimingV1 backend=NVRHI Vulkan frame=[0-9]+ passes=7 wholeMs=[0-9]+([.][0-9]+)? status=Ready capability=GpuTimestamps result=pass' "$LOG_FILE" || true)
     if [[ "$GPU_TIMING_COUNT" -lt 1 ]]; then
         echo "Vulkan render smoke did not publish exact-frame GPU durations and promote the exercised capability path on attempt $ATTEMPT/$ITERATIONS." >&2
         exit 1

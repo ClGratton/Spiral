@@ -7,6 +7,8 @@ editor="$repo_root/bin/Debug-linux-x86_64-gmake/Editor/Editor"
 target_monitor="${SPIRAL_HEADED_MONITOR:-DP-3}"
 target_workspace="${SPIRAL_HEADED_WORKSPACE:-2}"
 build_jobs="${SPIRAL_EDITOR_BUILD_JOBS:-2}"
+canonical_linux_worktree="/home/claudio/Spiral-Linux-Worktree"
+premake="$repo_root/Vendor/premake/bin/premake5"
 
 if [[ "$(uname -s)" != "Linux" ]]; then
     echo "LaunchHeadedEditor.sh is Linux-only" >&2
@@ -20,12 +22,33 @@ if [[ ! "$build_jobs" =~ ^[1-9][0-9]*$ ]]; then
     echo "SPIRAL_EDITOR_BUILD_JOBS must be a positive integer" >&2
     exit 1
 fi
-for command_name in hyprctl jq make realpath setsid; do
+for command_name in git hyprctl jq make realpath setsid sha256sum; do
     if ! command -v "$command_name" >/dev/null 2>&1; then
         echo "Required command is unavailable: $command_name" >&2
         exit 1
     fi
 done
+
+resolved_repo_root="$(realpath "$repo_root")"
+git_repo_root="$(git -C "$repo_root" rev-parse --show-toplevel 2>/dev/null || true)"
+if [[ -z "$git_repo_root" || "$(realpath "$git_repo_root")" != "$resolved_repo_root" ]]; then
+    echo "Launch helper is not rooted at the resolved Git worktree: helper=$resolved_repo_root git=${git_repo_root:-unavailable}" >&2
+    exit 1
+fi
+if [[ -e "$canonical_linux_worktree/.git" ]] \
+    && [[ "$resolved_repo_root" != "$(realpath "$canonical_linux_worktree")" ]]; then
+    echo "Refusing a non-canonical Linux checkout: expected $canonical_linux_worktree, got $resolved_repo_root" >&2
+    exit 1
+fi
+if [[ -e "$canonical_linux_worktree/.git" ]] \
+    && [[ "$target_monitor" != "DP-3" || "$target_workspace" != "2" ]]; then
+    echo "Refusing a headed-target override on this workstation: required DP-3/workspace 2, got $target_monitor/workspace $target_workspace" >&2
+    exit 1
+fi
+if [[ ! -x "$premake" ]]; then
+    echo "Pinned Premake executable is unavailable: $premake" >&2
+    exit 1
+fi
 
 mapfile -t existing_windows < <(
     hyprctl -j clients | jq -r '.[] | select(.class == "Spiral Editor" or .title == "Spiral Editor") | "\(.address) pid=\(.pid) monitor=\(.monitor) workspace=\(.workspace.id)"'
@@ -41,8 +64,31 @@ if [[ ! "$target_monitor_id" =~ ^[0-9]+$ ]]; then
     echo "Target monitor is unavailable: $target_monitor" >&2
     exit 1
 fi
+target_monitor_x="$(hyprctl -j monitors | jq -r --arg name "$target_monitor" '.[] | select(.name == $name) | .x')"
+left_monitor_x="$(hyprctl -j monitors | jq -r '.[] | select(.name == "DP-1") | .x')"
+if [[ ! "$target_monitor_x" =~ ^-?[0-9]+$ \
+    || ! "$left_monitor_x" =~ ^-?[0-9]+$ \
+    || "$target_monitor_x" -le "$left_monitor_x" ]]; then
+    echo "Physical display mapping is not the required DP-1-left/DP-3-right layout: DP-1 x=$left_monitor_x, $target_monitor x=$target_monitor_x" >&2
+    exit 1
+fi
 
 cd "$repo_root"
+source_head="$(git rev-parse --verify HEAD)"
+if [[ -n "$(git status --porcelain=v1 --untracked-files=normal)" ]]; then
+    source_state="dirty"
+else
+    source_state="clean"
+fi
+source_fingerprint="$({
+    git diff --binary HEAD --
+    while IFS= read -r -d '' untracked_path; do
+        printf '%s\0' "$untracked_path"
+        sha256sum -- "$untracked_path"
+    done < <(git ls-files --others --exclude-standard -z | sort -z)
+} | sha256sum | awk '{print $1}')"
+echo "Headed Editor project refresh: $premake --file=$repo_root/premake5.lua gmake"
+"$premake" --file="$repo_root/premake5.lua" gmake
 echo "Headed Editor build gate: $editor"
 make config=debug Editor -j"$build_jobs"
 if [[ ! -x "$editor" ]]; then
@@ -138,6 +184,45 @@ if grep -Eiq 'native viewport unavailable|renderer initialization failed|failed 
     exit 1
 fi
 
+# Startup can publish/recreate Scene output after the first compositor placement.
+# Reassert the exact address only after native handoff and require it to remain on
+# the physical right-hand display for a stability interval before showing it.
+stable_samples=0
+for _ in $(seq 1 80); do
+    client_state="$(hyprctl -j clients | jq -c --arg address "$editor_address" '.[] | select(.address == $address) | {monitor, workspace: .workspace.id, at}')"
+    actual_monitor_id="$(jq -r '.monitor // -1' <<<"$client_state")"
+    actual_workspace="$(jq -r '.workspace // -1' <<<"$client_state")"
+    actual_x="$(jq -r '.at[0] // -1' <<<"$client_state")"
+    target_geometry="$(hyprctl -j monitors | jq -c --arg name "$target_monitor" '.[] | select(.name == $name) | {id, x, width, activeWorkspace: .activeWorkspace.id}')"
+    target_monitor_id="$(jq -r '.id // -1' <<<"$target_geometry")"
+    target_x="$(jq -r '.x // -1' <<<"$target_geometry")"
+    target_width="$(jq -r '.width // 0' <<<"$target_geometry")"
+    active_target_workspace="$(jq -r '.activeWorkspace // -1' <<<"$target_geometry")"
+
+    if [[ "$actual_monitor_id" == "$target_monitor_id" \
+        && "$actual_workspace" == "$target_workspace" \
+        && "$active_target_workspace" == "$target_workspace" \
+        && "$actual_x" -ge "$target_x" \
+        && "$actual_x" -lt $((target_x + target_width)) ]]; then
+        stable_samples=$((stable_samples + 1))
+        if (( stable_samples >= 20 )); then
+            break
+        fi
+    else
+        stable_samples=0
+        hyprctl dispatch "hl.dsp.focus({ workspace = '$target_workspace' })" | grep -Fxq ok
+        hyprctl dispatch "hl.dsp.window.move({ workspace = $target_workspace, follow = false, window = 'address:$editor_address' })" | grep -Fxq ok
+        hyprctl dispatch "hl.dsp.focus({ window = 'address:$editor_address' })" | grep -Fxq ok
+    fi
+    sleep 0.05
+done
+if (( stable_samples < 20 )); then
+    echo "Headed Editor final placement did not remain stable on physical $target_monitor/workspace $target_workspace: $client_state" >&2
+    exit 1
+fi
+actual_monitor="$target_monitor"
+
 keep_editor=true
 trap - EXIT
-echo "HeadedEditorLaunchV1 executable=$expected_editor pid=$editor_pid address=$editor_address backend=NVRHI-Vulkan monitor=$actual_monitor monitorId=$actual_monitor_id workspace=$actual_workspace sceneHandoff=pass controlDir=$control_dir log=$log_path result=pass"
+receipt="HeadedEditorLaunchV2 sourceRoot=$expected_cwd sourceHead=$source_head sourceState=$source_state sourceFingerprint=$source_fingerprint build=Debug-gmake-editor-only executable=$expected_editor pid=$editor_pid address=$editor_address backend=NVRHI-Vulkan monitor=$actual_monitor monitorId=$actual_monitor_id workspace=$actual_workspace stableSamples=$stable_samples sceneHandoff=pass controlDir=$control_dir log=$log_path result=pass"
+printf '%s\n' "$receipt" | tee "$run_dir/launch-receipt.txt"

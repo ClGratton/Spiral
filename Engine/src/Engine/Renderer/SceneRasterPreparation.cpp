@@ -41,6 +41,11 @@ namespace Engine
             return frame;
 
         const CameraView& view = snapshot.Views[viewIndex].Camera;
+        Ref<const ArtifactResolverSnapshot> artifactResolvers =
+            Renderer::GetPublishedArtifactResolverSnapshot();
+        if (!artifactResolvers)
+            return frame;
+        frame.ArtifactResolvers = artifactResolvers;
         Math::SectorLocalPosition translationOriginPosition;
         if (view.HasCanonicalTranslationOrigin)
         {
@@ -56,6 +61,10 @@ namespace Engine
 
         frame.TranslationOrigin = view.TranslationOrigin;
         frame.HasValidView = true;
+        std::string skyError;
+        if (!TryPrepareSceneSkyAtmosphere(snapshot, viewIndex,
+            frame.SkyAtmosphere, skyError))
+            return {};
         SceneMaterialRow defaultRow;
         defaultRow.Material.Name = "Default/Error Material";
         frame.MaterialRows.push_back(defaultRow);
@@ -80,7 +89,8 @@ namespace Engine
             u64 resolvedGeneration = 0;
             std::string ignoredError;
             const bool resolved = Renderer::ResolvePublishedMaterialAsset(
-                asset, material, resolvedGeneration, ignoredError);
+                *artifactResolvers, asset, material, resolvedGeneration,
+                ignoredError);
             if (!generationInitialized)
             {
                 generationInitialized = true;
@@ -99,10 +109,9 @@ namespace Engine
             materialIds.emplace_back(asset, materialId);
         }
         frame.MaterialCatalogGeneration = generationInitialized
-            ? catalogGeneration : Renderer::GetPublishedArtifactResolverGeneration();
+            ? catalogGeneration
+            : Renderer::GetArtifactResolverSnapshotGeneration(*artifactResolvers);
         frame.MaterialRows[0].CatalogGeneration = frame.MaterialCatalogGeneration;
-        if (Renderer::GetPublishedArtifactResolverGeneration() != frame.MaterialCatalogGeneration)
-            return {};
         frame.Instances.reserve(snapshot.Meshes.size());
 
         for (const SceneRenderMesh& mesh : snapshot.Meshes)

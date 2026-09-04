@@ -27,6 +27,7 @@ namespace Engine::RHI
 
 namespace Engine
 {
+    class ArtifactResolverSnapshot;
     class AssetRegistry;
     class FramePacingBenchmarkCapture;
     class MaterialLibrary;
@@ -439,10 +440,20 @@ namespace Engine
         static void PublishArtifactResolvers(const AssetRegistry& registry);
         static void PublishArtifactResolvers(
             const AssetRegistry& registry, const MaterialLibrary& materials);
+        // Retains one exact immutable registry/material catalog generation for
+        // a prepared frame. New live edits may publish a later generation
+        // without invalidating resolution for the already-prepared frame.
+        static Ref<const ArtifactResolverSnapshot>
+            GetPublishedArtifactResolverSnapshot();
+        static u64 GetArtifactResolverSnapshotGeneration(
+            const ArtifactResolverSnapshot& snapshot);
         // Compatibility entry point for existing mesh-only tests. Publication
         // is now one atomic mesh+texture catalog generation.
         static void PublishMeshArtifactResolver(const AssetRegistry& registry);
         static bool ResolvePublishedMeshArtifact(AssetHandle asset, MeshArtifact& outArtifact, std::string& outError);
+        static bool ResolvePublishedMeshArtifact(
+            const ArtifactResolverSnapshot& snapshot, AssetHandle asset,
+            MeshArtifact& outArtifact, std::string& outError);
         static bool ResolvePublishedTextureArtifact(AssetHandle asset, TextureArtifact& outArtifact, std::string& outError);
         static bool ResolvePublishedTextureArtifactVariantSet(AssetHandle asset,
             TextureTargetProfile preferredTarget, TextureArtifactVariantSet& outVariants,
@@ -450,8 +461,17 @@ namespace Engine
         static bool ResolvePublishedTextureArtifactVariantSet(AssetHandle asset,
             TextureTargetProfile preferredTarget, TextureArtifactVariantSet& outVariants,
             u64& outCatalogGeneration, std::string& outError);
+        static bool ResolvePublishedTextureArtifactVariantSet(
+            const ArtifactResolverSnapshot& snapshot, AssetHandle asset,
+            TextureTargetProfile preferredTarget,
+            TextureArtifactVariantSet& outVariants,
+            u64& outCatalogGeneration, std::string& outError);
         static bool ResolvePublishedMaterialAsset(AssetHandle asset,
             MaterialAsset& outMaterial, u64& outCatalogGeneration, std::string& outError);
+        static bool ResolvePublishedMaterialAsset(
+            const ArtifactResolverSnapshot& snapshot, AssetHandle asset,
+            MaterialAsset& outMaterial, u64& outCatalogGeneration,
+            std::string& outError);
         static u64 GetPublishedArtifactResolverGeneration();
         // Explicitly clears the immutable catalog. Renderer shutdown invokes
         // this before backend/device destruction.

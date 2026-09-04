@@ -11,6 +11,7 @@
 #include "Engine/Renderer/SceneLightPayload.h"
 #include "Engine/Renderer/ShaderLibrary.h"
 #include "Engine/Renderer/SlangShaderCompiler.h"
+#include "Engine/Renderer/SkyAtmospherePass.h"
 #include "Engine/Renderer/TextureRuntimePublication.h"
 #include "Engine/Renderer/ToneMapPass.h"
 #include "Engine/RenderGraph/RenderGraph.h"
@@ -98,6 +99,7 @@ namespace Engine
             const std::vector<SceneMeshDraw>& shadowDraws,
             const Ref<SceneLightPayloadSlot>& lightPayload,
             RHI::Texture& shadowDepth,
+            const SkyAtmospherePassConstants& skyConstants,
             const ToneMapPassConstants& toneMapConstants)
         {
             Scope<RHI::CommandList> commands = m_Device->CreateCommandList(RHI::QueueType::Graphics, "Scene Viewport Bootstrap Reference");
@@ -138,7 +140,13 @@ namespace Engine
                 || !commands->TransitionTexture(depthTexture, RHI::ResourceState::DepthWrite)
                 || !commands->BindViewportOutputs(hdrTexture, &depthTexture)
                 || !commands->ClearViewportOutputs(clear)) return false;
+            commands->BeginDebugMarker("Scene Viewport Bootstrap Reference Sky Atmosphere");
+            if (!m_SkyAtmosphere.Record(*commands, hdrTexture, width, height,
+                skyConstants)) return false;
+            commands->EndDebugMarker();
             commands->BeginDebugMarker("Scene Viewport Bootstrap Reference Raster");
+            if (!commands->BindViewportOutputs(hdrTexture, &depthTexture))
+                return false;
             if (m_Pipeline && frame.HasValidView && !frame.Instances.empty())
             {
                 commands->SetGraphicsPipeline(*m_Pipeline);
@@ -182,7 +190,7 @@ namespace Engine
             if (source.Status != ShaderSourceStatus::Loaded)
                 return false;
             const std::string viewportConstantsShape =
-                "struct{ViewProjection:float32x4x4:row-major@0,NormalTransform:float32x4x4:row-major@64,BaseColorAndAlphaCutoff:float32x4@128,EmissiveAndStrength:float32x4@144,SurfaceFactors:float32x4@160,CallistoFactors:float32x4@176,TextureIndices0:uint32x4@192,TextureIndices1:uint32x4@208,TextureState:uint32x4@224,MaterialState:uint32x4@240,ModelView:float32x4x4:row-major@256,NormalViewTransform:float32x4x4:row-major@320,ShadowViewProjection:float32x4x4:row-major@384,ShadowParameters:float32x4@448,ShadowState:uint32x4@464}";
+                "struct{ViewProjection:float32x4x4:row-major@0,NormalTransform:float32x4x4:row-major@64,BaseColorAndAlphaCutoff:float32x4@128,EmissiveAndStrength:float32x4@144,SurfaceFactors:float32x4@160,CallistoFactors:float32x4@176,TextureIndices0:uint32x4@192,TextureIndices1:uint32x4@208,TextureState:uint32x4@224,MaterialState:uint32x4@240,ModelView:float32x4x4:row-major@256,NormalViewTransform:float32x4x4:row-major@320,ShadowViewProjection:float32x4x4:row-major@384,ShadowParameters:float32x4@448,ShadowState:uint32x4@464,SkyIrradianceUpper:float32x4@480,SkyIrradianceLower:float32x4@496}";
             auto makeRequest = [&source, &viewportConstantsShape, this](
                                    RHI::ShaderStage stage, const char* entry,
                                    bool lightPayload, bool shadowReceiver) {
@@ -201,7 +209,7 @@ namespace Engine
                     "GE_SCENE_SHADOW_MAP=" + std::to_string(shadowReceiver ? 1 : 0)
                 };
                 request.ExpectedLayout = {
-                    { "ViewportConstants", 'b', 0, 0, stage, "ConstantBuffer", viewportConstantsShape, 1, 480, 0, 0 },
+                    { "ViewportConstants", 'b', 0, 0, stage, "ConstantBuffer", viewportConstantsShape, 1, 512, 0, 0 },
                     { "ReadOnlySamplers", 's', 0, 1, stage, "SamplerState", "sampler", m_TextureTableCapacity, 0, 0, 0 },
                     { "ReadOnlyTextures", 't', 0, 1, stage, "Texture2D", "float32x4", m_TextureTableCapacity, 0, 1, 4 }
                 };
@@ -272,6 +280,7 @@ namespace Engine
             m_ShadowDepth = m_TextureRuntime ? m_Device->CreateTexture(shadowDepth) : nullptr;
             return m_Pipeline != nullptr && m_ShadowPipeline != nullptr
                 && m_TextureRuntime != nullptr && m_ShadowDepth != nullptr
+                && m_SkyAtmosphere.Initialize(*m_Device)
                 && m_ToneMap.Initialize(*m_Device);
         }
 
@@ -345,7 +354,9 @@ namespace Engine
             const std::shared_ptr<const SceneRasterFrame> prepared = Renderer::GetPreparedSceneRasterFrame();
             if (!prepared || prepared->SnapshotFrameIndex != snapshot.FrameIndex) return false;
             SceneRasterFrame frame = *prepared;
-            if (!frame.HasValidView || frame.Instances.empty()) return false;
+            if (!frame.HasValidView || frame.Instances.empty()
+                || !frame.ArtifactResolvers)
+                return false;
             const RendererColorPipelineSettings colorSettings =
                 Renderer::GetColorPipelineSettings();
             std::string lightGridError;
@@ -400,7 +411,9 @@ namespace Engine
                     materialBindings.Handles.fill(m_TextureRuntime->GetErrorHandle());
                     materialBindings.CatalogGeneration = materialRow.CatalogGeneration;
                 }
-                else if (!m_TextureRuntime->ResolveMaterialTextures(instance.MaterialAsset, materialBindings, materialError))
+                else if (!m_TextureRuntime->ResolveMaterialTextures(
+                    *frame.ArtifactResolvers, instance.MaterialAsset,
+                    materialBindings, materialError))
                 { Log::Error("Vulkan Scene viewport could not resolve snapshot material: ", materialError); return false; }
                 if (materialBindings.CatalogGeneration != frame.MaterialCatalogGeneration) return false;
                 if (!materialError.empty()) Log::Warn("Vulkan Scene material uses error resources: ", materialError);
@@ -422,7 +435,9 @@ namespace Engine
             for (size_t index = 0; index < frame.Instances.size(); ++index)
             {
                 MeshArtifact artifact;
-                if (!Renderer::ResolvePublishedMeshArtifact(frame.Instances[index].MeshAsset, artifact, meshError)) { Log::Error("Vulkan Scene viewport could not resolve snapshot mesh artifact: ", meshError); return false; }
+                if (!Renderer::ResolvePublishedMeshArtifact(
+                    *frame.ArtifactResolvers, frame.Instances[index].MeshAsset,
+                    artifact, meshError)) { Log::Error("Vulkan Scene viewport could not resolve snapshot mesh artifact: ", meshError); return false; }
                 SceneObjectBounds bounds;
                 if (!TryCalculateObjectBounds(artifact, bounds))
                 { Log::Error("Vulkan Scene viewport could not calculate finite mesh bounds"); return false; }
@@ -450,6 +465,9 @@ namespace Engine
                 if (!TryApplySceneShadowMapConstants(frame.Instances[index],
                     *shadowFrame, casterModes[index], cpuConstants[index]))
                 { Log::Error("Vulkan Scene viewport rejected shadow constants"); return false; }
+                if (!TryApplySceneSkyIrradianceConstants(
+                    frame.SkyAtmosphere, cpuConstants[index]))
+                { Log::Error("Vulkan Scene viewport rejected sky irradiance constants"); return false; }
                 std::memcpy(constants[index].Mapped, &cpuConstants[index],
                     sizeof(cpuConstants[index]));
             }
@@ -461,6 +479,13 @@ namespace Engine
                     shadowDraws.push_back(draw);
             Ref<ToneMapPassConstants> toneMapConstants = m_ToneMap.AcquireConstants(colorSettings);
             if (!toneMapConstants) { Log::Error("Vulkan Scene viewport could not allocate tone-map constants"); return false; }
+            std::string skyConstantsError;
+            Ref<SkyAtmospherePassConstants> skyConstants =
+                m_SkyAtmosphere.AcquireConstants(snapshot.FrameIndex,
+                    frame.SkyAtmosphere, lightPayload->Payload->PreExposure.Scale,
+                    skyConstantsError);
+            if (!skyConstants)
+            { Log::Error("Vulkan Scene viewport could not acquire sky constants: ", skyConstantsError); return false; }
             RHI::ResourceState hdrColorState = RHI::ResourceState::Unknown;
             RHI::ResourceState colorState = RHI::ResourceState::Unknown;
             RHI::ResourceState depthState = RHI::ResourceState::Unknown;
@@ -555,6 +580,17 @@ namespace Engine
             graph->AddWrite(clearPass, hdrColor, RHI::ResourceState::RenderTarget); graph->AddWrite(clearPass, depth, RHI::ResourceState::DepthWrite);
             graph->SetPassCallback(clearPass, [hdrColor, depth, clear](RenderGraph::ExecutionContext& context) { RHI::Texture* graphColor = context.GetTexture(hdrColor); RHI::Texture* graphDepth = context.GetTexture(depth); return graphColor && graphDepth && context.GetCommandList().BindViewportOutputs(*graphColor, graphDepth) && context.GetCommandList().ClearViewportOutputs(clear); });
             graph->SetPassWorkerRecordingEligible(clearPass);
+            const RenderGraph::PassHandle skyPass = graph->AddPass(
+                "Scene Sky Atmosphere", RHI::QueueType::Graphics);
+            graph->AddWrite(skyPass, hdrColor, RHI::ResourceState::RenderTarget);
+            graph->SetPassCallback(skyPass,
+                [this, hdrColor, width, height, skyConstants](
+                    RenderGraph::ExecutionContext& context)
+            {
+                RHI::Texture* graphHdr = context.GetTexture(hdrColor);
+                return graphHdr && m_SkyAtmosphere.Record(context.GetCommandList(),
+                    *graphHdr, width, height, *skyConstants);
+            });
             const RenderGraph::PassHandle rasterPass = graph->AddPass("Scene Viewport Graph Raster", RHI::QueueType::Graphics);
             graph->AddWrite(rasterPass, hdrColor, RHI::ResourceState::RenderTarget); graph->AddWrite(rasterPass, depth, RHI::ResourceState::DepthWrite);
             graph->AddRead(rasterPass, lightGpu, RHI::ResourceState::ShaderResource, RHI::ShaderStage::Pixel);
@@ -621,7 +657,8 @@ namespace Engine
                     { Log::Error("Vulkan Scene viewport could not retain material textures: ", textureRetentionError); m_Device->WaitIdle(); return false; }
                 }
                 std::string retentionError;
-                std::vector<Ref<void>> payloads { constantBufferSet, toneMapConstants, lightPayload, shadowFrame };
+                std::vector<Ref<void>> payloads { constantBufferSet, skyConstants,
+                    toneMapConstants, lightPayload, shadowFrame };
                 for (const SceneMeshDraw& draw : draws) payloads.emplace_back(std::const_pointer_cast<MeshGpuResourceBundle>(draw.Bundle));
                 if (!m_SubmittedGraphFrames.Retain(snapshot.FrameIndex, std::move(graph), compiled, executed,
                     std::move(payloads), &retentionError))
@@ -645,6 +682,16 @@ namespace Engine
             if (Application::Get().GetSpecification().CommandLineArgs.HasFlag("--scene-viewport-render-graph-smoke")) Log::Info("ClusteredLightGridV1 backend=Vulkan tiles=", frame.LightGrid.TileCountX, "x", frame.LightGrid.TileCountY, " depthSlices=", frame.LightGrid.DepthSliceCount, " lights=", frame.LightGrid.Lights.size(), " global=", frame.LightGrid.GlobalLightIndices.size(), " localReferences=", frame.LightGrid.LocalLightIndices.size(), " overflow=", frame.LightGrid.OverflowedLocalLightReferences, " storage=bounded-csr result=pass");
             if (Application::Get().GetSpecification().CommandLineArgs.HasFlag("--scene-viewport-render-graph-smoke")) Log::Info("ScenePhotometricLightPublicationV2 backend=Vulkan directional=", directionalLightCount, " local=", localLightCount, " directionalUnit=", directionalLightCount > 0 ? "lux" : "none", " localUnit=", localLightCount > 0 ? "lm" : "none", " snapshot=typed grid=typed effectiveExposureEV100=", EffectiveExposureEV100(colorSettings), " exposureScale=", ManualExposureScale(colorSettings), " shaderConsumption=production-PSMain result=pass");
             if (Application::Get().GetSpecification().CommandLineArgs.HasFlag("--scene-viewport-render-graph-smoke")) Log::Info("SceneShadowMapV1 backend=Vulkan light=", shadowFrame->PrimaryLightEntity, " resolution=", shadowFrame->Resolution, " stabilization=texel-snapped filter=3x3-pcf casters=", shadowFrame->Casters.size(), " opaque=", shadowFrame->OpaqueCasterCount, " masked=", shadowFrame->AlphaTestedCasterCount, " conservativeError=", shadowFrame->ConservativeErrorCasterCount, " componentExcluded=", shadowFrame->ComponentExcludedCount, " blendExcluded=", shadowFrame->BlendExcludedCount, " receiverExclusions=deferred graphLabel=Scene-Primary-Directional-Shadow-Map result=pass");
+            if (args.HasFlag("--scene-viewport-render-graph-smoke")
+                || args.HasFlag("--scene-sky-atmosphere-smoke"))
+                Log::Info("SceneSkyAtmosphereV1 backend=Vulkan model=Preetham1999 enabled=",
+                    frame.SkyAtmosphere.Enabled ? "yes" : "no", " sunEntity=",
+                    frame.SkyAtmosphere.SunEntity, " sunLightIndex=",
+                    frame.SkyAtmosphere.SunLightIndex, " turbidity=",
+                    frame.SkyAtmosphere.Turbidity, " groundAlbedo=",
+                    frame.SkyAtmosphere.GroundAlbedo, " angularRadiusDegrees=",
+                    kBasicSunAngularRadiusDegrees,
+                    " skyDome=procedural-fullscreen diffuseIrradiance=first-order-zonal graphLabel=Scene-Sky-Atmosphere result=pass");
             const bool comparisonRequested = Application::Get().GetSpecification().CommandLineArgs.HasFlag("--scene-viewport-render-graph-smoke");
             if (comparisonRequested)
             {
@@ -661,11 +708,11 @@ namespace Engine
                     && referenceShadow && RecordBootstrapReference(*referenceHdr,
                         *referenceColor, *referenceDepth, width, height, clear,
                         frame, constants, draws, shadowDraws, lightPayload,
-                        *referenceShadow, *toneMapConstants);
+                        *referenceShadow, *skyConstants, *toneMapConstants);
                 const bool readBack = referenceRendered && ReadbackGraphOutput(*m_Color, graphReadback) && m_Device->ReadbackTexture(*referenceColor, referenceReadback);
                 const bool equivalent = readBack && graphReadback.Extent.Width == referenceReadback.Extent.Width && graphReadback.Extent.Height == referenceReadback.Extent.Height
                     && graphReadback.RowPitchBytes == referenceReadback.RowPitchBytes && graphReadback.Data == referenceReadback.Data;
-                Log::Info("SceneViewportRenderGraphV1 backend=Vulkan passes=6 labels=light-payload-copy,primary-directional-shadow-map,clear,raster,tone-map,output-handoff execution=pass reference=direct comparator=exact-byte-", equivalent ? "pass" : "fail", " size=", width, "x", height, " bytes=", graphReadback.Data.size());
+                Log::Info("SceneViewportRenderGraphV1 backend=Vulkan passes=7 labels=light-payload-copy,primary-directional-shadow-map,clear,sky-atmosphere,raster,tone-map,output-handoff execution=pass reference=direct comparator=exact-byte-", equivalent ? "pass" : "fail", " size=", width, "x", height, " bytes=", graphReadback.Data.size());
                 Log::Info("SceneColorPipelineV2 backend=Vulkan sceneLinear=pre-exposed-finite-RGBA16F exposurePlacement=before-storage toneMapExposure=none finiteClamp=65504 manualExposureEV100=", colorSettings.ManualExposureEV100,
                     " exposureMode=", ToString(colorSettings.ExposureMode),
                     " effectiveExposureEV100=", EffectiveExposureEV100(colorSettings),
@@ -702,6 +749,7 @@ namespace Engine
             m_LightPayloadPublication.ClearAfterDeviceIdle();
             m_MeshResourceCache.Clear();
             m_FrameConstantBuffers = {};
+            m_SkyAtmosphere.Shutdown();
             m_ToneMap.Shutdown();
             m_HdrColor.reset(); m_Color.reset(); m_Depth.reset(); m_ShadowDepth.reset();
             m_ShadowPipeline.reset(); m_Pipeline.reset();
@@ -711,6 +759,7 @@ namespace Engine
         RHI::Device* m_Device = nullptr; MeshGpuResourceCache m_MeshResourceCache { 32 };
         u32 m_TextureTableCapacity = 0;
         Scope<TextureRuntimePublication> m_TextureRuntime;
+        SkyAtmospherePass m_SkyAtmosphere;
         ToneMapPass m_ToneMap;
         Scope<RHI::Shader> m_VertexShader, m_PixelShader;
         Scope<RHI::Shader> m_ShadowVertexShader, m_ShadowPixelShader;

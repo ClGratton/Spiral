@@ -24,6 +24,7 @@
 #include "Engine/Renderer/PortableShaderContract.h"
 #include "Engine/Renderer/SlangShaderCompiler.h"
 #include "Engine/Renderer/SceneRasterPreparation.h"
+#include "Engine/Renderer/SceneSkyAtmosphere.h"
 #include "Engine/Renderer/SceneShadowMap.h"
 #include "Engine/Renderer/SceneSurfaceConstants.h"
 #include "Engine/Renderer/SceneLightPayload.h"
@@ -2819,10 +2820,37 @@ namespace
 
         AssetRegistry registry;
         std::string error;
-        AssetHandle baseColor = kInvalidAssetHandle;
-        const bool defaultStored = EnsureDefaultSceneTextureArtifact(registry, baseColor, error);
+        NormalizedTextureSource baseColorSource;
+        baseColorSource.SourcePath =
+            "Tests/Generated/BindingBaseColor.rgba8";
+        baseColorSource.Role = TextureRole::BaseColor;
+        baseColorSource.ColorSpace = TextureColorSpace::Srgb;
+        baseColorSource.Width = 64;
+        baseColorSource.Height = 64;
+        baseColorSource.Mips = {
+            std::vector<u8>(64u * 64u * 4u, 127u)
+        };
+        for (size_t alpha = 3; alpha < baseColorSource.Mips[0].size();
+             alpha += 4)
+            baseColorSource.Mips[0][alpha] = 255u;
+        baseColorSource.MipPolicy = TextureMipPolicy::CompleteMissing;
+        TextureArtifact cookedBaseColor;
+        const bool defaultStored = TextureImporter::CookNormalizedRgba8(
+            baseColorSource, registry, TextureTargetProfile::RGBAFallback,
+            cookedBaseColor, error);
+        const AssetHandle baseColor = defaultStored
+            ? cookedBaseColor.Asset : kInvalidAssetHandle;
         const std::filesystem::path defaultPath = GetCookedTextureArtifactPath(
             baseColor, TextureTargetProfile::RGBAFallback);
+        AssetRegistry productionIdentityRegistry;
+        const AssetHandle productionDefault =
+            productionIdentityRegistry.RegisterAsset(AssetType::Texture,
+                GetDefaultSceneTextureSourcePath(), "Production Default");
+        const bool fixtureIdentityIsolated = baseColor != kInvalidAssetHandle
+            && productionDefault != kInvalidAssetHandle
+            && baseColor != productionDefault
+            && defaultPath != GetCookedTextureArtifactPath(
+                productionDefault, TextureTargetProfile::RGBAFallback);
         TextureArtifact defaultArtifact;
         const bool defaultLoaded = defaultStored
             && LoadTextureArtifact(defaultPath, defaultArtifact, error);
@@ -2895,6 +2923,10 @@ namespace
             && materials.Set(emptyMaterialHandle, emptyMaterial)
             && materials.Set(mismatchMaterialHandle, mismatchMaterial);
         Renderer::PublishArtifactResolvers(registry, materials);
+        const Ref<const ArtifactResolverSnapshot> retainedResolver =
+            Renderer::GetPublishedArtifactResolverSnapshot();
+        const u64 retainedResolverGeneration =
+            Renderer::GetPublishedArtifactResolverGeneration();
 
         MeshGpuCacheTestDevice device(902);
         device.SetFormatCapabilities({
@@ -2948,6 +2980,30 @@ namespace
             && emissiveView.Sampler == TextureSampler::PointClamp
             && opacityView.Sampler == TextureSampler::LinearWrap
             && controlView.Sampler == TextureSampler::PointClamp;
+        MaterialLibrary editedMaterials = materials;
+        MaterialAsset* editedMaterial = editedMaterials.Get(materialHandle);
+        if (editedMaterial)
+            editedMaterial->Roughness = 0.93f;
+        Renderer::PublishArtifactResolvers(registry, editedMaterials);
+        MaterialTextureBindingSet retainedBindings;
+        MaterialTextureBindingSet editedBindings;
+        const bool liveEditContinuity = runtime && retainedResolver
+            && runtime->ResolveMaterialTextures(*retainedResolver,
+                materialHandle, retainedBindings, error)
+            && retainedBindings.CatalogGeneration == retainedResolverGeneration
+            && retainedBindings.Material.Roughness == material.Roughness
+            && runtime->ResolveMaterialTextures(
+                materialHandle, editedBindings, error)
+            && editedBindings.CatalogGeneration > retainedResolverGeneration
+            && editedMaterial
+            && editedBindings.Material.Roughness == editedMaterial->Roughness
+            && std::equal(retainedBindings.Handles.begin(),
+                retainedBindings.Handles.end(), editedBindings.Handles.begin(),
+                [](TextureBindingHandle left, TextureBindingHandle right)
+                {
+                    return left.Index == right.Index
+                        && left.Generation == right.Generation;
+                });
         const bool defaultMipChain = defaultLoaded
             && defaultArtifact.Role == TextureRole::BaseColor
             && defaultArtifact.ColorSpace == TextureColorSpace::Srgb
@@ -2984,10 +3040,14 @@ namespace
         for (const std::filesystem::path& path : artifactPaths)
             std::filesystem::remove(path, filesystemError);
 
-        return Expect(defaultMipChain,
-                "the first-scene base color is a full-mip sRGB artifact from the normal import path")
+        return Expect(fixtureIdentityIsolated,
+                "the binding fixture cannot overwrite or delete the production default texture artifact")
+            && Expect(defaultMipChain,
+                "the binding fixture base color is a full-mip sRGB artifact from the normal import path")
             && Expect(completeSet,
                 "material slots resolve exact role color-space sampler and shared-resource view identities")
+            && Expect(liveEditContinuity,
+                "an in-flight frame resolves its retained material catalog while the next live edit reuses unchanged texture views")
             && Expect(semanticDefaults && mismatchVisible,
                 "unset slots remain semantic shader defaults while declared mismatches use the visible error resource")
             && Expect(invalidTransactional,
@@ -4969,6 +5029,31 @@ namespace
             mesh(16, wrongTypeMaterial), mesh(17, missingLibraryMaterial)
         };
         const SceneRasterFrame firstFrame = PrepareSceneRasterFrame(snapshot);
+        MaterialLibrary editedMaterials = materials;
+        MaterialAsset* editedFirst = editedMaterials.Get(firstMaterial);
+        if (editedFirst)
+            editedFirst->BaseColor = { 0.9f, 0.1f, 0.2f };
+        Renderer::PublishArtifactResolvers(registry, editedMaterials);
+        MaterialAsset retainedMaterial;
+        MaterialAsset currentMaterial;
+        u64 retainedGeneration = 0;
+        u64 currentGeneration = 0;
+        std::string retainedError;
+        const bool retainedCatalog = firstFrame.ArtifactResolvers
+            && Renderer::ResolvePublishedMaterialAsset(
+                *firstFrame.ArtifactResolvers, firstMaterial, retainedMaterial,
+                retainedGeneration, retainedError)
+            && Renderer::ResolvePublishedMaterialAsset(firstMaterial,
+                currentMaterial, currentGeneration, retainedError)
+            && retainedGeneration == firstFrame.MaterialCatalogGeneration
+            && currentGeneration > retainedGeneration
+            && retainedMaterial.BaseColor.X == first.BaseColor.X
+            && retainedMaterial.BaseColor.Y == first.BaseColor.Y
+            && retainedMaterial.BaseColor.Z == first.BaseColor.Z
+            && editedFirst
+            && currentMaterial.BaseColor.X == editedFirst->BaseColor.X
+            && currentMaterial.BaseColor.Y == editedFirst->BaseColor.Y
+            && currentMaterial.BaseColor.Z == editedFirst->BaseColor.Z;
         SceneRenderSnapshot reordered = snapshot;
         reordered.FrameIndex = 402;
         std::reverse(reordered.Meshes.begin(), reordered.Meshes.end());
@@ -5047,7 +5132,7 @@ namespace
             instance, invalidBindings, false, preservedConstants)
             && preservedConstants.MaterialState[0] == 91;
         const bool constantBoundary = constantsBuilt && errorConstantsBuilt
-            && sizeof(SceneSurfaceConstants) == 480
+            && sizeof(SceneSurfaceConstants) == 512
             && offsetof(SceneSurfaceConstants, NormalTransform) == 64
             && offsetof(SceneSurfaceConstants, BaseColorAndAlphaCutoff) == 128
             && offsetof(SceneSurfaceConstants, MaterialState) == 240
@@ -5056,6 +5141,8 @@ namespace
             && offsetof(SceneSurfaceConstants, ShadowViewProjection) == 384
             && offsetof(SceneSurfaceConstants, ShadowParameters) == 448
             && offsetof(SceneSurfaceConstants, ShadowState) == 464
+            && offsetof(SceneSurfaceConstants, SkyIrradianceUpper) == 480
+            && offsetof(SceneSurfaceConstants, SkyIrradianceLower) == 496
             && constants.NormalTransform[0] == instance.NormalTransform.Values[0]
             && constants.NormalTransform[5] == instance.NormalTransform.Values[5]
             && constants.ModelView[0] == instance.ModelView.Values[0]
@@ -5069,10 +5156,156 @@ namespace
             && singularFrame.Instances.empty() && singularFrame.MaterialRows.empty();
         return Expect(stableRows,
                 "sorted unique material handles publish stable rows while duplicate invalid wrong-type and missing-library handles use row zero")
+            && Expect(retainedCatalog,
+                "a prepared frame retains one exact immutable artifact catalog while a live edit publishes the next generation")
             && Expect(normalTransformValid && singularWholeFrameRejected,
                 "nonuniform scale publishes the row-vector inverse-transpose while any singular mesh rejects the complete prepared frame")
             && Expect(constantBoundary,
-                "the exact 480-byte Scene payload carries model/view and shadow data, bounded finite material rows, valid enums, and the explicit zero/one/zero/zero error state");
+                "the exact 512-byte Scene payload carries model/view, shadow, and sky data with bounded material rows and explicit error state");
+    }
+
+    bool TestSceneSkyAtmospherePreparationIsDeterministicAndBounded()
+    {
+        using namespace Engine;
+        SceneRenderSnapshot snapshot;
+        snapshot.FrameIndex = 450;
+        SceneRenderView view;
+        view.Camera = BuildCameraView({}, {}, {}, 16.0f / 9.0f, {});
+        snapshot.Views.push_back(view);
+
+        SceneRenderLight point;
+        point.SourceEntity = 40;
+        point.Type = LightType::Point;
+        point.PhotometricUnit = LightPhotometricUnit::Lumens;
+        point.PhotometricValue = 500.0;
+        SceneRenderLight sun;
+        sun.SourceEntity = 41;
+        sun.Type = LightType::Directional;
+        sun.PhotometricUnit = LightPhotometricUnit::Lux;
+        sun.PhotometricValue = 100000.0;
+        sun.Transform.RotationDegrees = { 45.0f, 0.0f, 0.0f };
+        snapshot.Lights = { point, sun };
+
+        SceneSkyAtmosphereFrame full;
+        std::string error;
+        const bool accepted = TryPrepareSceneSkyAtmosphere(
+            snapshot, 0, full, error);
+        const auto near = [](float left, float right, float tolerance)
+        { return std::abs(left - right) <= tolerance; };
+        const bool model = accepted && error.empty() && full.Enabled
+            && full.SunEntity == 41 && full.SunLightIndex == 1
+            && near(full.Turbidity, 3.0f, 0.0f)
+            && near(full.GroundAlbedo, 0.1f, 0.0f)
+            && near(full.SunAngularRadiusRadians,
+                Math::DegreesToRadians(0.266f), 0.0000001f)
+            && near(full.SunZenithRadians,
+                Math::DegreesToRadians(45.0f), 0.000001f)
+            && near(full.SurfaceToSunWorld.X, 0.0f, 0.000001f)
+            && near(full.SurfaceToSunWorld.Y, 0.70710677f, 0.000001f)
+            && near(full.SurfaceToSunWorld.Z, -0.70710677f, 0.000001f)
+            && near(full.LuminancePerez.A, -0.9269f, 0.00001f)
+            && near(full.LuminancePerez.B, -0.6387f, 0.00001f)
+            && near(full.LuminancePerez.C, 5.2570f, 0.00001f)
+            && near(full.LuminancePerez.D, -2.2153f, 0.00001f)
+            && near(full.LuminancePerez.E, 0.1693f, 0.00001f)
+            && full.ZenithChromaticityX > 0.2f
+            && full.ZenithChromaticityX < 0.4f
+            && full.ZenithChromaticityY > 0.2f
+            && full.ZenithChromaticityY < 0.4f
+            && full.ZenithLuminanceCdPerSquareMeter > 1000.0f
+            && full.UpperDiffuseIrradiance.X > 0.0f
+            && full.UpperDiffuseIrradiance.Y > 0.0f
+            && full.UpperDiffuseIrradiance.Z > 0.0f
+            && near(full.LowerDiffuseIrradiance.X,
+                full.UpperDiffuseIrradiance.X * 0.1f, 0.001f)
+            && near(full.LowerDiffuseIrradiance.Y,
+                full.UpperDiffuseIrradiance.Y * 0.1f, 0.001f)
+            && near(full.LowerDiffuseIrradiance.Z,
+                full.UpperDiffuseIrradiance.Z * 0.1f, 0.001f)
+            && IsValidSceneSkyAtmosphereFrame(full);
+
+        SceneRenderSnapshot halfSnapshot = snapshot;
+        halfSnapshot.Lights[1].PhotometricValue = 50000.0;
+        SceneSkyAtmosphereFrame half;
+        const bool halfAccepted = TryPrepareSceneSkyAtmosphere(
+            halfSnapshot, 0, half, error);
+        const bool scales = halfAccepted && half.Enabled
+            && near(half.ZenithChromaticityX, full.ZenithChromaticityX, 0.0f)
+            && near(half.ZenithChromaticityY, full.ZenithChromaticityY, 0.0f)
+            && near(half.ZenithLuminanceCdPerSquareMeter,
+                full.ZenithLuminanceCdPerSquareMeter * 0.5f, 0.01f)
+            && near(half.SunRadiance.X, full.SunRadiance.X * 0.5f, 8.0f)
+            && near(half.UpperDiffuseIrradiance.X,
+                full.UpperDiffuseIrradiance.X * 0.5f, 0.02f)
+            && near(half.UpperDiffuseIrradiance.Y,
+                full.UpperDiffuseIrradiance.Y * 0.5f, 0.02f)
+            && near(half.UpperDiffuseIrradiance.Z,
+                full.UpperDiffuseIrradiance.Z * 0.5f, 0.02f);
+
+        SceneSkyAtmosphereGpuConstants gpu;
+        const bool gpuBuilt = TryBuildSceneSkyAtmosphereGpuConstants(
+                full, 1.0f / 2048.0f, gpu, error)
+            && sizeof(SceneSkyAtmosphereGpuConstants) == 160
+            && gpu.ProjectionAndExposure[0] == full.TanHalfVerticalFov
+            && gpu.ProjectionAndExposure[1] == full.AspectRatio
+            && gpu.ProjectionAndExposure[2] == 1.0f / 2048.0f
+            && gpu.ViewUpAndEnabled[3] == 1.0f
+            && gpu.ZenithxyYAndSunTheta[2]
+                == full.ZenithLuminanceCdPerSquareMeter
+            && gpu.PerezE[0] == full.LuminancePerez.E
+            && gpu.PerezE[1] == full.ChromaticityXPerez.E
+            && gpu.PerezE[2] == full.ChromaticityYPerez.E;
+
+        SceneSurfaceConstants surface;
+        const bool surfaceApplied = TryApplySceneSkyIrradianceConstants(
+                full, surface)
+            && sizeof(SceneSurfaceConstants) == 512
+            && offsetof(SceneSurfaceConstants, SkyIrradianceUpper) == 480
+            && offsetof(SceneSurfaceConstants, SkyIrradianceLower) == 496
+            && surface.SkyIrradianceUpper[0]
+                == full.UpperDiffuseIrradiance.X
+            && surface.SkyIrradianceUpper[3] == 1.0f
+            && surface.SkyIrradianceLower[2]
+                == full.LowerDiffuseIrradiance.Z
+            && surface.SkyIrradianceLower[3] == 0.0f;
+
+        SceneRenderSnapshot night = snapshot;
+        night.Lights[1].Transform.RotationDegrees.X = -15.0f;
+        SceneSkyAtmosphereFrame disabled;
+        const bool nightAccepted = TryPrepareSceneSkyAtmosphere(
+                night, 0, disabled, error)
+            && !disabled.Enabled && IsValidSceneSkyAtmosphereFrame(disabled);
+        SceneSurfaceConstants disabledSurface = surface;
+        const bool disabledClears = nightAccepted
+            && TryApplySceneSkyIrradianceConstants(disabled, disabledSurface)
+            && disabledSurface.SkyIrradianceUpper[0] == 0.0f
+            && disabledSurface.SkyIrradianceUpper[3] == 0.0f
+            && disabledSurface.SkyIrradianceLower[2] == 0.0f;
+
+        SceneSkyAtmosphereFrame preserved = full;
+        SceneRenderSnapshot invalid = snapshot;
+        invalid.Views[0].Camera.Projection.Values[5] =
+            std::numeric_limits<float>::quiet_NaN();
+        const bool invalidRejected = !TryPrepareSceneSkyAtmosphere(
+                invalid, 0, preserved, error)
+            && preserved.SunEntity == full.SunEntity && preserved.Enabled
+            && !error.empty();
+        SceneSkyAtmosphereGpuConstants preservedGpu;
+        preservedGpu.ViewUpAndEnabled[3] = 77.0f;
+        const bool invalidGpuRejected = !TryBuildSceneSkyAtmosphereGpuConstants(
+                full, 0.0f, preservedGpu, error)
+            && preservedGpu.ViewUpAndEnabled[3] == 77.0f;
+
+        return Expect(model,
+                "the first directional produces the fixed Preetham daylight and finite upper/lower irradiance")
+            && Expect(scales,
+                "analytic sky luminance, sun radiance, and diffuse irradiance scale linearly with authored lux")
+            && Expect(gpuBuilt && surfaceApplied,
+                "sky GPU and exact 512-byte surface constants preserve model, exposure, and irradiance inputs")
+            && Expect(disabledClears,
+                "a below-horizon sun publishes an explicit disabled sky and clears stale indirect input")
+            && Expect(invalidRejected && invalidGpuRejected,
+                "invalid sky projection or exposure rejects transactionally without replacing caller state");
     }
 
     bool TestSceneShadowMapPreparationIsStableAndExplicit()
@@ -11064,6 +11297,7 @@ int main(int argc, char** argv)
         FAST_TEST("Per-view sector-snapped origin tracking", TestPerViewSectorSnappedOriginTracking),
         FAST_TEST("Scene raster origin epoch invariance", TestSceneRasterOriginEpochInvariance),
         FAST_TEST("Scene surface basis and material rows publish deterministically", TestSceneSurfaceBasisAndMaterialRows),
+        FAST_TEST("Scene sky atmosphere preparation is deterministic and bounded", TestSceneSkyAtmospherePreparationIsDeterministicAndBounded),
         FAST_TEST("Scene shadow map preparation is stabilized and classifies caster modes", TestSceneShadowMapPreparationIsStableAndExplicit),
         FAST_TEST("Basic PBR CPU reference uses accepted convention", TestBasicPbrCpuReferenceUsesAcceptedConvention),
         FAST_TEST("Clustered light grid builds bounded deterministic assignments", TestClusteredLightGridBuildsBoundedDeterministicAssignments),

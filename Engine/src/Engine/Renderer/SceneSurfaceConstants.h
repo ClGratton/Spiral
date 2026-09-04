@@ -6,12 +6,13 @@ namespace Engine
 {
     struct MaterialTextureBindingSet;
     struct SceneRasterInstance;
+    struct SceneSkyAtmosphereFrame;
     struct SceneShadowMapFrame;
     enum class SceneShadowCasterMode : u32;
 
     // Exact b0/space0 payload shared by the production D3D12/Vulkan Scene path.
-    // The reflected payload is 480 bytes and native allocations are rounded to
-    // one 512-byte hardware constant-buffer block per visible instance.
+    // The reflected payload exactly fills one 512-byte hardware constant-buffer
+    // block per visible instance.
     struct SceneSurfaceConstants
     {
         float ViewProjection[16] {};
@@ -34,9 +35,13 @@ namespace Engine
         float ShadowParameters[4] {};
         // x=enabled, y=primary light record, z=resolution, w=caster mode.
         u32 ShadowState[4] {};
+        // RGB diffuse irradiance for upward/downward-facing world normals.
+        // Upper.w is the enabled flag; Lower.w is reserved zero.
+        float SkyIrradianceUpper[4] {};
+        float SkyIrradianceLower[4] {};
     };
 
-    static_assert(sizeof(SceneSurfaceConstants) == 480);
+    static_assert(sizeof(SceneSurfaceConstants) == 512);
 
     bool TryBuildSceneSurfaceConstants(
         const SceneRasterInstance& instance,
@@ -45,5 +50,8 @@ namespace Engine
         SceneSurfaceConstants& outConstants);
     bool TryApplySceneShadowMapConstants(const SceneRasterInstance& instance,
         const SceneShadowMapFrame& shadow, SceneShadowCasterMode casterMode,
+        SceneSurfaceConstants& inOutConstants);
+    bool TryApplySceneSkyIrradianceConstants(
+        const SceneSkyAtmosphereFrame& sky,
         SceneSurfaceConstants& inOutConstants);
 }
