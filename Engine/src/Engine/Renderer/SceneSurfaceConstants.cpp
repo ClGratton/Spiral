@@ -18,38 +18,6 @@ namespace Engine
             return true;
         }
 
-        bool IsFiniteMaterial(const MaterialAsset& material)
-        {
-            const float values[] {
-                material.BaseColor.X, material.BaseColor.Y, material.BaseColor.Z,
-                material.Metallic, material.Roughness, material.NormalScale,
-                material.OcclusionStrength, material.EmissiveColor.X,
-                material.EmissiveColor.Y, material.EmissiveColor.Z,
-                material.EmissiveStrength, material.AlphaCutoff,
-                material.DiffuseFresnelIntensity,
-                material.RetroreflectionIntensity,
-                material.DiffuseFresnelFalloff,
-                material.RetroreflectionFalloff,
-                material.SmoothTerminator
-            };
-            for (float value : values)
-                if (!std::isfinite(value))
-                    return false;
-            const bool baseColorValid = material.BaseColor.X >= 0.0f && material.BaseColor.X <= 1.0f
-                && material.BaseColor.Y >= 0.0f && material.BaseColor.Y <= 1.0f
-                && material.BaseColor.Z >= 0.0f && material.BaseColor.Z <= 1.0f;
-            const bool emissiveProductFinite = std::isfinite(
-                material.EmissiveColor.X * material.EmissiveStrength)
-                && std::isfinite(material.EmissiveColor.Y * material.EmissiveStrength)
-                && std::isfinite(material.EmissiveColor.Z * material.EmissiveStrength);
-            const bool shadingModelValid = material.ShadingModel == MaterialShadingModel::Standard
-                || material.ShadingModel == MaterialShadingModel::Unlit;
-            const bool alphaModeValid = material.AlphaMode == MaterialAlphaMode::Opaque
-                || material.AlphaMode == MaterialAlphaMode::Mask
-                || material.AlphaMode == MaterialAlphaMode::Blend;
-            return baseColorValid && emissiveProductFinite
-                && shadingModelValid && alphaModeValid;
-        }
     }
 
     bool TryBuildSceneSurfaceConstants(
@@ -67,7 +35,7 @@ namespace Engine
             || !IsFiniteMatrix(constants.NormalTransform)
             || !IsFiniteMatrix(constants.ModelView)
             || !IsFiniteMatrix(constants.NormalViewTransform)
-            || !IsFiniteMaterial(bindings.Material))
+            || !IsValidMaterialAssetValues(bindings.Material))
             return false;
         constants.BaseColorAndAlphaCutoff[0] = bindings.Material.BaseColor.X;
         constants.BaseColorAndAlphaCutoff[1] = bindings.Material.BaseColor.Y;

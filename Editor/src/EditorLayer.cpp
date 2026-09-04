@@ -25,6 +25,19 @@ namespace
     constexpr int ProjectFormatVersion = 6;
     constexpr int EditorSettingsFormatVersion = 1;
 
+    bool HasCommandLineOption(const Engine::ApplicationCommandLineArgs& args,
+        std::string_view option)
+    {
+        const std::string prefix = std::string(option) + "=";
+        for (int index = 0; index < args.Count; ++index)
+        {
+            const std::string_view argument = args[index];
+            if (argument == option || argument.starts_with(prefix))
+                return true;
+        }
+        return false;
+    }
+
     struct EditorSettings
     {
         ViewportNavigationPreset ViewportNavigation = ViewportNavigationPreset::Fusion;
@@ -584,6 +597,20 @@ void EditorLayer::OnAttach()
     m_ViewportNavigationSmokeRequested =
         Engine::Application::Get().GetSpecification().CommandLineArgs.HasFlag("--editor-viewport-navigation-smoke");
     m_PresentationPolicySmokeRequested = args.HasFlag("--presentation-policy-smoke");
+    m_EditorMaterialControlSmokeRequested = args.HasFlag("--editor-control-mailbox-smoke");
+    m_EditorMaterialControlLiveHelperSmokeRequested =
+        args.HasFlag("--editor-control-live-helper-smoke");
+    m_EditorMaterialControlCapacitySmokeRequested =
+        args.HasFlag("--editor-control-capacity-smoke");
+    m_EditorMaterialControlDurabilitySmokeRequested =
+        args.HasFlag("--editor-control-durability-smoke");
+    const unsigned int controlSmokeCount =
+        (m_EditorMaterialControlSmokeRequested ? 1u : 0u)
+        + (m_EditorMaterialControlLiveHelperSmokeRequested ? 1u : 0u)
+        + (m_EditorMaterialControlCapacitySmokeRequested ? 1u : 0u)
+        + (m_EditorMaterialControlDurabilitySmokeRequested ? 1u : 0u);
+    if (controlSmokeCount > 1)
+        throw std::runtime_error("editor material-control smoke modes are mutually exclusive");
     if (m_SceneOriginRasterSmokeRequested)
         ConfigureSceneOriginRasterSmoke();
     if (m_AssetWatchSmokeRequested)
@@ -591,8 +618,19 @@ void EditorLayer::OnAttach()
         WriteTextFile(m_AssetWatchSmokePath, "asset watch smoke baseline\n");
         m_AssetRegistry.RegisterAsset(Engine::AssetType::Mesh, m_AssetWatchSmokePath, "Asset Watch Smoke");
     }
+    InitializeEditorMaterialControl();
     m_AssetWatcher.SyncRegistry(m_AssetRegistry);
     Engine::Renderer::PublishArtifactResolvers(m_AssetRegistry, m_MaterialLibrary);
+    if (m_EditorMaterialControlSmokeRequested
+        || m_EditorMaterialControlLiveHelperSmokeRequested
+        || m_EditorMaterialControlCapacitySmokeRequested
+        || m_EditorMaterialControlDurabilitySmokeRequested)
+    {
+        m_EditorMaterialControlSmokeInitialRendererGeneration =
+            Engine::Renderer::GetPublishedArtifactResolverGeneration();
+        m_EditorMaterialControlSmokeInitialUndoDepth = m_UndoHistory.size();
+        m_EditorMaterialControlSmokeInitialRedoDepth = m_RedoHistory.size();
+    }
     m_ConsoleLines.emplace_back("File watching active: " + std::to_string(m_AssetWatcher.GetTrackedCount()) + " asset source(s)");
     if (m_CaptureViewportRequested)
         m_ConsoleLines.emplace_back(std::string("Viewport capture requested: ") + m_CaptureViewportPath);
@@ -617,6 +655,7 @@ void EditorLayer::OnAttach()
 
 void EditorLayer::OnDetach()
 {
+    m_EditorMaterialControl.Close();
     if (m_FramePacingNavigationTraceEnabled)
     {
         const double deltaX = m_CameraPosition[0] - m_FramePacingInitialCameraPosition[0];
@@ -686,6 +725,21 @@ void EditorLayer::OnUpdate(Engine::Timestep timestep)
     HandleAssetWatchEvents();
     UpdateViewportNavigation(timestep);
 
+    m_EditorMaterialControl.EnsureProjectIdentity(m_ProjectPath);
+    RunEditorMaterialControlSmokeBeforeDrain();
+    RunEditorMaterialControlCapacitySmokeBeforeDrain();
+    RunEditorMaterialControlDurabilitySmokeBeforeDrain();
+    const Engine::u64 applicationFrame = Engine::Application::Get().GetFrameIndex();
+    m_EditorMaterialControl.Drain(applicationFrame,
+        [this](const EditorMaterialControlRequest& request, Engine::u64 frame)
+        {
+            return ExecuteEditorMaterialControlRequest(request, frame);
+        });
+    RunEditorMaterialControlSmokeAfterDrain();
+    RunEditorMaterialControlLiveHelperSmokeAfterDrain();
+    RunEditorMaterialControlCapacitySmokeAfterDrain();
+    RunEditorMaterialControlDurabilitySmokeAfterDrain();
+
     Engine::TrackedCameraViewRequest viewportViewRequest;
     viewportViewRequest.StableViewId = 1;
     viewportViewRequest.WorldPosition = m_EditorCamera.GetPosition();
@@ -710,6 +764,840 @@ void EditorLayer::OnUpdate(Engine::Timestep timestep)
             Engine::Log::Trace("Editor background validation job completed");
         }, "EditorValidation");
     }
+}
+
+void EditorLayer::InitializeEditorMaterialControl()
+{
+    const Engine::ApplicationCommandLineArgs& args =
+        Engine::Application::Get().GetSpecification().CommandLineArgs;
+    const bool optionProvided = HasCommandLineOption(args, "--editor-control-dir");
+    const std::string_view controlDirectory = args.GetOptionValue("--editor-control-dir");
+    if (!optionProvided)
+    {
+        if (m_EditorMaterialControlSmokeRequested
+            || m_EditorMaterialControlLiveHelperSmokeRequested
+            || m_EditorMaterialControlCapacitySmokeRequested
+            || m_EditorMaterialControlDurabilitySmokeRequested)
+            throw std::runtime_error(
+                "editor material-control smokes require --editor-control-dir=<absolute path>");
+        return;
+    }
+    if (controlDirectory.empty())
+        throw std::runtime_error("--editor-control-dir requires a non-empty absolute path");
+
+    if (m_EditorMaterialControlSmokeRequested
+        || m_EditorMaterialControlLiveHelperSmokeRequested
+        || m_EditorMaterialControlCapacitySmokeRequested
+        || m_EditorMaterialControlDurabilitySmokeRequested)
+    {
+        if (!Engine::Application::Get().GetSpecification().Window.Headless)
+            throw std::runtime_error("editor material-control smoke requires --headless");
+        if (!m_ActiveScene.IsEntityValid(m_PrototypeMeshEntity))
+            throw std::runtime_error("editor material-control smoke requires Prototype Mesh");
+        Engine::MeshRendererComponent* prototypeRenderer =
+            m_ActiveScene.TryGetMeshRendererComponent(m_PrototypeMeshEntity);
+        if (!prototypeRenderer)
+            throw std::runtime_error("editor material-control smoke requires a mesh renderer");
+
+        m_EditorMaterialControlSmokeMaterial = m_AssetRegistry.RegisterAsset(
+            Engine::AssetType::Material,
+            "output/assets/editor-control-mailbox-smoke.spiralmat",
+            "Editor Control Mailbox Smoke");
+        Engine::MaterialAsset smokeMaterial;
+        smokeMaterial.Name = "Editor Control Mailbox Smoke";
+        m_EditorMaterialControlSmokeBefore = {
+            { 0.62f, 0.22f, 0.14f }, 0.35f, 0.74f
+        };
+        m_EditorMaterialControlSmokeAfter = {
+            { 0.21f, 0.43f, 0.67f }, 0.77f, 0.31f
+        };
+        if (!Engine::TrySetMaterialSurface(smokeMaterial, m_EditorMaterialControlSmokeBefore)
+            || !Engine::IsValidMaterialAssetValues(smokeMaterial)
+            || !m_MaterialLibrary.Set(m_EditorMaterialControlSmokeMaterial, smokeMaterial))
+            throw std::runtime_error("could not stage editor material-control smoke material");
+        prototypeRenderer->MaterialAsset = m_EditorMaterialControlSmokeMaterial;
+        const Engine::MeshRendererComponent sharedRenderer = *prototypeRenderer;
+
+        m_EditorMaterialControlSharedPeer =
+            m_ActiveScene.FindEntityByName("Editor Control Shared Peer");
+        if (!m_EditorMaterialControlSharedPeer)
+            m_EditorMaterialControlSharedPeer =
+                m_ActiveScene.CreateEntity("Editor Control Shared Peer");
+        Engine::MeshRendererComponent* peerRenderer =
+            m_ActiveScene.TryGetMeshRendererComponent(m_EditorMaterialControlSharedPeer);
+        if (!peerRenderer)
+            peerRenderer = m_ActiveScene.AddMeshRendererComponent(
+                m_EditorMaterialControlSharedPeer, sharedRenderer);
+        if (!peerRenderer)
+            throw std::runtime_error("could not stage editor material-control shared peer");
+        *peerRenderer = sharedRenderer;
+        peerRenderer->MaterialAsset = m_EditorMaterialControlSmokeMaterial;
+        if (m_EditorMaterialControlCapacitySmokeRequested)
+        {
+            for (unsigned int index = 0; index < 40; ++index)
+            {
+                const Engine::Entity extra = m_ActiveScene.CreateEntity(
+                    "Editor Control Capacity Peer " + std::to_string(index));
+                if (!m_ActiveScene.AddMeshRendererComponent(extra, sharedRenderer))
+                    throw std::runtime_error(
+                        "could not stage editor material-control capacity peer");
+            }
+        }
+        m_SelectedEntity = m_ActiveScene.GetMainCameraEntity();
+        ResetFusionNavigationPivotFromSelectionOrScene();
+    }
+
+    std::string error;
+    if (!m_EditorMaterialControl.Initialize(
+        std::filesystem::path(std::string(controlDirectory)), m_ProjectPath, error))
+        throw std::runtime_error("could not initialize editor material control: " + error);
+    if (m_EditorMaterialControlLiveHelperSmokeRequested
+        && !m_EditorMaterialControl.PublishLiveTargetForSmoke(
+            m_PrototypeMeshEntity.Id, "Prototype Mesh",
+            m_EditorMaterialControlSmokeMaterial,
+            m_EditorMaterialControlSmokeBefore,
+            m_EditorMaterialControlSmokeAfter, error))
+        throw std::runtime_error(
+            "could not publish live helper smoke target: " + error);
+}
+
+EditorMaterialControlTransaction EditorLayer::ExecuteEditorMaterialControlRequest(
+    const EditorMaterialControlRequest& request, Engine::u64 frame)
+{
+    EditorMaterialControlTransaction transaction;
+    EditorMaterialControlReceipt& receipt = transaction.Receipt;
+    receipt.Action = request.Action;
+    receipt.ActionKnown = true;
+    receipt.Frame = frame;
+    receipt.RendererGeneration = Engine::Renderer::GetPublishedArtifactResolverGeneration();
+    receipt.UndoDepthBefore = m_UndoHistory.size();
+    receipt.UndoDepthAfter = m_UndoHistory.size();
+    receipt.RedoDepthBefore = m_RedoHistory.size();
+    receipt.RedoDepthAfter = m_RedoHistory.size();
+
+    const auto reject = [&transaction, &receipt](std::string reason)
+    {
+        receipt.Succeeded = false;
+        receipt.Reason = std::move(reason);
+        return transaction;
+    };
+
+    const Engine::Entity entityHandle { request.EntityId };
+    const Engine::SceneEntity* entity = m_ActiveScene.TryGetEntity(entityHandle);
+    if (!entity || entity->Name != request.ExpectedEntityName)
+        return reject("stale_or_mismatched_entity_identity");
+    receipt.EntityId = entity->EntityHandle.Id;
+    receipt.EntityName = entity->Name;
+    receipt.MaterialHandle = request.MaterialHandle;
+    if (!entity->MeshRenderer
+        || entity->MeshRenderer->MaterialAsset != request.MaterialHandle)
+        return reject("stale_or_mismatched_material_identity");
+    const Engine::AssetMetadata* metadata = m_AssetRegistry.GetAsset(request.MaterialHandle);
+    if (!metadata || metadata->Type != Engine::AssetType::Material)
+        return reject("material_handle_is_not_registered_material");
+    const Engine::MaterialAsset* currentMaterial = m_MaterialLibrary.Get(request.MaterialHandle);
+    if (!currentMaterial || !Engine::IsValidMaterialAssetValues(*currentMaterial))
+        return reject("material_state_is_not_publishable");
+
+    receipt.Before = Engine::GetMaterialSurface(*currentMaterial);
+    receipt.After = receipt.Before;
+    receipt.AffectedEntityIds.push_back(request.EntityId);
+    for (const Engine::SceneEntity& candidate : m_ActiveScene.GetEntities())
+    {
+        if (candidate.MeshRenderer
+            && candidate.MeshRenderer->MaterialAsset == request.MaterialHandle)
+        {
+            ++receipt.AffectedEntityCount;
+            if (candidate.EntityHandle.Id != request.EntityId
+                && receipt.AffectedEntityIds.size()
+                < EditorMaterialControlMailbox::MaximumAffectedEntityIds)
+                receipt.AffectedEntityIds.push_back(candidate.EntityHandle.Id);
+        }
+    }
+    std::sort(receipt.AffectedEntityIds.begin(), receipt.AffectedEntityIds.end());
+    receipt.AffectedEntityIdsTruncated =
+        receipt.AffectedEntityCount > receipt.AffectedEntityIds.size();
+
+    if (request.Action == EditorMaterialControlAction::InspectMaterialSurface)
+    {
+        Engine::MaterialAsset publishedMaterial;
+        Engine::u64 publishedGeneration = 0;
+        std::string readbackError;
+        const bool readback = Engine::Renderer::ResolvePublishedMaterialAsset(
+            request.MaterialHandle, publishedMaterial, publishedGeneration, readbackError);
+        receipt.RendererGeneration = publishedGeneration;
+        receipt.RendererReadbackVerified = readback
+            && publishedGeneration == Engine::Renderer::GetPublishedArtifactResolverGeneration()
+            && Engine::GetMaterialSurface(publishedMaterial) == receipt.Before;
+        if (!receipt.RendererReadbackVerified)
+            return reject("renderer_material_readback_mismatch");
+        receipt.Succeeded = true;
+        receipt.Reason = "ok";
+        receipt.Effect = "ReadOnly";
+        return transaction;
+    }
+
+    if (!request.HasExpectedSurface || !request.HasNewSurface
+        || !request.SharedMaterialScope)
+        return reject("patch_contract_is_incomplete");
+    if (receipt.Before != request.ExpectedSurface)
+        return reject("compare_and_swap_state_mismatch");
+
+    Engine::Math::DVec3 targetPivot;
+    if (!m_ActiveScene.TryGetEntityApproximateWorldPosition(entityHandle, targetPivot))
+        return reject("entity_has_no_finite_world_position");
+    Engine::MaterialAsset stagedMaterial = *currentMaterial;
+    if (!Engine::TrySetMaterialSurface(stagedMaterial, request.NewSurface)
+        || !Engine::IsValidMaterialAssetValues(stagedMaterial)
+        || Engine::GetMaterialSurface(stagedMaterial) != request.NewSurface)
+        return reject("new_material_state_is_not_publishable");
+
+    const Engine::u64 generationBeforePublication = receipt.RendererGeneration;
+    receipt.Succeeded = true;
+    receipt.Reason = "ok";
+    receipt.Effect = "SharedMaterialSurfacePatched";
+    receipt.Recovery = "UndoRedo";
+    receipt.After = request.NewSurface;
+    receipt.RendererGeneration = generationBeforePublication + 1;
+    receipt.UndoDepthAfter = std::min<std::size_t>(
+        receipt.UndoDepthBefore + 1, 128);
+    receipt.RedoDepthAfter = 0;
+    receipt.SelectionCommitted = true;
+    receipt.PivotRetargeted = true;
+    receipt.RendererReadbackVerified = true;
+
+    struct RollbackState
+    {
+        HistoryState State;
+        std::vector<HistoryEntry> UndoHistory;
+        std::vector<HistoryEntry> RedoHistory;
+        bool FusionPivotValid = false;
+        Engine::Math::DVec3 FusionPivot;
+        bool MutationStarted = false;
+    };
+    auto rollback = std::make_shared<RollbackState>();
+    rollback->State = CaptureHistoryState();
+    rollback->UndoHistory = m_UndoHistory;
+    rollback->RedoHistory = m_RedoHistory;
+    rollback->FusionPivotValid = m_FusionNavigationPivotValid;
+    rollback->FusionPivot = m_FusionNavigationPivot;
+
+    transaction.Mutating = true;
+    transaction.Commit = [this, request, entityHandle, targetPivot,
+                              generationBeforePublication, stagedMaterial,
+                              rollback](std::string& error)
+    {
+        const Engine::SceneEntity* currentEntity = m_ActiveScene.TryGetEntity(entityHandle);
+        Engine::MaterialAsset* mutableMaterial = m_MaterialLibrary.Get(request.MaterialHandle);
+        if (!currentEntity || currentEntity->Name != request.ExpectedEntityName
+            || !currentEntity->MeshRenderer
+            || currentEntity->MeshRenderer->MaterialAsset != request.MaterialHandle
+            || !mutableMaterial
+            || Engine::GetMaterialSurface(*mutableMaterial) != request.ExpectedSurface)
+        {
+            error = "state_changed_before_commit";
+            return false;
+        }
+
+        rollback->MutationStarted = true;
+        *mutableMaterial = stagedMaterial;
+        m_SelectedEntity = entityHandle;
+        SetFusionNavigationPivot(targetPivot);
+        Engine::Renderer::PublishArtifactResolvers(m_AssetRegistry, m_MaterialLibrary);
+
+        Engine::MaterialAsset publishedMaterial;
+        Engine::u64 publishedGeneration = 0;
+        std::string readbackError;
+        const bool readback = Engine::Renderer::ResolvePublishedMaterialAsset(
+            request.MaterialHandle, publishedMaterial, publishedGeneration, readbackError);
+        const bool selectionValid = m_SelectedEntity == entityHandle;
+        const bool pivotValid = m_FusionNavigationPivotValid
+            && m_FusionNavigationPivot.X == targetPivot.X
+            && m_FusionNavigationPivot.Y == targetPivot.Y
+            && m_FusionNavigationPivot.Z == targetPivot.Z;
+        if (m_EditorMaterialControlForceCommitFailureOnce)
+        {
+            m_EditorMaterialControlForceCommitFailureOnce = false;
+            error = "injected_renderer_readback_failure";
+            return false;
+        }
+        if (!readback || publishedGeneration != generationBeforePublication + 1
+            || Engine::GetMaterialSurface(publishedMaterial) != request.NewSurface
+            || !selectionValid || !pivotValid)
+        {
+            error = readbackError.empty()
+                ? "renderer_or_editor_readback_mismatch" : "renderer_readback_failed";
+            return false;
+        }
+
+        RecordHistory("Agent patch shared material surface", rollback->State);
+        if (m_UndoHistory.size()
+                != std::min<std::size_t>(rollback->UndoHistory.size() + 1, 128)
+            || !m_RedoHistory.empty())
+        {
+            error = "history_commit_mismatch";
+            return false;
+        }
+        if (m_EditorMaterialControlForceLateResponseCollisionOnce)
+        {
+            m_EditorMaterialControlForceLateResponseCollisionOnce = false;
+            std::string collisionError;
+            if (!m_EditorMaterialControl.PublishRawResponseForSmoke(
+                request.RequestId, "late response collision\n", collisionError))
+            {
+                error = "late_response_collision_injection_failed";
+                return false;
+            }
+        }
+        if (m_EditorMaterialControlForceParentSyncFailureOnce)
+        {
+            m_EditorMaterialControlForceParentSyncFailureOnce = false;
+            m_EditorMaterialControl.InjectParentDirectorySyncFailureForSmoke();
+        }
+        return true;
+    };
+    transaction.Rollback = [this, rollback, request](EditorMaterialControlReceipt& rolledBack)
+    {
+        if (rollback->MutationStarted)
+            RestoreHistoryState(rollback->State);
+        m_UndoHistory = rollback->UndoHistory;
+        m_RedoHistory = rollback->RedoHistory;
+        m_FusionNavigationPivot = rollback->FusionPivot;
+        m_FusionNavigationPivotValid = rollback->FusionPivotValid;
+        rolledBack.RendererGeneration =
+            Engine::Renderer::GetPublishedArtifactResolverGeneration();
+        rolledBack.UndoDepthAfter = m_UndoHistory.size();
+        rolledBack.RedoDepthAfter = m_RedoHistory.size();
+        rolledBack.SelectionCommitted = false;
+        rolledBack.PivotRetargeted = false;
+        Engine::MaterialAsset publishedMaterial;
+        Engine::u64 publishedGeneration = 0;
+        std::string readbackError;
+        rolledBack.RendererReadbackVerified =
+            Engine::Renderer::ResolvePublishedMaterialAsset(request.MaterialHandle,
+                publishedMaterial, publishedGeneration, readbackError)
+            && publishedGeneration == rolledBack.RendererGeneration
+            && Engine::GetMaterialSurface(publishedMaterial) == rolledBack.Before;
+    };
+    return transaction;
+}
+
+void EditorLayer::RunEditorMaterialControlSmokeBeforeDrain()
+{
+    if (!m_EditorMaterialControlSmokeRequested
+        || m_EditorMaterialControlSmokeCompleted
+        || m_EditorMaterialControlSmokeStage != 0)
+        return;
+
+    const Engine::SceneEntity* target = m_ActiveScene.TryGetEntity(m_PrototypeMeshEntity);
+    if (!target)
+        throw std::runtime_error("editor material-control smoke target disappeared");
+    const std::string& session = m_EditorMaterialControl.GetSessionId();
+    std::string error;
+    if (m_EditorMaterialControl.PublishRequestForSmoke(
+        ".hidden-request", "invalid", error))
+        throw std::runtime_error("editor material-control accepted a leading-dot request ID");
+    error.clear();
+    const std::string collisionRequest = EditorMaterialControlMailbox::FormatPatchRequest(
+        "smoke-01-response-collision", session, target->EntityHandle.Id, target->Name,
+        m_EditorMaterialControlSmokeMaterial, m_EditorMaterialControlSmokeBefore,
+        m_EditorMaterialControlSmokeAfter);
+    if (!m_EditorMaterialControl.PublishRawResponseForSmoke(
+            "smoke-01-response-collision", "occupied\n", error)
+        || !m_EditorMaterialControl.PublishRequestForSmoke(
+            "smoke-01-response-collision", collisionRequest, error))
+        throw std::runtime_error("could not stage response-collision smoke: " + error);
+
+    std::string unknownField = EditorMaterialControlMailbox::FormatPatchRequest(
+        "smoke-02-unknown-field", session, target->EntityHandle.Id, target->Name,
+        m_EditorMaterialControlSmokeMaterial, m_EditorMaterialControlSmokeBefore,
+        m_EditorMaterialControlSmokeAfter);
+    unknownField += "UnexpectedField 1\n";
+    if (!m_EditorMaterialControl.PublishRequestForSmoke(
+            "smoke-02-unknown-field", unknownField, error))
+        throw std::runtime_error("could not stage unknown-field smoke: " + error);
+
+    const std::string wrongSession = EditorMaterialControlMailbox::FormatInspectRequest(
+        "smoke-03-wrong-session", "not-this-session", target->EntityHandle.Id,
+        target->Name, m_EditorMaterialControlSmokeMaterial);
+    if (!m_EditorMaterialControl.PublishRequestForSmoke(
+            "smoke-03-wrong-session", wrongSession, error))
+        throw std::runtime_error("could not stage wrong-session smoke: " + error);
+
+    m_EditorMaterialControlForceCommitFailureOnce = true;
+    const std::string rollback = EditorMaterialControlMailbox::FormatPatchRequest(
+        "smoke-04-rollback", session, target->EntityHandle.Id, target->Name,
+        m_EditorMaterialControlSmokeMaterial, m_EditorMaterialControlSmokeBefore,
+        m_EditorMaterialControlSmokeAfter);
+    if (!m_EditorMaterialControl.PublishRequestForSmoke(
+            "smoke-04-rollback", rollback, error))
+        throw std::runtime_error("could not stage rollback smoke: " + error);
+    m_EditorMaterialControlSmokeStage = 1;
+}
+
+void EditorLayer::RunEditorMaterialControlSmokeAfterDrain()
+{
+    if (!m_EditorMaterialControlSmokeRequested
+        || m_EditorMaterialControlSmokeCompleted)
+        return;
+    const Engine::SceneEntity* target = m_ActiveScene.TryGetEntity(m_PrototypeMeshEntity);
+    const Engine::MaterialAsset* material =
+        m_MaterialLibrary.Get(m_EditorMaterialControlSmokeMaterial);
+    if (!target || !material)
+        throw std::runtime_error("editor material-control smoke state disappeared");
+
+    if (m_EditorMaterialControlSmokeStage == 1)
+    {
+        const auto rejected = [this](std::string_view id)
+        {
+            const EditorMaterialControlReceipt* receipt =
+                m_EditorMaterialControl.FindTerminalReceipt(id);
+            return receipt && !receipt->Succeeded;
+        };
+        const bool collisionRejected =
+            m_EditorMaterialControl.GetResponseCollisionCount() == 1
+            && !m_EditorMaterialControl.FindTerminalReceipt("smoke-01-response-collision");
+        const EditorMaterialControlReceipt* rolledBack =
+            m_EditorMaterialControl.FindTerminalReceipt("smoke-04-rollback");
+        const bool invalidRejected = rejected("smoke-02-unknown-field")
+            && rejected("smoke-03-wrong-session")
+            && rolledBack && !rolledBack->Succeeded
+            && rolledBack->Reason == "injected_renderer_readback_failure_rolled_back"
+            && rolledBack->Effect == "RolledBack"
+            && rolledBack->Recovery == "None"
+            && rolledBack->Before == m_EditorMaterialControlSmokeBefore
+            && rolledBack->After == m_EditorMaterialControlSmokeBefore
+            && rolledBack->RendererReadbackVerified;
+        const bool unchanged = Engine::GetMaterialSurface(*material)
+                == m_EditorMaterialControlSmokeBefore
+            && Engine::Renderer::GetPublishedArtifactResolverGeneration()
+                == m_EditorMaterialControlSmokeInitialRendererGeneration + 2
+            && m_UndoHistory.size() == m_EditorMaterialControlSmokeInitialUndoDepth
+            && m_RedoHistory.size() == m_EditorMaterialControlSmokeInitialRedoDepth
+            && m_SelectedEntity == m_ActiveScene.GetMainCameraEntity()
+            && m_FusionNavigationPivotValid
+            && m_FusionNavigationPivot.X == 0.0
+            && m_FusionNavigationPivot.Y == 0.0
+            && m_FusionNavigationPivot.Z == 0.0
+            && m_ActiveScene.IsEntityValid(m_EditorMaterialControlSharedPeer);
+        if (!collisionRejected || !invalidRejected || !unchanged)
+            throw std::runtime_error(
+                "editor material-control invalid transactionality smoke failed");
+        m_EditorMaterialControlSmokeInitialRendererGeneration =
+            Engine::Renderer::GetPublishedArtifactResolverGeneration();
+
+        const std::string& session = m_EditorMaterialControl.GetSessionId();
+        std::string error;
+        const std::string inspect = EditorMaterialControlMailbox::FormatInspectRequest(
+            "smoke-05-inspect", session, target->EntityHandle.Id, target->Name,
+            m_EditorMaterialControlSmokeMaterial);
+        m_EditorMaterialControlForceLateResponseCollisionOnce = true;
+        const std::string lateCollision = EditorMaterialControlMailbox::FormatPatchRequest(
+            "smoke-06-late-collision", session, target->EntityHandle.Id, target->Name,
+            m_EditorMaterialControlSmokeMaterial,
+            m_EditorMaterialControlSmokeBefore,
+            m_EditorMaterialControlSmokeAfter);
+        m_EditorMaterialControlSmokePatchRequest =
+            EditorMaterialControlMailbox::FormatPatchRequest(
+                "smoke-07-patch", session, target->EntityHandle.Id, target->Name,
+                m_EditorMaterialControlSmokeMaterial,
+                m_EditorMaterialControlSmokeBefore,
+                m_EditorMaterialControlSmokeAfter);
+        std::string oversized(EditorMaterialControlMailbox::MaximumRequestBytes + 1, 'x');
+        if (!m_EditorMaterialControl.PublishRequestForSmoke(
+                "smoke-05-inspect", inspect, error)
+            || !m_EditorMaterialControl.PublishRequestForSmoke(
+                "smoke-06-late-collision", lateCollision, error)
+            || !m_EditorMaterialControl.PublishRequestForSmoke(
+                "smoke-07-patch", m_EditorMaterialControlSmokePatchRequest, error)
+            || !m_EditorMaterialControl.PublishRequestForSmoke(
+                "smoke-08-oversized", oversized, error))
+            throw std::runtime_error("could not stage valid control smoke: " + error);
+        m_EditorMaterialControlSmokeStage = 2;
+        return;
+    }
+
+    if (m_EditorMaterialControlSmokeStage == 2)
+    {
+        const EditorMaterialControlReceipt* inspect =
+            m_EditorMaterialControl.FindTerminalReceipt("smoke-05-inspect");
+        const EditorMaterialControlReceipt* patch =
+            m_EditorMaterialControl.FindTerminalReceipt("smoke-07-patch");
+        const EditorMaterialControlReceipt* oversized =
+            m_EditorMaterialControl.FindTerminalReceipt("smoke-08-oversized");
+        const bool lateCollisionRolledBack =
+            !m_EditorMaterialControl.FindTerminalReceipt("smoke-06-late-collision")
+            && std::filesystem::is_regular_file(m_EditorMaterialControl.GetRoot()
+                / "responses" / "smoke-06-late-collision.collision.response")
+            && m_EditorMaterialControl.GetResponseCollisionCount() == 2;
+        Engine::Math::DVec3 targetPosition;
+        const bool pivotExpected = m_ActiveScene.TryGetEntityApproximateWorldPosition(
+            m_PrototypeMeshEntity, targetPosition);
+        const bool affectedExactly = patch && patch->AffectedEntityCount == 2
+            && patch->AffectedEntityIds.size() == 2
+            && !patch->AffectedEntityIdsTruncated
+            && std::find(patch->AffectedEntityIds.begin(), patch->AffectedEntityIds.end(),
+                m_PrototypeMeshEntity.Id) != patch->AffectedEntityIds.end()
+            && std::find(patch->AffectedEntityIds.begin(), patch->AffectedEntityIds.end(),
+                m_EditorMaterialControlSharedPeer.Id) != patch->AffectedEntityIds.end();
+        const bool committed = inspect && inspect->Succeeded
+            && inspect->Effect == "ReadOnly"
+            && inspect->Before == m_EditorMaterialControlSmokeBefore
+            && inspect->After == m_EditorMaterialControlSmokeBefore
+            && inspect->RendererReadbackVerified
+            && patch && patch->Succeeded
+            && patch->Before == m_EditorMaterialControlSmokeBefore
+            && patch->After == m_EditorMaterialControlSmokeAfter
+            && patch->Recovery == "UndoRedo"
+            && patch->RendererReadbackVerified
+            && patch->RendererGeneration
+                == m_EditorMaterialControlSmokeInitialRendererGeneration + 3
+            && patch->UndoDepthBefore == m_EditorMaterialControlSmokeInitialUndoDepth
+            && patch->UndoDepthAfter == m_EditorMaterialControlSmokeInitialUndoDepth + 1
+            && patch->RedoDepthBefore == m_EditorMaterialControlSmokeInitialRedoDepth
+            && patch->RedoDepthAfter == 0
+            && patch->SelectionCommitted && patch->PivotRetargeted
+            && affectedExactly
+            && Engine::GetMaterialSurface(*material)
+                == m_EditorMaterialControlSmokeAfter
+            && m_SelectedEntity == m_PrototypeMeshEntity
+            && pivotExpected && m_FusionNavigationPivotValid
+            && m_FusionNavigationPivot.X == targetPosition.X
+            && m_FusionNavigationPivot.Y == targetPosition.Y
+            && m_FusionNavigationPivot.Z == targetPosition.Z
+            && oversized && !oversized->Succeeded
+            && oversized->Reason == "oversized_request_rejected"
+            && lateCollisionRolledBack;
+        const std::string* patchText =
+            m_EditorMaterialControl.FindTerminalText("smoke-07-patch");
+        if (!committed || !patchText)
+            throw std::runtime_error("editor material-control valid commit smoke failed");
+        m_EditorMaterialControlSmokePatchReceipt = *patchText;
+
+        std::string error;
+        const std::string secondOversized(
+            EditorMaterialControlMailbox::MaximumRequestBytes + 2, 'y');
+        if (!m_EditorMaterialControl.PublishRequestForSmoke(
+                "smoke-07-patch", m_EditorMaterialControlSmokePatchRequest, error)
+            || !m_EditorMaterialControl.PublishRequestForSmoke(
+                "smoke-08-oversized", secondOversized, error))
+            throw std::runtime_error("could not stage idempotent retry smoke: " + error);
+        m_EditorMaterialControlSmokeStage = 3;
+        return;
+    }
+
+    if (m_EditorMaterialControlSmokeStage == 3)
+    {
+        const std::string* retryText =
+            m_EditorMaterialControl.FindTerminalText("smoke-07-patch");
+        const bool idempotent = retryText
+            && *retryText == m_EditorMaterialControlSmokePatchReceipt
+            && Engine::GetMaterialSurface(*material)
+                == m_EditorMaterialControlSmokeAfter
+            && Engine::Renderer::GetPublishedArtifactResolverGeneration()
+                == m_EditorMaterialControlSmokeInitialRendererGeneration + 3
+            && m_UndoHistory.size()
+                == m_EditorMaterialControlSmokeInitialUndoDepth + 1
+            && m_EditorMaterialControl.GetResponseCollisionCount() == 3
+            && std::filesystem::is_regular_file(m_EditorMaterialControl.GetRoot()
+                / "responses" / "smoke-08-oversized.collision.response")
+            && !std::filesystem::exists(m_EditorMaterialControl.GetRoot()
+                / "requests" / "smoke-08-oversized.request");
+        if (!idempotent)
+            throw std::runtime_error("editor material-control idempotent retry smoke failed");
+        std::string changedDuplicate = m_EditorMaterialControlSmokePatchRequest;
+        changedDuplicate += "UnexpectedField 2\n";
+        const std::string thirdOversized(
+            EditorMaterialControlMailbox::MaximumRequestBytes + 3, 'z');
+        std::string error;
+        if (!m_EditorMaterialControl.PublishRequestForSmoke(
+                "smoke-07-patch", changedDuplicate, error)
+            || !m_EditorMaterialControl.PublishRequestForSmoke(
+                "smoke-08-oversized", thirdOversized, error))
+            throw std::runtime_error("could not stage changed duplicate smoke: " + error);
+        m_EditorMaterialControlSmokeStage = 4;
+        return;
+    }
+
+    if (m_EditorMaterialControlSmokeStage == 4)
+    {
+        const std::string* retryText =
+            m_EditorMaterialControl.FindTerminalText("smoke-07-patch");
+        const bool conflictsConsumed = retryText
+            && *retryText == m_EditorMaterialControlSmokePatchReceipt
+            && m_EditorMaterialControl.GetResponseCollisionCount() == 5
+            && Engine::GetMaterialSurface(*material)
+                == m_EditorMaterialControlSmokeAfter
+            && Engine::Renderer::GetPublishedArtifactResolverGeneration()
+                == m_EditorMaterialControlSmokeInitialRendererGeneration + 3
+            && m_UndoHistory.size()
+                == m_EditorMaterialControlSmokeInitialUndoDepth + 1
+            && !std::filesystem::exists(m_EditorMaterialControl.GetRoot()
+                / "requests" / "smoke-07-patch.request")
+            && !std::filesystem::exists(m_EditorMaterialControl.GetRoot()
+                / "requests" / "smoke-08-oversized.request");
+        if (!conflictsConsumed)
+            throw std::runtime_error(
+                "editor material-control stable conflict smoke failed");
+        std::string thirdConflict = m_EditorMaterialControlSmokePatchRequest;
+        thirdConflict += "UnexpectedField 3\n";
+        std::string error;
+        if (!m_EditorMaterialControl.PublishRequestForSmoke(
+            "smoke-07-patch", thirdConflict, error))
+            throw std::runtime_error("could not stage third conflict smoke: " + error);
+        m_EditorMaterialControlSmokeStage = 5;
+        return;
+    }
+
+    if (m_EditorMaterialControlSmokeStage == 5)
+    {
+        const std::string* retryText =
+            m_EditorMaterialControl.FindTerminalText("smoke-07-patch");
+        const bool thirdConflictConsumed = retryText
+            && *retryText == m_EditorMaterialControlSmokePatchReceipt
+            && m_EditorMaterialControl.GetResponseCollisionCount() == 6
+            && Engine::GetMaterialSurface(*material)
+                == m_EditorMaterialControlSmokeAfter
+            && Engine::Renderer::GetPublishedArtifactResolverGeneration()
+                == m_EditorMaterialControlSmokeInitialRendererGeneration + 3
+            && m_UndoHistory.size()
+                == m_EditorMaterialControlSmokeInitialUndoDepth + 1
+            && !std::filesystem::exists(m_EditorMaterialControl.GetRoot()
+                / "requests" / "smoke-07-patch.request");
+        if (!thirdConflictConsumed || !Undo())
+            throw std::runtime_error(
+                "editor material-control changed-duplicate/undo smoke failed");
+        const Engine::MaterialAsset* undone =
+            m_MaterialLibrary.Get(m_EditorMaterialControlSmokeMaterial);
+        if (!undone || Engine::GetMaterialSurface(*undone)
+                != m_EditorMaterialControlSmokeBefore
+            || !Redo())
+            throw std::runtime_error("editor material-control undo smoke failed");
+        const Engine::MaterialAsset* redone =
+            m_MaterialLibrary.Get(m_EditorMaterialControlSmokeMaterial);
+        if (!redone || Engine::GetMaterialSurface(*redone)
+                != m_EditorMaterialControlSmokeAfter
+            || m_SelectedEntity != m_PrototypeMeshEntity)
+            throw std::runtime_error("editor material-control redo smoke failed");
+        const bool projectGuardClosed = !m_EditorMaterialControl.EnsureProjectIdentity(
+                "output/projects/editor-control-different.spiralproject")
+            && !m_EditorMaterialControl.IsAcceptingRequests()
+            && std::filesystem::is_regular_file(
+                m_EditorMaterialControl.GetRoot() / "session.closed");
+        if (!projectGuardClosed)
+            throw std::runtime_error("editor material-control project guard smoke failed");
+
+        Engine::Log::Info(
+            "EditorMaterialControlMailboxV1 interface=private-filesystem "
+            "actions=inspect,select-patch-shared session=exact schema=1 "
+            "mainThread=before-scene-snapshot invalid=transactional-pass "
+            "rollback=readback-and-receipt-pass inspect=pass commit=pass "
+            "idempotency=exact-bytes conflicts=A-B-C-consumed "
+            "oversized=non-replayable-A-B-C shared=2 "
+            "history=exactly-one undo=pass redo=pass save=not-invoked "
+            "projectGuard=canonical-every-drain "
+            "publication=visible-rename-authoritative "
+            "input=mailbox-no-ui-synthesis pollCadenceMs=16 directoryPolls=",
+            m_EditorMaterialControl.GetDirectoryPollCount(),
+            " result=pass");
+        m_ConsoleLines.emplace_back("Editor material-control mailbox smoke passed");
+        m_EditorMaterialControlSmokeCompleted = true;
+        m_EditorMaterialControlSmokeStage = 6;
+    }
+}
+
+void EditorLayer::RunEditorMaterialControlLiveHelperSmokeAfterDrain()
+{
+    if (!m_EditorMaterialControlLiveHelperSmokeRequested
+        || m_EditorMaterialControlLiveHelperSmokeCompleted)
+        return;
+    const EditorMaterialControlReceipt* inspect =
+        m_EditorMaterialControl.FindTerminalReceipt("live-helper-inspect");
+    const EditorMaterialControlReceipt* patch =
+        m_EditorMaterialControl.FindTerminalReceipt("live-helper-set");
+    if (!inspect || !patch)
+        return;
+
+    const Engine::MaterialAsset* material =
+        m_MaterialLibrary.Get(m_EditorMaterialControlSmokeMaterial);
+    const bool affected = patch->AffectedEntityCount == 2
+        && patch->AffectedEntityIds.size() == 2
+        && !patch->AffectedEntityIdsTruncated
+        && std::find(patch->AffectedEntityIds.begin(), patch->AffectedEntityIds.end(),
+            m_PrototypeMeshEntity.Id) != patch->AffectedEntityIds.end()
+        && std::find(patch->AffectedEntityIds.begin(), patch->AffectedEntityIds.end(),
+            m_EditorMaterialControlSharedPeer.Id) != patch->AffectedEntityIds.end();
+    const bool valid = inspect->Succeeded
+        && inspect->Action == EditorMaterialControlAction::InspectMaterialSurface
+        && inspect->Effect == "ReadOnly" && inspect->Recovery == "None"
+        && inspect->EntityId == m_PrototypeMeshEntity.Id
+        && inspect->MaterialHandle == m_EditorMaterialControlSmokeMaterial
+        && inspect->Before == m_EditorMaterialControlSmokeBefore
+        && inspect->After == m_EditorMaterialControlSmokeBefore
+        && !inspect->SelectionCommitted && !inspect->PivotRetargeted
+        && inspect->RendererReadbackVerified
+        && patch->Succeeded
+        && patch->Action == EditorMaterialControlAction::SelectEntityPatchMaterialSurface
+        && patch->Effect == "SharedMaterialSurfacePatched"
+        && patch->Recovery == "UndoRedo"
+        && patch->EntityId == m_PrototypeMeshEntity.Id
+        && patch->MaterialHandle == m_EditorMaterialControlSmokeMaterial
+        && patch->Before == m_EditorMaterialControlSmokeBefore
+        && patch->After == m_EditorMaterialControlSmokeAfter
+        && patch->SelectionCommitted && patch->PivotRetargeted
+        && patch->RendererReadbackVerified && affected
+        && material && Engine::GetMaterialSurface(*material)
+            == m_EditorMaterialControlSmokeAfter
+        && m_UndoHistory.size() == m_EditorMaterialControlSmokeInitialUndoDepth + 1
+        && Engine::Renderer::GetPublishedArtifactResolverGeneration()
+            == m_EditorMaterialControlSmokeInitialRendererGeneration + 1
+        && m_EditorMaterialControl.GetDirectoryPollCount() >= 2
+        && m_EditorMaterialControl.GetCadenceSkipCount() > 0;
+    if (!valid)
+        throw std::runtime_error("live external editor material-control helper smoke failed");
+
+    Engine::Log::Info(
+        "EditorMaterialControlLiveHelperV1 producer=external-python requests=fresh "
+        "inspect=semantic-pass set=semantic-pass close=editor-condition "
+        "identity=session-pid-project affected=bounded-exact "
+        "pollCadenceMs=16 idleSkips=", m_EditorMaterialControl.GetCadenceSkipCount(),
+        " directoryPolls=", m_EditorMaterialControl.GetDirectoryPollCount(),
+        " result=pass");
+    m_EditorMaterialControlLiveHelperSmokeCompleted = true;
+    Engine::Application::Get().Close();
+}
+
+void EditorLayer::RunEditorMaterialControlCapacitySmokeBeforeDrain()
+{
+    if (!m_EditorMaterialControlCapacitySmokeRequested
+        || m_EditorMaterialControlCapacitySmokeCompleted
+        || m_EditorMaterialControlSmokeStage != 0)
+        return;
+    const Engine::SceneEntity* target = m_ActiveScene.TryGetEntity(m_PrototypeMeshEntity);
+    if (!target)
+        throw std::runtime_error("editor material-control capacity target disappeared");
+    for (std::size_t index = 0;
+        index <= EditorMaterialControlMailbox::MaximumTerminalRequests; ++index)
+    {
+        std::ostringstream requestId;
+        requestId << "capacity-" << std::setfill('0') << std::setw(4) << index;
+        const std::string request = EditorMaterialControlMailbox::FormatInspectRequest(
+            requestId.str(), m_EditorMaterialControl.GetSessionId(),
+            target->EntityHandle.Id, target->Name,
+            m_EditorMaterialControlSmokeMaterial);
+        std::string error;
+        if (!m_EditorMaterialControl.PublishRequestForSmoke(
+            requestId.str(), request, error))
+            throw std::runtime_error(
+                "could not stage editor material-control capacity smoke: " + error);
+    }
+    m_EditorMaterialControlSmokeStage = 1;
+}
+
+void EditorLayer::RunEditorMaterialControlCapacitySmokeAfterDrain()
+{
+    if (!m_EditorMaterialControlCapacitySmokeRequested
+        || m_EditorMaterialControlCapacitySmokeCompleted
+        || m_EditorMaterialControl.IsAcceptingRequests())
+        return;
+    const std::filesystem::path pending = m_EditorMaterialControl.GetRoot()
+        / "requests" / "capacity-0256.request";
+    const std::filesystem::path unexpectedResponse = m_EditorMaterialControl.GetRoot()
+        / "responses" / "capacity-0256.response";
+    const EditorMaterialControlReceipt* bounded =
+        m_EditorMaterialControl.FindTerminalReceipt("capacity-0000");
+    const bool valid = m_EditorMaterialControl.GetTerminalCount()
+            == EditorMaterialControlMailbox::MaximumTerminalRequests
+        && std::filesystem::is_regular_file(pending)
+        && !std::filesystem::exists(unexpectedResponse)
+        && std::filesystem::is_regular_file(
+            m_EditorMaterialControl.GetRoot() / "session.closed")
+        && Engine::Renderer::GetPublishedArtifactResolverGeneration()
+            == m_EditorMaterialControlSmokeInitialRendererGeneration
+        && m_UndoHistory.size() == m_EditorMaterialControlSmokeInitialUndoDepth
+        && bounded && bounded->Succeeded
+        && bounded->AffectedEntityCount == 42
+        && bounded->AffectedEntityIds.size()
+            == EditorMaterialControlMailbox::MaximumAffectedEntityIds
+        && bounded->AffectedEntityIdsTruncated
+        && std::is_sorted(bounded->AffectedEntityIds.begin(),
+            bounded->AffectedEntityIds.end())
+        && std::find(bounded->AffectedEntityIds.begin(),
+            bounded->AffectedEntityIds.end(), m_PrototypeMeshEntity.Id)
+            != bounded->AffectedEntityIds.end();
+    if (!valid)
+        throw std::runtime_error("editor material-control capacity retention smoke failed");
+    Engine::Log::Info(
+        "EditorMaterialControlCapacityV1 retained=256 accepting=no "
+        "pendingUnclaimed=1 response=absent session=closed "
+        "affectedTotal=42 affectedSample=32 truncated=yes result=pass");
+    m_EditorMaterialControlCapacitySmokeCompleted = true;
+    Engine::Application::Get().Close();
+}
+
+void EditorLayer::RunEditorMaterialControlDurabilitySmokeBeforeDrain()
+{
+    if (!m_EditorMaterialControlDurabilitySmokeRequested
+        || m_EditorMaterialControlDurabilitySmokeCompleted
+        || m_EditorMaterialControlSmokeStage != 0)
+        return;
+    const Engine::SceneEntity* target = m_ActiveScene.TryGetEntity(m_PrototypeMeshEntity);
+    if (!target)
+        throw std::runtime_error("editor material-control durability target disappeared");
+    const std::string request = EditorMaterialControlMailbox::FormatPatchRequest(
+        "durability-visible-success", m_EditorMaterialControl.GetSessionId(),
+        target->EntityHandle.Id, target->Name, m_EditorMaterialControlSmokeMaterial,
+        m_EditorMaterialControlSmokeBefore, m_EditorMaterialControlSmokeAfter);
+    std::string error;
+    m_EditorMaterialControlForceParentSyncFailureOnce = true;
+    if (!m_EditorMaterialControl.PublishRequestForSmoke(
+        "durability-visible-success", request, error))
+        throw std::runtime_error(
+            "could not stage editor material-control durability smoke: " + error);
+    m_EditorMaterialControlSmokeStage = 1;
+}
+
+void EditorLayer::RunEditorMaterialControlDurabilitySmokeAfterDrain()
+{
+    if (!m_EditorMaterialControlDurabilitySmokeRequested
+        || m_EditorMaterialControlDurabilitySmokeCompleted
+        || m_EditorMaterialControlSmokeStage != 1)
+        return;
+    const EditorMaterialControlReceipt* receipt =
+        m_EditorMaterialControl.FindTerminalReceipt("durability-visible-success");
+    if (!receipt)
+        return;
+    const Engine::MaterialAsset* material =
+        m_MaterialLibrary.Get(m_EditorMaterialControlSmokeMaterial);
+    const bool valid = receipt->Succeeded
+        && receipt->Effect == "SharedMaterialSurfacePatched"
+        && receipt->Before == m_EditorMaterialControlSmokeBefore
+        && receipt->After == m_EditorMaterialControlSmokeAfter
+        && receipt->RendererReadbackVerified
+        && material && Engine::GetMaterialSurface(*material)
+            == m_EditorMaterialControlSmokeAfter
+        && Engine::Renderer::GetPublishedArtifactResolverGeneration()
+            == m_EditorMaterialControlSmokeInitialRendererGeneration + 1
+        && m_UndoHistory.size() == m_EditorMaterialControlSmokeInitialUndoDepth + 1
+        && m_EditorMaterialControl.GetTerminalCount() == 1
+        && m_EditorMaterialControl.GetDurabilityDegradationCount() == 1
+        && !m_EditorMaterialControl.IsAcceptingRequests()
+        && std::filesystem::is_regular_file(m_EditorMaterialControl.GetRoot()
+            / "responses" / "durability-visible-success.response")
+        && std::filesystem::is_regular_file(m_EditorMaterialControl.GetRoot()
+            / "session.closed")
+        && !std::filesystem::exists(m_EditorMaterialControl.GetRoot()
+            / "requests" / "durability-visible-success.request");
+    if (!valid)
+        throw std::runtime_error(
+            "editor material-control visible-publication durability smoke failed");
+    Engine::Log::Info(
+        "EditorMaterialControlDurabilityV1 visibility=rename-authoritative "
+        "parentSync=injected-failure committed=preserved rollback=no "
+        "acceptance=closed crashDurability=degraded result=pass");
+    m_EditorMaterialControlDurabilitySmokeCompleted = true;
+    m_EditorMaterialControlSmokeStage = 2;
+    Engine::Application::Get().Close();
 }
 
 void EditorLayer::OnUiRender()
@@ -4141,6 +5029,7 @@ bool EditorLayer::CreateNewProject(std::string name, const std::filesystem::path
 
     Engine::Log::Info("Project created: ", m_ProjectPath);
     m_ConsoleLines.emplace_back("Project created: " + m_ProjectPath);
+    m_EditorMaterialControl.EnsureProjectIdentity(m_ProjectPath);
     return true;
 }
 
@@ -4297,6 +5186,7 @@ bool EditorLayer::LoadProject()
     Engine::Log::Info("Frame pacing policy loaded: ",
         Engine::DescribeFramePacingPolicy(m_GameFramePacingSettings.Resolve(m_ProjectFramePacingPolicy)));
     m_ConsoleLines.emplace_back("Project loaded: " + m_ProjectPath);
+    m_EditorMaterialControl.EnsureProjectIdentity(m_ProjectPath);
     return true;
 }
 

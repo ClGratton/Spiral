@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <fstream>
 #include <iomanip>
 #include <iterator>
@@ -144,6 +145,81 @@ namespace Engine
             return MaterialAlphaMode::Blend;
 
         return MaterialAlphaMode::Opaque;
+    }
+
+    bool IsValidMaterialSurface(const MaterialSurface& surface)
+    {
+        const float values[] {
+            surface.BaseColor.X, surface.BaseColor.Y, surface.BaseColor.Z,
+            surface.Metallic, surface.Roughness
+        };
+        return std::all_of(std::begin(values), std::end(values), [](float value)
+        {
+            return std::isfinite(value) && value >= 0.0f && value <= 1.0f;
+        });
+    }
+
+    MaterialSurface GetMaterialSurface(const MaterialAsset& material)
+    {
+        return { material.BaseColor, material.Metallic, material.Roughness };
+    }
+
+    bool TrySetMaterialSurface(MaterialAsset& material, const MaterialSurface& surface)
+    {
+        if (!IsValidMaterialSurface(surface))
+            return false;
+        material.BaseColor = surface.BaseColor;
+        material.Metallic = surface.Metallic;
+        material.Roughness = surface.Roughness;
+        return true;
+    }
+
+    bool IsValidMaterialAssetValues(const MaterialAsset& material)
+    {
+        const auto finiteRange = [](float value, float minimum, float maximum)
+        {
+            return std::isfinite(value) && value >= minimum && value <= maximum;
+        };
+        const auto finiteNonNegative = [](float value)
+        {
+            return std::isfinite(value) && value >= 0.0f;
+        };
+        const auto samplerValid = [](MaterialTextureSampler sampler)
+        {
+            return sampler == MaterialTextureSampler::LinearWrap
+                || sampler == MaterialTextureSampler::LinearClamp
+                || sampler == MaterialTextureSampler::PointWrap
+                || sampler == MaterialTextureSampler::PointClamp;
+        };
+
+        const bool enumsValid = (material.ShadingModel == MaterialShadingModel::Standard
+                || material.ShadingModel == MaterialShadingModel::Unlit)
+            && (material.AlphaMode == MaterialAlphaMode::Opaque
+                || material.AlphaMode == MaterialAlphaMode::Mask
+                || material.AlphaMode == MaterialAlphaMode::Blend)
+            && samplerValid(material.Samplers.BaseColor)
+            && samplerValid(material.Samplers.Normal)
+            && samplerValid(material.Samplers.Orm)
+            && samplerValid(material.Samplers.Emissive)
+            && samplerValid(material.Samplers.Opacity)
+            && samplerValid(material.Samplers.CallistoControl);
+        const bool emissiveValid = finiteNonNegative(material.EmissiveColor.X)
+            && finiteNonNegative(material.EmissiveColor.Y)
+            && finiteNonNegative(material.EmissiveColor.Z)
+            && finiteNonNegative(material.EmissiveStrength)
+            && std::isfinite(material.EmissiveColor.X * material.EmissiveStrength)
+            && std::isfinite(material.EmissiveColor.Y * material.EmissiveStrength)
+            && std::isfinite(material.EmissiveColor.Z * material.EmissiveStrength);
+        return enumsValid && IsValidMaterialSurface(GetMaterialSurface(material))
+            && finiteRange(material.NormalScale, 0.0f, 4.0f)
+            && finiteRange(material.OcclusionStrength, 0.0f, 1.0f)
+            && emissiveValid
+            && finiteRange(material.AlphaCutoff, 0.0f, 1.0f)
+            && finiteRange(material.DiffuseFresnelIntensity, 0.0f, 256.0f)
+            && finiteRange(material.RetroreflectionIntensity, 0.0f, 256.0f)
+            && finiteRange(material.DiffuseFresnelFalloff, 0.0f, 1.0f)
+            && finiteRange(material.RetroreflectionFalloff, 0.0f, 1.0f)
+            && finiteRange(material.SmoothTerminator, -1.0f, 1.0f);
     }
 
     AssetHandle& MaterialAsset::GetTexture(MaterialTextureSlot slot)

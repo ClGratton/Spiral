@@ -52,6 +52,28 @@ namespace Engine
     MaterialShadingModel ParseMaterialShadingModel(std::string_view value);
     MaterialAlphaMode ParseMaterialAlphaMode(std::string_view value);
 
+    struct MaterialAsset;
+
+    struct MaterialSurface
+    {
+        Math::Vec3 BaseColor = { 1.0f, 1.0f, 1.0f };
+        float Metallic = 0.0f;
+        float Roughness = 0.5f;
+
+        bool operator==(const MaterialSurface& other) const
+        {
+            return BaseColor.X == other.BaseColor.X
+                && BaseColor.Y == other.BaseColor.Y
+                && BaseColor.Z == other.BaseColor.Z
+                && Metallic == other.Metallic
+                && Roughness == other.Roughness;
+        }
+    };
+
+    bool IsValidMaterialSurface(const MaterialSurface& surface);
+    MaterialSurface GetMaterialSurface(const MaterialAsset& material);
+    bool TrySetMaterialSurface(MaterialAsset& material, const MaterialSurface& surface);
+
     struct MaterialTextureSet
     {
         AssetHandle BaseColor = kInvalidAssetHandle;
@@ -106,6 +128,10 @@ namespace Engine
         bool SaveToFile(const std::filesystem::path& path) const;
         static bool LoadFromFile(const std::filesystem::path& path, MaterialAsset& outMaterial);
     };
+
+    // Shared authoring/publication gate. This rejects invalid enum values and
+    // every non-finite or out-of-domain numeric field without changing the asset.
+    bool IsValidMaterialAssetValues(const MaterialAsset& material);
 
     class MaterialLibrary
     {

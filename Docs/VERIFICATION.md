@@ -738,3 +738,46 @@ SceneBasicPbrMaterialIdV1 backend=Vulkan productionPSMain=exercised brdf=GGX-Smi
 ```
 
 This is Linux/Vulkan execution only. Shared D3D12 reflection and 512-byte aligned constant allocation compile from the same source, but D3D12 PBR execution remains unqualified. The marker does not claim tangent-space normal mapping, Callisto/Proxima control consumption, two-sided material policy, shadows, photometric attenuation, or Scene-light evaluation.
+
+## Typed Editor Material Control
+
+Run the focused material validator and the complete mailbox/helper smoke after one coherent Debug build:
+
+```bash
+bin/Debug-linux-x86_64-gmake/EngineTests/EngineTests --test "Material surface updates validate transactionally"
+bash Scripts/TestEditorMaterialControl.sh
+```
+
+The smoke covers strict schema parsing, finite inclusive surface bounds, exact compare-and-swap preconditions, exact-byte replay, stable request-ID conflicts, owner-only filesystem state, no-follow/no-replace publication, bounded scans/work/terminal retention, total shared-material impact with a bounded ID sample, project-identity closure, non-replayable unreadable/oversized inputs, and full transaction rollback. It injects both pre-commit and post-rename durability failures: publication before mutation must fail without mutation, while a successful no-replace rename remains authoritative if the following parent-directory sync degrades and closes intake. A successful patch must atomically update selection, Fusion pivot, material state, renderer publication/readback, and exactly one undo/redo history entry without saving.
+
+For a real Editor session, pass a fresh absolute path whose final component does not yet exist:
+
+```bash
+bin/Debug-linux-x86_64-gmake/Editor/Editor \
+  --renderer-vulkan \
+  --editor-control-dir=/absolute/private-parent/new-mailbox
+```
+
+After `session.info` reports `State Ready`, use the checked-in helper. Every invocation requires the canonical project path and a caller-chosen stable request ID:
+
+```bash
+python3 Scripts/EditorMaterialControl.py \
+  --control-dir /absolute/private-parent/new-mailbox \
+  --expected-project /absolute/project.spiralproject \
+  --request-id inspect-001 \
+  inspect --entity-id 2 --expected-name "Prototype Mesh" \
+  --material-handle 16858962097201374774
+
+python3 Scripts/EditorMaterialControl.py \
+  --control-dir /absolute/private-parent/new-mailbox \
+  --expected-project /absolute/project.spiralproject \
+  --request-id patch-001 \
+  set --entity-id 2 --expected-name "Prototype Mesh" \
+  --material-handle 16858962097201374774 \
+  --expected-base 0.72 0.78 0.92 \
+  --expected-metallic 0 --expected-roughness 0.45 \
+  --new-base 0.10 1.0 0.10 \
+  --new-metallic 0 --new-roughness 0.10
+```
+
+Headed acceptance requires the actual current Editor and claimed native backend, verified monitor/workspace placement, a successful inspect, a visibly distinct typed patch, receipt-confirmed real selection/pivot/readback/history effects, an exact typed restoration, visual inspection of all captures, and clean window-manager shutdown. Mouse, virtual-pointer, and other synthetic UI input are forbidden for this gate. The 2026-09-04 Linux acceptance on DP-3/workspace 2 used native NVRHI Vulkan on the RTX 3080 Ti, visibly changed the default cube from blue/orange to green, restored the original surface exactly, and closed normally after 20,857 frames. This qualifies only the narrow Editor control and Linux/Vulkan headed result; it does not qualify a generic automation framework, persistent save, external service, D3D12, or MoltenVK.

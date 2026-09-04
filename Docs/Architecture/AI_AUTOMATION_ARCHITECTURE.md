@@ -1,6 +1,6 @@
 # AI And Automation Architecture
 
-**Status:** Accepted planning contract; product runtime not implemented
+**Status:** Accepted planning contract; narrow Editor control implemented; product AI runtime not implemented
 **Date:** 2026-07-18
 
 ## Decision Summary
@@ -20,6 +20,8 @@ human-owned intent and constraints
 AI may help form the plan and select tools, but it is not a second mutation authority. The same guided workflows remain usable without AI. Model/provider integration is optional and replaceable; engine commands, transactions, validation, history, and provenance remain deterministic engine/editor capabilities.
 
 This is a targeted hardening of the existing direction, not a wholesale redesign. No substantive product AI framework exists today. The unused `WorkflowDefinition`/`WorkflowStep` header was removed because it exposed mutable completion state without a consumer, executor, transaction, permission, validation, recovery, or test contract.
+
+The first deliberately reordered concrete consumer is narrower than the Phase 13 workflow framework: an implemented opt-in Editor material-control mailbox used by repository agents to inspect and transactionally patch the currently authored material without mouse/UI injection. It proves only two fixed versioned material actions, main-thread execution, exact preconditions, validation, one history transaction, immutable renderer republication, and a terminal receipt. It remains session-local and does not save assets, accept arbitrary commands or request-chosen paths, introduce a model/provider dependency, or justify generalization before another real consumer proves the shared boundary. This user-directed prerequisite makes actual headed renderer verification use the same deterministic command authority intended for later in-product agents; it is not evidence that the Phase 13 project-template workflow or product AI exists.
 
 ## Scope: Two Different Agent Systems
 
@@ -219,6 +221,6 @@ Provider/model quality is evaluated separately with versioned scenario sets, rep
 
 ## Current State And Next Implementation Rule
 
-There is no in-product AI runtime, provider adapter, generic workflow executor, action schema, or Automation module. Phase 2 project creation and undo/redo are ordinary editor features, not proof of Phase 13 automation.
+There is no in-product AI runtime, provider adapter, generic workflow executor, cross-domain action schema, or Automation module. The implemented Editor material-control mailbox is a session-local, explicitly enabled verification tool with two fixed actions; it deliberately remains Editor-owned and does not establish generic Phase 13 infrastructure. Phase 2 project creation and undo/redo are ordinary editor features, not proof of Phase 13 automation.
 
 Phase 13 begins with one real non-AI guided workflow using existing public commands, transaction/history behavior, validation, and a receipt. Reusable automation types are extracted only when that vertical slice exposes a stable boundary or a second concrete consumer. The AI adapter comes after deterministic tools and permission/receipt semantics exist.

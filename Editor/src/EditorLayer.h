@@ -1,5 +1,7 @@
 #pragma once
 
+#include "EditorMaterialControl.h"
+
 #include <Engine.h>
 
 #include <array>
@@ -75,6 +77,16 @@ private:
     void RunEditorSettingsSmoke();
     void RunViewportNavigationSmoke();
     void RunPresentationPolicySmoke();
+    void InitializeEditorMaterialControl();
+    EditorMaterialControlTransaction ExecuteEditorMaterialControlRequest(
+        const EditorMaterialControlRequest& request, Engine::u64 frame);
+    void RunEditorMaterialControlSmokeBeforeDrain();
+    void RunEditorMaterialControlSmokeAfterDrain();
+    void RunEditorMaterialControlLiveHelperSmokeAfterDrain();
+    void RunEditorMaterialControlCapacitySmokeBeforeDrain();
+    void RunEditorMaterialControlCapacitySmokeAfterDrain();
+    void RunEditorMaterialControlDurabilitySmokeBeforeDrain();
+    void RunEditorMaterialControlDurabilitySmokeAfterDrain();
     void ConfigureSceneOriginRasterSmoke();
     void AdvanceSceneOriginRasterSmoke();
     void CaptureSceneOriginRasterSmoke();
@@ -150,6 +162,18 @@ private:
     bool m_EventTraceEnabled = false;
     bool m_PresentationPolicySmokeRequested = false;
     bool m_PresentationPolicySmokeCompleted = false;
+    bool m_EditorMaterialControlSmokeRequested = false;
+    bool m_EditorMaterialControlSmokeCompleted = false;
+    bool m_EditorMaterialControlLiveHelperSmokeRequested = false;
+    bool m_EditorMaterialControlLiveHelperSmokeCompleted = false;
+    bool m_EditorMaterialControlCapacitySmokeRequested = false;
+    bool m_EditorMaterialControlCapacitySmokeCompleted = false;
+    bool m_EditorMaterialControlDurabilitySmokeRequested = false;
+    bool m_EditorMaterialControlDurabilitySmokeCompleted = false;
+    bool m_EditorMaterialControlForceCommitFailureOnce = false;
+    bool m_EditorMaterialControlForceLateResponseCollisionOnce = false;
+    bool m_EditorMaterialControlForceParentSyncFailureOnce = false;
+    unsigned int m_EditorMaterialControlSmokeStage = 0;
     Engine::u64 m_PresentationPolicySmokeTearingGeneration = 0;
     bool m_ShowNewProjectDialog = false;
     std::string m_CaptureViewportPath = "output/captures/editor-viewport.bmp";
@@ -181,6 +205,7 @@ private:
     Engine::Entity m_DirectionalLightEntity;
     Engine::Entity m_PlayerStartEntity;
     Engine::Entity m_SceneOriginRasterMeshEntity;
+    Engine::Entity m_EditorMaterialControlSharedPeer;
     Engine::Entity m_SelectedEntity;
     Engine::EditorCamera m_EditorCamera;
     Engine::CameraViewOriginTracker m_ViewportOriginTracker;
@@ -231,6 +256,15 @@ private:
     std::array<char, 128> m_NewProjectName { 'U', 'n', 't', 'i', 't', 'l', 'e', 'd' };
     std::array<char, 512> m_NewProjectParentPath { 'o', 'u', 't', 'p', 'u', 't', '/', 'p', 'r', 'o', 'j', 'e', 'c', 't', 's' };
     std::vector<std::string> m_ConsoleLines;
+    EditorMaterialControlMailbox m_EditorMaterialControl;
+    Engine::AssetHandle m_EditorMaterialControlSmokeMaterial = Engine::kInvalidAssetHandle;
+    Engine::MaterialSurface m_EditorMaterialControlSmokeBefore;
+    Engine::MaterialSurface m_EditorMaterialControlSmokeAfter;
+    Engine::u64 m_EditorMaterialControlSmokeInitialRendererGeneration = 0;
+    std::size_t m_EditorMaterialControlSmokeInitialUndoDepth = 0;
+    std::size_t m_EditorMaterialControlSmokeInitialRedoDepth = 0;
+    std::string m_EditorMaterialControlSmokePatchRequest;
+    std::string m_EditorMaterialControlSmokePatchReceipt;
 
     struct HistoryState
     {

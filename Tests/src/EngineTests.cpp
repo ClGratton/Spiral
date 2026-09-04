@@ -3035,6 +3035,71 @@ namespace
                 "missing duplicate unknown-slot and unknown-mode sampler declarations reject transactionally");
     }
 
+    bool TestMaterialSurfaceValidationIsTransactional()
+    {
+        using namespace Engine;
+        MaterialAsset material;
+        material.Name = "Surface Validation Sentinel";
+        material.EmissiveColor = { 2.0f, 3.0f, 4.0f };
+        material.EmissiveStrength = 5.0f;
+        material.Textures.BaseColor = 71;
+        material.Samplers.BaseColor = MaterialTextureSampler::PointClamp;
+        const MaterialSurface original = GetMaterialSurface(material);
+        const MaterialSurface accepted { { 0.0f, 0.5f, 1.0f }, 1.0f, 0.0f };
+        const bool acceptedExactly = TrySetMaterialSurface(material, accepted)
+            && GetMaterialSurface(material) == accepted
+            && material.Name == "Surface Validation Sentinel"
+            && material.EmissiveColor.X == 2.0f
+            && material.EmissiveStrength == 5.0f
+            && material.Textures.BaseColor == 71
+            && material.Samplers.BaseColor == MaterialTextureSampler::PointClamp
+            && IsValidMaterialAssetValues(material);
+
+        const auto rejectedWithoutMutation = [&material](MaterialSurface candidate)
+        {
+            const MaterialSurface before = GetMaterialSurface(material);
+            return !TrySetMaterialSurface(material, candidate)
+                && GetMaterialSurface(material) == before;
+        };
+        MaterialSurface invalid = accepted;
+        invalid.BaseColor.X = std::numeric_limits<float>::quiet_NaN();
+        const bool nanRejected = rejectedWithoutMutation(invalid);
+        invalid = accepted;
+        invalid.Metallic = std::numeric_limits<float>::infinity();
+        const bool infinityRejected = rejectedWithoutMutation(invalid);
+        invalid = accepted;
+        invalid.BaseColor.Z = 1.0001f;
+        const bool colorRangeRejected = rejectedWithoutMutation(invalid);
+        invalid = accepted;
+        invalid.Roughness = -0.0001f;
+        const bool factorRangeRejected = rejectedWithoutMutation(invalid);
+
+        MaterialAsset invalidWhole = material;
+        invalidWhole.EmissiveStrength = std::numeric_limits<float>::infinity();
+        const bool nonfiniteWholeRejected = !IsValidMaterialAssetValues(invalidWhole);
+        invalidWhole = material;
+        invalidWhole.NormalScale = 4.001f;
+        const bool rangeWholeRejected = !IsValidMaterialAssetValues(invalidWhole);
+        invalidWhole = material;
+        invalidWhole.AlphaMode = static_cast<MaterialAlphaMode>(99);
+        const bool enumWholeRejected = !IsValidMaterialAssetValues(invalidWhole);
+        invalidWhole = material;
+        invalidWhole.Samplers.Orm = static_cast<MaterialTextureSampler>(99);
+        const bool samplerWholeRejected = !IsValidMaterialAssetValues(invalidWhole);
+
+        material = {};
+        return Expect(acceptedExactly,
+                "material surface accepts exact inclusive bounds without changing unrelated fields")
+            && Expect(nanRejected && infinityRejected && colorRangeRejected
+                    && factorRangeRejected,
+                "material surface rejects nonfinite and out-of-range updates transactionally")
+            && Expect(nonfiniteWholeRejected && rangeWholeRejected
+                    && enumWholeRejected && samplerWholeRejected,
+                "full material publication validation rejects invalid numeric and enum state")
+            && Expect(GetMaterialSurface(material) == original,
+                "default material retains the canonical surface baseline");
+    }
+
     bool TestMeshArtifactValidationAndResolution()
     {
         using namespace Engine;
@@ -9680,6 +9745,7 @@ int main(int argc, char** argv)
         FAST_TEST("Renderer material catalog publishes immutable exact generations", TestImmutableMaterialCatalogPublication),
         FAST_TEST("Material texture binding resolves semantic slots samplers and fallbacks", TestMaterialTextureBindingResolution),
         INTEGRATION_TEST("Material sampler declarations migrate and validate transactionally", TestMaterialSamplerSchemaMigration),
+        FAST_TEST("Material surface updates validate transactionally", TestMaterialSurfaceValidationIsTransactional),
         FAST_TEST("RHI read-only texture upload validates the full-subresource contract", TestReadOnlyTextureUploadContract),
         FAST_TEST("RHI single-slot vertex stride validates layout and binding transactionally", TestRhiSingleSlotVertexStrideContract),
         FAST_TEST("RHI sampled texture-table binding validates pipeline space offsets and exact ownership", TestSampledTextureTableBindingContract),
