@@ -40,6 +40,36 @@ Get-ChildItem -Recurse -Filter *.md |
 if ($Broken.Count) { $Broken; throw 'Broken Markdown links found.' }
 ```
 
+### Fab secure-intake and provenance foundations
+
+The Linux directory-snapshot and shared receipt/immutable-root foundation is built from the canonical worktree with:
+
+```bash
+bash Scripts/GenerateProjects.sh gmake
+make config=debug EngineTests Editor -j"$(nproc)"
+```
+
+Run the exact behavior boundaries before the complete tier:
+
+```bash
+./bin/Debug-linux-x86_64-gmake/EngineTests/EngineTests --test "Core SHA-256 matches independent vectors and streaming boundaries"
+./bin/Debug-linux-x86_64-gmake/EngineTests/EngineTests --test "External HTTPS navigation accepts only the declared host"
+./bin/Debug-linux-x86_64-gmake/EngineTests/EngineTests --test "Fab receipts derive stable identity and preserve provenance transactionally"
+./bin/Debug-linux-x86_64-gmake/EngineTests/EngineTests --test "Fab immutable asset generations retain exact rooted resolvers"
+./bin/Debug-linux-x86_64-gmake/EngineTests/EngineTests --test "Local package snapshot copies deterministic immutable directory input"
+./bin/Debug-linux-x86_64-gmake/EngineTests/EngineTests --test "Local package snapshot rejects hostile roots paths and objects"
+./bin/Debug-linux-x86_64-gmake/EngineTests/EngineTests --test "Local package snapshot enforces limits races cancellation and cleanup"
+./bin/Debug-linux-x86_64-gmake/EngineTests/EngineTests --test "Material texture binding resolves semantic slots samplers and fallbacks"
+./bin/Debug-linux-x86_64-gmake/EngineTests/EngineTests --test "Scene surface basis and material rows publish deterministically"
+./bin/Debug-linux-x86_64-gmake/EngineTests/EngineTests --tier integration
+bash Scripts/CheckCodeStyle.sh
+git diff --check
+```
+
+Commit `92bbae2` passed a warning-free Debug GMake `Editor`/`EngineTests` build, all nine focused commands, 122/122 Integration tests, code style, and diff checks on Linux. Raw logs are retained under ignored `output/verification/fab-foundation-20260905/`. The URL test proves policy parsing, not that a browser opened. The three snapshot tests compile and execute only on Linux. No Vulkan harness or headed window is required evidence for these CPU/filesystem contracts, and none was used.
+
+This result does not qualify Windows secure intake, ZIP extraction, PNG/JPEG decoding, semantic glTF cooking, project-manifest commit, Editor integration, or an actual Fab-acquired asset. Windows parity requires its retained-handle/reparse-point implementation plus native MSVC and hosted Windows execution of the secure-intake, receipt-atomicity, registry-migration/rooted-resolution, and URL-policy boundaries before the cross-platform feature can complete.
+
 ### Opt-in dependency source admission
 
 An optional source dependency is admitted before linkage only when its fetch path resolves the exact recorded commit and retains the license and third-party notice paths named in [DEPENDENCIES.md](DEPENDENCIES.md). For the Phase 3D libktx prerequisite, run:
