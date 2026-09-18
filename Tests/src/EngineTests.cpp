@@ -97,6 +97,17 @@
     #include <Windows.h>
     #include <Aclapi.h>
     #include <winioctl.h>
+
+    // Keep the Windows SDK spelling aliases from rewriting engine test types and locals.
+    #ifdef DeviceCapabilities
+        #undef DeviceCapabilities
+    #endif
+    #ifdef near
+        #undef near
+    #endif
+    #ifdef far
+        #undef far
+    #endif
 #endif
 
 namespace

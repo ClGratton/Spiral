@@ -2,6 +2,14 @@
 
 Updated 2026-09-18. This is a recovery aid; `PLAN.md` remains the sole roadmap and checkbox authority. Sections are reverse chronological, and the newest section supersedes future-tense or non-claim language preserved in older acceptance records. A new agent must begin with `AGENTS.md`, `PLAN.md`, `Docs/README.md`, `Docs/ROADMAP_GOVERNANCE.md`, `Docs/TESTING_STRATEGY.md`, `Docs/VERIFICATION.md`, and `Docs/Architecture/README.md`. For the active Fab work, also read `Docs/Architecture/FAB_ASSET_INTEGRATION.md` and the Engine Assets, Editor, and Tests ownership files.
 
+## Windows Fab Hosted Test-TU Compile Rejection (2026-09-18)
+
+Corrected hosted CI run `35330248945`, Windows job `105552735546`, is also rejected pre-test evidence. `Engine` and `Editor` compiled, but `EngineTests.cpp` included `Windows.h` for the Windows snapshot fixtures and then let SDK compatibility macros rewrite unrelated existing test symbols: `DeviceCapabilities` became `DeviceCapabilitiesW`, making the device fakes appear abstract, and `near` erased the atmospheric numeric-comparison local. The 107-error cascade stopped at MSVC's 100-error limit; it did not execute any test.
+
+The narrow correction undefines only the concrete `DeviceCapabilities`, `near`, and `far` SDK macros immediately after the Windows-only headers in that translation unit. The masked-error audit found no other direct Windows macro collision in the post-header test source: its `min`/`max` uses are qualified standard-library or `numeric_limits` member names, and it does not declare/call a matching unqualified Windows alias. No build, test, generator, or launch was run locally. This correction does not qualify Windows parity; the required native/hosted rerun remains pending.
+
+Root then accepted the available-host regression boundary: the warning-free incremental Debug GMake `Editor`/`EngineTests` build, all three snapshot focused tests, 122/122 Integration tests, code style, and diff checks passed. Raw logs are ignored under `output/verification/fab-windows-parity-ci-macro-correction-20260918/`. Windows parity remains gated on the next hosted MSVC execution.
+
 ## Windows Fab Hosted Compile Rejection (2026-09-18)
 
 Hosted CI run `35329250230`, Windows job `105549504678`, is rejected evidence: compilation stopped before any secure-intake test or D3D12/Fab runtime boundary ran. The failures were pre-existing portability/source defects rather than a Windows-parity pass or failure: `AtomicFile.cpp` expanded the Windows `max` macro inside `std::numeric_limits<DWORD>::max()`, and `NVRHID3D12Device.cpp` omitted the final closing parenthesis on the outer `DrawIndexed` recording/binding predicate after the fixed read-only structured-buffer group. The correction uses the macro-safe `(std::numeric_limits<DWORD>::max)()` spelling and restores that one predicate parenthesis.

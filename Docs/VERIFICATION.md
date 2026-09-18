@@ -76,6 +76,10 @@ Hosted CI run `35329250230` / Windows job `105549504678` is rejected pre-test ev
 
 The correction passed a warning-free Debug GMake `Editor`/`EngineTests` build, the SHA-256 and three snapshot focused tests, 122/122 Integration tests, code style, and diff checks on Linux. Raw logs are retained under ignored `output/verification/fab-windows-parity-ci-correction-20260918/`. This Linux regression evidence does not replace the required Windows rerun.
 
+Corrected hosted CI run `35330248945` / Windows job `105552735546` is rejected pre-test evidence: `Engine` and `Editor` compiled, but the newly Windows-header-enabled `EngineTests.cpp` let the SDK `DeviceCapabilities` alias rewrite existing RHI test types and let `near` erase an existing comparison local. The resulting device-fake abstract-class cascade hit MSVC's 100-error stop before any test ran. The follow-up undefines the concrete `DeviceCapabilities`, `near`, and `far` macros immediately after the Windows-only includes; a targeted post-header source audit found no further direct SDK macro collision. This is a compile-unblock correction only and does not qualify Windows Fab parity; the required Windows rerun remains pending.
+
+That macro-boundary correction passed a warning-free incremental Debug GMake `Editor`/`EngineTests` build, all three snapshot focused tests, 122/122 Integration tests, code style, and diff checks on Linux. Raw logs are retained under ignored `output/verification/fab-windows-parity-ci-macro-correction-20260918/`; this remains host-regression evidence, not Windows qualification.
+
 ### Opt-in dependency source admission
 
 An optional source dependency is admitted before linkage only when its fetch path resolves the exact recorded commit and retains the license and third-party notice paths named in [DEPENDENCIES.md](DEPENDENCIES.md). For the Phase 3D libktx prerequisite, run:
