@@ -56,9 +56,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
-      - name: Build and validate viewport capture
+      - name: Build Windows targets
         shell: pwsh
-        run: .\Scripts\TestRender.ps1 -Configuration Debug -Action vs2022
+        run: .\Scripts\Build.ps1 -Configuration Debug -Action vs2022
 
       - name: Run engine tests
         shell: pwsh
@@ -99,6 +99,10 @@ jobs:
         run: |
           .\bin\Debug-windows-x86_64\Editor\Editor.exe --headless --frame-task-graph-smoke
           .\bin\Debug-windows-x86_64\Editor\Editor.exe --headless --frame-task-graph-smoke --frame-task-single-thread
+
+      - name: Run D3D12 render smoke
+        shell: pwsh
+        run: .\Scripts\TestRender.ps1 -Configuration Debug -Action vs2022 -SkipBuild
 
       - name: Upload viewport capture
         uses: actions/upload-artifact@v7
