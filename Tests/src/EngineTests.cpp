@@ -1652,13 +1652,16 @@ namespace
         }
         const bool stagingParentReplaced = !filesystemError
             && WritePackageText(staging / "replacement.keep", "replacement sentinel");
-        const bool retainedAfterReplacement = retainedIdentity && stagingParentReplaced
+        const bool retainedStreamed = retainedIdentity && stagingParentReplaced
             && retainedSnapshot.StreamFile("root.gltf", [&](std::span<const u8> bytes)
-                { retainedBytes.append(reinterpret_cast<const char*>(bytes.data()), bytes.size()); return true; }, retainedError)
-            && retainedBytes == gltf
+                { retainedBytes.append(reinterpret_cast<const char*>(bytes.data()), bytes.size()); return true; }, retainedError);
+        const bool replacementSentinelPreserved = stagingParentReplaced
             && ReadPackageText(staging / "replacement.keep") == "replacement sentinel";
+        const bool retainedAfterReplacement = retainedStreamed
+            && retainedBytes == gltf && replacementSentinelPreserved;
         retainedSnapshot = LocalPackageSnapshot {};
-        const bool retainedCleanup = DirectoryEntryCount(movedStaging) == 0
+        const size_t movedStagingEntries = DirectoryEntryCount(movedStaging);
+        const bool retainedCleanup = movedStagingEntries == 0
             && ReadPackageText(staging / "replacement.keep") == "replacement sentinel";
         const bool sentinels = ReadPackageText(source / "d.bin") == "abc"
             && ReadPackageText(outside) == "outside sentinel";
@@ -1679,6 +1682,13 @@ namespace
                 << " throw=" << (throwingCallbackRejected ? "pass" : "fail")
                 << " tamper=" << (stagedTamperingRejected ? "pass" : "fail")
                 << " retained=" << (retainedAfterReplacement && retainedCleanup ? "pass" : "fail")
+                << "{identity=" << (retainedIdentity ? "pass" : "fail")
+                << ",parent-replaced=" << (stagingParentReplaced ? "pass" : "fail")
+                << ",stream=" << (retainedStreamed ? "pass" : "fail")
+                << ",stream-error=" << retainedError
+                << ",bytes=" << (retainedBytes == gltf ? "pass" : "fail")
+                << ",replacement-sentinel=" << (replacementSentinelPreserved ? "pass" : "fail")
+                << ",cleanup-count=" << movedStagingEntries << "}"
                 << " sentinels=" << (sentinels ? "pass" : "fail") << '\n';
 #endif
         return Expect(preparedBoundaries,
