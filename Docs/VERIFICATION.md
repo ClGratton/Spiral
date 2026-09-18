@@ -92,6 +92,8 @@ Corrected run `35362360458` / Windows job `105656686770` reached the staging pri
 
 Run `35363213892` / Windows job `105659810079` passed the corrected privacy gate and reached handle-native inventory, where all three valid paths rejected a relative segment. `FileIdBothDirectoryInfo` supplied `.` and `..`; inventory now skips exactly those native entries, matching the existing cleanup and sealing enumerators, before applying unchanged validation to every package-provided name. This remains Windows-only source evidence pending the next hosted execution.
 
+Run `35363902496` / Windows job `105661955178` passed privacy and inventory, then failed valid cases while sealing because that enumerator still attempted only `FILE_DIRECTORY_FILE`. Sealing now retries the exact retained-parent-relative entry as `FILE_NON_DIRECTORY_FILE` before identity classification, matching the already-correct cleanup path. Native hosted execution remains required.
+
 ### Opt-in dependency source admission
 
 An optional source dependency is admitted before linkage only when its fetch path resolves the exact recorded commit and retains the license and third-party notice paths named in [DEPENDENCIES.md](DEPENDENCIES.md). For the Phase 3D libktx prerequisite, run:
