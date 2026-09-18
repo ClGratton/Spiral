@@ -1,0 +1,42 @@
+name: Windows Fab Qualification
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: windows-fab-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows-fab-engine-tests:
+    name: Windows Fab EngineTests
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Build EngineTests and dependencies
+        shell: pwsh
+        run: .\Scripts\Build.ps1 -Configuration Debug -Action vs2022 -Target EngineTests
+
+      - name: Run focused Fab boundaries
+        shell: pwsh
+        timeout-minutes: 6
+        run: |
+          $Executable = ".\bin\Debug-windows-x86_64\EngineTests\EngineTests.exe"
+          $Tests = @(
+            "Core SHA-256 matches independent vectors and streaming boundaries",
+            "External HTTPS navigation accepts only the declared host",
+            "Fab receipts derive stable identity and preserve provenance transactionally",
+            "Fab immutable asset generations retain exact rooted resolvers",
+            "Local package snapshot copies deterministic immutable directory input",
+            "Local package snapshot rejects hostile roots paths and objects",
+            "Local package snapshot enforces limits races cancellation and cleanup"
+          )
+          foreach ($Test in $Tests) {
+            & $Executable --test $Test
+            if ($LASTEXITCODE -ne 0) {
+              throw "Focused Windows Fab boundary failed: $Test"
+            }
+          }

@@ -2,7 +2,10 @@ param(
     [ValidateSet("Debug", "Release", "Dist")]
     [string]$Configuration = "Debug",
 
-    [string]$Action = ""
+    [string]$Action = "",
+
+    [ValidateSet("All", "EngineTests")]
+    [string]$Target = "All"
 )
 
 $ErrorActionPreference = "Stop"
@@ -69,7 +72,12 @@ if ($Action -like "vs*") {
         throw "MSBuild was not found on PATH. Install Visual Studio Build Tools or use -Action gmake."
     }
 
-    & $MSBuild $Solution /m /p:Configuration=$Configuration /p:Platform=x64
+    $BuildInput = if ($Target -eq "EngineTests") {
+        Join-Path $Root "Tests\EngineTests.vcxproj"
+    } else {
+        $Solution
+    }
+    & $MSBuild $BuildInput /m /p:Configuration=$Configuration /p:Platform=x64
     if ($LASTEXITCODE -ne 0) {
         throw "MSBuild failed with exit code $LASTEXITCODE."
     }
@@ -84,7 +92,11 @@ if ($Action -like "vs*") {
     }
 
     $ConfigName = $Configuration.ToLowerInvariant()
-    & $Make -C $Root "config=$ConfigName"
+    if ($Target -eq "All") {
+        & $Make -C $Root "config=$ConfigName"
+    } else {
+        & $Make -C $Root "config=$ConfigName" $Target
+    }
     if ($LASTEXITCODE -ne 0) {
         throw "Make failed with exit code $LASTEXITCODE."
     }
@@ -92,4 +104,4 @@ if ($Action -like "vs*") {
     throw "Unsupported build action '$Action'. Try gmake or vs2022."
 }
 
-Write-Host "Build complete: $Configuration ($Action)"
+Write-Host "Build complete: $Configuration ($Action, target=$Target)"

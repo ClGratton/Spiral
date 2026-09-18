@@ -100,6 +100,10 @@ Run `35365232521` / Windows job `105666357069` passed deterministic copy, hostil
 
 Run `35366212361` / Windows job `105669406595` passed all of those boundaries except the aggregate retained-parent replacement case. The next run adds no behavior change; it reports creation, rename/replacement, retained stream/error/bytes, replacement sentinel, and moved-parent cleanup count separately so the exact Windows lifecycle operation can be corrected without weakening the ownership contract.
 
+Run `35366959744` showed the retained snapshot was valid but Windows prevented the staging-parent rename itself; consequently no moved parent, replacement sentinel, or retained stream attempt existed. The cross-platform oracle now requires one of two safe, explicit outcomes: successful rename/replacement with retained original-object streaming and exact cleanup, or prevented rename with retained unchanged-object streaming and exact cleanup. Linux continues to execute the first branch. The next Windows run must execute the second branch and pass all seven focused Fab boundaries.
+
+After `.github/workflows/windows-fab-qualification.yml` is present on the default branch, an additional Windows-only Fab correction is qualified on a non-main ref with `gh workflow run windows-fab-qualification.yml --ref <exact-qualification-branch>`. That manual lane invokes `Scripts/Build.ps1 -Target EngineTests`, builds the test project and dependencies rather than the full solution, and runs the seven fixed SHA/URL/receipt/immutable-root/snapshot boundaries. It is diagnostic qualification only; the accepted candidate still requires the normal full `main` matrix once.
+
 ### Opt-in dependency source admission
 
 An optional source dependency is admitted before linkage only when its fetch path resolves the exact recorded commit and retains the license and third-party notice paths named in [DEPENDENCIES.md](DEPENDENCIES.md). For the Phase 3D libktx prerequisite, run:

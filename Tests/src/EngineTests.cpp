@@ -1644,25 +1644,33 @@ namespace
             source, staging, {}, retainedSnapshot, retainedError);
         filesystemError.clear();
         std::filesystem::rename(staging, movedStaging, filesystemError);
-        if (!filesystemError)
+        const bool stagingParentRenamed = !filesystemError;
+        if (stagingParentRenamed)
         {
             std::filesystem::create_directories(staging, filesystemError);
             std::filesystem::permissions(staging, std::filesystem::perms::owner_all,
                 std::filesystem::perm_options::replace, filesystemError);
         }
-        const bool stagingParentReplaced = !filesystemError
+        const bool stagingParentReplaced = stagingParentRenamed && !filesystemError
             && WritePackageText(staging / "replacement.keep", "replacement sentinel");
-        const bool retainedStreamed = retainedIdentity && stagingParentReplaced
+        const bool stagingParentReplacementPrevented = !stagingParentRenamed
+            && std::filesystem::is_directory(staging)
+            && !std::filesystem::exists(movedStaging);
+        const bool retainedStreamed = retainedIdentity
+            && (stagingParentReplaced || stagingParentReplacementPrevented)
             && retainedSnapshot.StreamFile("root.gltf", [&](std::span<const u8> bytes)
                 { retainedBytes.append(reinterpret_cast<const char*>(bytes.data()), bytes.size()); return true; }, retainedError);
-        const bool replacementSentinelPreserved = stagingParentReplaced
-            && ReadPackageText(staging / "replacement.keep") == "replacement sentinel";
+        const bool replacementSentinelPreserved = stagingParentReplacementPrevented
+            || (stagingParentReplaced
+                && ReadPackageText(staging / "replacement.keep") == "replacement sentinel");
         const bool retainedAfterReplacement = retainedStreamed
             && retainedBytes == gltf && replacementSentinelPreserved;
         retainedSnapshot = LocalPackageSnapshot {};
-        const size_t movedStagingEntries = DirectoryEntryCount(movedStaging);
-        const bool retainedCleanup = movedStagingEntries == 0
-            && ReadPackageText(staging / "replacement.keep") == "replacement sentinel";
+        const size_t ownedParentEntries = DirectoryEntryCount(
+            stagingParentRenamed ? movedStaging : staging);
+        const bool retainedCleanup = ownedParentEntries == 0
+            && (stagingParentReplacementPrevented
+                || ReadPackageText(staging / "replacement.keep") == "replacement sentinel");
         const bool sentinels = ReadPackageText(source / "d.bin") == "abc"
             && ReadPackageText(outside) == "outside sentinel";
         const bool raceAndLifecycleChecks = changedRejectedOrPrevented && changedCleanup
@@ -1684,17 +1692,18 @@ namespace
                 << " retained=" << (retainedAfterReplacement && retainedCleanup ? "pass" : "fail")
                 << "{identity=" << (retainedIdentity ? "pass" : "fail")
                 << ",parent-replaced=" << (stagingParentReplaced ? "pass" : "fail")
+                << ",replacement-prevented=" << (stagingParentReplacementPrevented ? "pass" : "fail")
                 << ",stream=" << (retainedStreamed ? "pass" : "fail")
                 << ",stream-error=" << retainedError
                 << ",bytes=" << (retainedBytes == gltf ? "pass" : "fail")
                 << ",replacement-sentinel=" << (replacementSentinelPreserved ? "pass" : "fail")
-                << ",cleanup-count=" << movedStagingEntries << "}"
+                << ",cleanup-count=" << ownedParentEntries << "}"
                 << " sentinels=" << (sentinels ? "pass" : "fail") << '\n';
 #endif
         return Expect(preparedBoundaries,
                 "snapshot enforces B-1/B/B+1 file-count, depth, path, segment, per-file, and aggregate limits")
             && Expect(raceAndLifecycleChecks,
-                "snapshot detects changed bytes and same-name identity replacement, cancels at every exposed boundary, retains exact identity across parent replacement, and cleans only owned staging");
+                "snapshot detects or prevents source replacement, cancels at every exposed boundary, retains exact identity across or prevents parent replacement, and cleans only owned staging");
     }
 #endif
 
