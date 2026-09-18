@@ -96,6 +96,8 @@ Run `35363902496` / Windows job `105661955178` passed privacy and inventory, the
 
 Run `35364467371` / Windows job `105663740660` completed valid snapshot creation and retained reads, then exposed that sealed read-only child DACLs prevented cleanup from reopening children with delete/write rights. The exact-owned cleanup now uses a minimal owner `WRITE_DAC` handle to restore full current-user access before its existing attribute-clear and delete reopen. It remains handle-relative/no-follow and still refuses multi-link objects. Hosted execution is required to qualify the lifecycle.
 
+Run `35365232521` / Windows job `105666357069` passed deterministic copy, hostile inputs, cleanup, and 120/121 Integration tests. The final race test incorrectly required Linux-style mutation hooks to succeed even when Windows' live source handle intentionally denies write/delete sharing. Its oracle now accepts only either successful mutation plus transactional rejection or attempted-but-blocked mutation plus a valid snapshot of unchanged source bytes/identity; cleanup is checked after releasing any accepted snapshot. The incremental Linux `EngineTests` build and changed focused test passed with no warning/error diagnostics; logs are under ignored `output/verification/fab-windows-race-oracle-correction-20260918/`. The next native run must pass all remaining cancellation, tamper, retained-parent, and sentinel sub-boundaries.
+
 ### Opt-in dependency source admission
 
 An optional source dependency is admitted before linkage only when its fetch path resolves the exact recorded commit and retains the license and third-party notice paths named in [DEPENDENCIES.md](DEPENDENCIES.md). For the Phase 3D libktx prerequisite, run:

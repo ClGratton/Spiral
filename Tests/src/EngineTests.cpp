@@ -1476,6 +1476,7 @@ namespace
                 << " boundaries=" << (boundaries ? "pass" : "fail") << '\n';
 #endif
 
+        bool changedHookAttempted = false;
         bool changedHookRan = false;
         LocalPackageSnapshotOptions changedOptions;
         changedOptions.TestHook = [&](LocalPackageSnapshotHookPoint point, std::string_view relativePath)
@@ -1483,17 +1484,25 @@ namespace
             if (!changedHookRan && point == LocalPackageSnapshotHookPoint::BeforeFileCopy
                 && relativePath == "d.bin")
             {
+                changedHookAttempted = true;
                 changedHookRan = WritePackageText(source / "d.bin", "xyz");
             }
         };
         LocalPackageSnapshot changedSnapshot;
         std::string changedError;
-        const bool changedRejected = !LocalPackageSnapshot::Create(
-            source, staging, changedOptions, changedSnapshot, changedError)
-            && changedHookRan && !changedSnapshot.IsValid() && DirectoryEntryCount(staging) == 0;
+        const bool changedCreated = LocalPackageSnapshot::Create(
+            source, staging, changedOptions, changedSnapshot, changedError);
+        const bool changedRejectedOrPrevented = changedHookAttempted
+            && (changedHookRan
+                ? (!changedCreated && !changedSnapshot.IsValid())
+                : (changedCreated && changedSnapshot.IsValid()
+                    && ReadPackageText(source / "d.bin") == "abc"));
+        changedSnapshot = LocalPackageSnapshot {};
+        const bool changedCleanup = DirectoryEntryCount(staging) == 0;
         WritePackageText(source / "d.bin", "abc");
 
         const std::filesystem::path replacedFile = source / "d.replaced";
+        bool identityHookAttempted = false;
         bool identityHookRan = false;
         LocalPackageSnapshotOptions identityOptions;
         identityOptions.TestHook = [&](LocalPackageSnapshotHookPoint point, std::string_view relativePath)
@@ -1501,16 +1510,22 @@ namespace
             if (identityHookRan || point != LocalPackageSnapshotHookPoint::BeforeFileCopy
                 || relativePath != "d.bin")
                 return;
+            identityHookAttempted = true;
             filesystemError.clear();
             std::filesystem::rename(source / "d.bin", replacedFile, filesystemError);
             identityHookRan = !filesystemError && WritePackageText(source / "d.bin", "abc");
         };
         LocalPackageSnapshot identitySnapshot;
         std::string identityError;
-        const bool identityReplacementRejected = !LocalPackageSnapshot::Create(
-            source, staging, identityOptions, identitySnapshot, identityError)
-            && identityHookRan && !identitySnapshot.IsValid()
-            && DirectoryEntryCount(staging) == 0;
+        const bool identityCreated = LocalPackageSnapshot::Create(
+            source, staging, identityOptions, identitySnapshot, identityError);
+        const bool identityReplacementRejectedOrPrevented = identityHookAttempted
+            && (identityHookRan
+                ? (!identityCreated && !identitySnapshot.IsValid())
+                : (identityCreated && identitySnapshot.IsValid()
+                    && ReadPackageText(source / "d.bin") == "abc"));
+        identitySnapshot = LocalPackageSnapshot {};
+        const bool identityCleanup = DirectoryEntryCount(staging) == 0;
         std::filesystem::remove(replacedFile, filesystemError);
         WritePackageText(source / "d.bin", "abc");
 
@@ -1518,6 +1533,7 @@ namespace
         WritePackageText(directorySource / "root.gltf", MinimalGltf());
         WritePackageText(directorySource / "folder/payload.bin", "abc");
         const std::filesystem::path replacedDirectory = directorySource / "folder.replaced";
+        bool directoryIdentityHookAttempted = false;
         bool directoryIdentityHookRan = false;
         LocalPackageSnapshotOptions directoryIdentityOptions;
         directoryIdentityOptions.TestHook = [&](LocalPackageSnapshotHookPoint point,
@@ -1527,6 +1543,7 @@ namespace
                 || point != LocalPackageSnapshotHookPoint::InventoryEntry
                 || relativePath != "folder")
                 return;
+            directoryIdentityHookAttempted = true;
             filesystemError.clear();
             std::filesystem::rename(
                 directorySource / "folder", replacedDirectory, filesystemError);
@@ -1539,11 +1556,16 @@ namespace
         };
         LocalPackageSnapshot directoryIdentitySnapshot;
         std::string directoryIdentityError;
-        const bool directoryIdentityReplacementRejected = !LocalPackageSnapshot::Create(
+        const bool directoryIdentityCreated = LocalPackageSnapshot::Create(
             directorySource, staging, directoryIdentityOptions,
-            directoryIdentitySnapshot, directoryIdentityError)
-            && directoryIdentityHookRan && !directoryIdentitySnapshot.IsValid()
-            && DirectoryEntryCount(staging) == 0;
+            directoryIdentitySnapshot, directoryIdentityError);
+        const bool directoryIdentityReplacementRejectedOrPrevented = directoryIdentityHookAttempted
+            && (directoryIdentityHookRan
+                ? (!directoryIdentityCreated && !directoryIdentitySnapshot.IsValid())
+                : (directoryIdentityCreated && directoryIdentitySnapshot.IsValid()
+                    && ReadPackageText(directorySource / "folder/payload.bin") == "abc"));
+        directoryIdentitySnapshot = LocalPackageSnapshot {};
+        const bool directoryIdentityCleanup = DirectoryEntryCount(staging) == 0;
 
         const auto cancelsAt = [&](LocalPackageSnapshotHookPoint cancellationPoint)
         {
@@ -1640,12 +1662,28 @@ namespace
             && ReadPackageText(staging / "replacement.keep") == "replacement sentinel";
         const bool sentinels = ReadPackageText(source / "d.bin") == "abc"
             && ReadPackageText(outside) == "outside sentinel";
+        const bool raceAndLifecycleChecks = changedRejectedOrPrevented && changedCleanup
+            && identityReplacementRejectedOrPrevented && identityCleanup
+            && directoryIdentityReplacementRejectedOrPrevented && directoryIdentityCleanup
+            && cancellations && throwingCallbackRejected && stagedTamperingRejected
+            && retainedAfterReplacement && retainedCleanup && sentinels;
+#if defined(GE_PLATFORM_WINDOWS)
+        if (!raceAndLifecycleChecks)
+            std::cerr << "  Windows snapshot race/lifecycle failure: changed="
+                << (changedRejectedOrPrevented && changedCleanup ? "pass" : "fail")
+                << " fileIdentity="
+                << (identityReplacementRejectedOrPrevented && identityCleanup ? "pass" : "fail")
+                << " directoryIdentity="
+                << (directoryIdentityReplacementRejectedOrPrevented && directoryIdentityCleanup ? "pass" : "fail")
+                << " cancellations=" << (cancellations ? "pass" : "fail")
+                << " throw=" << (throwingCallbackRejected ? "pass" : "fail")
+                << " tamper=" << (stagedTamperingRejected ? "pass" : "fail")
+                << " retained=" << (retainedAfterReplacement && retainedCleanup ? "pass" : "fail")
+                << " sentinels=" << (sentinels ? "pass" : "fail") << '\n';
+#endif
         return Expect(preparedBoundaries,
                 "snapshot enforces B-1/B/B+1 file-count, depth, path, segment, per-file, and aggregate limits")
-            && Expect(changedRejected && identityReplacementRejected
-                    && directoryIdentityReplacementRejected
-                    && cancellations && throwingCallbackRejected && stagedTamperingRejected
-                    && retainedAfterReplacement && retainedCleanup && sentinels,
+            && Expect(raceAndLifecycleChecks,
                 "snapshot detects changed bytes and same-name identity replacement, cancels at every exposed boundary, retains exact identity across parent replacement, and cleans only owned staging");
     }
 #endif
