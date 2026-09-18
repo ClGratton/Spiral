@@ -94,6 +94,8 @@ Run `35363213892` / Windows job `105659810079` passed the corrected privacy gate
 
 Run `35363902496` / Windows job `105661955178` passed privacy and inventory, then failed valid cases while sealing because that enumerator still attempted only `FILE_DIRECTORY_FILE`. Sealing now retries the exact retained-parent-relative entry as `FILE_NON_DIRECTORY_FILE` before identity classification, matching the already-correct cleanup path. Native hosted execution remains required.
 
+Run `35364467371` / Windows job `105663740660` completed valid snapshot creation and retained reads, then exposed that sealed read-only child DACLs prevented cleanup from reopening children with delete/write rights. The exact-owned cleanup now uses a minimal owner `WRITE_DAC` handle to restore full current-user access before its existing attribute-clear and delete reopen. It remains handle-relative/no-follow and still refuses multi-link objects. Hosted execution is required to qualify the lifecycle.
+
 ### Opt-in dependency source admission
 
 An optional source dependency is admitted before linkage only when its fetch path resolves the exact recorded commit and retains the license and third-party notice paths named in [DEPENDENCIES.md](DEPENDENCIES.md). For the Phase 3D libktx prerequisite, run:

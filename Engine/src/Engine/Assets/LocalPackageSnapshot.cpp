@@ -2484,15 +2484,28 @@ namespace Engine
             {
                 if (name == L"." || name == L"..")
                     continue;
-                WindowsHandle child = OpenWindowsChildNative(directoryHandle, name,
-                    GENERIC_READ | FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES
-                        | FILE_WRITE_ATTRIBUTES | READ_CONTROL | WRITE_DAC | DELETE | SYNCHRONIZE,
-                    FILE_OPEN, true, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE);
+                const auto openForCleanup = [&](bool directory)
+                {
+                    const ACCESS_MASK cleanupAccess = GENERIC_READ | FILE_READ_ATTRIBUTES
+                        | FILE_WRITE_ATTRIBUTES | READ_CONTROL | WRITE_DAC | DELETE | SYNCHRONIZE
+                        | (directory ? FILE_LIST_DIRECTORY : 0);
+                    WindowsHandle child = OpenWindowsChildNative(directoryHandle, name,
+                        cleanupAccess, FILE_OPEN, directory,
+                        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE);
+                    if (child)
+                        return child;
+                    WindowsHandle ownerControl = OpenWindowsChildNative(directoryHandle, name,
+                        READ_CONTROL | WRITE_DAC | SYNCHRONIZE, FILE_OPEN, directory,
+                        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE);
+                    if (!ownerControl || !SetWindowsOwnerAccess(ownerControl.Get(), GENERIC_ALL))
+                        return WindowsHandle {};
+                    return OpenWindowsChildNative(directoryHandle, name,
+                        cleanupAccess, FILE_OPEN, directory,
+                        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE);
+                };
+                WindowsHandle child = openForCleanup(true);
                 if (!child)
-                    child = OpenWindowsChildNative(directoryHandle, name,
-                        GENERIC_READ | FILE_READ_ATTRIBUTES | FILE_WRITE_ATTRIBUTES
-                            | READ_CONTROL | WRITE_DAC | DELETE | SYNCHRONIZE,
-                        FILE_OPEN, false, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE);
+                    child = openForCleanup(false);
                 WindowsFileIdentity identity;
                 if (!child || !GetWindowsIdentity(child.Get(), identity)
                     || identity.LinkCount != 1)
