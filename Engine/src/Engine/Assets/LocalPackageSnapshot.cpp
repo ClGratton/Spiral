@@ -2661,6 +2661,8 @@ namespace Engine
 
             for (const std::wstring& wideName : names)
             {
+                if (wideName == L"." || wideName == L"..")
+                    continue;
                 std::string name;
                 if (!WindowsNameToPortableAscii(wideName, name)
                     || !ValidateSegment(name, options.Limits.MaximumSegmentBytes, error))
