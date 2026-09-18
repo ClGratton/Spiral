@@ -49,6 +49,9 @@ project "EngineTests"
         systemversion "latest"
         defines { "GE_PLATFORM_WINDOWS" }
 
+    filter { "system:windows", "action:vs*" }
+        buildoptions { "/bigobj" }
+
     filter "system:linux"
         defines { "GE_PLATFORM_LINUX" }
         links { "pthread", "dl" }

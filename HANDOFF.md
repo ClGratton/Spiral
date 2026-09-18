@@ -2,6 +2,14 @@
 
 Updated 2026-09-18. This is a recovery aid; `PLAN.md` remains the sole roadmap and checkbox authority. Sections are reverse chronological, and the newest section supersedes future-tense or non-claim language preserved in older acceptance records. A new agent must begin with `AGENTS.md`, `PLAN.md`, `Docs/README.md`, `Docs/ROADMAP_GOVERNANCE.md`, `Docs/TESTING_STRATEGY.md`, `Docs/VERIFICATION.md`, and `Docs/Architecture/README.md`. For the active Fab work, also read `Docs/Architecture/FAB_ASSET_INTEGRATION.md` and the Engine Assets, Editor, and Tests ownership files.
 
+## Windows Fab Hosted EngineTests Object-Section Rejection (2026-09-18)
+
+Corrected hosted CI run `35330957687`, Windows job `105555027314`, is rejected pre-test evidence. `Engine` and `Editor` compiled after the include-boundary correction, but MSVC could not emit the monolithic `EngineTests.cpp` object: `C1128` reported that its section count exceeded the standard object-file limit and requested `/bigobj`. The same failed compiler invocation also logged `D8040` (child-process communication); `C1128` is the concrete object-format root. The log additionally contains two pre-existing `LNK4006` duplicate import-descriptor warnings while linking `Engine` (`Shell32`/`Advapi32` versus `slang.lib`), not a new test failure. No test ran.
+
+`Tests/premake5.lua` now applies `/bigobj` only to the EngineTests Windows Visual Studio action filter, leaving Engine, all non-MSVC actions, and EngineFuzzTests unchanged. No build, test, generator, or launch was run locally. This is another compile-unblock correction only; Windows parity remains unchecked pending a new native/hosted execution.
+
+Root generated the VS2022 graph locally and verified `/bigobj` appears in all three `EngineTests.vcxproj` configurations and nowhere in the generated `Engine.vcxproj` or `EngineFuzzTests.vcxproj`. It then restored the GMake graph and passed the warning-free Debug `Editor`/`EngineTests` build, all three snapshot focused tests, 122/122 Integration tests, code style, and diff checks. Raw logs are ignored under `output/verification/fab-windows-parity-ci-bigobj-correction-20260918/`. Only the actual hosted MSVC rerun can qualify Windows behavior.
+
 ## Windows Fab Hosted Test-TU Compile Rejection (2026-09-18)
 
 Corrected hosted CI run `35330248945`, Windows job `105552735546`, is also rejected pre-test evidence. `Engine` and `Editor` compiled, but `EngineTests.cpp` included `Windows.h` for the Windows snapshot fixtures and then let SDK compatibility macros rewrite unrelated existing test symbols: `DeviceCapabilities` became `DeviceCapabilitiesW`, making the device fakes appear abstract, and `near` erased the atmospheric numeric-comparison local. The 107-error cascade stopped at MSVC's 100-error limit; it did not execute any test.
