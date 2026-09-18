@@ -62,7 +62,7 @@ namespace Engine
         while (offset < bytes.size())
         {
             const DWORD requested = static_cast<DWORD>(std::min<size_t>(
-                bytes.size() - offset, std::numeric_limits<DWORD>::max()));
+                bytes.size() - offset, (std::numeric_limits<DWORD>::max)()));
             DWORD written = 0;
             if (!::WriteFile(output, bytes.data() + offset, requested, &written, nullptr)
                 || written != requested)

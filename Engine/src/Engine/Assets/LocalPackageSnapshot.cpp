@@ -2894,7 +2894,7 @@ namespace Engine
             while (offset < size)
             {
                 const DWORD requested = static_cast<DWORD>(std::min<size_t>(
-                    size - offset, std::numeric_limits<DWORD>::max()));
+                    size - offset, (std::numeric_limits<DWORD>::max)()));
                 DWORD written = 0;
                 if (!::WriteFile(handle, bytes + offset, requested, &written, nullptr)
                     || written == 0)
@@ -3030,7 +3030,7 @@ namespace Engine
             while (completed < bytes.size())
             {
                 const DWORD requested = static_cast<DWORD>(std::min<size_t>(
-                    bytes.size() - completed, std::numeric_limits<DWORD>::max()));
+                    bytes.size() - completed, (std::numeric_limits<DWORD>::max)()));
                 DWORD count = 0;
                 if (!::ReadFile(handle, bytes.data() + completed, requested, &count, nullptr)
                     || count == 0)

@@ -1771,7 +1771,7 @@ namespace Engine::RHI
                                 : m_FixedSrvHeap)))
                     && (!m_ActivePipeline->GetDescription().FixedReadOnlyStructuredBuffer
                         || (m_StructuredBufferBindingActive && m_StructuredBufferResource
-                            && m_BoundStructuredBuffer))
+                            && m_BoundStructuredBuffer)))
                     m_CommandList->DrawIndexedInstanced(indexCount, instanceCount, startIndex, baseVertex, startInstance);
             }
 

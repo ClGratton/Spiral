@@ -72,6 +72,10 @@ The later Windows-parity source slice registers the same three snapshot tests on
 
 Linux execution does not qualify the Windows implementation. Windows parity still requires native MSVC compilation and execution plus hosted Windows execution of the secure-intake, receipt-atomicity, registry-migration/rooted-resolution, and URL-policy boundaries. Neither result qualifies ZIP extraction, PNG/JPEG decoding, semantic glTF cooking, project-manifest commit, Editor integration, or an actual Fab-acquired asset.
 
+Hosted CI run `35329250230` / Windows job `105549504678` is rejected pre-test evidence: MSVC stopped on a Windows `max` macro collision in `AtomicFile.cpp` and a missing closing parenthesis in the D3D12 `DrawIndexed` binding predicate. The follow-up also corrected the same macro-safe maximum spelling in the new Windows snapshot chunk calculations. This is a compile-unblock correction only; it neither executes nor qualifies Windows Fab parity.
+
+The correction passed a warning-free Debug GMake `Editor`/`EngineTests` build, the SHA-256 and three snapshot focused tests, 122/122 Integration tests, code style, and diff checks on Linux. Raw logs are retained under ignored `output/verification/fab-windows-parity-ci-correction-20260918/`. This Linux regression evidence does not replace the required Windows rerun.
+
 ### Opt-in dependency source admission
 
 An optional source dependency is admitted before linkage only when its fetch path resolves the exact recorded commit and retains the license and third-party notice paths named in [DEPENDENCIES.md](DEPENDENCIES.md). For the Phase 3D libktx prerequisite, run:
