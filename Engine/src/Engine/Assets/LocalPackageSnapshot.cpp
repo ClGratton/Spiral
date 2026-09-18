@@ -2652,6 +2652,11 @@ namespace Engine
 
                 WindowsHandle entry = OpenWindowsChild(directoryHandle, wideName,
                     GENERIC_READ | FILE_READ_ATTRIBUTES | SYNCHRONIZE, true);
+                if (!entry)
+                {
+                    entry = OpenWindowsChild(directoryHandle, wideName,
+                        GENERIC_READ | FILE_READ_ATTRIBUTES | SYNCHRONIZE, false);
+                }
                 WindowsFileIdentity entryIdentity;
                 if (!entry || !GetWindowsIdentity(entry.Get(), entryIdentity))
                 {
@@ -3103,7 +3108,7 @@ namespace Engine
                     continue;
                 WindowsHandle child = OpenWindowsChildNative(directoryHandle, name,
                     GENERIC_READ | FILE_READ_ATTRIBUTES | READ_CONTROL | SYNCHRONIZE,
-                    FILE_OPEN, true);
+                    FILE_OPEN, true, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE);
                 WindowsFileIdentity childIdentity;
                 if (!child || !GetWindowsIdentity(child.Get(), childIdentity)
                     || childIdentity.VolumeSerial != directoryIdentity.VolumeSerial

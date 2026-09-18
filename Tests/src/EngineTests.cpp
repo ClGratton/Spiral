@@ -1086,10 +1086,18 @@ namespace
         LocalPackageSnapshot first;
         LocalPackageSnapshot second;
         std::string error;
+        std::string firstError;
+        std::string secondError;
         const bool firstCreated = fixtureWritten && LocalPackageSnapshot::Create(
-            source, staging, {}, first, error);
+            source, staging, {}, first, firstError);
         const bool secondCreated = firstCreated && LocalPackageSnapshot::Create(
-            source, staging, {}, second, error);
+            source, staging, {}, second, secondError);
+#if defined(GE_PLATFORM_WINDOWS)
+        if (!firstCreated)
+            std::cerr << "  Windows snapshot deterministic-create failure: " << firstError << '\n';
+        if (firstCreated && !secondCreated)
+            std::cerr << "  Windows snapshot repeated-create failure: " << secondError << '\n';
+#endif
         const std::vector<std::string> expectedPaths {
             "Buffers/data.bin", "scene.gltf", "source.keep", "texture.png"
         };
@@ -1224,6 +1232,10 @@ namespace
         const bool validGlbAccepted = stagingPrepared && LocalPackageSnapshot::Create(
             validGlb, staging, {}, glbSnapshot, glbError)
             && glbSnapshot.GetRootRelativePath() == "root.glb";
+#if defined(GE_PLATFORM_WINDOWS)
+        if (!validGlbAccepted)
+            std::cerr << "  Windows snapshot valid-GLB create failure: " << glbError << '\n';
+#endif
         const std::filesystem::path missingDependency = makeSource("missing-dependency");
         WritePackageText(missingDependency / "root.gltf", MinimalGltf("missing.bin", 3));
         const std::filesystem::path shortDependency = makeSource("short-dependency");
@@ -1457,6 +1469,12 @@ namespace
             && boundary(aggregate, [](auto& options, u64 value) { options.Limits.MaximumAggregateBytes = value; })
             && boundary(gltf.size(), [](auto& options, u64 value) { options.Limits.MaximumGltfJsonBytes = value; });
         const bool preparedBoundaries = stagingPrepared && boundaries;
+#if defined(GE_PLATFORM_WINDOWS)
+        if (!preparedBoundaries)
+            std::cerr << "  Windows snapshot limit-boundary setup failure: staging-private="
+                << (stagingPrepared ? "yes" : "no")
+                << " boundaries=" << (boundaries ? "pass" : "fail") << '\n';
+#endif
 
         bool changedHookRan = false;
         LocalPackageSnapshotOptions changedOptions;

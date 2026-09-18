@@ -86,6 +86,8 @@ Local generation proved all three Debug/Release/Dist `EngineTests.vcxproj` confi
 
 That macro-boundary correction passed a warning-free incremental Debug GMake `Editor`/`EngineTests` build, all three snapshot focused tests, 122/122 Integration tests, code style, and diff checks on Linux. Raw logs are retained under ignored `output/verification/fab-windows-parity-ci-macro-correction-20260918/`; this remains host-regression evidence, not Windows qualification.
 
+Hosted run `35332484514` / Windows job `105559737859` compiled and linked successfully and passed the shared URL, receipt, and immutable-generation boundaries, but failed all three native snapshot tests. Direct control-flow review identified the shared failure: inventory tried `FILE_DIRECTORY_FILE` for ordinary files and never retried them as files. The retained-parent-relative correction adds only that file retry and removes a sealing probe's self-conflicting share mode; hostile-object checks stay intact. The available-host regression then produced a warning-free Debug GMake `Editor`/`EngineTests` build, three focused snapshot passes, 122/122 Integration, style, and diff passes. Logs are under ignored `output/verification/fab-windows-inventory-correction-20260918/`. Windows qualification remains pending a new hosted execution.
+
 ### Opt-in dependency source admission
 
 An optional source dependency is admitted before linkage only when its fetch path resolves the exact recorded commit and retains the license and third-party notice paths named in [DEPENDENCIES.md](DEPENDENCIES.md). For the Phase 3D libktx prerequisite, run:
