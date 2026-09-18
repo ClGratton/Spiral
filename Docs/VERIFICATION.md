@@ -66,9 +66,11 @@ bash Scripts/CheckCodeStyle.sh
 git diff --check
 ```
 
-Commit `92bbae2` passed a warning-free Debug GMake `Editor`/`EngineTests` build, all nine focused commands, 122/122 Integration tests, code style, and diff checks on Linux. Raw logs are retained under ignored `output/verification/fab-foundation-20260905/`. The URL test proves policy parsing, not that a browser opened. The three snapshot tests compile and execute only on Linux. No Vulkan harness or headed window is required evidence for these CPU/filesystem contracts, and none was used.
+Commit `92bbae2` passed a warning-free Debug GMake `Editor`/`EngineTests` build, all nine focused commands, 122/122 Integration tests, code style, and diff checks on Linux. Raw logs are retained under ignored `output/verification/fab-foundation-20260905/`. The URL test proves policy parsing, not that a browser opened. At that commit the three snapshot tests compiled and executed only on Linux. No Vulkan harness or headed window is required evidence for these CPU/filesystem contracts, and none was used.
 
-This result does not qualify Windows secure intake, ZIP extraction, PNG/JPEG decoding, semantic glTF cooking, project-manifest commit, Editor integration, or an actual Fab-acquired asset. Windows parity requires its retained-handle/reparse-point implementation plus native MSVC and hosted Windows execution of the secure-intake, receipt-atomicity, registry-migration/rooted-resolution, and URL-policy boundaries before the cross-platform feature can complete.
+The later Windows-parity source slice registers the same three snapshot tests on Windows and adds retained-root streaming, Win32 reparse/junction/hardlink/alternate-stream/private-ACL/noninheritability/identity-replacement/lifetime-cleanup probes. Its final Linux regression evidence is a warning-free Debug GMake `Editor`/`EngineTests` build, all nine focused commands, 122/122 Integration, the complete engine-test-runner contract, code style, diff checks, and the ASan/UBSan structured-fuzz lane with 512 runs. Raw logs are under ignored `output/verification/fab-windows-parity-source-20260918/`. The first build exit was rejected because its log contained one `-Wmisleading-indentation` warning in the new retained-root streaming reader; only the corrected rebuild is accepted.
+
+Linux execution does not qualify the Windows implementation. Windows parity still requires native MSVC compilation and execution plus hosted Windows execution of the secure-intake, receipt-atomicity, registry-migration/rooted-resolution, and URL-policy boundaries. Neither result qualifies ZIP extraction, PNG/JPEG decoding, semantic glTF cooking, project-manifest commit, Editor integration, or an actual Fab-acquired asset.
 
 ### Opt-in dependency source admission
 

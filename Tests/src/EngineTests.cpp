@@ -1,3 +1,15 @@
+#if defined(_WIN32)
+    #ifndef _WIN32_WINNT
+        #define _WIN32_WINNT 0x0A00
+    #endif
+    #ifndef NOMINMAX
+        #define NOMINMAX
+    #endif
+    #ifndef WIN32_LEAN_AND_MEAN
+        #define WIN32_LEAN_AND_MEAN
+    #endif
+#endif
+
 #include "Engine/Core/Log.h"
 #include "Engine/Core/LayerStack.h"
 #include "Engine/Core/Sha256.h"
@@ -49,6 +61,7 @@
 #include "TestSupport/StructuredFuzz.h"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <bit>
 #include <charconv>
@@ -80,6 +93,10 @@
     #include <sys/types.h>
     #include <sys/wait.h>
     #include <unistd.h>
+#elif defined(GE_PLATFORM_WINDOWS)
+    #include <Windows.h>
+    #include <Aclapi.h>
+    #include <winioctl.h>
 #endif
 
 namespace
@@ -820,15 +837,20 @@ namespace
                 "Core streaming SHA-256 is chunk-boundary invariant and preserves the portable shader API output");
     }
 
-#if defined(GE_PLATFORM_LINUX)
+#if defined(GE_PLATFORM_LINUX) || defined(GE_PLATFORM_WINDOWS)
     class ScopedPackageTestRoot
     {
     public:
         ScopedPackageTestRoot()
         {
             static std::atomic<Engine::u64> sequence { 1 };
+#if defined(GE_PLATFORM_WINDOWS)
+            const Engine::u64 processId = static_cast<Engine::u64>(::GetCurrentProcessId());
+#else
+            const Engine::u64 processId = static_cast<Engine::u64>(getpid());
+#endif
             Root = std::filesystem::temp_directory_path()
-                / ("spiral-package-snapshot-test-" + std::to_string(static_cast<Engine::u64>(getpid()))
+                / ("spiral-package-snapshot-test-" + std::to_string(processId)
                     + '-' + std::to_string(sequence.fetch_add(1, std::memory_order_relaxed)));
             std::error_code error;
             std::filesystem::remove_all(Root, error);
@@ -907,6 +929,124 @@ namespace
         return error ? std::numeric_limits<size_t>::max() : count;
     }
 
+#if defined(GE_PLATFORM_WINDOWS)
+    bool MakePackageTestDirectoryPrivate(const std::filesystem::path& path)
+    {
+        HANDLE token = nullptr;
+        if (!::OpenProcessToken(::GetCurrentProcess(), TOKEN_QUERY, &token))
+            return false;
+        DWORD required = 0;
+        ::GetTokenInformation(token, TokenUser, nullptr, 0, &required);
+        std::vector<unsigned char> tokenBytes(required);
+        const bool queried = required != 0 && ::GetTokenInformation(
+            token, TokenUser, tokenBytes.data(), required, &required) != FALSE;
+        ::CloseHandle(token);
+        if (!queried)
+            return false;
+        const auto* user = reinterpret_cast<const TOKEN_USER*>(tokenBytes.data());
+        EXPLICIT_ACCESSW access {};
+        access.grfAccessPermissions = GENERIC_ALL;
+        access.grfAccessMode = SET_ACCESS;
+        access.grfInheritance = SUB_CONTAINERS_AND_OBJECTS_INHERIT;
+        ::BuildTrusteeWithSidW(&access.Trustee, user->User.Sid);
+        PACL dacl = nullptr;
+        const DWORD aclResult = ::SetEntriesInAclW(1, &access, nullptr, &dacl);
+        if (aclResult != ERROR_SUCCESS || !dacl)
+            return false;
+        const DWORD setResult = ::SetNamedSecurityInfoW(
+            const_cast<wchar_t*>(path.c_str()), SE_FILE_OBJECT,
+            DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+            nullptr, nullptr, dacl, nullptr);
+        ::LocalFree(dacl);
+        return setResult == ERROR_SUCCESS;
+    }
+
+    bool MakePackageTestDirectoryPublic(const std::filesystem::path& path)
+    {
+        std::array<unsigned char, SECURITY_MAX_SID_SIZE> everyoneSid {};
+        DWORD sidBytes = static_cast<DWORD>(everyoneSid.size());
+        if (!::CreateWellKnownSid(WinWorldSid, nullptr, everyoneSid.data(), &sidBytes))
+            return false;
+        EXPLICIT_ACCESSW access {};
+        access.grfAccessPermissions = FILE_GENERIC_READ | FILE_GENERIC_EXECUTE;
+        access.grfAccessMode = GRANT_ACCESS;
+        access.grfInheritance = SUB_CONTAINERS_AND_OBJECTS_INHERIT;
+        ::BuildTrusteeWithSidW(&access.Trustee, everyoneSid.data());
+        PACL dacl = nullptr;
+        const DWORD aclResult = ::SetEntriesInAclW(1, &access, nullptr, &dacl);
+        if (aclResult != ERROR_SUCCESS || !dacl)
+            return false;
+        const DWORD setResult = ::SetNamedSecurityInfoW(
+            const_cast<wchar_t*>(path.c_str()), SE_FILE_OBJECT,
+            DACL_SECURITY_INFORMATION | UNPROTECTED_DACL_SECURITY_INFORMATION,
+            nullptr, nullptr, dacl, nullptr);
+        ::LocalFree(dacl);
+        return setResult == ERROR_SUCCESS;
+    }
+
+    bool MakePackageTestFileWritable(const std::filesystem::path& path)
+    {
+        // Never use a NULL DACL in a hostile-input fixture: it grants every
+        // principal full access and can turn a fixture setup bug into a pass.
+        return MakePackageTestDirectoryPrivate(path)
+            && ::SetFileAttributesW(path.c_str(), FILE_ATTRIBUTE_NORMAL) != FALSE;
+    }
+
+    bool CreatePackageTestJunction(
+        const std::filesystem::path& junction,
+        const std::filesystem::path& target)
+    {
+        std::error_code filesystemError;
+        std::filesystem::create_directory(junction, filesystemError);
+        const std::filesystem::path absoluteTarget = std::filesystem::absolute(target, filesystemError);
+        if (filesystemError)
+            return false;
+        HANDLE handle = ::CreateFileW(junction.c_str(), GENERIC_WRITE,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            nullptr, OPEN_EXISTING,
+            FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+        if (handle == INVALID_HANDLE_VALUE)
+            return false;
+
+        const std::wstring printName = absoluteTarget.wstring();
+        const std::wstring substituteName = L"\\??\\" + printName;
+        struct JunctionReparseBuffer
+        {
+            DWORD ReparseTag;
+            WORD ReparseDataLength;
+            WORD Reserved;
+            WORD SubstituteNameOffset;
+            WORD SubstituteNameLength;
+            WORD PrintNameOffset;
+            WORD PrintNameLength;
+            wchar_t PathBuffer[32768];
+        };
+        JunctionReparseBuffer buffer {};
+        buffer.ReparseTag = IO_REPARSE_TAG_MOUNT_POINT;
+        buffer.SubstituteNameLength = static_cast<WORD>(substituteName.size() * sizeof(wchar_t));
+        buffer.PrintNameOffset = static_cast<WORD>(buffer.SubstituteNameLength + sizeof(wchar_t));
+        buffer.PrintNameLength = static_cast<WORD>(printName.size() * sizeof(wchar_t));
+        if (buffer.PrintNameOffset + buffer.PrintNameLength + sizeof(wchar_t) > sizeof(buffer.PathBuffer))
+        {
+            ::CloseHandle(handle);
+            return false;
+        }
+        std::memcpy(buffer.PathBuffer, substituteName.c_str(),
+            buffer.SubstituteNameLength + sizeof(wchar_t));
+        std::memcpy(reinterpret_cast<unsigned char*>(buffer.PathBuffer) + buffer.PrintNameOffset,
+            printName.c_str(), buffer.PrintNameLength + sizeof(wchar_t));
+        buffer.ReparseDataLength = static_cast<WORD>(
+            8 + buffer.SubstituteNameLength + sizeof(wchar_t)
+            + buffer.PrintNameLength + sizeof(wchar_t));
+        DWORD returned = 0;
+        const DWORD inputBytes = static_cast<DWORD>(8 + buffer.ReparseDataLength);
+        const bool created = ::DeviceIoControl(handle, FSCTL_SET_REPARSE_POINT,
+            &buffer, inputBytes, nullptr, 0, &returned, nullptr) != FALSE;
+        ::CloseHandle(handle);
+        return created;
+    }
+#endif
+
     bool TestLocalPackageSnapshotCopiesDeterministically()
     {
         using namespace Engine;
@@ -919,8 +1059,14 @@ namespace
         std::filesystem::create_directories(staging, filesystemError);
         std::filesystem::permissions(staging, std::filesystem::perms::owner_all,
             std::filesystem::perm_options::replace, filesystemError);
+#if defined(GE_PLATFORM_WINDOWS)
+        const bool stagingPrepared = MakePackageTestDirectoryPrivate(staging);
+#else
+        const bool stagingPrepared = true;
+#endif
         const std::string gltf = MinimalGltf("Buffers/data.bin", 3);
-        const bool fixtureWritten = WritePackageText(source / "scene.gltf", gltf)
+        const bool fixtureWritten = stagingPrepared
+            && WritePackageText(source / "scene.gltf", gltf)
             && WritePackageText(source / "Buffers/data.bin", "abc")
             && WritePackageText(source / "source.keep", "source sentinel")
             && WritePackageText(source / "texture.png", "")
@@ -947,16 +1093,34 @@ namespace
         {
             return entry.RelativePath == "texture.png";
         });
+#if defined(GE_PLATFORM_WINDOWS)
+        const DWORD stagingAttributes = firstCreated
+            ? ::GetFileAttributesW(first.GetDirectory().c_str()) : INVALID_FILE_ATTRIBUTES;
+        const DWORD copiedFileAttributes = firstCreated
+            ? ::GetFileAttributesW((first.GetDirectory() / "Buffers/data.bin").c_str())
+            : INVALID_FILE_ATTRIBUTES;
+        HANDLE writableFile = firstCreated
+            ? ::CreateFileW((first.GetDirectory() / "Buffers/data.bin").c_str(), GENERIC_WRITE,
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
+                FILE_ATTRIBUTE_NORMAL, nullptr)
+            : INVALID_HANDLE_VALUE;
+        const bool stagingPrivate = stagingAttributes != INVALID_FILE_ATTRIBUTES
+            && (stagingAttributes & FILE_ATTRIBUTE_READONLY) != 0
+            && copiedFileAttributes != INVALID_FILE_ATTRIBUTES
+            && (copiedFileAttributes & FILE_ATTRIBUTE_READONLY) != 0
+            && writableFile == INVALID_HANDLE_VALUE;
+        if (writableFile != INVALID_HANDLE_VALUE)
+            ::CloseHandle(writableFile);
+#else
         struct stat stagingStatus {};
         struct stat copiedFileStatus {};
         const bool stagingPrivate = firstCreated && stat(first.GetDirectory().c_str(), &stagingStatus) == 0
             && (stagingStatus.st_mode & 0777) == 0500
             && stat((first.GetDirectory() / "Buffers/data.bin").c_str(), &copiedFileStatus) == 0
             && (copiedFileStatus.st_mode & 0777) == 0400;
-        const int retainedDirectoryDescriptor = firstCreated
-            ? std::stoi(first.GetDirectory().filename().string()) : -1;
-        const bool descriptorPrivate = retainedDirectoryDescriptor >= 0
-            && (fcntl(retainedDirectoryDescriptor, F_GETFD) & FD_CLOEXEC) != 0;
+#endif
+        const bool descriptorPrivate = firstCreated
+            && first.RetainedOwnershipIsNonInheritableForTesting();
         const bool exactInventory = firstCreated && secondCreated && actualPaths == expectedPaths
             && dataEntry != first.GetEntries().end() && dataEntry->SizeBytes == 3
             && dataEntry->Sha256 == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
@@ -965,18 +1129,27 @@ namespace
         const bool deterministic = first.GetTreeSha256()
                 == "41dd4d94e48ef524cb53ad59a97016603a2fc7503c0a14409f087e9515256293"
             && first.GetTreeSha256() == second.GetTreeSha256();
-        const bool copiedBytes = ReadPackageText(first.GetDirectory() / "scene.gltf") == gltf
-            && ReadPackageText(first.GetDirectory() / "Buffers/data.bin") == "abc"
+        std::string streamedRoot;
+        std::string streamedBuffer;
+        std::string streamError;
+        const bool copiedBytes = first.StreamFile("scene.gltf", [&](std::span<const u8> bytes)
+            { streamedRoot.append(reinterpret_cast<const char*>(bytes.data()), bytes.size()); return true; }, streamError)
+            && first.StreamFile("Buffers/data.bin", [&](std::span<const u8> bytes)
+            { streamedBuffer.append(reinterpret_cast<const char*>(bytes.data()), bytes.size()); return true; }, streamError)
+            && streamedRoot == gltf && streamedBuffer == "abc"
             && first.GetRootRelativePath() == "scene.gltf"
             && first.GetRootPath() == first.GetDirectory() / "scene.gltf";
         const std::filesystem::path preservedDirectory = first.GetDirectory();
         const std::string preservedTree = first.GetTreeSha256();
         LocalPackageSnapshotOptions rejectingOptions;
         rejectingOptions.Limits.MaximumFileCount = 0;
+        std::string preservedRootBytes;
         const bool rejectedReplacementPreservesSnapshot = !LocalPackageSnapshot::Create(
             source, staging, rejectingOptions, first, error)
             && first.GetDirectory() == preservedDirectory && first.GetTreeSha256() == preservedTree
-            && std::filesystem::exists(first.GetRootPath());
+            && first.StreamFile("scene.gltf", [&](std::span<const u8> bytes)
+                { preservedRootBytes.append(reinterpret_cast<const char*>(bytes.data()), bytes.size()); return true; }, error)
+            && preservedRootBytes == gltf;
         const std::filesystem::path releasedDirectory = first.GetDirectory();
         first = LocalPackageSnapshot {};
         const bool lifetime = !std::filesystem::exists(releasedDirectory)
@@ -1001,6 +1174,11 @@ namespace
         std::filesystem::create_directories(staging, filesystemError);
         std::filesystem::permissions(staging, std::filesystem::perms::owner_all,
             std::filesystem::perm_options::replace, filesystemError);
+#if defined(GE_PLATFORM_WINDOWS)
+        const bool stagingPrepared = MakePackageTestDirectoryPrivate(staging);
+#else
+        const bool stagingPrepared = true;
+#endif
         WritePackageText(outside, "outside sentinel");
 
         const auto rejects = [&](const std::filesystem::path& source)
@@ -1032,7 +1210,7 @@ namespace
         WritePackageText(validGlb / "root.glb", MinimalGlb());
         LocalPackageSnapshot glbSnapshot;
         std::string glbError;
-        const bool validGlbAccepted = LocalPackageSnapshot::Create(
+        const bool validGlbAccepted = stagingPrepared && LocalPackageSnapshot::Create(
             validGlb, staging, {}, glbSnapshot, glbError)
             && glbSnapshot.GetRootRelativePath() == "root.glb";
         const std::filesystem::path missingDependency = makeSource("missing-dependency");
@@ -1064,27 +1242,89 @@ namespace
         const std::filesystem::path rootTarget = makeSource("root-target");
         WritePackageText(rootTarget / "root.gltf", MinimalGltf());
         const std::filesystem::path linkedRoot = fixture.Root / "linked-root";
+#if defined(GE_PLATFORM_WINDOWS)
+        const bool rootSymlinkCreated = ::CreateSymbolicLinkW(
+            linkedRoot.c_str(), rootTarget.c_str(),
+            SYMBOLIC_LINK_FLAG_DIRECTORY | 0x2u) != FALSE;
+        const DWORD rootSymlinkError = rootSymlinkCreated ? ERROR_SUCCESS : ::GetLastError();
+#else
+        filesystemError.clear();
         std::filesystem::create_directory_symlink(rootTarget, linkedRoot, filesystemError);
         const bool rootSymlinkCreated = !filesystemError;
+#endif
         const std::filesystem::path childSymlink = makeSource("child-symlink");
         WritePackageText(childSymlink / "root.gltf", MinimalGltf());
+#if defined(GE_PLATFORM_WINDOWS)
+        const bool childSymlinkCreated = ::CreateSymbolicLinkW(
+            (childSymlink / "escape.bin").c_str(), outside.c_str(), 0x2u) != FALSE;
+        const DWORD childSymlinkError = childSymlinkCreated ? ERROR_SUCCESS : ::GetLastError();
+#else
+        filesystemError.clear();
         std::filesystem::create_symlink(outside, childSymlink / "escape.bin", filesystemError);
         const bool childSymlinkCreated = !filesystemError;
+#endif
         const std::filesystem::path hardlink = makeSource("hardlink");
         WritePackageText(hardlink / "root.gltf", MinimalGltf());
+        filesystemError.clear();
         std::filesystem::create_hard_link(outside, hardlink / "aliased.bin", filesystemError);
         const bool hardlinkCreated = !filesystemError;
+#if defined(GE_PLATFORM_LINUX)
         const std::filesystem::path fifo = makeSource("fifo");
         WritePackageText(fifo / "root.gltf", MinimalGltf());
         const bool fifoCreated = mkfifo((fifo / "pipe").c_str(), 0600) == 0;
         const bool objectTypesRejected = rootSymlinkCreated && childSymlinkCreated && hardlinkCreated && fifoCreated
             && rejects(linkedRoot) && rejects(childSymlink) && rejects(hardlink) && rejects(fifo);
+#else
+        const bool symlinkPrivilegeUnavailable = !rootSymlinkCreated && !childSymlinkCreated
+            && rootSymlinkError == ERROR_PRIVILEGE_NOT_HELD
+            && childSymlinkError == ERROR_PRIVILEGE_NOT_HELD;
+        if (symlinkPrivilegeUnavailable)
+            std::cout << "[  SKIPPED ] Windows package snapshot symlink reparse subcase: privilege unavailable\n";
+        const bool symlinksRejected = rootSymlinkCreated && childSymlinkCreated
+            && rejects(linkedRoot) && rejects(childSymlink);
+        const bool reparseProbe = symlinkPrivilegeUnavailable || symlinksRejected;
+        if (rootSymlinkCreated)
+            ::RemoveDirectoryW(linkedRoot.c_str());
+        if (childSymlinkCreated)
+            ::DeleteFileW((childSymlink / "escape.bin").c_str());
+        const std::filesystem::path childJunction = makeSource("child-junction");
+        WritePackageText(childJunction / "root.gltf", MinimalGltf());
+        const bool junctionCreated = CreatePackageTestJunction(
+            childJunction / "escape-directory", rootTarget);
+        const bool junctionRejected = junctionCreated && rejects(childJunction);
+        if (junctionCreated)
+            ::RemoveDirectoryW((childJunction / "escape-directory").c_str());
+        const bool objectTypesRejected = reparseProbe && junctionRejected
+            && hardlinkCreated && rejects(hardlink);
+#endif
 
         const std::filesystem::path collision = makeSource("case-collision");
+#if defined(GE_PLATFORM_WINDOWS)
+        HANDLE collisionDirectory = ::CreateFileW(collision.c_str(),
+            FILE_READ_ATTRIBUTES | FILE_WRITE_ATTRIBUTES,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+        struct CaseSensitiveDirectoryInfo { DWORD Flags; };
+        CaseSensitiveDirectoryInfo caseSensitiveInfo { 1 };
+        // FILE_INFO_BY_HANDLE_CLASS value 23 is FileCaseSensitiveInfo; spell it
+        // numerically so this optional fixture also compiles against older SDKs.
+        const bool collisionFixtureAvailable = collisionDirectory != INVALID_HANDLE_VALUE
+            && ::SetFileInformationByHandle(collisionDirectory,
+                static_cast<FILE_INFO_BY_HANDLE_CLASS>(23),
+                &caseSensitiveInfo, sizeof(caseSensitiveInfo)) != FALSE;
+        if (collisionDirectory != INVALID_HANDLE_VALUE)
+            ::CloseHandle(collisionDirectory);
+        if (!collisionFixtureAvailable)
+            std::cout << "[  SKIPPED ] Windows package snapshot portable-collision subcase: case-sensitive fixture unavailable\n";
+#endif
         WritePackageText(collision / "root.gltf", MinimalGltf());
         WritePackageText(collision / "Texture.bin", "A");
         WritePackageText(collision / "texture.BIN", "B");
+#if defined(GE_PLATFORM_WINDOWS)
+        const bool collisionRejected = !collisionFixtureAvailable || rejects(collision);
+#else
         const bool collisionRejected = rejects(collision);
+#endif
         const std::filesystem::path embeddedData = makeSource("embedded-data");
         WritePackageText(embeddedData / "root.gltf",
             MinimalGltf("data:application/octet-stream;base64,YWJj", 3));
@@ -1106,18 +1346,48 @@ namespace
         const std::filesystem::path executablePayload = makeSource("executable-payload");
         WritePackageText(executablePayload / "root.gltf", MinimalGltf());
         WritePackageText(executablePayload / "tool.bin", "ordinary bytes");
+#if defined(GE_PLATFORM_LINUX)
         chmod((executablePayload / "tool.bin").c_str(), 0700);
+        const bool alternateStreamRejected = true;
+#else
+        WritePackageText(executablePayload / "tool.exe", "ordinary bytes");
+        const std::filesystem::path alternateStream = makeSource("alternate-stream");
+        WritePackageText(alternateStream / "root.gltf", MinimalGltf());
+        WritePackageText(alternateStream / "carrier.bin", "ordinary bytes");
+        const std::wstring streamPath = (alternateStream / "carrier.bin").wstring() + L":hidden";
+        HANDLE stream = ::CreateFileW(streamPath.c_str(), GENERIC_WRITE,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+        const bool alternateStreamFixtureAvailable = stream != INVALID_HANDLE_VALUE;
+        if (stream != INVALID_HANDLE_VALUE)
+            ::CloseHandle(stream);
+        if (!alternateStreamFixtureAvailable)
+            std::cout << "[  SKIPPED ] Windows package snapshot alternate-stream subcase: filesystem support unavailable\n";
+        const bool alternateStreamRejected = !alternateStreamFixtureAvailable
+            || rejects(alternateStream);
+#endif
         const bool unsupportedRejected = rejects(embeddedData) && rejects(trailingJson)
             && rejects(malformedLiteral) && rejects(trailingComma)
-            && rejects(nestedArchive) && rejects(scriptPayload) && rejects(executablePayload);
+            && rejects(nestedArchive) && rejects(scriptPayload) && rejects(executablePayload)
+            && alternateStreamRejected;
         const std::filesystem::path publicStaging = fixture.Root / "public-staging";
         std::filesystem::create_directories(publicStaging, filesystemError);
+#if defined(GE_PLATFORM_LINUX)
         chmod(publicStaging.c_str(), 0755);
+#else
+        const bool publicAclApplied = MakePackageTestDirectoryPublic(publicStaging);
+#endif
         LocalPackageSnapshot publicSnapshot;
         std::string publicError;
         const bool publicStagingRejected = !LocalPackageSnapshot::Create(
             rootTarget, publicStaging, {}, publicSnapshot, publicError)
+#if defined(GE_PLATFORM_WINDOWS)
+            && publicAclApplied
+#endif
             && !publicSnapshot.IsValid() && !publicError.empty();
+#if defined(GE_PLATFORM_WINDOWS)
+        MakePackageTestFileWritable(publicStaging);
+#endif
         const bool sentinelPreserved = ReadPackageText(outside) == "outside sentinel";
         return Expect(validGlbAccepted && rootsRejected && traversalRejected && dependencyClosureRejected,
                 "snapshot accepts a minimal GLB and rejects missing/ambiguous roots, corrupt GLB, missing dependencies, and plain or encoded traversal")
@@ -1138,6 +1408,11 @@ namespace
         std::filesystem::create_directories(staging, filesystemError);
         std::filesystem::permissions(staging, std::filesystem::perms::owner_all,
             std::filesystem::perm_options::replace, filesystemError);
+#if defined(GE_PLATFORM_WINDOWS)
+        const bool stagingPrepared = MakePackageTestDirectoryPrivate(staging);
+#else
+        const bool stagingPrepared = true;
+#endif
         const std::string gltf = MinimalGltf("d.bin", 3);
         WritePackageText(source / "root.gltf", gltf);
         WritePackageText(source / "d.bin", "abc");
@@ -1170,6 +1445,7 @@ namespace
             && boundary(largestFile, [](auto& options, u64 value) { options.Limits.MaximumFileBytes = value; })
             && boundary(aggregate, [](auto& options, u64 value) { options.Limits.MaximumAggregateBytes = value; })
             && boundary(gltf.size(), [](auto& options, u64 value) { options.Limits.MaximumGltfJsonBytes = value; });
+        const bool preparedBoundaries = stagingPrepared && boundaries;
 
         bool changedHookRan = false;
         LocalPackageSnapshotOptions changedOptions;
@@ -1187,6 +1463,58 @@ namespace
             source, staging, changedOptions, changedSnapshot, changedError)
             && changedHookRan && !changedSnapshot.IsValid() && DirectoryEntryCount(staging) == 0;
         WritePackageText(source / "d.bin", "abc");
+
+        const std::filesystem::path replacedFile = source / "d.replaced";
+        bool identityHookRan = false;
+        LocalPackageSnapshotOptions identityOptions;
+        identityOptions.TestHook = [&](LocalPackageSnapshotHookPoint point, std::string_view relativePath)
+        {
+            if (identityHookRan || point != LocalPackageSnapshotHookPoint::BeforeFileCopy
+                || relativePath != "d.bin")
+                return;
+            filesystemError.clear();
+            std::filesystem::rename(source / "d.bin", replacedFile, filesystemError);
+            identityHookRan = !filesystemError && WritePackageText(source / "d.bin", "abc");
+        };
+        LocalPackageSnapshot identitySnapshot;
+        std::string identityError;
+        const bool identityReplacementRejected = !LocalPackageSnapshot::Create(
+            source, staging, identityOptions, identitySnapshot, identityError)
+            && identityHookRan && !identitySnapshot.IsValid()
+            && DirectoryEntryCount(staging) == 0;
+        std::filesystem::remove(replacedFile, filesystemError);
+        WritePackageText(source / "d.bin", "abc");
+
+        const std::filesystem::path directorySource = fixture.Root / "directory-identity-source";
+        WritePackageText(directorySource / "root.gltf", MinimalGltf());
+        WritePackageText(directorySource / "folder/payload.bin", "abc");
+        const std::filesystem::path replacedDirectory = directorySource / "folder.replaced";
+        bool directoryIdentityHookRan = false;
+        LocalPackageSnapshotOptions directoryIdentityOptions;
+        directoryIdentityOptions.TestHook = [&](LocalPackageSnapshotHookPoint point,
+            std::string_view relativePath)
+        {
+            if (directoryIdentityHookRan
+                || point != LocalPackageSnapshotHookPoint::InventoryEntry
+                || relativePath != "folder")
+                return;
+            filesystemError.clear();
+            std::filesystem::rename(
+                directorySource / "folder", replacedDirectory, filesystemError);
+            if (!filesystemError)
+            {
+                std::filesystem::create_directory(
+                    directorySource / "folder", filesystemError);
+                directoryIdentityHookRan = !filesystemError;
+            }
+        };
+        LocalPackageSnapshot directoryIdentitySnapshot;
+        std::string directoryIdentityError;
+        const bool directoryIdentityReplacementRejected = !LocalPackageSnapshot::Create(
+            directorySource, staging, directoryIdentityOptions,
+            directoryIdentitySnapshot, directoryIdentityError)
+            && directoryIdentityHookRan && !directoryIdentitySnapshot.IsValid()
+            && DirectoryEntryCount(staging) == 0;
 
         const auto cancelsAt = [&](LocalPackageSnapshotHookPoint cancellationPoint)
         {
@@ -1215,6 +1543,19 @@ namespace
             && cancelsAt(LocalPackageSnapshotHookPoint::BeforeDependencyValidation)
             && cancelsAt(LocalPackageSnapshotHookPoint::BeforeCommit);
 
+        LocalPackageSnapshotOptions throwingOptions;
+        throwingOptions.TestHook = [](LocalPackageSnapshotHookPoint point, std::string_view)
+        {
+            if (point == LocalPackageSnapshotHookPoint::InventoryComplete)
+                throw std::runtime_error("injected snapshot callback failure");
+        };
+        LocalPackageSnapshot throwingSnapshot;
+        std::string throwingError;
+        const bool throwingCallbackRejected = !LocalPackageSnapshot::Create(
+            source, staging, throwingOptions, throwingSnapshot, throwingError)
+            && !throwingSnapshot.IsValid() && !throwingError.empty()
+            && DirectoryEntryCount(staging) == 0;
+
         LocalPackageSnapshotOptions tamperedOptions;
         bool stagedFileReplaced = false;
         tamperedOptions.TestHook = [&](LocalPackageSnapshotHookPoint point, std::string_view)
@@ -1226,9 +1567,14 @@ namespace
                 const std::filesystem::path stagedRoot = entry.path() / "root.gltf";
                 if (!std::filesystem::exists(stagedRoot))
                     continue;
+#if defined(GE_PLATFORM_WINDOWS)
+                const bool madeWritable = MakePackageTestFileWritable(stagedRoot);
+                stagedFileReplaced = madeWritable && WritePackageText(stagedRoot, MinimalGltf());
+#else
                 std::filesystem::permissions(stagedRoot, std::filesystem::perms::owner_all,
                     std::filesystem::perm_options::replace, filesystemError);
                 stagedFileReplaced = !filesystemError && WritePackageText(stagedRoot, MinimalGltf());
+#endif
                 break;
             }
         };
@@ -1240,38 +1586,38 @@ namespace
             && DirectoryEntryCount(staging) == 0;
 
         LocalPackageSnapshot retainedSnapshot;
-        LocalPackageSnapshotOptions renamedParentOptions;
         const std::filesystem::path movedStaging = fixture.Root / "moved-private-staging";
-        bool stagingParentReplaced = false;
-        renamedParentOptions.TestHook = [&](LocalPackageSnapshotHookPoint point, std::string_view)
+        std::string retainedError;
+        std::string retainedBytes;
+        const bool retainedIdentity = LocalPackageSnapshot::Create(
+            source, staging, {}, retainedSnapshot, retainedError);
+        filesystemError.clear();
+        std::filesystem::rename(staging, movedStaging, filesystemError);
+        if (!filesystemError)
         {
-            if (point != LocalPackageSnapshotHookPoint::BeforeCommit || stagingParentReplaced)
-                return;
-            std::filesystem::rename(staging, movedStaging, filesystemError);
-            if (filesystemError)
-                return;
             std::filesystem::create_directories(staging, filesystemError);
             std::filesystem::permissions(staging, std::filesystem::perms::owner_all,
                 std::filesystem::perm_options::replace, filesystemError);
-            stagingParentReplaced = !filesystemError
-                && WritePackageText(staging / "replacement.keep", "replacement sentinel");
-        };
-        std::string retainedError;
-        const bool retainedIdentity = LocalPackageSnapshot::Create(
-            source, staging, renamedParentOptions, retainedSnapshot, retainedError)
-            && stagingParentReplaced
-            && ReadPackageText(retainedSnapshot.GetRootPath()) == gltf
+        }
+        const bool stagingParentReplaced = !filesystemError
+            && WritePackageText(staging / "replacement.keep", "replacement sentinel");
+        const bool retainedAfterReplacement = retainedIdentity && stagingParentReplaced
+            && retainedSnapshot.StreamFile("root.gltf", [&](std::span<const u8> bytes)
+                { retainedBytes.append(reinterpret_cast<const char*>(bytes.data()), bytes.size()); return true; }, retainedError)
+            && retainedBytes == gltf
             && ReadPackageText(staging / "replacement.keep") == "replacement sentinel";
         retainedSnapshot = LocalPackageSnapshot {};
         const bool retainedCleanup = DirectoryEntryCount(movedStaging) == 0
             && ReadPackageText(staging / "replacement.keep") == "replacement sentinel";
         const bool sentinels = ReadPackageText(source / "d.bin") == "abc"
             && ReadPackageText(outside) == "outside sentinel";
-        return Expect(boundaries,
+        return Expect(preparedBoundaries,
                 "snapshot enforces B-1/B/B+1 file-count, depth, path, segment, per-file, and aggregate limits")
-            && Expect(changedRejected && cancellations && stagedTamperingRejected
-                    && retainedIdentity && retainedCleanup && sentinels,
-                "snapshot detects changed-on-read input, cancels at every exposed boundary, retains exact identity across parent replacement, and cleans only owned staging");
+            && Expect(changedRejected && identityReplacementRejected
+                    && directoryIdentityReplacementRejected
+                    && cancellations && throwingCallbackRejected && stagedTamperingRejected
+                    && retainedAfterReplacement && retainedCleanup && sentinels,
+                "snapshot detects changed bytes and same-name identity replacement, cancels at every exposed boundary, retains exact identity across parent replacement, and cleans only owned staging");
     }
 #endif
 
@@ -12154,7 +12500,7 @@ int main(int argc, char** argv)
         FAST_TEST("External HTTPS navigation accepts only the declared host", TestExternalHttpsUrlPolicy),
         INTEGRATION_TEST("Fab receipts derive stable identity and preserve provenance transactionally", Spiral::Tests::TestFabImportReceiptAuthority),
         INTEGRATION_TEST("Fab immutable asset generations retain exact rooted resolvers", SpiralTests::TestFabImmutableAssetGenerations),
-#if defined(GE_PLATFORM_LINUX)
+#if defined(GE_PLATFORM_LINUX) || defined(GE_PLATFORM_WINDOWS)
         INTEGRATION_TEST("Local package snapshot copies deterministic immutable directory input", TestLocalPackageSnapshotCopiesDeterministically),
         INTEGRATION_TEST("Local package snapshot rejects hostile roots paths and objects", TestLocalPackageSnapshotRejectsHostileInputs),
         INTEGRATION_TEST("Local package snapshot enforces limits races cancellation and cleanup", TestLocalPackageSnapshotLimitsRacesAndCancellation),

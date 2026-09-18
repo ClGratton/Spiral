@@ -4,6 +4,7 @@
 
 #include <filesystem>
 #include <functional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -85,11 +86,25 @@ namespace Engine
             std::string& error);
 
         bool IsValid() const { return !m_Directory.empty(); }
+        // Diagnostic/convenience paths only. They are not authority-bearing and
+        // may become stale if an ancestor is renamed or replaced.
         const std::filesystem::path& GetDirectory() const { return m_Directory; }
         const std::vector<LocalPackageSnapshotEntry>& GetEntries() const { return m_Entries; }
         const std::string& GetTreeSha256() const { return m_TreeSha256; }
         const std::string& GetRootRelativePath() const { return m_RootRelativePath; }
         std::filesystem::path GetRootPath() const { return m_Directory / m_RootRelativePath; }
+
+        // Reads an accepted entry beneath the retained snapshot identity. The
+        // callback never receives a native handle; returning false aborts the
+        // read. Size, SHA-256, object identity, and link count are revalidated.
+        bool StreamFile(
+            std::string_view relativePath,
+            const std::function<bool(std::span<const u8>)>& onChunk,
+            std::string& error) const;
+
+        // Deliberately test-facing ownership invariant; this does not expose the
+        // retained native descriptor/handle or make GetDirectory trust-bearing.
+        bool RetainedOwnershipIsNonInheritableForTesting() const;
 
     private:
         void Reset() noexcept;
@@ -98,10 +113,15 @@ namespace Engine
         std::vector<LocalPackageSnapshotEntry> m_Entries;
         std::string m_TreeSha256;
         std::string m_RootRelativePath;
+#if defined(GE_PLATFORM_WINDOWS)
+        void* m_StagingParentHandle = nullptr;
+        void* m_DirectoryHandle = nullptr;
+#else
         u64 m_DirectoryDevice = 0;
         u64 m_DirectoryInode = 0;
         int m_StagingParentDescriptor = -1;
         int m_DirectoryDescriptor = -1;
+#endif
         std::string m_StagingName;
     };
 }
