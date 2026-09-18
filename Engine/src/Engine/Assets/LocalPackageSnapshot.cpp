@@ -2318,10 +2318,33 @@ namespace Engine
             return ::CopySid(sidLength, sidBytes.data(), user->User.Sid) != FALSE;
         }
 
+        bool GetCurrentTokenOwnerSidBytes(std::vector<u8>& sidBytes)
+        {
+            WindowsHandle token;
+            HANDLE rawToken = nullptr;
+            if (!::OpenProcessToken(::GetCurrentProcess(), TOKEN_QUERY, &rawToken))
+                return false;
+            token = WindowsHandle(rawToken);
+            DWORD required = 0;
+            ::GetTokenInformation(token.Get(), TokenOwner, nullptr, 0, &required);
+            if (required == 0 || ::GetLastError() != ERROR_INSUFFICIENT_BUFFER)
+                return false;
+            std::vector<u8> tokenBytes(required);
+            if (!::GetTokenInformation(token.Get(), TokenOwner,
+                tokenBytes.data(), required, &required))
+                return false;
+            const auto* owner = reinterpret_cast<const TOKEN_OWNER*>(tokenBytes.data());
+            const DWORD sidLength = ::GetLengthSid(owner->Owner);
+            sidBytes.resize(sidLength);
+            return ::CopySid(sidLength, sidBytes.data(), owner->Owner) != FALSE;
+        }
+
         bool IsPrivateWindowsDirectory(HANDLE handle)
         {
             std::vector<u8> currentUser;
-            if (!GetCurrentUserSidBytes(currentUser))
+            std::vector<u8> tokenOwner;
+            if (!GetCurrentUserSidBytes(currentUser)
+                || !GetCurrentTokenOwnerSidBytes(tokenOwner))
                 return false;
             PSID owner = nullptr;
             PACL dacl = nullptr;
@@ -2335,7 +2358,8 @@ namespace Engine
                     ::LocalFree(descriptor);
             };
             if (result != ERROR_SUCCESS || !owner || !dacl
-                || !::EqualSid(owner, currentUser.data()))
+                || (!::EqualSid(owner, currentUser.data())
+                    && !::EqualSid(owner, tokenOwner.data())))
             {
                 releaseDescriptor();
                 return false;
@@ -3276,7 +3300,7 @@ namespace Engine
             }
             if (!IsPrivateWindowsDirectory(stagingParent.Get()))
             {
-                error = "private staging parent must be owned by the current user without untrusted access";
+                error = "private staging parent must be owned by the current Windows security context without untrusted access";
                 return false;
             }
             std::error_code absoluteError;
