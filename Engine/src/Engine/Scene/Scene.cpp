@@ -99,6 +99,16 @@ namespace Engine
         {
             return scale.X == 1.0f && scale.Y == 1.0f && scale.Z == 1.0f;
         }
+
+        bool IsInsertableEntity(const SceneEntity& entity, const Math::WorldGridPolicy& policy)
+        {
+            return entity.EntityHandle.IsValid()
+                && Math::IsCanonical(entity.Transform.GetPosition(), policy)
+                && IsFinite(entity.Transform.RotationDegrees)
+                && HasStrictlyPositiveScale(entity.Transform.Scale)
+                && (!entity.Camera || HasUnitScale(entity.Transform.Scale))
+                && (!entity.Light || IsValidLightComponent(*entity.Light));
+        }
     }
 
     Scene::Scene(std::string name, Math::WorldGridPolicy worldGridPolicy)
@@ -206,6 +216,42 @@ namespace Engine
             }
         }
 
+        return true;
+    }
+
+    bool Scene::RestoreEntity(const SceneEntity& entity, size_t index)
+    {
+        return InsertEntity(SceneEntity(entity), index);
+    }
+
+    bool Scene::RestoreEntity(const SceneEntity& entity)
+    {
+        return RestoreEntity(entity, m_Entities.size());
+    }
+
+    Entity Scene::CloneEntity(Entity source, std::string name)
+    {
+        const SceneEntity* original = FindEntityStorage(source);
+        if (!original || m_NextEntityId == kInvalidEntityId
+            || m_NextEntityId == std::numeric_limits<EntityId>::max())
+        {
+            return {};
+        }
+
+        SceneEntity copy = *original;
+        copy.EntityHandle = Entity { m_NextEntityId };
+        copy.Name = std::move(name);
+        const Entity cloned = copy.EntityHandle;
+        return InsertEntity(std::move(copy), m_Entities.size()) ? cloned : Entity {};
+    }
+
+    bool Scene::TryGetEntityIndex(Entity entity, size_t& outIndex) const
+    {
+        const SceneEntity* sceneEntity = FindEntityStorage(entity);
+        if (!sceneEntity)
+            return false;
+
+        outIndex = static_cast<size_t>(sceneEntity - m_Entities.data());
         return true;
     }
 
@@ -928,6 +974,20 @@ namespace Engine
             return;
 
         m_MainCamera = *sceneEntity->Camera;
+    }
+
+    bool Scene::InsertEntity(SceneEntity&& entity, size_t index)
+    {
+        if (index > m_Entities.size() || !IsInsertableEntity(entity, m_WorldGridPolicy)
+            || FindEntityStorage(entity.EntityHandle))
+        {
+            return false;
+        }
+
+        const EntityId id = entity.EntityHandle.Id;
+        m_Entities.insert(m_Entities.begin() + static_cast<std::ptrdiff_t>(index), std::move(entity));
+        m_NextEntityId = std::max(m_NextEntityId, id + 1);
+        return true;
     }
 
     Entity Scene::CreateEntityWithId(EntityId id, std::string name)

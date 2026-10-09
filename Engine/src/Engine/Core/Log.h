@@ -1,5 +1,9 @@
 #pragma once
 
+#include "Engine/Core/Base.h"
+
+#include <atomic>
+#include <functional>
 #include <mutex>
 #include <sstream>
 #include <string>
@@ -18,9 +22,23 @@ namespace Engine
             Error
         };
 
+        // Receives every line that passes the minimum level, after it was written
+        // to the console. The view is valid only during the call. Sinks run on the
+        // logging thread under the log mutex, so delivery is totally ordered and
+        // RemoveSink never returns while its callback is running; keep them short
+        // (copy into a bounded queue) and non-throwing (exceptions are swallowed).
+        // A sink must not call Init, Shutdown or Log::Add/RemoveSink; the latter two
+        // refuse. A line logged from inside a sink is written but not re-delivered.
+        using Sink = std::function<void(Level, std::string_view)>;
+        using SinkId = u64;
+        static constexpr SinkId kInvalidSinkId = 0;
+
         static void Init();
+        // Also removes every registered sink.
         static void Shutdown();
         static void SetMinimumLevel(Level level);
+        static SinkId AddSink(Sink sink);
+        static bool RemoveSink(SinkId id);
 
         template<typename... Args>
         static void Trace(Args&&... args)
@@ -60,7 +78,7 @@ namespace Engine
 
     private:
         static std::mutex s_Mutex;
-        static Level s_MinimumLevel;
+        static std::atomic<Level> s_MinimumLevel;
         static bool s_Initialized;
     };
 }

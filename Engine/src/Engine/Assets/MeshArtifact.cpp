@@ -80,6 +80,22 @@ namespace Engine
             return false;
         }
 
+        float RoundDownToFloat(double value)
+        {
+            float result = static_cast<float>(value);
+            if (static_cast<double>(result) > value)
+                result = std::nextafter(result, -std::numeric_limits<float>::infinity());
+            return result;
+        }
+
+        float RoundUpToFloat(double value)
+        {
+            float result = static_cast<float>(value);
+            if (static_cast<double>(result) < value)
+                result = std::nextafter(result, std::numeric_limits<float>::infinity());
+            return result;
+        }
+
         static_assert(sizeof(MeshArtifactVertex) == kMeshArtifactVertexStrideBytes);
 
         constexpr std::string_view kDefaultSceneMeshSourcePath = "Engine/Generated/PrototypeCube.mesh";
@@ -381,6 +397,78 @@ namespace Engine
         }
 
         outError.clear();
+        return true;
+    }
+
+    bool ComputeMeshArtifactBounds(const MeshArtifact& artifact, MeshArtifactBounds& outBounds, std::string& outError)
+    {
+        if (!ValidateMeshArtifact(artifact, outError))
+            return false;
+
+        MeshArtifactBounds bounds {
+            { std::numeric_limits<float>::infinity(), std::numeric_limits<float>::infinity(), std::numeric_limits<float>::infinity() },
+            { -std::numeric_limits<float>::infinity(), -std::numeric_limits<float>::infinity(), -std::numeric_limits<float>::infinity() }
+        };
+        for (const MeshArtifactPrimitive& primitive : artifact.Primitives)
+        {
+            const size_t firstIndex = static_cast<size_t>(primitive.IndexByteOffset / kMeshArtifactIndexStrideBytes);
+            const size_t indexCount = static_cast<size_t>(primitive.IndexByteSize / kMeshArtifactIndexStrideBytes);
+            for (size_t index = firstIndex; index < firstIndex + indexCount; ++index)
+            {
+                const float* position = artifact.Vertices[artifact.Indices[index]].Position;
+                for (size_t axis = 0; axis < 3; ++axis)
+                {
+                    bounds.Min[axis] = std::min(bounds.Min[axis], position[axis]);
+                    bounds.Max[axis] = std::max(bounds.Max[axis], position[axis]);
+                }
+            }
+        }
+
+        outBounds = bounds;
+        outError.clear();
+        return true;
+    }
+
+    bool ResolveMeshArtifactBounds(const AssetRegistry& registry, AssetHandle asset,
+        MeshArtifactBounds& outBounds, std::string& outError)
+    {
+        MeshArtifact artifact;
+        return ResolveMeshArtifact(registry, asset, artifact, outError)
+            && ComputeMeshArtifactBounds(artifact, outBounds, outError);
+    }
+
+    bool TransformMeshArtifactBounds(const MeshArtifactBounds& bounds, const Math::Mat4& transform,
+        MeshArtifactBounds& outBounds)
+    {
+        const float* m = transform.Values;
+        bool finite = true;
+        for (size_t axis = 0; axis < 3; ++axis)
+            finite = finite && IsFinite(bounds.Min[axis]) && IsFinite(bounds.Max[axis])
+                && bounds.Min[axis] <= bounds.Max[axis];
+        for (size_t value = 0; value < 16; ++value)
+            finite = finite && IsFinite(m[value]);
+        if (!finite || m[3] != 0.0f || m[7] != 0.0f || m[11] != 0.0f || m[15] != 1.0f)
+            return false;
+
+        MeshArtifactBounds result;
+        for (size_t axis = 0; axis < 3; ++axis)
+        {
+            double minimum = m[12 + axis];
+            double maximum = m[12 + axis];
+            for (size_t source = 0; source < 3; ++source)
+            {
+                const double low = static_cast<double>(m[source * 4 + axis]) * bounds.Min[source];
+                const double high = static_cast<double>(m[source * 4 + axis]) * bounds.Max[source];
+                minimum += std::min(low, high);
+                maximum += std::max(low, high);
+            }
+            result.Min[axis] = RoundDownToFloat(minimum);
+            result.Max[axis] = RoundUpToFloat(maximum);
+            if (!IsFinite(result.Min[axis]) || !IsFinite(result.Max[axis]))
+                return false;
+        }
+
+        outBounds = result;
         return true;
     }
 

@@ -37,6 +37,24 @@ namespace Engine
 
         Entity CreateEntity(std::string name = "Entity");
         bool DestroyEntity(Entity entity);
+        // Reinserts a complete entity under the id it carries, at `index` in
+        // GetEntities() order (which is also the save order); the overload without
+        // an index appends. It restores a destroyed entity exactly and pastes a copy
+        // taken from another Scene. The request fails, leaving the Scene unchanged,
+        // when the id is invalid or already used, the index is past the end, or any
+        // component violates the invariants SetEntityTransform, AddCameraComponent
+        // and AddLightComponent enforce. The next-id counter moves above the id and
+        // is never lowered. The main-camera designation is never changed: after
+        // restoring a destroyed main camera the caller reapplies it with
+        // SetMainCameraEntity, because DestroyEntity may have promoted another camera.
+        bool RestoreEntity(const SceneEntity& entity, size_t index);
+        bool RestoreEntity(const SceneEntity& entity);
+        // Appends a copy of every component of `source` under the next unused id
+        // with the supplied name. Fails without consuming an id when `source` is
+        // unknown, no id is left, or the copy would violate the RestoreEntity
+        // invariants. Like RestoreEntity it never changes the main camera.
+        Entity CloneEntity(Entity source, std::string name);
+        bool TryGetEntityIndex(Entity entity, size_t& outIndex) const;
         bool IsEntityValid(Entity entity) const;
         Entity FindEntityByName(std::string_view name) const;
         const std::vector<SceneEntity>& GetEntities() const { return m_Entities; }
@@ -84,6 +102,7 @@ namespace Engine
         const SceneEntity* FindEntityStorage(Entity entity) const;
         void SyncMainCameraCacheFromEntity();
         Entity CreateEntityWithId(EntityId id, std::string name);
+        bool InsertEntity(SceneEntity&& entity, size_t index);
 
     private:
         std::string m_Name;
