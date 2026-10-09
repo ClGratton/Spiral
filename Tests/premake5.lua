@@ -16,7 +16,8 @@ project "EngineTests"
 
     includedirs
     {
-        "%{wks.location}/Engine/src"
+        "%{wks.location}/Engine/src",
+        "%{wks.location}/Vendor/miniz"
     }
 
     links

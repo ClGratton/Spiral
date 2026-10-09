@@ -11,6 +11,49 @@ project "Engine"
     {
         "src/**.h",
         "src/**.cpp",
+        "%{wks.location}/Vendor/miniz/miniz.c",
+        "%{wks.location}/Vendor/miniz/miniz_tdef.c",
+        "%{wks.location}/Vendor/miniz/miniz_tinfl.c",
+        "%{wks.location}/Vendor/miniz/miniz_zip.c",
+        "%{wks.location}/Vendor/zlib/adler32.c",
+        "%{wks.location}/Vendor/zlib/compress.c",
+        "%{wks.location}/Vendor/zlib/crc32.c",
+        "%{wks.location}/Vendor/zlib/deflate.c",
+        "%{wks.location}/Vendor/zlib/infback.c",
+        "%{wks.location}/Vendor/zlib/inffast.c",
+        "%{wks.location}/Vendor/zlib/inflate.c",
+        "%{wks.location}/Vendor/zlib/inftrees.c",
+        "%{wks.location}/Vendor/zlib/trees.c",
+        "%{wks.location}/Vendor/zlib/uncompr.c",
+        "%{wks.location}/Vendor/zlib/zutil.c",
+        "%{wks.location}/Vendor/libspng/spng.c",
+        "%{wks.location}/Vendor/libjpeg-turbo/jcomapi.c",
+        "%{wks.location}/Vendor/libjpeg-turbo/jdapimin.c",
+        "%{wks.location}/Vendor/libjpeg-turbo/jdatasrc.c",
+        "%{wks.location}/Vendor/libjpeg-turbo/jdhuff.c",
+        "%{wks.location}/Vendor/libjpeg-turbo/jdinput.c",
+        "%{wks.location}/Vendor/libjpeg-turbo/jdmarker.c",
+        "%{wks.location}/Vendor/libjpeg-turbo/jdmaster.c",
+        "%{wks.location}/Vendor/libjpeg-turbo/jdphuff.c",
+        "%{wks.location}/Vendor/libjpeg-turbo/jerror.c",
+        "%{wks.location}/Vendor/libjpeg-turbo/jmemmgr.c",
+        "%{wks.location}/Vendor/libjpeg-turbo/jmemnobs.c",
+        "%{wks.location}/Vendor/libjpeg-turbo/spiral_unsupported.c",
+        "%{wks.location}/Vendor/libjpeg-turbo/wrapper/jdapistd-8.c",
+        "%{wks.location}/Vendor/libjpeg-turbo/wrapper/jdcoefct-8.c",
+        "%{wks.location}/Vendor/libjpeg-turbo/wrapper/jdcolor-8.c",
+        "%{wks.location}/Vendor/libjpeg-turbo/wrapper/jddctmgr-8.c",
+        "%{wks.location}/Vendor/libjpeg-turbo/wrapper/jdmainct-8.c",
+        "%{wks.location}/Vendor/libjpeg-turbo/wrapper/jdmerge-8.c",
+        "%{wks.location}/Vendor/libjpeg-turbo/wrapper/jdpostct-8.c",
+        "%{wks.location}/Vendor/libjpeg-turbo/wrapper/jdsample-8.c",
+        "%{wks.location}/Vendor/libjpeg-turbo/wrapper/jidctflt-8.c",
+        "%{wks.location}/Vendor/libjpeg-turbo/wrapper/jidctfst-8.c",
+        "%{wks.location}/Vendor/libjpeg-turbo/wrapper/jidctint-8.c",
+        "%{wks.location}/Vendor/libjpeg-turbo/wrapper/jidctred-8.c",
+        "%{wks.location}/Vendor/libjpeg-turbo/wrapper/jquant1-8.c",
+        "%{wks.location}/Vendor/libjpeg-turbo/wrapper/jquant2-8.c",
+        "%{wks.location}/Vendor/libjpeg-turbo/wrapper/jutils-8.c",
         "%{wks.location}/Vendor/KTX-Software/lib/basis_transcode.cpp",
         "%{wks.location}/Vendor/KTX-Software/lib/checkheader.c",
         "%{wks.location}/Vendor/KTX-Software/lib/filestream.c",
@@ -53,6 +96,10 @@ project "Engine"
         "%{wks.location}/Vendor/KTX-Software/external/basisu/zstd",
         "%{wks.location}/Vendor/KTX-Software/other_include",
         "%{wks.location}/Vendor/KTX-Software/utils"
+        , "%{wks.location}/Vendor/miniz"
+        , "%{wks.location}/Vendor/zlib"
+        , "%{wks.location}/Vendor/libspng"
+        , "%{wks.location}/Vendor/libjpeg-turbo"
     }
 
     links
@@ -156,8 +203,11 @@ project "Engine"
     filter "toolset:gcc or toolset:clang"
         buildoptions { "-Wall", "-Wextra", "-Wpedantic" }
 
-    filter "files:../Vendor/KTX-Software/**"
+    filter "files:../Vendor/KTX-Software/** or ../Vendor/miniz/** or ../Vendor/zlib/** or ../Vendor/libspng/** or ../Vendor/libjpeg-turbo/**"
         warnings "Off"
+
+    filter "files:../Vendor/zlib/**"
+        defines { "Z_SOLO" }
 
     filter "files:Shaders/**.hlsl"
         buildaction "None"

@@ -51,6 +51,38 @@
       "license": "MIT"
     },
     {
+      "name": "miniz",
+      "package_url": "pkg:github/richgel999/miniz@3.1.2",
+      "relationship": "direct",
+      "scope": "runtime",
+      "source_location": "Vendor/miniz",
+      "license": "MIT"
+    },
+    {
+      "name": "zlib",
+      "package_url": "pkg:github/madler/zlib@v1.3.1",
+      "relationship": "direct",
+      "scope": "runtime",
+      "source_location": "Vendor/zlib",
+      "license": "Zlib"
+    },
+    {
+      "name": "libspng",
+      "package_url": "pkg:github/randy408/libspng@v0.7.4",
+      "relationship": "direct",
+      "scope": "runtime",
+      "source_location": "Vendor/libspng",
+      "license": "BSD-2-Clause AND Libpng-2.0"
+    },
+    {
+      "name": "libjpeg-turbo",
+      "package_url": "pkg:github/libjpeg-turbo/libjpeg-turbo@3.2.0",
+      "relationship": "direct",
+      "scope": "runtime",
+      "source_location": "Vendor/libjpeg-turbo",
+      "license": "IJG AND BSD-3-Clause AND Zlib"
+    },
+    {
       "name": "KTX-Software",
       "package_url": "pkg:github/KhronosGroup/KTX-Software@4d6fc70eaf62ad0558e63e8d97eb9766118327a6",
       "relationship": "direct",

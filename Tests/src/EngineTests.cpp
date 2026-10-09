@@ -56,6 +56,8 @@
 #include "Engine/Scene/Scene.h"
 #include "ExternalUrlTests.h"
 #include "FabImmutableAssetTests.h"
+#include "FabArchiveTests.h"
+#include "CommonImageTests.h"
 #include "FabImportReceiptTests.h"
 #include "TestSupport/GeneratedTest.h"
 #include "TestSupport/StructuredFuzz.h"
@@ -12586,6 +12588,8 @@ int main(int argc, char** argv)
         FAST_TEST("External HTTPS navigation accepts only the declared host", TestExternalHttpsUrlPolicy),
         INTEGRATION_TEST("Fab receipts derive stable identity and preserve provenance transactionally", Spiral::Tests::TestFabImportReceiptAuthority),
         INTEGRATION_TEST("Fab immutable asset generations retain exact rooted resolvers", SpiralTests::TestFabImmutableAssetGenerations),
+        INTEGRATION_TEST("Fab hostile ZIP admission streams bounded canonical members and rejects unsafe archives atomically", SpiralTests::TestFabZipAdmission),
+        INTEGRATION_TEST("Common PNG and JPEG decoders admit bounded images and reject hostile inputs atomically", SpiralTests::TestCommonImageAdmission),
 #if defined(GE_PLATFORM_LINUX) || defined(GE_PLATFORM_WINDOWS)
         INTEGRATION_TEST("Local package snapshot copies deterministic immutable directory input", TestLocalPackageSnapshotCopiesDeterministically),
         INTEGRATION_TEST("Local package snapshot rejects hostile roots paths and objects", TestLocalPackageSnapshotRejectsHostileInputs),
