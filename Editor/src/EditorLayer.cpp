@@ -2,6 +2,7 @@
 
 #include "Engine/Events/KeyEvent.h"
 #include "Engine/Events/MouseEvent.h"
+#include "Engine/Assets/ProjectManifest.h"
 #include "Engine/Assets/TextureArtifact.h"
 
 #include <imgui.h>
@@ -22,7 +23,6 @@
 namespace
 {
     constexpr const char* AssetDragPayloadType = "SPIRAL_ASSET_HANDLE";
-    constexpr int ProjectFormatVersion = 6;
     constexpr int EditorSettingsFormatVersion = 1;
 
     bool HasCommandLineOption(const Engine::ApplicationCommandLineArgs& args,
@@ -49,15 +49,6 @@ namespace
         Engine::AssetType Type = Engine::AssetType::Unknown;
     };
 
-    struct ProjectManifest
-    {
-        std::string ScenePath;
-        std::string AssetRegistryPath;
-        Engine::FramePacingPolicy FramePacingPolicy;
-        Engine::PresentationPolicy PresentationPolicy = Engine::PresentationPolicy::Synchronized;
-        Engine::RendererColorPipelineSettings ColorPipelineSettings;
-    };
-
     const char* ToEditorSettingsNavigationPreset(ViewportNavigationPreset preset)
     {
         switch (preset)
@@ -80,38 +71,6 @@ namespace
             outPreset = ViewportNavigationPreset::Unreal;
             return true;
         }
-        return false;
-    }
-
-    bool ParseFramePacingMode(std::string_view text, Engine::FramePacingMode& outMode)
-    {
-        if (text == "Responsive")
-        {
-            outMode = Engine::FramePacingMode::Responsive;
-            return true;
-        }
-        if (text == "SmoothFrametime")
-        {
-            outMode = Engine::FramePacingMode::SmoothFrametime;
-            return true;
-        }
-        return false;
-    }
-
-    const char* ToManifestFramePacingMode(Engine::FramePacingMode mode)
-    {
-        switch (mode)
-        {
-            case Engine::FramePacingMode::Responsive: return "Responsive";
-            case Engine::FramePacingMode::SmoothFrametime: return "SmoothFrametime";
-        }
-        return "Unknown";
-    }
-
-    bool ParsePresentationPolicy(std::string_view text, Engine::PresentationPolicy& outPolicy)
-    {
-        if (text == "Synchronized") { outPolicy = Engine::PresentationPolicy::Synchronized; return true; }
-        if (text == "TearingAllowed") { outPolicy = Engine::PresentationPolicy::TearingAllowed; return true; }
         return false;
     }
 
@@ -377,146 +336,39 @@ namespace
         return true;
     }
 
-    bool WriteProjectManifest(const std::filesystem::path& path, const ProjectManifest& manifest)
+    using ProjectManifest = Engine::ProjectManifest;
+
+    // The codec lives in Engine::Assets (format 7, transactional parse, atomic
+    // write). An ordinary save never moves the commit pointer, so a manifest that
+    // names no receipts and revision 0 keeps those of the manifest it replaces;
+    // only a project commit changes them.
+    bool WriteProjectManifest(const std::filesystem::path& path, ProjectManifest manifest)
     {
-        std::error_code error;
-        const std::filesystem::path parent = path.parent_path();
-        if (!parent.empty())
-            std::filesystem::create_directories(parent, error);
-        if (error)
-            return false;
+        if (manifest.FabReceiptsPath.empty() && manifest.ProjectRevision == 0)
+        {
+            ProjectManifest existing;
+            std::string existingError;
+            if (Engine::LoadProjectManifest(path, existing, existingError))
+            {
+                manifest.FabReceiptsPath = std::move(existing.FabReceiptsPath);
+                manifest.ProjectRevision = existing.ProjectRevision;
+            }
+        }
 
-        std::ofstream output(path, std::ios::out | std::ios::trunc);
-        if (!output)
-            return false;
-        output << std::setprecision(std::numeric_limits<double>::max_digits10);
-
-        output << "SpiralProject " << ProjectFormatVersion << '\n';
-        output << "Scene " << std::quoted(manifest.ScenePath) << '\n';
-        output << "AssetRegistry " << std::quoted(manifest.AssetRegistryPath) << '\n';
-        output << "FramePacingMode " << ToManifestFramePacingMode(manifest.FramePacingPolicy.Mode) << '\n';
-        output << "FramePacingTargetFps " << manifest.FramePacingPolicy.SmoothTargetFramesPerSecond << '\n';
-        output << "PresentationPolicy " << Engine::ToString(manifest.PresentationPolicy) << '\n';
-        output << "ManualExposureEV100 " << manifest.ColorPipelineSettings.ManualExposureEV100 << '\n';
-        output << "PostToneMapSaturation " << manifest.ColorPipelineSettings.PostToneMapSaturation << '\n';
-        output << "PostToneMapContrast " << manifest.ColorPipelineSettings.PostToneMapContrast << '\n';
-        output << "ExposureMode " << Engine::ToString(manifest.ColorPipelineSettings.ExposureMode) << '\n';
-        output << "CameraApertureFNumber " << manifest.ColorPipelineSettings.CameraApertureFNumber << '\n';
-        output << "CameraShutterSeconds " << manifest.ColorPipelineSettings.CameraShutterSeconds << '\n';
-        output << "CameraISO " << manifest.ColorPipelineSettings.CameraISO << '\n';
-        return static_cast<bool>(output);
+        std::string error;
+        if (Engine::StoreProjectManifest(path, manifest, error))
+            return true;
+        Engine::Log::Error("Could not write project manifest ", path.string(), ": ", error);
+        return false;
     }
 
     bool ReadProjectManifest(const std::filesystem::path& path, ProjectManifest& outManifest)
     {
-        std::ifstream input(path);
-        if (!input)
-            return false;
-
-        std::string magic;
-        int version = 0;
-        if (!(input >> magic >> version) || magic != "SpiralProject" || version < 1 || version > ProjectFormatVersion)
-            return false;
-
-        ProjectManifest manifest;
-        bool readFramePacingMode = version == 1;
-        bool readFramePacingTarget = version == 1;
-        bool readPresentationPolicy = version < 3;
-        bool readManualExposure = version < 4;
-        bool readPostToneMapSaturation = version < 5;
-        bool readPostToneMapContrast = version < 5;
-        bool readExposureMode = version < 6;
-        bool readCameraAperture = version < 6;
-        bool readCameraShutter = version < 6;
-        bool readCameraISO = version < 6;
-        std::string key;
-        while (input >> key)
-        {
-            if (key == "Scene")
-                input >> std::quoted(manifest.ScenePath);
-            else if (key == "AssetRegistry")
-                input >> std::quoted(manifest.AssetRegistryPath);
-            else if (version >= 2 && key == "FramePacingMode")
-            {
-                std::string mode;
-                input >> mode;
-                if (!ParseFramePacingMode(mode, manifest.FramePacingPolicy.Mode))
-                    return false;
-                readFramePacingMode = true;
-            }
-            else if (version >= 2 && key == "FramePacingTargetFps")
-            {
-                input >> manifest.FramePacingPolicy.SmoothTargetFramesPerSecond;
-                readFramePacingTarget = true;
-            }
-            else if (version >= 3 && key == "PresentationPolicy")
-            {
-                std::string policy;
-                if (!(input >> policy) || !ParsePresentationPolicy(policy, manifest.PresentationPolicy))
-                    return false;
-                readPresentationPolicy = true;
-            }
-            else if (version >= 4 && key == "ManualExposureEV100")
-            {
-                if (!(input >> manifest.ColorPipelineSettings.ManualExposureEV100))
-                    return false;
-                readManualExposure = true;
-            }
-            else if (version >= 5 && key == "PostToneMapSaturation")
-            {
-                if (!(input >> manifest.ColorPipelineSettings.PostToneMapSaturation))
-                    return false;
-                readPostToneMapSaturation = true;
-            }
-            else if (version >= 5 && key == "PostToneMapContrast")
-            {
-                if (!(input >> manifest.ColorPipelineSettings.PostToneMapContrast))
-                    return false;
-                readPostToneMapContrast = true;
-            }
-            else if (version >= 6 && key == "ExposureMode")
-            {
-                std::string mode;
-                if (!(input >> mode)
-                    || !Engine::ParseRendererExposureMode(mode, manifest.ColorPipelineSettings.ExposureMode))
-                    return false;
-                readExposureMode = true;
-            }
-            else if (version >= 6 && key == "CameraApertureFNumber")
-            {
-                if (!(input >> manifest.ColorPipelineSettings.CameraApertureFNumber))
-                    return false;
-                readCameraAperture = true;
-            }
-            else if (version >= 6 && key == "CameraShutterSeconds")
-            {
-                if (!(input >> manifest.ColorPipelineSettings.CameraShutterSeconds))
-                    return false;
-                readCameraShutter = true;
-            }
-            else if (version >= 6 && key == "CameraISO")
-            {
-                if (!(input >> manifest.ColorPipelineSettings.CameraISO))
-                    return false;
-                readCameraISO = true;
-            }
-            else
-                return false;
-
-            if (!input)
-                return false;
-        }
-
-        if (!readFramePacingMode || !readFramePacingTarget || !readPresentationPolicy || !readManualExposure
-            || !readPostToneMapSaturation || !readPostToneMapContrast
-            || !readExposureMode || !readCameraAperture || !readCameraShutter || !readCameraISO
-            || manifest.ScenePath.empty() || manifest.AssetRegistryPath.empty()
-            || !Engine::IsValidFramePacingPolicy(manifest.FramePacingPolicy)
-            || !Engine::IsValidRendererColorPipelineSettings(manifest.ColorPipelineSettings))
-            return false;
-
-        outManifest = std::move(manifest);
-        return true;
+        std::string error;
+        if (Engine::LoadProjectManifest(path, outManifest, error))
+            return true;
+        Engine::Log::Warn("Project manifest rejected: ", path.string(), " (", error, ")");
+        return false;
     }
 }
 

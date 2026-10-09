@@ -64,6 +64,35 @@ namespace Engine
         bool m_Focused;
     };
 
+    // Ratio of the window's pixel density to the platform's default (1.0 = unscaled).
+    class WindowContentScaleEvent final : public Event
+    {
+    public:
+        WindowContentScaleEvent(float xScale, float yScale)
+            : m_XScale(xScale), m_YScale(yScale)
+        {
+        }
+
+        float GetXScale() const { return m_XScale; }
+        float GetYScale() const { return m_YScale; }
+
+        std::string ToString() const override
+        {
+            std::stringstream ss;
+            ss << "WindowContentScaleEvent: " << m_XScale << ", " << m_YScale;
+            return ss.str();
+        }
+
+        static EventType GetStaticType() { return EventType::WindowContentScale; }
+        EventType GetEventType() const override { return GetStaticType(); }
+        std::string_view GetName() const override { return "WindowContentScale"; }
+        u32 GetCategoryFlags() const override { return EventCategoryApplication; }
+
+    private:
+        float m_XScale;
+        float m_YScale;
+    };
+
     class FileDropEvent final : public Event
     {
     public:

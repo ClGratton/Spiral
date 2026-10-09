@@ -128,6 +128,7 @@ REQUIRED_MARKERS=(
     "RenderGraphTimestampScopesV1 backend=Vulkan"
     "RendererGpuTimingV1 backend=NVRHI Vulkan"
     "RHITextureUploadSmokeV2 backend=Vulkan, mips=4, bc5Bytes=pass, bc7Bytes=pass, bc7SrgbBytes=pass, finalState=ShaderResource, result=pass"
+    "RhiTextureWriteV1 backend=Vulkan, submissions=6, wholeWrites=2, regionWrites=4, paddedPitch=pass, sourceOverwrittenAfterRecord=pass, overlapOrder=pass, bytesCompared=2176, mismatches=0, rejected=7, rejectedState=unchanged, steadyStates=CopySource+ShaderResource, writeCompletionWait=none, result=pass"
     "TextureGpuResourceCacheSmokeV1 backend=Vulkan, preferred=pass, reuse=exact, replacement=pass, fallback=RGBA8, shaderResource=pass, cacheCleared=pass, retained=pass, result=pass"
     "TextureRuntimePublicationSmokeV1 backend=Vulkan, catalog=pass, upload=pass, table=pass, replacement=exact-token-pass, removal=exact-token-pass, failure=error-resource, idleRelease=pass, result=pass"
     "SceneMaterialTextureShaderReadbackV1 backend=Vulkan roles=exact-pass colorSpace=sRGB-linear-pass samplers=declared-pass mip1=pass missing=semantic-defaults-pass invalid=error-resource-pass retention=exact-token-pass result=pass"
@@ -173,7 +174,7 @@ for ((ATTEMPT = 1; ATTEMPT <= ITERATIONS; ++ATTEMPT)); do
         my $status = $?;
         exit(128 + ($status & 127)) if $status & 127;
         exit($status >> 8);
-    ' "$CHILD_TIMEOUT_SECONDS" "$EDITOR" --vulkan-render-smoke --renderer-capability-smoke --color-pipeline-settings-smoke --scene-viewport-render-graph-smoke --vulkan-rhi-core-smoke --vulkan-rhi-indexed-draw-smoke --vulkan-scene-viewport-raster-smoke --rhi-buffer-transition-smoke --rhi-completion-smoke --rhi-queue-dependency-smoke --rhi-buffer-ownership-smoke --rhi-texture-ownership-smoke --rhi-resource-ownership-smoke --rhi-resource-state-smoke --rhi-texture-upload-smoke --rhi-sampled-table-smoke --rhi-fixed-structured-buffer-smoke --render-graph-execution-smoke) 2>&1 | tee "$LOG_FILE"
+    ' "$CHILD_TIMEOUT_SECONDS" "$EDITOR" --vulkan-render-smoke --renderer-capability-smoke --color-pipeline-settings-smoke --scene-viewport-render-graph-smoke --vulkan-rhi-core-smoke --vulkan-rhi-indexed-draw-smoke --vulkan-scene-viewport-raster-smoke --rhi-buffer-transition-smoke --rhi-completion-smoke --rhi-queue-dependency-smoke --rhi-buffer-ownership-smoke --rhi-texture-ownership-smoke --rhi-resource-ownership-smoke --rhi-resource-state-smoke --rhi-texture-upload-smoke --rhi-texture-update-smoke --rhi-sampled-table-smoke --rhi-fixed-structured-buffer-smoke --render-graph-execution-smoke) 2>&1 | tee "$LOG_FILE"
     STATUS=${PIPESTATUS[0]}
     set -e
     if [[ $STATUS -ne 0 ]]; then

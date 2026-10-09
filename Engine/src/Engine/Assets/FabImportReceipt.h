@@ -100,6 +100,9 @@ namespace Engine
         FabMetadataFlag GeneratedWithAI = FabMetadataFlag::Unknown;
 
         FabDigestKind SourceDigestKind = FabDigestKind::Unknown;
+        // SHA-256 of the source the user selected: the archive file for ZIP
+        // intake, and the snapshot's ExpandedTreeSha256 for a directory or a
+        // dropped non-archive file (which has no archive to hash).
         std::string SourceSha256;
         std::string ExpandedTreeSha256;
         std::string ImporterVersion;
@@ -195,4 +198,12 @@ namespace Engine
     bool AddFabImportReceipt(
         FabReceiptCollection& collection, const FabImportReceipt& candidate,
         FabReceiptDecision& outDecision, std::string& outError);
+
+    // Chooses the provenance relation that ClassifyFabImportReceipt will
+    // accept for `receipt` against the validated collection: the existing
+    // relation for a same-identity reimport, a source replacement of the stream
+    // tip, a product update of the product tip, or Initial for a new product.
+    // `receipt` is changed only on success, and only in the relation fields.
+    bool AssignFabGenerationRelation(
+        const FabReceiptCollection& collection, FabImportReceipt& receipt, std::string& outError);
 }

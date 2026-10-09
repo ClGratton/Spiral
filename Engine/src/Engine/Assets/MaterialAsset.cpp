@@ -1,5 +1,7 @@
 #include "Engine/Assets/MaterialAsset.h"
 
+#include "Engine/Core/AtomicFile.h"
+
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -305,20 +307,10 @@ namespace Engine
 
     bool MaterialAsset::SaveToFile(const std::filesystem::path& path) const
     {
-        std::error_code error;
-        const std::filesystem::path parent = path.parent_path();
-        if (!parent.empty())
-            std::filesystem::create_directories(parent, error);
-        if (error)
-            return false;
-
         MaterialAsset material = *this;
         material.ClampValues();
 
-        std::ofstream output(path, std::ios::out | std::ios::trunc);
-        if (!output)
-            return false;
-
+        std::ostringstream output;
         output << "SpiralMaterial " << kMaterialAssetFormatVersion << '\n';
         output << "Name " << std::quoted(material.Name) << '\n';
         output << "ShadingModel " << ToString(material.ShadingModel) << '\n';
@@ -343,7 +335,8 @@ namespace Engine
         for (MaterialTextureSlot slot : kMaterialTextureSlots)
             output << "Sampler " << ToString(slot) << ' ' << ToString(material.GetSampler(slot)) << '\n';
 
-        return static_cast<bool>(output);
+        std::string writeError;
+        return static_cast<bool>(output) && WriteFileAtomically(path, output.str(), writeError);
     }
 
     bool MaterialAsset::LoadFromFile(const std::filesystem::path& path, MaterialAsset& outMaterial)

@@ -26,6 +26,11 @@ Vendor/DXC/*
 !Vendor/DXC/README.md
 !Vendor/DXC/NOTICE.md
 
+# Pinned CEF archive, extracted distribution, and staged browser runtime.
+Vendor/CEF/*
+!Vendor/CEF/README.md
+!Vendor/CEF/THIRD_PARTY_NOTICE.md
+
 # Optional pinned libktx source acquired for the Phase 3D importer boundary.
 Vendor/KTX-Software/
 

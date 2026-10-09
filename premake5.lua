@@ -77,6 +77,38 @@ shader_toolchain_defines = {
     'GE_DXC_PACKAGE_SHA256="' .. dxc_package_sha256 .. '"'
 }
 
+-- CEF is an optional, Linux-only, Editor-private input. It is enabled only when
+-- Scripts/FetchCEF.sh has installed the exact pinned package; the sanitizer
+-- lane stays CEF-free because the wrapper must share the host compiler.
+local browser_pin_file = assert(io.open(path.join(_MAIN_SCRIPT_DIR, "Scripts/BrowserRuntimePins.env"), "r"))
+local browser_runtime_pins = {}
+for line in browser_pin_file:lines() do
+    local key, value = line:match("^([A-Z0-9_]+)=(.+)$")
+    if key ~= nil then browser_runtime_pins[key] = value end
+end
+browser_pin_file:close()
+assert(browser_runtime_pins.BROWSER_RUNTIME_PIN_FORMAT == "1", "Unsupported browser runtime pin format")
+cef_root = path.join("Vendor/CEF", "v" .. browser_runtime_pins.CEF_VERSION, "linux-x86_64")
+
+local function installed_cef_matches_pin()
+    local package_root = path.join(_MAIN_SCRIPT_DIR, cef_root)
+    local manifest = io.open(path.join(package_root, ".spiral-package-manifest"), "r")
+    if manifest == nil then return false end
+    local pinned = false
+    for line in manifest:lines() do
+        if line == "sha256=" .. browser_runtime_pins.CEF_LINUX_X86_64_SHA256 then pinned = true end
+    end
+    manifest:close()
+    return pinned
+        and os.isfile(path.join(package_root, "include/cef_app.h"))
+        and os.isfile(path.join(package_root, "libcef_dll/wrapper/libcef_dll_wrapper.cc"))
+        and os.isfile(path.join(package_root, "Release/libcef.so"))
+end
+has_cef = os.host() == "linux" and _OPTIONS["sanitize"] == nil and installed_cef_matches_pin()
+if os.host() == "linux" and not has_cef and _OPTIONS["sanitize"] == nil and os.isdir(path.join(_MAIN_SCRIPT_DIR, cef_root)) then
+    print("CEF at " .. cef_root .. " does not match Scripts/BrowserRuntimePins.env; generating without CEF. Run Scripts/FetchCEF.sh --force.")
+end
+
 group "Core"
     include "Vendor/GLFW"
     include "Vendor/ImGui"
@@ -88,6 +120,10 @@ group ""
 
 group "Tools"
     include "Editor"
+    if has_cef then
+        include "Vendor/CEF.premake.lua"
+        include "Editor/helper"
+    end
 group ""
 
 group "Examples"

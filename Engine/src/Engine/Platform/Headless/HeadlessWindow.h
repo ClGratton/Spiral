@@ -21,6 +21,7 @@ namespace Engine
         void SetCursorMode(CursorMode mode) override { (void)mode; }
         void GetCursorPosition(double& outX, double& outY) const override { outX = 0.0; outY = 0.0; }
         void SetCursorPosition(double x, double y) override { (void)x; (void)y; }
+        WindowContentScale GetContentScale() const override { return {}; }
         void* GetNativeWindow() const override { return nullptr; }
         void SetEventCallback(EventCallbackFn callback) override { m_EventCallback = std::move(callback); }
 

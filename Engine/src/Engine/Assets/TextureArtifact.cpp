@@ -806,13 +806,15 @@ namespace Engine
         return true;
     }
 
-    bool TextureImporter::CookNormalizedRgba8(const NormalizedTextureSource& source, AssetRegistry& registry, TextureTargetProfile target, TextureArtifact& outArtifact, std::string& outError)
+    bool TextureImporter::BuildNormalizedRgba8Artifact(const NormalizedTextureSource& source,
+        std::string_view artifactSourcePath, TextureTargetProfile target, bool hasAlpha,
+        TextureArtifact& outArtifact, std::string& outError)
     {
         if (target != TextureTargetProfile::RGBAFallback) { outError = "selected target profile requires the deferred KTX2/Basis transcode boundary"; return false; }
         NormalizedTextureSource prepared;
         u32 generatedMipCount = 0;
         if (!ApplyNormalizedRgba8MipPolicy(source, prepared, generatedMipCount, outError)) return false;
-        TextureArtifact candidate; candidate.SourcePath = AssetRegistry::NormalizeSourcePath(prepared.SourcePath); candidate.Role = prepared.Role; candidate.ColorSpace = prepared.ColorSpace; candidate.TargetProfile = target; candidate.HasAlpha = true;
+        TextureArtifact candidate; candidate.SourcePath = std::string(artifactSourcePath); candidate.Role = prepared.Role; candidate.ColorSpace = prepared.ColorSpace; candidate.TargetProfile = target; candidate.HasAlpha = hasAlpha;
         candidate.CookedFormat = prepared.ColorSpace == TextureColorSpace::Srgb ? TextureCookedFormat::R8G8B8A8Srgb : TextureCookedFormat::R8G8B8A8Unorm;
         if (candidate.SourcePath.empty()) { outError = "normalized texture source path is invalid"; return false; }
         u32 width = prepared.Width, height = prepared.Height;
@@ -823,6 +825,13 @@ namespace Engine
             candidate.Mips.push_back({ width, height, static_cast<u64>(candidate.Payload.size()), byteCount }); candidate.Payload.insert(candidate.Payload.end(), pixels.begin(), pixels.end());
             width = width > 1 ? width / 2 : 1; height = height > 1 ? height / 2 : 1;
         }
+        outArtifact = std::move(candidate); outError.clear(); return true;
+    }
+
+    bool TextureImporter::CookNormalizedRgba8(const NormalizedTextureSource& source, AssetRegistry& registry, TextureTargetProfile target, TextureArtifact& outArtifact, std::string& outError)
+    {
+        TextureArtifact candidate;
+        if (!BuildNormalizedRgba8Artifact(source, AssetRegistry::NormalizeSourcePath(source.SourcePath), target, true, candidate, outError)) return false;
         const bool existed = registry.FindAssetByPath(AssetType::Texture, candidate.SourcePath) != kInvalidAssetHandle;
         candidate.Asset = registry.RegisterAsset(AssetType::Texture, candidate.SourcePath);
         if (candidate.Asset == kInvalidAssetHandle || !StoreTextureArtifact(

@@ -4,6 +4,7 @@
 #include "Engine/Events/ApplicationEvent.h"
 #include "Engine/Events/KeyEvent.h"
 #include "Engine/Events/MouseEvent.h"
+#include "Engine/Platform/InputTranslation.h"
 
 #include <GLFW/glfw3.h>
 
@@ -14,6 +15,16 @@ namespace Engine
 {
     namespace
     {
+        static_assert(GlfwInputValues::ActionRelease == GLFW_RELEASE);
+        static_assert(GlfwInputValues::ActionPress == GLFW_PRESS);
+        static_assert(GlfwInputValues::ActionRepeat == GLFW_REPEAT);
+        static_assert(GlfwInputValues::ModShift == GLFW_MOD_SHIFT);
+        static_assert(GlfwInputValues::ModControl == GLFW_MOD_CONTROL);
+        static_assert(GlfwInputValues::ModAlt == GLFW_MOD_ALT);
+        static_assert(GlfwInputValues::ModSuper == GLFW_MOD_SUPER);
+        static_assert(GlfwInputValues::ModCapsLock == GLFW_MOD_CAPS_LOCK);
+        static_assert(GlfwInputValues::ModNumLock == GLFW_MOD_NUM_LOCK);
+
         u32 s_GLFWWindowCount = 0;
 
         void GLFWErrorCallback(int error, const char* description)
@@ -129,48 +140,14 @@ namespace Engine
 
         glfwSetKeyCallback(m_Window, [](GLFWwindow* window, int key, int scancode, int action, int mods)
         {
-            (void)scancode;
-            (void)mods;
-
             WindowData& data = *static_cast<WindowData*>(glfwGetWindowUserPointer(window));
-            if (!data.EventCallback)
-                return;
-
-            if (action == GLFW_PRESS)
-            {
-                KeyPressedEvent event(key, false);
-                data.EventCallback(event);
-            }
-            else if (action == GLFW_RELEASE)
-            {
-                KeyReleasedEvent event(key);
-                data.EventCallback(event);
-            }
-            else if (action == GLFW_REPEAT)
-            {
-                KeyPressedEvent event(key, true);
-                data.EventCallback(event);
-            }
+            DispatchGlfwKey(key, scancode, action, mods, data.EventCallback);
         });
 
         glfwSetMouseButtonCallback(m_Window, [](GLFWwindow* window, int button, int action, int mods)
         {
-            (void)mods;
-
             WindowData& data = *static_cast<WindowData*>(glfwGetWindowUserPointer(window));
-            if (!data.EventCallback)
-                return;
-
-            if (action == GLFW_PRESS)
-            {
-                MouseButtonPressedEvent event(button);
-                data.EventCallback(event);
-            }
-            else if (action == GLFW_RELEASE)
-            {
-                MouseButtonReleasedEvent event(button);
-                data.EventCallback(event);
-            }
+            DispatchGlfwMouseButton(button, action, mods, data.EventCallback);
         });
 
         glfwSetScrollCallback(m_Window, [](GLFWwindow* window, double xOffset, double yOffset)
@@ -188,6 +165,37 @@ namespace Engine
             if (data.EventCallback)
                 data.EventCallback(event);
         });
+
+        glfwSetCharCallback(m_Window, [](GLFWwindow* window, unsigned int codePoint)
+        {
+            WindowData& data = *static_cast<WindowData*>(glfwGetWindowUserPointer(window));
+            DispatchGlfwChar(codePoint, data.EventCallback);
+        });
+
+        glfwSetCursorEnterCallback(m_Window, [](GLFWwindow* window, int entered)
+        {
+            WindowData& data = *static_cast<WindowData*>(glfwGetWindowUserPointer(window));
+            DispatchGlfwCursorEnter(entered, data.EventCallback);
+        });
+
+        glfwSetWindowContentScaleCallback(m_Window, [](GLFWwindow* window, float xScale, float yScale)
+        {
+            WindowData& data = *static_cast<WindowData*>(glfwGetWindowUserPointer(window));
+            if (!IsValidContentScale(xScale, yScale))
+                return;
+
+            data.ContentScale = { xScale, yScale };
+            DispatchGlfwContentScale(xScale, yScale, data.EventCallback);
+        });
+
+        // Without this GLFW omits Caps Lock and Num Lock from the key and mouse-button mods.
+        glfwSetInputMode(m_Window, GLFW_LOCK_KEY_MODS, GLFW_TRUE);
+
+        float contentScaleX = 1.0f;
+        float contentScaleY = 1.0f;
+        glfwGetWindowContentScale(m_Window, &contentScaleX, &contentScaleY);
+        if (IsValidContentScale(contentScaleX, contentScaleY))
+            m_Data.ContentScale = { contentScaleX, contentScaleY };
 
         Log::Info("Created GLFW window: ", m_Data.Title, " (", m_Data.Width, "x", m_Data.Height, ")");
     }

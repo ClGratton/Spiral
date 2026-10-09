@@ -42,6 +42,7 @@ namespace Engine
         bool RunRHIResourceStateSmoke(RHI::Device& device, std::string_view backendName);
         bool RunRHITextureReadbackSmoke(RHI::Device& device, std::string_view backendName);
         bool RunRHITextureUploadSmoke(RHI::Device& device, std::string_view backendName);
+        bool RunRHITextureUpdateSmoke(RHI::Device& device, std::string_view backendName);
         bool RunRHISampledTextureTableSmoke(RHI::Device& device, std::string_view backendName);
         bool RunRHIFixedStructuredBufferSmoke(RHI::Device& device, std::string_view backendName);
         bool RunRHIMaterialTextureShaderSmoke(RHI::Device& device, std::string_view backendName);

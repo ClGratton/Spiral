@@ -3740,6 +3740,36 @@ namespace Engine
     }
 #endif
 
+    bool ResolveGltfDependencyUri(std::string_view rootRelativePath, std::string_view jsonDecodedUri,
+        const LocalPackageSnapshotLimits& limits, std::string& relativePath, std::string& error)
+    {
+        std::vector<std::string> rootSegments;
+        size_t offset = 0;
+        while (offset <= rootRelativePath.size())
+        {
+            const size_t separator = rootRelativePath.find('/', offset);
+            rootSegments.emplace_back(rootRelativePath.substr(offset,
+                separator == std::string_view::npos ? std::string_view::npos : separator - offset));
+            if (separator == std::string_view::npos)
+                break;
+            offset = separator + 1;
+        }
+        LocalPackageSnapshotOptions options;
+        options.Limits = limits;
+        std::string resolved;
+        bool embedded = false;
+        std::string resolveError;
+        if (rootRelativePath.empty() || !ResolveDependencyUri(
+            jsonDecodedUri, rootSegments, options, resolved, embedded, resolveError))
+        {
+            error = rootRelativePath.empty() ? "glTF dependency root path is empty" : std::move(resolveError);
+            return false;
+        }
+        relativePath = std::move(resolved);
+        error.clear();
+        return true;
+    }
+
     bool LocalPackageSnapshot::Create(
         const std::filesystem::path& sourceDirectory,
         const std::filesystem::path& privateStagingParent,

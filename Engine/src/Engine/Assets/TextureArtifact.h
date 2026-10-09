@@ -122,6 +122,13 @@ namespace Engine
     public:
         static bool ApplyNormalizedRgba8MipPolicy(const NormalizedTextureSource& source,
             NormalizedTextureSource& outSource, u32& outGeneratedMipCount, std::string& outError);
+        // Pure artifact construction: applies the mip policy and lays out the
+        // RGBA fallback payload without touching a registry or the filesystem.
+        // `artifactSourcePath` is stored verbatim, the caller assigns
+        // `outArtifact.Asset`, and `outArtifact` is untouched on failure.
+        static bool BuildNormalizedRgba8Artifact(const NormalizedTextureSource& source,
+            std::string_view artifactSourcePath, TextureTargetProfile target, bool hasAlpha,
+            TextureArtifact& outArtifact, std::string& outError);
         static bool CookNormalizedRgba8(const NormalizedTextureSource& source, AssetRegistry& registry,
             TextureTargetProfile target, TextureArtifact& outArtifact, std::string& outError);
         static bool CookKtx2Basis(const Ktx2BasisTextureSource& source, AssetRegistry& registry,

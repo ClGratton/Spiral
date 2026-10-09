@@ -47,12 +47,12 @@ assert_safe_zip_archive() {
 }
 
 assert_safe_tar_archive() {
-    local archive="$1" member marker line target
+    local archive="$1" compression="${2:-z}" member marker line target
     local members_file verbose_file
     members_file="$(mktemp "${TMPDIR:-/tmp}/spiral-tar-members-XXXXXX")"
     verbose_file="$(mktemp "${TMPDIR:-/tmp}/spiral-tar-verbose-XXXXXX")"
-    tar -tzf "$archive" > "$members_file"
-    LC_ALL=C tar -tvzf "$archive" > "$verbose_file"
+    tar "-t${compression}f" "$archive" > "$members_file"
+    LC_ALL=C tar "-tv${compression}f" "$archive" > "$verbose_file"
     if grep -q '^h' "$verbose_file"; then
         rm -f "$members_file" "$verbose_file"
         echo "Archive '$archive' contains hard links, which are not admitted by the toolchain extractor." >&2

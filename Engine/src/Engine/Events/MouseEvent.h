@@ -66,22 +66,24 @@ namespace Engine
     {
     public:
         int GetMouseButton() const { return m_Button; }
+        InputModifiers GetModifiers() const { return m_Modifiers; }
         u32 GetCategoryFlags() const override { return EventCategoryMouse | EventCategoryInput | EventCategoryMouseButton; }
 
     protected:
-        explicit MouseButtonEvent(int button)
-            : m_Button(button)
+        MouseButtonEvent(int button, InputModifiers modifiers)
+            : m_Button(button), m_Modifiers(modifiers)
         {
         }
 
         int m_Button;
+        InputModifiers m_Modifiers;
     };
 
     class MouseButtonPressedEvent final : public MouseButtonEvent
     {
     public:
-        explicit MouseButtonPressedEvent(int button)
-            : MouseButtonEvent(button)
+        explicit MouseButtonPressedEvent(int button, InputModifiers modifiers = InputModifierNone)
+            : MouseButtonEvent(button, modifiers)
         {
         }
 
@@ -93,13 +95,39 @@ namespace Engine
     class MouseButtonReleasedEvent final : public MouseButtonEvent
     {
     public:
-        explicit MouseButtonReleasedEvent(int button)
-            : MouseButtonEvent(button)
+        explicit MouseButtonReleasedEvent(int button, InputModifiers modifiers = InputModifierNone)
+            : MouseButtonEvent(button, modifiers)
         {
         }
 
         static EventType GetStaticType() { return EventType::MouseButtonReleased; }
         EventType GetEventType() const override { return GetStaticType(); }
         std::string_view GetName() const override { return "MouseButtonReleased"; }
+    };
+
+    class CursorEnterEvent final : public Event
+    {
+    public:
+        explicit CursorEnterEvent(bool entered)
+            : m_Entered(entered)
+        {
+        }
+
+        bool Entered() const { return m_Entered; }
+
+        std::string ToString() const override
+        {
+            std::stringstream ss;
+            ss << "CursorEnterEvent: " << (m_Entered ? "entered" : "left");
+            return ss.str();
+        }
+
+        static EventType GetStaticType() { return EventType::CursorEnter; }
+        EventType GetEventType() const override { return GetStaticType(); }
+        std::string_view GetName() const override { return "CursorEnter"; }
+        u32 GetCategoryFlags() const override { return EventCategoryMouse | EventCategoryInput; }
+
+    private:
+        bool m_Entered;
     };
 }

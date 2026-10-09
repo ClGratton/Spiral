@@ -1325,4 +1325,59 @@ namespace Engine
         outError.clear();
         return true;
     }
+
+    bool AssignFabGenerationRelation(
+        const FabReceiptCollection& collection, FabImportReceipt& receipt, std::string& outError)
+    {
+        if (!ValidateFabReceiptCollection(collection, outError))
+            return false;
+        if (!IsLowerSha256(receipt.StreamId) || !IsLowerSha256(receipt.GenerationId)
+            || !IsProductIdentity(receipt.ProductIdentity))
+            return Fail(outError, "Fab receipt identity is incomplete for relation assignment");
+
+        FabGenerationRelation relation = FabGenerationRelation::Initial;
+        std::string relatedStreamId;
+        std::string relatedGenerationId;
+        const auto sameIdentity = std::find_if(collection.Receipts.begin(), collection.Receipts.end(),
+            [&receipt](const FabImportReceipt& existing)
+            {
+                return (existing.StreamId == receipt.StreamId && existing.GenerationId == receipt.GenerationId)
+                    || SameReimportIdentity(existing, receipt);
+            });
+        if (sameIdentity != collection.Receipts.end())
+        {
+            relation = sameIdentity->Relation;
+            relatedStreamId = sameIdentity->RelatedStreamId;
+            relatedGenerationId = sameIdentity->RelatedGenerationId;
+        }
+        else if (std::any_of(collection.Receipts.begin(), collection.Receipts.end(),
+            [&receipt](const FabImportReceipt& existing) { return existing.StreamId == receipt.StreamId; }))
+        {
+            const FabImportReceipt* tip = FindStreamTip(collection, receipt.StreamId);
+            if (!tip)
+                return Fail(outError, "Fab stream has no unique current generation to replace");
+            relation = FabGenerationRelation::SourceReplacement;
+            relatedStreamId = tip->StreamId;
+            relatedGenerationId = tip->GenerationId;
+        }
+        else if (std::any_of(collection.Receipts.begin(), collection.Receipts.end(),
+            [&receipt](const FabImportReceipt& existing)
+            {
+                return existing.ProductIdentity == receipt.ProductIdentity;
+            }))
+        {
+            const FabImportReceipt* tip = FindProductTip(collection, receipt.ProductIdentity);
+            if (!tip)
+                return Fail(outError, "Fab product has no unique current generation to update");
+            relation = FabGenerationRelation::ProductUpdate;
+            relatedStreamId = tip->StreamId;
+            relatedGenerationId = tip->GenerationId;
+        }
+
+        receipt.Relation = relation;
+        receipt.RelatedStreamId = std::move(relatedStreamId);
+        receipt.RelatedGenerationId = std::move(relatedGenerationId);
+        outError.clear();
+        return true;
+    }
 }

@@ -455,6 +455,45 @@ namespace Engine::RHI
                 StageTextureState(*native, state, expectedBefore);
                 return true;
             }
+            bool WriteTexture(Texture& texture, const TextureWrite& write) override
+            {
+                auto* native = dynamic_cast<VulkanTexture*>(&texture);
+                TextureWritePlan plan;
+                if (m_State != State::Recording || m_QueueType != QueueType::Graphics || !native || !m_Device
+                    || (!m_AllowPendingTexture && !CanUseTexture(&texture))
+                    || ValidateTextureWrite(texture.GetDescription(), GetTextureState(*native), write, &plan) != TextureWriteStatus::Valid)
+                    return false;
+                if (plan.WholeSubresource)
+                {
+                    m_List->writeTexture(native->Native(), write.ArrayLayer, write.MipLevel, write.Data, static_cast<size_t>(plan.RowPitchBytes));
+                }
+                else
+                {
+                    // NVRHI's direct write covers one whole mip, so a region goes
+                    // through a region-sized scratch image that the recorded copy
+                    // references; the command buffer keeps it alive until retirement.
+                    nvrhi::TextureDesc scratchDescription;
+                    scratchDescription.setWidth(write.Extent.Width).setHeight(write.Extent.Height).setMipLevels(1).setArraySize(1)
+                        .setFormat(native->Native()->getDesc().format).setDebugName("RHI Texture Write Scratch")
+                        .setInitialState(nvrhi::ResourceStates::CopyDest);
+                    nvrhi::TextureHandle scratch = m_Device->createTexture(scratchDescription);
+                    if (!scratch)
+                        return false;
+                    m_List->beginTrackingTextureState(scratch, nvrhi::AllSubresources, nvrhi::ResourceStates::Common);
+                    m_List->writeTexture(scratch, 0, 0, write.Data, static_cast<size_t>(plan.RowPitchBytes));
+                    nvrhi::TextureSlice destinationSlice;
+                    destinationSlice.setOrigin(write.X, write.Y, 0).setSize(write.Extent.Width, write.Extent.Height, 1)
+                        .setMipLevel(write.MipLevel).setArraySlice(write.ArrayLayer);
+                    nvrhi::TextureSlice sourceSlice;
+                    sourceSlice.setSize(write.Extent.Width, write.Extent.Height, 1);
+                    m_List->copyTexture(native->Native(), destinationSlice, scratch, sourceSlice);
+                }
+                // An entry left by an explicit transition already carries the
+                // caller's expected state; only stage one when none exists.
+                if (!HasStagedTextureState(*native))
+                    StageTextureState(*native, ResourceState::CopyDest, ResourceState::CopyDest);
+                return true;
+            }
             bool ReleaseTextureOwnership(const TextureOwnershipRelease& release) override
             {
                 if (m_State != State::Recording || !m_TextureOwnershipTracker
@@ -928,6 +967,12 @@ namespace Engine::RHI
             struct TextureState { VulkanTexture* Resource = nullptr; ResourceState State = ResourceState::Common; ResourceState Expected = ResourceState::Unknown; };
             struct BufferState { VulkanBuffer* Resource = nullptr; ResourceState State = ResourceState::Common; ResourceState Expected = ResourceState::Unknown; };
 
+            bool HasStagedTextureState(const VulkanTexture& resource) const
+            {
+                return std::any_of(m_TextureStates.begin(), m_TextureStates.end(),
+                    [&](const TextureState& state) { return state.Resource == &resource; });
+            }
+
             ResourceState GetTextureState(const VulkanTexture& resource) const
             {
                 for (const TextureState& state : m_TextureStates)
@@ -1308,6 +1353,7 @@ namespace Engine::RHI
                     [this](const Buffer* resource, QueueType queue) { return CanUseBufferOnQueue(resource, queue); },
                     [this](const Texture* resource, QueueType queue) { return CanUseTextureOnQueue(resource, queue); }, this) : nullptr;
             }
+            bool SupportsTextureWrite() const override { return static_cast<bool>(m_Device); }
             bool UploadBuffer(Buffer& destination, const void* data, u64 size, u64 offset) override
             {
                 auto* buffer = dynamic_cast<VulkanBuffer*>(&destination); if (!buffer || !OwnsResource(&destination)

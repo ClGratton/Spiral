@@ -7,6 +7,7 @@
 #include "Engine/RHI/Query.h"
 #include "Engine/RHI/RHICommon.h"
 #include "Engine/RHI/Texture.h"
+#include "Engine/RHI/TextureWrite.h"
 
 #include <string_view>
 
@@ -91,6 +92,24 @@ namespace Engine::RHI
             (void)destinationState;
             return false;
         }
+        // Records one non-stalling CPU-to-texture write: the source bytes are
+        // copied (or privately staged) during this call and the backend retains
+        // that staging until the submission carrying this list completes, so the
+        // caller may reuse `Data` immediately. The destination must already be
+        // in CopyDest at this point of the recording, either by an explicit
+        // TransitionTexture earlier in this list or by being left there by an
+        // accepted submission. Validation (`ValidateTextureWrite`) runs before
+        // any native work, so a false return records nothing and leaves the
+        // list's staged texture state unchanged. Recording is limited to a
+        // Graphics-queue list. The default rejects, which is the answer for
+        // every backend and test list that has not implemented the capability;
+        // `Device::SupportsTextureWrite` reports the implemented answer.
+        virtual bool WriteTexture(Texture& texture, const TextureWrite& write)
+        {
+            (void)texture;
+            (void)write;
+            return false;
+        }
         virtual bool ReleaseBufferOwnership(const BufferOwnershipRelease& release) { (void)release; return false; }
         virtual bool AcquireBufferOwnership(const BufferOwnershipAcquire& acquire) { (void)acquire; return false; }
         virtual bool ReleaseTextureOwnership(const TextureOwnershipRelease& release) { (void)release; return false; }
@@ -132,6 +151,33 @@ namespace Engine::RHI
         virtual bool WriteTimestamp(QueryPool& queryPool, u32 queryIndex) = 0;
         virtual bool ResolveQueryPool(QueryPool& queryPool, u32 firstQuery, u32 queryCount) = 0;
     };
+
+    // Documented bracket for a repeatable update of a texture whose steady state
+    // is `steadyState` (normally ShaderResource): steady -> CopyDest, one
+    // WriteTexture, CopyDest -> steady, all with explicit expected-before
+    // states so submission validates the live state. The write is fully
+    // validated before the first transition, so a false return from validation
+    // records nothing. A false return after recording began (a native rejection
+    // of a transition or write) leaves the list in a partially recorded state
+    // and the caller must discard it without submitting.
+    //
+    // A texture that has never been in an accepted submission has no defined
+    // native layout; give it a first write with the two-argument
+    // TransitionTexture overloads (which let the backend start from the real
+    // initial layout) before relying on this explicit-expected form. Create
+    // dynamic textures with InitialState equal to `steadyState` so backends
+    // that restore a texture's creation state at list close agree with the
+    // bracket.
+    inline bool RecordTextureWrite(CommandList& commandList, Texture& texture, const TextureWrite& write,
+        ResourceState steadyState = ResourceState::ShaderResource)
+    {
+        if (steadyState == ResourceState::Unknown || steadyState == ResourceState::CopyDest
+            || ValidateTextureWrite(texture.GetDescription(), ResourceState::CopyDest, write) != TextureWriteStatus::Valid)
+            return false;
+        return commandList.TransitionTexture(texture, steadyState, ResourceState::CopyDest)
+            && commandList.WriteTexture(texture, write)
+            && commandList.TransitionTexture(texture, ResourceState::CopyDest, steadyState);
+    }
 
     // Keeps backend marker nesting balanced across early returns and exceptions.
     // The command list must outlive the scope and already be recording.

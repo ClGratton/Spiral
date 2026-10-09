@@ -9,7 +9,16 @@ project "EngineTests"
 
     files
     {
-        "src/**.cpp"
+        "src/**.cpp",
+        -- Pure Editor-private Fab browser core (plain types, no CEF/ImGui/GLFW/RHI),
+        -- compiled here so it is tested without CEF ever entering Engine.
+        "../Editor/src/Fab/BrowserDownloadPolicy.cpp",
+        "../Editor/src/Fab/BrowserFrameMirror.cpp",
+        "../Editor/src/Fab/BrowserInputRouter.cpp",
+        "../Editor/src/Fab/BrowserNavigationPolicy.cpp",
+        "../Editor/src/Fab/BrowserSurface.cpp",
+        "../Editor/src/Fab/FabIntake.cpp",
+        "../Editor/src/Fab/NullBrowserSurface.cpp"
     }
 
     removefiles { "src/EngineFuzzTests.cpp" }
@@ -17,6 +26,7 @@ project "EngineTests"
     includedirs
     {
         "%{wks.location}/Engine/src",
+        "%{wks.location}/Editor/src/Fab",
         "%{wks.location}/Vendor/miniz"
     }
 

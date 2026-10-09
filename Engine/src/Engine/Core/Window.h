@@ -21,6 +21,13 @@ namespace Engine
         Disabled
     };
 
+    // Ratio of pixel density to the platform default; 1.0 when unscaled or unknown.
+    struct WindowContentScale
+    {
+        float X = 1.0f;
+        float Y = 1.0f;
+    };
+
     struct WindowSpecification
     {
         std::string Title = "Spiral";
@@ -48,6 +55,7 @@ namespace Engine
         virtual void SetCursorMode(CursorMode mode) = 0;
         virtual void GetCursorPosition(double& outX, double& outY) const = 0;
         virtual void SetCursorPosition(double x, double y) = 0;
+        virtual WindowContentScale GetContentScale() const = 0;
         virtual void* GetNativeWindow() const = 0;
         virtual void SetEventCallback(EventCallbackFn callback) = 0;
 

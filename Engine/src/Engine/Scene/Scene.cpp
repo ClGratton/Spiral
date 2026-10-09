@@ -1,5 +1,6 @@
 #include "Engine/Scene/Scene.h"
 
+#include "Engine/Core/AtomicFile.h"
 #include "Engine/Core/Log.h"
 
 #include <algorithm>
@@ -458,24 +459,7 @@ namespace Engine
             }
         }
 
-        std::error_code error;
-        const std::filesystem::path parent = path.parent_path();
-        if (!parent.empty())
-            std::filesystem::create_directories(parent, error);
-
-        if (error)
-        {
-            Log::Error("Could not create scene directory: ", parent.string(), " (", error.message(), ")");
-            return false;
-        }
-
-        std::ofstream output(path, std::ios::out | std::ios::trunc);
-        if (!output)
-        {
-            Log::Error("Could not open scene file for writing: ", path.string());
-            return false;
-        }
-
+        std::ostringstream output;
         output << std::setprecision(std::numeric_limits<double>::max_digits10);
         output << "SpiralScene " << kSceneFormatVersion << '\n';
         output << "Name " << std::quoted(m_Name) << '\n';
@@ -546,6 +530,12 @@ namespace Engine
             }
         }
 
+        std::string writeError;
+        if (!output || !WriteFileAtomically(path, output.str(), writeError))
+        {
+            Log::Error("Could not atomically save scene file: ", path.string(), " (", writeError, ")");
+            return false;
+        }
         return true;
     }
 

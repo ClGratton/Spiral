@@ -58,6 +58,12 @@
 #include "FabImmutableAssetTests.h"
 #include "FabArchiveTests.h"
 #include "CommonImageTests.h"
+#include "FabGltfCookTests.h"
+#include "FabProjectCommitTests.h"
+#include "ProjectManifestTests.h"
+#include "FabBrowserCoreTests.h"
+#include "InputEventTests.h"
+#include "RhiTextureWriteTests.h"
 #include "FabImportReceiptTests.h"
 #include "TestSupport/GeneratedTest.h"
 #include "TestSupport/StructuredFuzz.h"
@@ -12590,6 +12596,36 @@ int main(int argc, char** argv)
         INTEGRATION_TEST("Fab immutable asset generations retain exact rooted resolvers", SpiralTests::TestFabImmutableAssetGenerations),
         INTEGRATION_TEST("Fab hostile ZIP admission streams bounded canonical members and rejects unsafe archives atomically", SpiralTests::TestFabZipAdmission),
         INTEGRATION_TEST("Common PNG and JPEG decoders admit bounded images and reject hostile inputs atomically", SpiralTests::TestCommonImageAdmission),
+        INTEGRATION_TEST("Fab glTF prepare bakes node transforms and derives normals against independent oracles", SpiralTests::TestFabGltfPrepareBakesGeometryAgainstIndependentOracles),
+        INTEGRATION_TEST("Fab glTF prepare maps materials textures roles and colour spaces exactly", SpiralTests::TestFabGltfPrepareMapsMaterialsTexturesRolesAndColorSpaces),
+        INTEGRATION_TEST("Fab glTF prepare rejects unsupported and hostile packages without output", SpiralTests::TestFabGltfPrepareRejectsUnsupportedAndHostilePackagesWithoutOutput),
+        INTEGRATION_TEST("Fab glTF cook stages deterministic generations and stable identities", SpiralTests::TestFabGltfCookStagesDeterministicGenerationsAndStableIdentities),
+        INTEGRATION_TEST("Fab glTF candidate construction is failure-atomic and preserves old resolvers", SpiralTests::TestFabGltfCandidateConstructionIsFailureAtomicAndPreservesOldResolvers),
+        INTEGRATION_TEST("Project manifest format 7 migrates earlier formats and rejects malformed input transactionally", SpiralTests::TestProjectManifestCodec),
+        INTEGRATION_TEST("Scene material and manifest writers are atomic under real failure and publish directories without replacement", SpiralTests::TestProjectPersistenceWritersAreCrashSafe),
+        INTEGRATION_TEST("Project commit publishes revisions atomically behind one manifest pointer", SpiralTests::TestProjectCommitPublishesRevisionsAtomically),
+        INTEGRATION_TEST("Project commit injected failures cancellations and crashes preserve the old project", SpiralTests::TestProjectCommitInjectedFailuresPreserveOldProject),
+        INTEGRATION_TEST("Project commit generation publication is create-once and adopt-or-fail", SpiralTests::TestProjectCommitGenerationPublicationIsCreateOnce),
+        INTEGRATION_TEST("Project commit rejects path escapes stale bases and lock contention", SpiralTests::TestProjectCommitRejectsEscapesStaleBasesAndLockContention),
+        INTEGRATION_TEST("Project commit excludes concurrent writers", SpiralTests::TestProjectCommitConcurrentWritersAreExcluded),
+        INTEGRATION_TEST("Fab project state detects tamper and orphans", SpiralTests::TestFabProjectStateDetectsTamperAndOrphans),
+        INTEGRATION_TEST("Fab immutable materials load from their generation root", SpiralTests::TestFabImmutableMaterialLoad),
+        FAST_TEST("RHI texture write validator matches an independent oracle and rejects overflow", SpiralTests::TestRhiTextureWriteValidationMatchesIndependentOracle),
+        FAST_TEST("RHI texture write fake-device contract covers state regions retention no-stall and atomicity", SpiralTests::TestRhiTextureWriteFakeDeviceContract),
+        FAST_TEST("RHI texture write defaults reject without backend support", SpiralTests::TestRhiTextureWriteDefaultsRejectWithoutBackendSupport),
+        FAST_TEST("Input modifier translation maps GLFW bits to engine flags exhaustively", SpiralTests::TestInputModifierTranslation),
+        FAST_TEST("Input events carry scancode modifiers characters cursor enter and content scale through the GLFW-free seam", SpiralTests::TestInputEventTranslationAndDispatch),
+        FAST_TEST("New input events leave existing event types categories and constructors unchanged", SpiralTests::TestInputEventConsumerCompatibility),
+        FAST_TEST("Browser frame swizzle and physical size match scalar oracles", SpiralTests::TestBrowserSwizzleAndPhysicalSize),
+        FAST_TEST("Browser frame mirror matches a scalar reference under generated dirty rectangles", SpiralTests::TestBrowserFrameMirrorProperty),
+        FAST_TEST("Browser dirty rectangle coalescing never loses a pixel", SpiralTests::TestBrowserDirtyRectCoalescing),
+        FAST_TEST("Browser navigation policy allows only the declared https hosts", SpiralTests::TestBrowserNavigationPolicy),
+        FAST_TEST("Browser download policy sanitises names and refuses hostile decisions", SpiralTests::TestBrowserDownloadPolicy),
+        FAST_TEST("Browser key translation matches the GLFW to virtual-key oracle", SpiralTests::TestBrowserKeyTranslation),
+        FAST_TEST("Browser input router scenarios keep ownership and editor-shortcut guards", SpiralTests::TestBrowserInputRouterScenarios),
+        FAST_TEST("Browser input router matches an independent model under random sequences", SpiralTests::TestBrowserInputRouterModel),
+        INTEGRATION_TEST("Fab intake classifies packages by content without following links", SpiralTests::TestFabIntakeClassification),
+        FAST_TEST("Browser surface fake session delivers callbacks on the pump thread", SpiralTests::TestBrowserSurfaceFakeSession),
 #if defined(GE_PLATFORM_LINUX) || defined(GE_PLATFORM_WINDOWS)
         INTEGRATION_TEST("Local package snapshot copies deterministic immutable directory input", TestLocalPackageSnapshotCopiesDeterministically),
         INTEGRATION_TEST("Local package snapshot rejects hostile roots paths and objects", TestLocalPackageSnapshotRejectsHostileInputs),

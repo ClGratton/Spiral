@@ -121,6 +121,14 @@
       "scope": "runtime",
       "source_location": "Vendor/DXC/v1.9.2602/windows-x86_64",
       "license": "LicenseRef-Microsoft-DXC AND NCSA AND MIT"
+    },
+    {
+      "name": "Chromium Embedded Framework",
+      "package_url": "pkg:github/chromiumembedded/cef@14c5a089e8452874cb1a556dc3fde26ed2d87723",
+      "relationship": "direct",
+      "scope": "runtime",
+      "source_location": "Vendor/CEF/v154.0.34",
+      "license": "NOASSERTION"
     }
   ]
 }

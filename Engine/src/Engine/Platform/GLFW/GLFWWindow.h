@@ -23,6 +23,7 @@ namespace Engine
         void SetCursorMode(CursorMode mode) override;
         void GetCursorPosition(double& outX, double& outY) const override;
         void SetCursorPosition(double x, double y) override;
+        WindowContentScale GetContentScale() const override { return m_Data.ContentScale; }
         void* GetNativeWindow() const override { return m_Window; }
         void SetEventCallback(EventCallbackFn callback) override { m_Data.EventCallback = std::move(callback); }
 
@@ -36,6 +37,7 @@ namespace Engine
             std::string Title;
             u32 Width = 0;
             u32 Height = 0;
+            WindowContentScale ContentScale;
             EventCallbackFn EventCallback;
         };
 

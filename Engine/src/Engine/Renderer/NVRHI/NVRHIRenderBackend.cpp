@@ -19,9 +19,11 @@
 #include <algorithm>
 #include <array>
 #include <bit>
+#include <chrono>
 #include <cmath>
 #include <cstring>
 #include <filesystem>
+#include <thread>
 
 namespace Engine
 {
@@ -141,6 +143,10 @@ namespace Engine
             {
                 Log::Error("Vulkan RHI texture-upload smoke failed"); m_VulkanContext->Shutdown(); m_VulkanContext.reset(); return false;
             }
+            if (args.HasFlag("--rhi-texture-update-smoke") && !RunRHITextureUpdateSmoke(*m_VulkanContext->GetRHIDevice(), "Vulkan"))
+            {
+                Log::Error("Vulkan RHI texture-update smoke failed"); m_VulkanContext->Shutdown(); m_VulkanContext.reset(); return false;
+            }
             if (args.HasFlag("--rhi-sampled-table-smoke")
                 && (!RunRHISampledTextureTableSmoke(*m_VulkanContext->GetRHIDevice(), "Vulkan")
                     || !RunRHIMaterialTextureShaderSmoke(*m_VulkanContext->GetRHIDevice(), "Vulkan")))
@@ -241,6 +247,10 @@ namespace Engine
             if (args.HasFlag("--rhi-texture-upload-smoke") && !RunRHITextureUploadSmoke(*m_Device, "D3D12"))
             {
                 Log::Error("D3D12 RHI texture-upload smoke failed"); m_Device.reset(); return false;
+            }
+            if (args.HasFlag("--rhi-texture-update-smoke") && !RunRHITextureUpdateSmoke(*m_Device, "D3D12"))
+            {
+                Log::Error("D3D12 RHI texture-update smoke failed"); m_Device.reset(); return false;
             }
             if (args.HasFlag("--rhi-sampled-table-smoke")
                 && (!RunRHISampledTextureTableSmoke(*m_Device, "D3D12")
@@ -1148,6 +1158,329 @@ namespace Engine
             ", readback=", readbackOk ? "pass" : "fail",
             ", layout=", pixelsOk ? "tight" : "invalid",
             ", result=", passed ? "pass" : "fail");
+        return passed;
+    }
+
+    bool NVRHIRenderBackend::RunRHITextureUpdateSmoke(RHI::Device& device, std::string_view backendName)
+    {
+        struct Rect
+        {
+            u32 X = 0;
+            u32 Y = 0;
+            u32 Width = 0;
+            u32 Height = 0;
+        };
+        // One analytic texel per (frame, x, y). Both the uploaded bytes and the
+        // expected image are derived from it with different loops, so a pitch,
+        // offset, or ordering bug cannot cancel itself out.
+        const auto texel = [](u32 frame, u32 x, u32 y) -> std::array<u8, 4>
+        {
+            return { static_cast<u8>(31u * frame + 7u * x + 3u * y + 1u), static_cast<u8>(97u * frame + 5u * x + 11u * y + 2u),
+                static_cast<u8>(13u * frame + 17u * x + 29u * y + 3u), static_cast<u8>(0xF0u - 16u * frame + (x & 3u)) };
+        };
+        // Padding bytes are filled with a pattern no texel can reproduce so a
+        // backend that reads past the tight row width is visible in the readback.
+        const auto makeSource = [&](u32 frame, const Rect& rect, u32 pitchBytes)
+        {
+            std::vector<u8> bytes(static_cast<size_t>(pitchBytes) * rect.Height, 0xA5u);
+            for (u32 row = 0; row < rect.Height; ++row)
+                for (u32 column = 0; column < rect.Width; ++column)
+                {
+                    const std::array<u8, 4> value = texel(frame, rect.X + column, rect.Y + row);
+                    std::copy(value.begin(), value.end(), bytes.begin() + static_cast<std::ptrdiff_t>(row) * pitchBytes + column * 4);
+                }
+            return bytes;
+        };
+        const auto makeWrite = [](const Rect& rect, const std::vector<u8>& bytes, u32 pitchBytes)
+        {
+            RHI::TextureWrite write;
+            write.X = rect.X;
+            write.Y = rect.Y;
+            write.Extent = { rect.Width, rect.Height };
+            write.TextureFormat = RHI::Format::R8G8B8A8Unorm;
+            write.RowPitchBytes = pitchBytes == rect.Width * 4u ? 0u : pitchBytes;
+            write.Data = bytes.data();
+            write.DataSizeBytes = bytes.size();
+            return write;
+        };
+
+        struct Target
+        {
+            const char* Name = "";
+            u32 Width = 0;
+            u32 Height = 0;
+            RHI::ResourceState Steady = RHI::ResourceState::Unknown;
+            Scope<RHI::Texture> Texture;
+            std::vector<std::array<u8, 4>> Expected;
+        };
+        const auto createTarget = [&](const char* name, u32 width, u32 height, RHI::ResourceState steady)
+        {
+            Target target;
+            target.Name = name;
+            target.Width = width;
+            target.Height = height;
+            target.Steady = steady;
+            target.Expected.assign(static_cast<size_t>(width) * height, { 0, 0, 0, 0 });
+            RHI::TextureDescription description;
+            description.DebugName = name;
+            description.Extent = { width, height };
+            description.TextureFormat = RHI::Format::R8G8B8A8Unorm;
+            description.Usage = static_cast<RHI::TextureUsage>(static_cast<u32>(RHI::TextureUsage::CopyDest)
+                | static_cast<u32>(RHI::TextureUsage::CopySource) | static_cast<u32>(RHI::TextureUsage::ShaderResource));
+            // Creation state equals the steady state so backends that restore a
+            // texture's creation state at list close agree with the bracket.
+            description.InitialState = steady;
+            target.Texture = device.CreateTexture(description);
+            return target;
+        };
+        const auto applyExpected = [&](Target& target, u32 frame, const Rect& rect)
+        {
+            for (u32 y = rect.Y; y < rect.Y + rect.Height; ++y)
+                for (u32 x = rect.X; x < rect.X + rect.Width; ++x)
+                    target.Expected[static_cast<size_t>(y) * target.Width + x] = texel(frame, x, y);
+        };
+
+        std::string failedStage;
+        const auto fail = [&](std::string_view stage)
+        {
+            if (failedStage.empty())
+                failedStage = std::string(stage);
+            return false;
+        };
+        u32 submissions = 0;
+        u32 wholeWrites = 0;
+        u32 regionWrites = 0;
+        u32 rejected = 0;
+        u64 bytesCompared = 0;
+        u64 mismatches = 0;
+        long long maxRecordSubmitMicroseconds = 0;
+
+        // Submits without waiting and observes completion only through the
+        // non-blocking query, so a stall inside the write path cannot hide in
+        // a completion wait owned by the harness.
+        const auto submitAndPoll = [&](RHI::CommandList& list, long long recordStartMicroseconds, const auto& clock)
+        {
+            const RHI::CompletionToken token = device.Submit(list);
+            maxRecordSubmitMicroseconds = std::max(maxRecordSubmitMicroseconds, clock() - recordStartMicroseconds);
+            if (!token.IsValid())
+                return false;
+            ++submissions;
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+            RHI::CompletionStatus status = device.QueryCompletion(token);
+            while (status == RHI::CompletionStatus::Incomplete && std::chrono::steady_clock::now() < deadline)
+            {
+                std::this_thread::yield();
+                status = device.QueryCompletion(token);
+            }
+            return status == RHI::CompletionStatus::Complete;
+        };
+        const auto clockMicroseconds = []
+        {
+            return static_cast<long long>(std::chrono::duration_cast<std::chrono::microseconds>(
+                std::chrono::steady_clock::now().time_since_epoch()).count());
+        };
+        const auto compare = [&](Target& target, std::string_view stage)
+        {
+            RHI::TextureReadback readback;
+            if (!device.ReadbackTexture(*target.Texture, readback) || readback.Extent.Width != target.Width
+                || readback.Extent.Height != target.Height || readback.RowPitchBytes < target.Width * 4u)
+                return fail(std::string(stage) + "-readback");
+            bool exact = true;
+            for (u32 y = 0; y < target.Height; ++y)
+                for (u32 x = 0; x < target.Width; ++x)
+                    for (u32 channel = 0; channel < 4; ++channel)
+                    {
+                        ++bytesCompared;
+                        if (readback.Data[static_cast<size_t>(y) * readback.RowPitchBytes + x * 4u + channel]
+                            != target.Expected[static_cast<size_t>(y) * target.Width + x][channel])
+                        {
+                            ++mismatches;
+                            exact = false;
+                        }
+                    }
+            return exact || fail(std::string(stage) + "-bytes");
+        };
+        // First-use frame: the two-argument transitions let the backend start
+        // from the texture's real initial layout, which an explicit expected
+        // state cannot describe for a never-submitted image.
+        const auto writeFirstWhole = [&](Target& target, u32 frame, u32 pitchBytes, std::string_view stage)
+        {
+            const Rect whole { 0, 0, target.Width, target.Height };
+            std::vector<u8> bytes = makeSource(frame, whole, pitchBytes);
+            Scope<RHI::CommandList> list = device.CreateCommandList(RHI::QueueType::Graphics, "RhiTextureWriteV1 first use");
+            const long long start = clockMicroseconds();
+            const bool recorded = list && list->Begin() && list->TransitionTexture(*target.Texture, RHI::ResourceState::CopyDest)
+                && list->WriteTexture(*target.Texture, makeWrite(whole, bytes, pitchBytes));
+            std::fill(bytes.begin(), bytes.end(), 0xEEu);
+            if (!recorded || !list->TransitionTexture(*target.Texture, target.Steady) || !list->End())
+                return fail(std::string(stage) + "-record");
+            if (!submitAndPoll(*list, start, clockMicroseconds))
+                return fail(std::string(stage) + "-submit");
+            ++wholeWrites;
+            applyExpected(target, frame, whole);
+            return true;
+        };
+        const auto stateIs = [&](Target& target, RHI::ResourceState expected)
+        {
+            RHI::ResourceState state = RHI::ResourceState::Unknown;
+            return device.QueryResourceState(target.Texture.get(), state) && state == expected;
+        };
+
+        Target colorTarget = createTarget("RhiTextureWriteV1 CopySource", 16, 8, RHI::ResourceState::CopySource);
+        Target sampledTarget = createTarget("RhiTextureWriteV1 ShaderResource", 8, 4, RHI::ResourceState::ShaderResource);
+        if (!device.SupportsTextureWrite())
+            fail("capability");
+        else if (!colorTarget.Texture || !sampledTarget.Texture)
+            fail("create");
+        else
+        {
+            // Texture A, steady CopySource so every frame is read back directly.
+            // Frame 0: whole write with a padded row pitch.
+            if (writeFirstWhole(colorTarget, 0, 16u * 4u + 12u, "frame0"))
+                compare(colorTarget, "frame0");
+
+            // Frame 1: smaller region, different content, explicit-state helper.
+            if (failedStage.empty())
+            {
+                const Rect region { 3, 2, 5, 3 };
+                std::vector<u8> bytes = makeSource(1, region, region.Width * 4u);
+                Scope<RHI::CommandList> list = device.CreateCommandList(RHI::QueueType::Graphics, "RhiTextureWriteV1 frame1");
+                const long long start = clockMicroseconds();
+                const bool recorded = list && list->Begin()
+                    && RHI::RecordTextureWrite(*list, *colorTarget.Texture, makeWrite(region, bytes, region.Width * 4u), colorTarget.Steady);
+                std::fill(bytes.begin(), bytes.end(), 0xEEu);
+                if (!recorded || !list->End())
+                    fail("frame1-record");
+                else if (!submitAndPoll(*list, start, clockMicroseconds))
+                    fail("frame1-submit");
+                else
+                {
+                    ++regionWrites;
+                    applyExpected(colorTarget, 1, region);
+                    compare(colorTarget, "frame1");
+                }
+            }
+
+            // Frame 2: two overlapping padded-pitch regions in one list; the
+            // later write must win in the overlap.
+            if (failedStage.empty())
+            {
+                const Rect first { 4, 3, 4, 3 };
+                const Rect second { 6, 4, 6, 3 };
+                const u32 secondPitch = second.Width * 4u + 8u;
+                std::vector<u8> firstBytes = makeSource(2, first, first.Width * 4u);
+                std::vector<u8> secondBytes = makeSource(3, second, secondPitch);
+                Scope<RHI::CommandList> list = device.CreateCommandList(RHI::QueueType::Graphics, "RhiTextureWriteV1 frame2");
+                const long long start = clockMicroseconds();
+                bool recorded = list && list->Begin()
+                    && RHI::RecordTextureWrite(*list, *colorTarget.Texture, makeWrite(first, firstBytes, first.Width * 4u), colorTarget.Steady);
+                std::fill(firstBytes.begin(), firstBytes.end(), 0xEEu);
+                recorded = recorded
+                    && RHI::RecordTextureWrite(*list, *colorTarget.Texture, makeWrite(second, secondBytes, secondPitch), colorTarget.Steady);
+                std::fill(secondBytes.begin(), secondBytes.end(), 0xEEu);
+                if (!recorded || !list->End())
+                    fail("frame2-record");
+                else if (!submitAndPoll(*list, start, clockMicroseconds))
+                    fail("frame2-submit");
+                else
+                {
+                    regionWrites += 2;
+                    applyExpected(colorTarget, 2, first);
+                    applyExpected(colorTarget, 3, second);
+                    compare(colorTarget, "frame2");
+                }
+            }
+
+            // Rejections record nothing and leave the texture, its state, and
+            // its content untouched.
+            if (failedStage.empty())
+            {
+                const Rect inside { 1, 1, 2, 2 };
+                const std::vector<u8> bytes = makeSource(4, inside, inside.Width * 4u);
+                Scope<RHI::CommandList> list = device.CreateCommandList(RHI::QueueType::Graphics, "RhiTextureWriteV1 rejections");
+                bool recorded = list && list->Begin();
+                // Texture is still CopySource in this list: not a legal write state.
+                recorded = recorded && !list->WriteTexture(*colorTarget.Texture, makeWrite(inside, bytes, inside.Width * 4u));
+                rejected += recorded ? 1 : 0;
+                recorded = recorded && list->TransitionTexture(*colorTarget.Texture, colorTarget.Steady, RHI::ResourceState::CopyDest);
+                const auto rejects = [&](RHI::TextureWrite write)
+                {
+                    const bool refused = recorded && !list->WriteTexture(*colorTarget.Texture, write);
+                    rejected += refused ? 1 : 0;
+                    return refused;
+                };
+                RHI::TextureWrite outOfBounds = makeWrite({ 10, 0, 7, 1 }, bytes, 28);
+                RHI::TextureWrite empty = makeWrite(inside, bytes, inside.Width * 4u);
+                empty.Extent.Width = 0;
+                RHI::TextureWrite truncated = makeWrite(inside, bytes, inside.Width * 4u);
+                truncated.DataSizeBytes = bytes.size() - 1;
+                RHI::TextureWrite shortPitch = makeWrite(inside, bytes, inside.Width * 4u);
+                shortPitch.RowPitchBytes = inside.Width * 4u - 1u;
+                RHI::TextureWrite wrongFormat = makeWrite(inside, bytes, inside.Width * 4u);
+                wrongFormat.TextureFormat = RHI::Format::R8G8B8A8UnormSrgb;
+                RHI::TextureWrite noData = makeWrite(inside, bytes, inside.Width * 4u);
+                noData.Data = nullptr;
+                recorded = rejects(outOfBounds) && rejects(empty) && rejects(truncated) && rejects(shortPitch)
+                    && rejects(wrongFormat) && rejects(noData);
+                recorded = recorded && list->TransitionTexture(*colorTarget.Texture, RHI::ResourceState::CopyDest, colorTarget.Steady);
+                if (!recorded || !list->End())
+                    fail("rejections-record");
+                else if (!submitAndPoll(*list, clockMicroseconds(), clockMicroseconds))
+                    fail("rejections-submit");
+                else if (!stateIs(colorTarget, colorTarget.Steady))
+                    fail("rejections-state");
+                else
+                    compare(colorTarget, "rejections");
+            }
+
+            // Texture B, steady ShaderResource: first use, then an explicit
+            // ShaderResource -> CopyDest -> ShaderResource region frame.
+            if (failedStage.empty() && writeFirstWhole(sampledTarget, 5, sampledTarget.Width * 4u, "sampled-frame0"))
+            {
+                const Rect region { 1, 1, 3, 2 };
+                std::vector<u8> bytes = makeSource(6, region, region.Width * 4u);
+                Scope<RHI::CommandList> list = device.CreateCommandList(RHI::QueueType::Graphics, "RhiTextureWriteV1 sampled frame1");
+                const long long start = clockMicroseconds();
+                const bool recorded = list && list->Begin()
+                    && RHI::RecordTextureWrite(*list, *sampledTarget.Texture, makeWrite(region, bytes, region.Width * 4u), sampledTarget.Steady);
+                std::fill(bytes.begin(), bytes.end(), 0xEEu);
+                if (!recorded || !list->End())
+                    fail("sampled-frame1-record");
+                else if (!submitAndPoll(*list, start, clockMicroseconds))
+                    fail("sampled-frame1-submit");
+                else if (!stateIs(sampledTarget, RHI::ResourceState::ShaderResource))
+                    fail("sampled-state");
+                else
+                {
+                    ++regionWrites;
+                    applyExpected(sampledTarget, 6, region);
+                    // Readback needs CopySource, which ends this texture's use.
+                    Scope<RHI::CommandList> readbackList = device.CreateCommandList(RHI::QueueType::Graphics, "RhiTextureWriteV1 sampled readback");
+                    const bool toCopySource = readbackList && readbackList->Begin()
+                        && readbackList->TransitionTexture(*sampledTarget.Texture, RHI::ResourceState::CopySource)
+                        && readbackList->End() && device.SubmitAndWait(*readbackList);
+                    if (!toCopySource)
+                        fail("sampled-copy-source");
+                    else
+                        compare(sampledTarget, "sampled");
+                }
+            }
+        }
+
+        const bool passed = failedStage.empty() && mismatches == 0 && submissions == 6 && wholeWrites == 2 && regionWrites == 4
+            && rejected == 7 && bytesCompared == 2176;
+        if (passed)
+            Log::Info("RhiTextureWriteV1 backend=", backendName,
+                ", submissions=", submissions, ", wholeWrites=", wholeWrites, ", regionWrites=", regionWrites,
+                ", paddedPitch=pass, sourceOverwrittenAfterRecord=pass, overlapOrder=pass, bytesCompared=", bytesCompared,
+                ", mismatches=", mismatches, ", rejected=", rejected, ", rejectedState=unchanged, steadyStates=CopySource+ShaderResource",
+                ", writeCompletionWait=none, result=pass");
+        else
+            Log::Error("RhiTextureWriteV1 backend=", backendName, ", failedStage=", failedStage.empty() ? "counters" : failedStage,
+                ", submissions=", submissions, ", wholeWrites=", wholeWrites, ", regionWrites=", regionWrites,
+                ", bytesCompared=", bytesCompared, ", mismatches=", mismatches, ", rejected=", rejected, ", result=fail");
+        Log::Info("RhiTextureWriteTimingV1 backend=", backendName, ", maxRecordAndSubmitMicroseconds=", maxRecordSubmitMicroseconds,
+            ", note=informational-not-a-pass-criterion");
         return passed;
     }
 

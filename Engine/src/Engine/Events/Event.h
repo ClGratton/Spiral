@@ -23,7 +23,10 @@ namespace Engine
         MouseButtonPressed,
         MouseButtonReleased,
         MouseMoved,
-        MouseScrolled
+        MouseScrolled,
+        CharTyped,
+        CursorEnter,
+        WindowContentScale
     };
 
     enum EventCategory : u32
@@ -35,6 +38,21 @@ namespace Engine
         EventCategoryMouse = 1u << 3u,
         EventCategoryMouseButton = 1u << 4u
     };
+
+    // Engine-owned modifier state. Platform backends translate their native
+    // bits into these flags; native constants never leave Engine/Platform.
+    enum InputModifier : u32
+    {
+        InputModifierNone = 0,
+        InputModifierShift = 1u << 0u,
+        InputModifierControl = 1u << 1u,
+        InputModifierAlt = 1u << 2u,
+        InputModifierSuper = 1u << 3u,
+        InputModifierCapsLock = 1u << 4u,
+        InputModifierNumLock = 1u << 5u
+    };
+
+    using InputModifiers = u32;
 
     class Event
     {

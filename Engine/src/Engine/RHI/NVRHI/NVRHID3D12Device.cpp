@@ -1048,6 +1048,7 @@ namespace Engine::RHI
                 m_FixedBindingActive = false;
                 m_StructuredBufferResource.Reset();
                 m_RetainedStructuredBufferResources.clear();
+                m_RetainedTextureWriteResources.clear();
                 m_BoundStructuredBuffer = nullptr;
                 m_StructuredBufferBindingActive = false;
                 m_BoundColorRtv = {};
@@ -1259,6 +1260,85 @@ namespace Engine::RHI
                 }
                 if (m_OwnedCommandList) StageTextureState(*nativeTexture, destination, destinationState, expectedBefore);
                 else { nativeTexture->SetCurrentState(destination); nativeTexture->SetTrackedState(destinationState); }
+                return true;
+            }
+
+            bool WriteTexture(Texture& texture, const TextureWrite& write) override
+            {
+                auto* nativeTexture = dynamic_cast<NVRHID3D12Texture*>(&texture);
+                if (!m_OwnedCommandList || m_State != State::Recording || m_EffectiveQueueType != QueueType::Graphics
+                    || !m_Device || !nativeTexture || !nativeTexture->GetResource()
+                    || (m_TextureOwnershipTracker && !m_AllowPendingTexture && !m_TextureOwnershipTracker->CanUse(&texture)))
+                    return false;
+                const ResourceState currentState = GetTextureState(*nativeTexture) == D3D12_RESOURCE_STATE_COPY_DEST
+                    ? ResourceState::CopyDest : ResourceState::Unknown;
+                TextureWritePlan plan;
+                if (ValidateTextureWrite(texture.GetDescription(), currentState, write, &plan) != TextureWriteStatus::Valid)
+                    return false;
+
+                // Footprint of the region alone: the private upload buffer holds
+                // exactly the written rows at the 256-byte row pitch D3D12 needs.
+                D3D12_RESOURCE_DESC regionDescription = nativeTexture->GetResource()->GetDesc();
+                if (regionDescription.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D)
+                    return false;
+                regionDescription.Alignment = 0;
+                regionDescription.Width = write.Extent.Width;
+                regionDescription.Height = write.Extent.Height;
+                regionDescription.DepthOrArraySize = 1;
+                regionDescription.MipLevels = 1;
+                regionDescription.Flags = D3D12_RESOURCE_FLAG_NONE;
+                D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint {};
+                UINT rowCount = 0;
+                UINT64 rowBytes = 0;
+                UINT64 totalBytes = 0;
+                m_Device->GetCopyableFootprints(&regionDescription, 0, 1, 0, &footprint, &rowCount, &rowBytes, &totalBytes);
+                if (rowCount != write.Extent.Height || rowBytes != static_cast<UINT64>(write.Extent.Width) * 4u || totalBytes == 0)
+                    return false;
+
+                D3D12_HEAP_PROPERTIES heapProperties {};
+                heapProperties.Type = D3D12_HEAP_TYPE_UPLOAD;
+                heapProperties.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
+                heapProperties.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
+                heapProperties.CreationNodeMask = 1;
+                heapProperties.VisibleNodeMask = 1;
+                D3D12_RESOURCE_DESC bufferDescription {};
+                bufferDescription.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+                bufferDescription.Width = totalBytes;
+                bufferDescription.Height = 1;
+                bufferDescription.DepthOrArraySize = 1;
+                bufferDescription.MipLevels = 1;
+                bufferDescription.Format = DXGI_FORMAT_UNKNOWN;
+                bufferDescription.SampleDesc.Count = 1;
+                bufferDescription.SampleDesc.Quality = 0;
+                bufferDescription.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+                bufferDescription.Flags = D3D12_RESOURCE_FLAG_NONE;
+                ComPtr<ID3D12Resource> staging;
+                if (FAILED(m_Device->CreateCommittedResource(&heapProperties, D3D12_HEAP_FLAG_NONE, &bufferDescription,
+                        D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&staging))))
+                    return false;
+                void* mapped = nullptr;
+                const D3D12_RANGE emptyReadRange { 0, 0 };
+                if (FAILED(staging->Map(0, &emptyReadRange, &mapped)) || !mapped)
+                    return false;
+                const u8* source = static_cast<const u8*>(write.Data);
+                for (UINT row = 0; row < rowCount; ++row)
+                    std::memcpy(static_cast<u8*>(mapped) + static_cast<size_t>(row) * footprint.Footprint.RowPitch,
+                        source + static_cast<size_t>(row) * static_cast<size_t>(plan.RowPitchBytes), static_cast<size_t>(rowBytes));
+                staging->Unmap(0, nullptr);
+
+                D3D12_TEXTURE_COPY_LOCATION sourceLocation {};
+                sourceLocation.pResource = staging.Get();
+                sourceLocation.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+                sourceLocation.PlacedFootprint = footprint;
+                D3D12_TEXTURE_COPY_LOCATION destinationLocation {};
+                destinationLocation.pResource = nativeTexture->GetResource();
+                destinationLocation.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+                destinationLocation.SubresourceIndex = write.MipLevel + write.ArrayLayer * texture.GetDescription().MipLevels;
+                m_CommandList->CopyTextureRegion(&destinationLocation, write.X, write.Y, 0, &sourceLocation, nullptr);
+                // Held by the list until Begin() after the submission completes.
+                m_RetainedTextureWriteResources.push_back(std::move(staging));
+                if (!HasStagedTextureState(*nativeTexture))
+                    StageTextureState(*nativeTexture, D3D12_RESOURCE_STATE_COPY_DEST, ResourceState::CopyDest, ResourceState::CopyDest);
                 return true;
             }
 
@@ -1864,6 +1944,12 @@ namespace Engine::RHI
                 ResourceState Expected = ResourceState::Unknown;
             };
 
+            bool HasStagedTextureState(const NVRHID3D12Texture& resource) const
+            {
+                return std::any_of(m_TextureStates.begin(), m_TextureStates.end(),
+                    [&](const TextureState& state) { return state.Resource == &resource; });
+            }
+
             D3D12_RESOURCE_STATES GetTextureState(const NVRHID3D12Texture& resource) const
             {
                 for (const TextureState& state : m_TextureStates)
@@ -1939,6 +2025,7 @@ namespace Engine::RHI
             std::vector<ComPtr<ID3D12Resource>> m_RetainedFixedTextureResources;
             ComPtr<ID3D12Resource> m_StructuredBufferResource;
             std::vector<ComPtr<ID3D12Resource>> m_RetainedStructuredBufferResources;
+            std::vector<ComPtr<ID3D12Resource>> m_RetainedTextureWriteResources;
             std::vector<Ref<Texture>> m_BoundTableTextures;
             NVRHID3D12Texture* m_BoundFixedTexture = nullptr;
             NVRHID3D12Buffer* m_BoundStructuredBuffer = nullptr;
@@ -2281,6 +2368,8 @@ namespace Engine::RHI
 
                 return SubmitAndWait(*commandList);
             }
+
+            bool SupportsTextureWrite() const override { return m_Device.Get() != nullptr; }
 
             bool UploadTexture(Texture& destination, const TextureUpload& upload) override
             {

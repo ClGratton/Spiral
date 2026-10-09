@@ -176,6 +176,10 @@ namespace Engine::RHI
             (void)upload;
             return false;
         }
+        // True only when this exact device implements CommandList::WriteTexture
+        // (repeatable, non-stalling CPU-to-texture writes). UploadTexture stays
+        // the one-shot, completion-waiting initializer either way.
+        virtual bool SupportsTextureWrite() const { return false; }
         virtual bool ReadbackTexture(Texture& source, TextureReadback& destination) = 0;
         virtual bool ReadbackTexture(Texture& source, u32 mipLevel, TextureReadback& destination)
         {

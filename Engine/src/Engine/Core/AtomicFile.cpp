@@ -12,17 +12,21 @@
     #define WIN32_LEAN_AND_MEAN
     #include <Windows.h>
 #elif defined(GE_PLATFORM_LINUX) || defined(GE_PLATFORM_MACOS)
+    #include <cstring>
     #include <fcntl.h>
     #include <sys/stat.h>
+    #include <sys/syscall.h>
     #include <sys/types.h>
     #include <unistd.h>
 #endif
 
 namespace Engine
 {
-    bool WriteFileAtomically(
-        const std::filesystem::path& path, std::string_view bytes, std::string& outError)
+    bool WriteFileAtomically(const std::filesystem::path& path, std::string_view bytes,
+        std::string& outError, bool* outDirectoryDurable)
     {
+        if (outDirectoryDurable)
+            *outDirectoryDurable = false;
         if (path.empty() || path.filename().empty())
         {
             outError = "atomic file destination is invalid";
@@ -41,6 +45,7 @@ namespace Engine
         }
 
         static std::atomic<u64> sequence { 0 };
+        bool directoryDurable = false;
 #if defined(_WIN32)
         std::filesystem::path temporary;
         HANDLE output = INVALID_HANDLE_VALUE;
@@ -94,7 +99,10 @@ namespace Engine
                 outError = "could not atomically publish the file";
                 return false;
             }
+            directoryDurable = true;
         }
+        // REPLACEFILE_WRITE_THROUGH is documented as unsupported, so a successful
+        // ReplaceFileW leaves directory durability unconfirmed.
 #elif defined(GE_PLATFORM_LINUX) || defined(GE_PLATFORM_MACOS)
         const std::filesystem::path parentPath = path.parent_path().empty()
             ? std::filesystem::path(".") : path.parent_path();
@@ -155,14 +163,117 @@ namespace Engine
             outError = "could not atomically publish the file";
             return false;
         }
-        (void)fsync(parent);
+        directoryDurable = fsync(parent) == 0;
         close(parent);
 #else
         (void)bytes;
         outError = "atomic file storage is unsupported on this platform";
         return false;
 #endif
+        if (outDirectoryDurable)
+            *outDirectoryDurable = directoryDurable;
         outError.clear();
         return true;
+    }
+
+
+    DirectoryPublishStatus PublishDirectoryNoReplace(const std::filesystem::path& stagedDirectory,
+        const std::filesystem::path& finalDirectory, std::string& outError)
+    {
+        if (stagedDirectory.empty() || finalDirectory.empty()
+            || stagedDirectory.filename().empty() || finalDirectory.filename().empty())
+        {
+            outError = "directory publication paths are invalid";
+            return DirectoryPublishStatus::Failed;
+        }
+
+#if defined(GE_PLATFORM_LINUX)
+        std::error_code filesystemError;
+        if (!finalDirectory.parent_path().empty())
+        {
+            std::filesystem::create_directories(finalDirectory.parent_path(), filesystemError);
+            if (filesystemError)
+            {
+                outError = "could not create the directory publication parent";
+                return DirectoryPublishStatus::Failed;
+            }
+        }
+
+        const auto openParent = [](const std::filesystem::path& path)
+        {
+            const std::filesystem::path parentPath = path.parent_path().empty()
+                ? std::filesystem::path(".") : path.parent_path();
+            return open(parentPath.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+        };
+        const int sourceParent = openParent(stagedDirectory);
+        if (sourceParent < 0)
+        {
+            outError = "could not open the staged directory parent";
+            return DirectoryPublishStatus::Failed;
+        }
+        const int finalParent = openParent(finalDirectory);
+        if (finalParent < 0)
+        {
+            close(sourceParent);
+            outError = "could not open the final directory parent";
+            return DirectoryPublishStatus::Failed;
+        }
+
+        const std::string sourceName = stagedDirectory.filename().string();
+        const std::string finalName = finalDirectory.filename().string();
+        struct stat sourceStat {};
+        if (fstatat(sourceParent, sourceName.c_str(), &sourceStat, AT_SYMLINK_NOFOLLOW) != 0
+            || !S_ISDIR(sourceStat.st_mode))
+        {
+            close(finalParent);
+            close(sourceParent);
+            outError = "the staged directory is missing or is not a real directory";
+            return DirectoryPublishStatus::Failed;
+        }
+
+        constexpr unsigned int renameNoReplace = 1;
+        const long renamed = ::syscall(SYS_renameat2, sourceParent, sourceName.c_str(),
+            finalParent, finalName.c_str(), renameNoReplace);
+        const int renameError = renamed == 0 ? 0 : errno;
+        DirectoryPublishStatus status = DirectoryPublishStatus::Published;
+        if (renamed != 0)
+        {
+            if (renameError == EEXIST || renameError == ENOTEMPTY)
+            {
+                outError = "the final directory already exists";
+                status = DirectoryPublishStatus::AlreadyExists;
+            }
+            else if (renameError == EINVAL || renameError == ENOSYS || renameError == EOPNOTSUPP)
+            {
+                outError = std::string("no-replace directory publication is unsupported here: ")
+                    + std::strerror(renameError);
+                status = DirectoryPublishStatus::Unsupported;
+            }
+            else
+            {
+                outError = std::string("could not publish the directory: ") + std::strerror(renameError);
+                status = DirectoryPublishStatus::Failed;
+            }
+        }
+        else
+        {
+            bool durable = fsync(finalParent) == 0;
+            struct stat finalParentStat {};
+            struct stat sourceParentStat {};
+            if (fstat(finalParent, &finalParentStat) != 0 || fstat(sourceParent, &sourceParentStat) != 0
+                || finalParentStat.st_ino != sourceParentStat.st_ino
+                || finalParentStat.st_dev != sourceParentStat.st_dev)
+                durable = fsync(sourceParent) == 0 && durable;
+            if (!durable)
+                status = DirectoryPublishStatus::PublishedDurabilityUnconfirmed;
+            outError.clear();
+        }
+        close(finalParent);
+        close(sourceParent);
+        return status;
+#else
+        outError = "no-replace directory publication is not implemented on this platform";
+        return DirectoryPublishStatus::Unsupported;
+#endif
     }
 }

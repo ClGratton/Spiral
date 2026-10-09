@@ -31,6 +31,13 @@ project "Editor"
         links { "NVRHI" }
     end
 
+    if has_cef then
+        -- The helper is built (and kept current) with the Editor. Nothing in
+        -- Editor/src consumes CEF yet; the define only marks a CEF-capable tree.
+        defines { "GE_HAS_CEF=1" }
+        dependson { "SpiralBrowserHelper" }
+    end
+
     filter "system:windows"
         libdirs { "%{wks.location}/" .. slang_root .. "/windows-x86_64/lib" }
         links { "slang" }
@@ -41,6 +48,11 @@ project "Editor"
         links { "slang" }
         linkoptions { "-Wl,-rpath,'$$ORIGIN'" }
         postbuildcommands { 'bash "' .. workspace_root .. '/Scripts/StageSlangRuntime.sh" "' .. workspace_root .. '/' .. slang_root .. '/linux-x86_64" "%{cfg.targetdir}"' }
+        if has_cef then
+            -- A cef/ subdirectory keeps the bundled libvulkan.so.1 out of the
+            -- Editor's $ORIGIN lookup, which would otherwise shadow the system loader.
+            postbuildcommands { 'bash "' .. workspace_root .. '/Scripts/StageBrowserRuntime.sh" "' .. workspace_root .. '/' .. cef_root .. '" "%{cfg.targetdir}/cef"' }
+        end
 
     filter "system:macosx"
         libdirs { "%{wks.location}/" .. slang_root .. "/macos-x86_64/lib" }

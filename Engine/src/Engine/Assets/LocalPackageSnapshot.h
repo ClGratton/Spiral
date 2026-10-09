@@ -67,6 +67,15 @@ namespace Engine
         std::function<void(LocalPackageSnapshotHookPoint, std::string_view)> TestHook;
     };
 
+    // The single glTF dependency-URI authority: resolves one JSON-decoded
+    // buffer or image `uri` against the canonical root path inside a snapshot.
+    // It applies the same scheme, `data:`, query/fragment, backslash,
+    // percent-encoding, traversal, segment and path-limit rules used when the
+    // snapshot is created, so a consumer never re-implements them. The output
+    // is untouched on failure.
+    bool ResolveGltfDependencyUri(std::string_view rootRelativePath, std::string_view jsonDecodedUri,
+        const LocalPackageSnapshotLimits& limits, std::string& relativePath, std::string& error);
+
     class LocalPackageSnapshot
     {
     public:

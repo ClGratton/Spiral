@@ -73,11 +73,14 @@ function Assert-SafeZipArchive {
 }
 
 function Assert-SafeTarArchive {
-    param([Parameter(Mandatory = $true)][string]$Archive)
+    param(
+        [Parameter(Mandatory = $true)][string]$Archive,
+        [ValidateSet("z", "j")][string]$CompressionFlag = "z"
+    )
 
-    $members = @(& tar -tzf $Archive)
+    $members = @(& tar "-t${CompressionFlag}f" $Archive)
     if ($LASTEXITCODE -ne 0) { throw "Could not list archive '$Archive'." }
-    $verbose = @(& tar -tvzf $Archive)
+    $verbose = @(& tar "-tv${CompressionFlag}f" $Archive)
     if ($LASTEXITCODE -ne 0) { throw "Could not inspect archive '$Archive'." }
 
     foreach ($member in $members) {

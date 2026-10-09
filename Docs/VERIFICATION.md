@@ -40,6 +40,10 @@ Get-ChildItem -Recurse -Filter *.md |
 if ($Broken.Count) { $Broken; throw 'Broken Markdown links found.' }
 ```
 
+### Fab intake, cook, commit, and browser-panel prerequisites (Linux, 2026-10-09)
+
+Built from the canonical worktree with `bash Scripts/Build.sh Debug gmake`; the Engine, Editor, CEF wrapper and helper compile warning-free. Focused names (all registered in `EngineTests`): `Fab hostile ZIP admission streams bounded canonical members and rejects unsafe archives atomically`; `Common PNG and JPEG decoders admit bounded images and reject hostile inputs atomically`; the five `Fab glTF prepare/cook/candidate` tests; `Project manifest format 7 ...`; `Scene material and manifest writers are atomic ...`; the seven `Project commit ...` / `Fab project state ...` / `Fab immutable materials ...` tests; the three `RHI texture write ...` tests; the three `Input ...` tests; and ten `Browser ...` / `Fab intake ...` tests. Then `./bin/Debug-linux-x86_64-gmake/EngineTests/EngineTests --tier integration` (154/154 on 2026-10-09), `bash Scripts/CheckCodeStyle.sh`, `bash Scripts/TestSanitizers.sh` (ASan/UBSan integration tier plus 512 structured-fuzz runs) and, with no headed Editor open, `bash Scripts/TestVulkan.sh Debug gmake --skip-build`, whose required markers now include `RhiTextureWriteV1 ... bytesCompared=2176, mismatches=0 ... result=pass`. Fetch the CEF runtime with `bash Scripts/FetchCEF.sh` (idempotent; refuses a hash mismatch). Raw logs are under ignored `output/verification/fab-zip-image-20261009/` and `output/verification/fab-cook-commit-panel-prereq-20261009/`. None of this runs on Windows or macOS, drives an actual browser from the Editor, imports an actual Fab asset, or proves a headed result.
+
 ### Fab secure-intake and provenance foundations
 
 The Linux directory-snapshot and shared receipt/immutable-root foundation is built from the canonical worktree with:
