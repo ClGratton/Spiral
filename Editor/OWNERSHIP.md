@@ -20,3 +20,8 @@ Authority stays where the Fab contract puts it. The navigation policy composes `
 ## Project Manifest And Browser Helper
 
 The project manifest codec is no longer Editor code: `EditorLayer` reads and writes the manifest through thin wrappers over `Engine::ProjectManifest` (format 7). The Editor owns when to commit and the undo barrier, never the commit mechanism. `Editor/helper/` builds `SpiralBrowserHelper`, the separate browser subprocess executable (built only when `Vendor/CEF` is present); it is staged under the Editor's `cef/` directory, and no other Editor, Engine, Sandbox, or test target links or includes CEF.
+
+## Fab Import Controller And CEF Host Library
+
+`Editor/src/Fab/FabImportController.*` is the headless import state machine: it includes Engine headers only (no ImGui, GLFW, CEF, or RHI), is compiled into `EngineTests`, and never touches live Editor state; the Editor adopts a committed result. `Editor/src/Fab/CefBrowserSurface.cpp` is the only CEF-including adapter and is compiled solely into `libSpiralBrowserHost.so` (`Editor/browserhost/`), which the Editor must load with `dlopen` and never link; `SpiralBrowserSmoke` drives it headlessly through the same factory. The Editor, Engine, Sandbox, and `EngineTests` targets never include or link CEF.
+

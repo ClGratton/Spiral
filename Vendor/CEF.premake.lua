@@ -228,3 +228,6 @@ project "CEFWrapper"
 
     defines(cef_toolchain_defines)
     buildoptions(cef_toolchain_buildoptions)
+
+-- The on-demand browser host library and its smoke driver reuse the flags above.
+include "../Editor/browserhost"

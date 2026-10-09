@@ -26,6 +26,15 @@ namespace Engine
         void RenderImGuiDrawData(ImDrawData* drawData, const ClearColor& clearColor, u32 width, u32 height);
         bool PrepareViewportTexture(u32 width, u32 height);
         u64 GetViewportTextureId() const;
+        // Dynamic UI textures (Renderer UI-texture service). Registration
+        // allocates an SRV from the shared ImGui descriptor heap and returns its
+        // GPU handle; the descriptor must outlive every submission that draws it.
+        // Serials count ImGui draw submissions and are resolved against the
+        // presentation fence without waiting.
+        u64 RegisterUiTexture(RHI::Texture& texture);
+        void UnregisterUiTexture(u64 imGuiId);
+        u64 GetSubmittedPresentationSerial() const;
+        u64 PollCompletedPresentationSerial();
         bool CaptureViewportToFile(std::string_view path);
         const RendererPresentationTiming& GetTiming() const;
         void SetPresentationPolicy(PresentationPolicy policy);

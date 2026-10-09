@@ -62,6 +62,8 @@
 #include "FabProjectCommitTests.h"
 #include "ProjectManifestTests.h"
 #include "FabBrowserCoreTests.h"
+#include "FabImportControllerTests.h"
+#include "UiTextureServiceTests.h"
 #include "InputEventTests.h"
 #include "RhiTextureWriteTests.h"
 #include "FabImportReceiptTests.h"
@@ -12610,6 +12612,19 @@ int main(int argc, char** argv)
         INTEGRATION_TEST("Project commit excludes concurrent writers", SpiralTests::TestProjectCommitConcurrentWritersAreExcluded),
         INTEGRATION_TEST("Fab project state detects tamper and orphans", SpiralTests::TestFabProjectStateDetectsTamperAndOrphans),
         INTEGRATION_TEST("Fab immutable materials load from their generation root", SpiralTests::TestFabImmutableMaterialLoad),
+        INTEGRATION_TEST("Fab ZIP staging sink writes owner-only exact trees and removes only what it owns", SpiralTests::TestFabZipStagingSinkWritesOwnerOnlyExactTrees),
+        INTEGRATION_TEST("Fab import controller imports folder ZIP and bare GLB packages end to end", SpiralTests::TestFabImportControllerImportsFolderZipAndGlbPackages),
+        INTEGRATION_TEST("Fab import controller classifies reimport replacement update and conflict", SpiralTests::TestFabImportControllerClassifiesReimportReplacementAndConflict),
+        INTEGRATION_TEST("Fab import controller rejects hostile packages without changing the project", SpiralTests::TestFabImportControllerRejectsHostilePackagesWithoutChangingTheProject),
+        INTEGRATION_TEST("Fab import controller validates and binds provenance", SpiralTests::TestFabImportControllerValidatesAndBindsProvenance),
+        INTEGRATION_TEST("Fab import controller cancels at every hook and injects commit failures", SpiralTests::TestFabImportControllerCancelsAtEveryHookAndInjectsCommitFailures),
+        INTEGRATION_TEST("Fab import controller rejects stale bases and assignment mismatches", SpiralTests::TestFabImportControllerRejectsStaleBasesAndAssignmentMismatches),
+        INTEGRATION_TEST("Fab import controller state machine matches its model", SpiralTests::TestFabImportControllerStateMachineMatchesModel),
+        FAST_TEST("UI texture service handles stay generation-safe reject stale and forged handles and enforce the texture limit", SpiralTests::TestUiTextureServiceHandleLifecycleAndLimits),
+        FAST_TEST("UI texture service dirty-rectangle writes match an independent oracle under generated inputs", SpiralTests::TestUiTextureServiceDirtyRectContentMatchesIndependentOracle),
+        FAST_TEST("UI texture service retires textures only after their write tokens and presentation serials complete", SpiralTests::TestUiTextureServiceDeferredRetirementWaitsForWriteTokensAndPresentation),
+        FAST_TEST("UI texture service failures are atomic and never leave a partially registered texture", SpiralTests::TestUiTextureServiceFailuresAreAtomicAndNeverRegisterPartialTextures),
+        FAST_TEST("UI texture service shutdown drains enforces the main-thread rule and never waits for the GPU", SpiralTests::TestUiTextureServiceShutdownDrainThreadRulesAndNoStall),
         FAST_TEST("RHI texture write validator matches an independent oracle and rejects overflow", SpiralTests::TestRhiTextureWriteValidationMatchesIndependentOracle),
         FAST_TEST("RHI texture write fake-device contract covers state regions retention no-stall and atomicity", SpiralTests::TestRhiTextureWriteFakeDeviceContract),
         FAST_TEST("RHI texture write defaults reject without backend support", SpiralTests::TestRhiTextureWriteDefaultsRejectWithoutBackendSupport),

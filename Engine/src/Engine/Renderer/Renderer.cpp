@@ -653,6 +653,54 @@ namespace Engine
         return false;
     }
 
+    UiTextureHandle Renderer::CreateUiTexture(u32 width, u32 height, std::string_view debugName)
+    {
+        NVRHIRenderBackend* backend = GetNVRHIBackend();
+        return backend ? backend->CreateUiTexture(width, height, debugName) : kInvalidUiTextureHandle;
+    }
+
+    bool Renderer::UpdateUiTexture(UiTextureHandle handle, const UiTextureUpdate& update)
+    {
+        NVRHIRenderBackend* backend = GetNVRHIBackend();
+        return backend && backend->UpdateUiTexture(handle, update);
+    }
+
+    bool Renderer::ResizeUiTexture(UiTextureHandle handle, u32 width, u32 height)
+    {
+        NVRHIRenderBackend* backend = GetNVRHIBackend();
+        return backend && backend->ResizeUiTexture(handle, width, height);
+    }
+
+    bool Renderer::DestroyUiTexture(UiTextureHandle handle)
+    {
+        NVRHIRenderBackend* backend = GetNVRHIBackend();
+        return backend && backend->DestroyUiTexture(handle);
+    }
+
+    u64 Renderer::GetUiTextureImGuiId(UiTextureHandle handle)
+    {
+        const NVRHIRenderBackend* backend = dynamic_cast<const NVRHIRenderBackend*>(s_Backend.get());
+        return backend ? backend->GetUiTextureImGuiId(handle) : 0;
+    }
+
+    bool Renderer::GetUiTextureExtent(UiTextureHandle handle, u32& outWidth, u32& outHeight)
+    {
+        const NVRHIRenderBackend* backend = dynamic_cast<const NVRHIRenderBackend*>(s_Backend.get());
+        return backend && backend->GetUiTextureExtent(handle, outWidth, outHeight);
+    }
+
+    UiTextureCounters Renderer::GetUiTextureCounters()
+    {
+        const NVRHIRenderBackend* backend = dynamic_cast<const NVRHIRenderBackend*>(s_Backend.get());
+        return backend ? backend->GetUiTextureCounters() : UiTextureCounters {};
+    }
+
+    UiTextureError Renderer::GetLastUiTextureError()
+    {
+        const NVRHIRenderBackend* backend = dynamic_cast<const NVRHIRenderBackend*>(s_Backend.get());
+        return backend ? backend->GetLastUiTextureError() : UiTextureError::ServiceUnavailable;
+    }
+
     RendererBackend Renderer::GetActiveBackend()
     {
         return s_ActiveBackend;

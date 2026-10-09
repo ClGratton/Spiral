@@ -27,12 +27,14 @@
 
     #include <array>
     #include <chrono>
+    #include <deque>
     #include <filesystem>
     #include <fstream>
     #include <limits>
     #include <sstream>
     #include <stdexcept>
     #include <string>
+    #include <unordered_map>
     #include <vector>
 #endif
 
@@ -219,6 +221,8 @@ namespace Engine
         void Shutdown()
         {
             WaitIdle();
+            m_InFlightSerials.clear();
+            m_UiTextureSrvIndices.clear();
             if (m_ImGuiInitialized)
             {
                 ImGui_ImplDX12_Shutdown();
@@ -432,6 +436,7 @@ namespace Engine
                 throw std::runtime_error("Could not signal D3D12 fence: " + HResultToString(result));
             frame.FenceValue = fenceValue;
             frame.ApplicationFrameIndex = applicationFrameIndex;
+            m_InFlightSerials.push_back({ ++m_SubmittedSerial, fenceValue });
         }
 
         bool PrepareViewportTexture(u32 width, u32 height)
@@ -505,6 +510,59 @@ namespace Engine
         u64 GetViewportTextureId() const
         {
             return m_ViewportTextureId;
+        }
+
+        u64 RegisterUiTexture(RHI::Texture& texture)
+        {
+            if (!m_Initialized || !m_ImGuiInitialized)
+                return 0;
+            const RHI::NVRHID3D12TextureNativeHandles handles = RHI::GetNVRHID3D12TextureNativeHandles(texture);
+            auto* resource = static_cast<ID3D12Resource*>(handles.Resource);
+            if (!resource)
+                return 0;
+
+            D3D12_CPU_DESCRIPTOR_HANDLE srvCpu {};
+            D3D12_GPU_DESCRIPTOR_HANDLE srvGpu {};
+            u32 srvIndex = kInvalidDescriptorIndex;
+            if (!AllocateSrvDescriptor(&srvCpu, &srvGpu, &srvIndex))
+                return 0;
+
+            D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc {};
+            srvDesc.Format = kSwapchainFormat;
+            srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+            srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+            srvDesc.Texture2D.MostDetailedMip = 0;
+            srvDesc.Texture2D.MipLevels = 1;
+            srvDesc.Texture2D.PlaneSlice = 0;
+            srvDesc.Texture2D.ResourceMinLODClamp = 0.0f;
+            m_Device->CreateShaderResourceView(resource, &srvDesc, srvCpu);
+            m_UiTextureSrvIndices[srvGpu.ptr] = srvIndex;
+            return srvGpu.ptr;
+        }
+
+        void UnregisterUiTexture(u64 imGuiId)
+        {
+            const auto found = m_UiTextureSrvIndices.find(imGuiId);
+            if (found == m_UiTextureSrvIndices.end())
+                return;
+            FreeSrvDescriptor(found->second);
+            m_UiTextureSrvIndices.erase(found);
+        }
+
+        u64 GetSubmittedSerial() const
+        {
+            return m_SubmittedSerial;
+        }
+
+        u64 PollCompletedPresentationSerial()
+        {
+            const u64 completedFence = m_Fence ? m_Fence->GetCompletedValue() : std::numeric_limits<u64>::max();
+            while (!m_InFlightSerials.empty() && m_InFlightSerials.front().second <= completedFence)
+            {
+                m_CompletedSerial = m_InFlightSerials.front().first;
+                m_InFlightSerials.pop_front();
+            }
+            return m_CompletedSerial;
         }
 
         bool CaptureViewportToFile(std::string_view path)
@@ -1221,6 +1279,11 @@ namespace Engine
         u32 m_ViewportSrvIndex = kInvalidDescriptorIndex;
         u64 m_ViewportTextureId = 0;
         ClearColor m_LastClearColor;
+        u64 m_SubmittedSerial = 0;
+        u64 m_CompletedSerial = 0;
+        // ImGui draw submissions (serial, fence value) not yet observed complete.
+        std::deque<std::pair<u64, u64>> m_InFlightSerials;
+        std::unordered_map<u64, u32> m_UiTextureSrvIndices;
     };
 #else
     struct NVRHID3D12Presentation::Impl
@@ -1320,6 +1383,43 @@ namespace Engine
     {
 #if defined(GE_HAS_NVRHI_D3D12)
         return m_Impl->GetViewportTextureId();
+#else
+        return 0;
+#endif
+    }
+
+    u64 NVRHID3D12Presentation::RegisterUiTexture(RHI::Texture& texture)
+    {
+#if defined(GE_HAS_NVRHI_D3D12)
+        return m_Impl->RegisterUiTexture(texture);
+#else
+        (void)texture;
+        return 0;
+#endif
+    }
+
+    void NVRHID3D12Presentation::UnregisterUiTexture(u64 imGuiId)
+    {
+#if defined(GE_HAS_NVRHI_D3D12)
+        m_Impl->UnregisterUiTexture(imGuiId);
+#else
+        (void)imGuiId;
+#endif
+    }
+
+    u64 NVRHID3D12Presentation::GetSubmittedPresentationSerial() const
+    {
+#if defined(GE_HAS_NVRHI_D3D12)
+        return m_Impl->GetSubmittedSerial();
+#else
+        return 0;
+#endif
+    }
+
+    u64 NVRHID3D12Presentation::PollCompletedPresentationSerial()
+    {
+#if defined(GE_HAS_NVRHI_D3D12)
+        return m_Impl->PollCompletedPresentationSerial();
 #else
         return 0;
 #endif

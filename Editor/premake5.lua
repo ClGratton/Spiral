@@ -13,6 +13,10 @@ project "Editor"
         "src/**.cpp"
     }
 
+    -- The CEF adapter compiles only into libSpiralBrowserHost.so (Editor/browserhost),
+    -- so the Editor never includes a CEF header or links libcef.
+    removefiles { "src/Fab/CefBrowserSurface.cpp" }
+
     includedirs
     {
         "%{wks.location}/Engine/src",
@@ -32,10 +36,11 @@ project "Editor"
     end
 
     if has_cef then
-        -- The helper is built (and kept current) with the Editor. Nothing in
+        -- The helper and the on-demand browser host library are built (and kept
+        -- current) with the Editor, but never linked into it. Nothing in
         -- Editor/src consumes CEF yet; the define only marks a CEF-capable tree.
         defines { "GE_HAS_CEF=1" }
-        dependson { "SpiralBrowserHelper" }
+        dependson { "SpiralBrowserHelper", "SpiralBrowserHost", "SpiralBrowserSmoke" }
     end
 
     filter "system:windows"

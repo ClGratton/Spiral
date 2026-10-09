@@ -8,6 +8,9 @@
 #include "Engine/Renderer/NVRHI/NVRHIVulkanPresentation.h"
 #include "Engine/Renderer/NVRHI/NVRHIVulkanViewportSceneRenderer.h"
 #include "Engine/Renderer/RenderBackend.h"
+#include "Engine/Renderer/UiTextureService.h"
+
+#include <string>
 
 struct ImDrawData;
 
@@ -31,6 +34,17 @@ namespace Engine
         u64 GetViewportTextureId() const;
         void MarkViewportTextureQueued(u64 textureId);
         bool CaptureViewportToFile(std::string_view path);
+
+        // Renderer UI-texture service (Renderer::CreateUiTexture and friends).
+        // Present only while native ImGui is enabled. Main thread only.
+        UiTextureHandle CreateUiTexture(u32 width, u32 height, std::string_view debugName);
+        bool UpdateUiTexture(UiTextureHandle handle, const UiTextureUpdate& update);
+        bool ResizeUiTexture(UiTextureHandle handle, u32 width, u32 height);
+        bool DestroyUiTexture(UiTextureHandle handle);
+        u64 GetUiTextureImGuiId(UiTextureHandle handle) const;
+        bool GetUiTextureExtent(UiTextureHandle handle, u32& outWidth, u32& outHeight) const;
+        UiTextureCounters GetUiTextureCounters() const;
+        UiTextureError GetLastUiTextureError() const;
         bool RunVulkanRHICoreSmoke();
         bool RunRHIBufferTransitionSmoke(RHI::Device& device, std::string_view backendName);
         bool RunRHICompletionSmoke(RHI::Device& device, std::string_view backendName);
@@ -58,6 +72,30 @@ namespace Engine
         const RendererPresentationPolicyDiagnostics* GetPresentationPolicyDiagnostics() const;
 
     private:
+        enum class UiTextureSmokeStage : u8
+        {
+            Disabled,
+            Pending,
+            AwaitingRetirement,
+            Finished
+        };
+
+        // Evidence gathered by the offscreen ImGui captures of --ui-texture-smoke.
+        struct UiTextureSmokeEvidence
+        {
+            u32 Captures = 0;
+            u64 PixelsCompared = 0;
+            u64 Mismatches = 0;
+            u32 MaximumChannelDelta = 0;
+            bool IdChangedOnResize = false;
+        };
+
+        void InitializeUiTextureService(RHI::Device& device, Scope<UiTextureNativeBridge> bridge, std::string_view backendName);
+        void ShutdownUiTextureService();
+        void CollectUiTextureRetirements();
+        void RunUiTextureSmoke();
+        void FinishUiTextureSmokeIfRetired();
+
         RHI::NVRHIAdapterInfo m_AdapterInfo;
         RHI::NVRHID3D12NativeHandles m_D3D12NativeHandles;
         Scope<RHI::Device> m_Device;
@@ -66,6 +104,13 @@ namespace Engine
         Scope<NVRHIVulkanPresentation> m_VulkanPresentation;
         Scope<NVRHIVulkanViewportSceneRenderer> m_VulkanSceneRenderer;
         u64 m_VulkanOutputCaptureGeneration = 0;
+        // The bridge must outlive the service that calls into it.
+        Scope<UiTextureNativeBridge> m_UiTextureBridge;
+        Scope<UiTextureService> m_UiTextureService;
+        bool m_ImGuiFrameOpen = false;
+        std::string m_UiTextureBackendName;
+        UiTextureSmokeStage m_UiTextureSmokeStage = UiTextureSmokeStage::Disabled;
+        UiTextureSmokeEvidence m_UiTextureSmokeEvidence;
         RHI::Backend m_RequestedBackend = RHI::Backend::None;
         RendererBackend m_RendererBackend = RendererBackend::NVRHICommon;
     };

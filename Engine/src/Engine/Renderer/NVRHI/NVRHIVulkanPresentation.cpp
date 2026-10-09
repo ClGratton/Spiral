@@ -7,7 +7,10 @@
     #include <GLFW/glfw3.h>
     #include <backends/imgui_impl_vulkan.h>
 
+    #include <algorithm>
     #include <chrono>
+    #include <cstring>
+    #include <functional>
     #include <iterator>
     #include <stdexcept>
     #include <unordered_map>
@@ -126,6 +129,7 @@ namespace Engine
             if (m_Device)
                 VULKAN_HPP_DEFAULT_DISPATCHER.vkDeviceWaitIdle(m_Device);
             m_SubmittedFrameIds.clear();
+            m_InFlightSerialByImage.clear();
             ReleaseViewportOutput();
             if (m_ImGuiInitialized)
                 ImGui_ImplVulkan_Shutdown();
@@ -232,6 +236,8 @@ namespace Engine
                 RendererFrameWaitKind::MandatoryVulkanFence,
                 true,
                 std::chrono::duration<double, std::milli>(Clock::now() - fenceWaitStart).count());
+            // The wait proved this image's previous presentation submission finished.
+            m_InFlightSerialByImage.erase(m_WindowData.FrameIndex);
             if (const auto completed = m_SubmittedFrameIds.find(m_WindowData.FrameIndex); completed != m_SubmittedFrameIds.end()
                 && completed->second.SwapchainGeneration == m_SwapchainGeneration)
                 Renderer::RecordGpuCompletionObservation(completed->second.ApplicationFrameIndex);
@@ -279,6 +285,7 @@ namespace Engine
                 return;
             const u64 applicationFrameIndex = Renderer::GetLastFrameTiming().FrameIndex;
             m_SubmittedFrameIds[m_WindowData.FrameIndex] = { applicationFrameIndex, m_SwapchainGeneration };
+            m_InFlightSerialByImage[m_WindowData.FrameIndex] = ++m_SubmittedSerial;
             Renderer::RecordFrameLifecyclePhase(applicationFrameIndex, RendererFrameLifecyclePhase::RenderSubmission);
 
             VkPresentInfoKHR presentInfo {};
@@ -407,6 +414,284 @@ namespace Engine
             m_ViewportTextureQueued = textureId != 0 && textureId == m_ViewportTextureId;
         }
 
+        u64 RegisterUiTexture(RHI::Texture& texture)
+        {
+            if (!m_Initialized || !m_ImGuiInitialized)
+                return 0;
+            const RHI::NVRHIVulkanTextureNativeHandles handles = RHI::GetNVRHIVulkanTextureNativeHandles(texture);
+            if (!handles.ImageView)
+                return 0;
+            // The ImGui backend binds its one shared linear/clamp sampler for
+            // every texture, so registration needs only the view and layout.
+            return reinterpret_cast<u64>(ImGui_ImplVulkan_AddTexture(
+                static_cast<VkImageView>(handles.ImageView), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL));
+        }
+
+        void UnregisterUiTexture(u64 imGuiId)
+        {
+            if (imGuiId != 0 && m_ImGuiInitialized)
+                ImGui_ImplVulkan_RemoveTexture(reinterpret_cast<VkDescriptorSet>(imGuiId));
+        }
+
+        u64 PollCompletedPresentationSerial()
+        {
+            if (!m_Device)
+                return m_SubmittedSerial;
+            u64 oldestInFlight = 0;
+            for (auto it = m_InFlightSerialByImage.begin(); it != m_InFlightSerialByImage.end();)
+            {
+                bool finished = it->first >= m_WindowData.ImageCount;
+                if (!finished)
+                {
+                    // Anything but not-ready is terminal (signalled or device lost).
+                    finished = VULKAN_HPP_DEFAULT_DISPATCHER.vkGetFenceStatus(
+                        m_Device, m_WindowData.Frames[it->first].Fence) != VK_NOT_READY;
+                }
+                if (finished)
+                {
+                    it = m_InFlightSerialByImage.erase(it);
+                    continue;
+                }
+                oldestInFlight = oldestInFlight == 0 ? it->second : std::min(oldestInFlight, it->second);
+                ++it;
+            }
+            return oldestInFlight == 0 ? m_SubmittedSerial : oldestInFlight - 1;
+        }
+
+        bool CaptureDrawDataOffscreen(ImDrawData* drawData, u32 width, u32 height, std::vector<u8>& outRgba)
+        {
+            outRgba.clear();
+            const VkFormat format = m_WindowData.SurfaceFormat.format;
+            const bool bgra = format == VK_FORMAT_B8G8R8A8_UNORM;
+            if (!m_Initialized || !m_ImGuiInitialized || !drawData || width == 0 || height == 0
+                || (!bgra && format != VK_FORMAT_R8G8B8A8_UNORM))
+                return false;
+
+            auto& vk = VULKAN_HPP_DEFAULT_DISPATCHER;
+            // The ImGui vertex/index ring this draw reuses must not be read by the GPU.
+            vk.vkDeviceWaitIdle(m_Device);
+
+            VkImage image = VK_NULL_HANDLE;
+            VkDeviceMemory imageMemory = VK_NULL_HANDLE;
+            VkImageView imageView = VK_NULL_HANDLE;
+            VkRenderPass renderPass = VK_NULL_HANDLE;
+            VkFramebuffer framebuffer = VK_NULL_HANDLE;
+            VkBuffer readback = VK_NULL_HANDLE;
+            VkDeviceMemory readbackMemory = VK_NULL_HANDLE;
+            VkCommandPool commandPool = VK_NULL_HANDLE;
+            VkFence fence = VK_NULL_HANDLE;
+            struct ScopeExit
+            {
+                std::function<void()> Function;
+                ~ScopeExit() { if (Function) Function(); }
+            } cleanup;
+            cleanup.Function = [&]
+            {
+                if (fence) vk.vkDestroyFence(m_Device, fence, nullptr);
+                if (commandPool) vk.vkDestroyCommandPool(m_Device, commandPool, nullptr);
+                if (readback) vk.vkDestroyBuffer(m_Device, readback, nullptr);
+                if (readbackMemory) vk.vkFreeMemory(m_Device, readbackMemory, nullptr);
+                if (framebuffer) vk.vkDestroyFramebuffer(m_Device, framebuffer, nullptr);
+                if (renderPass) vk.vkDestroyRenderPass(m_Device, renderPass, nullptr);
+                if (imageView) vk.vkDestroyImageView(m_Device, imageView, nullptr);
+                if (image) vk.vkDestroyImage(m_Device, image, nullptr);
+                if (imageMemory) vk.vkFreeMemory(m_Device, imageMemory, nullptr);
+            };
+
+            const auto allocate = [&](const VkMemoryRequirements& requirements, VkMemoryPropertyFlags required, VkDeviceMemory& outMemory)
+            {
+                VkPhysicalDeviceMemoryProperties properties {};
+                vk.vkGetPhysicalDeviceMemoryProperties(m_PhysicalDevice, &properties);
+                for (u32 type = 0; type < properties.memoryTypeCount; ++type)
+                {
+                    if (!(requirements.memoryTypeBits & (1u << type))
+                        || (properties.memoryTypes[type].propertyFlags & required) != required)
+                        continue;
+                    VkMemoryAllocateInfo allocateInfo {};
+                    allocateInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+                    allocateInfo.allocationSize = requirements.size;
+                    allocateInfo.memoryTypeIndex = type;
+                    return vk.vkAllocateMemory(m_Device, &allocateInfo, nullptr, &outMemory) == VK_SUCCESS;
+                }
+                return false;
+            };
+
+            VkImageCreateInfo imageInfo {};
+            imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+            imageInfo.imageType = VK_IMAGE_TYPE_2D;
+            imageInfo.format = format;
+            imageInfo.extent = { width, height, 1 };
+            imageInfo.mipLevels = 1;
+            imageInfo.arrayLayers = 1;
+            imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+            imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+            imageInfo.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+            imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+            imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+            if (vk.vkCreateImage(m_Device, &imageInfo, nullptr, &image) != VK_SUCCESS)
+                return false;
+            VkMemoryRequirements imageRequirements {};
+            vk.vkGetImageMemoryRequirements(m_Device, image, &imageRequirements);
+            if (!allocate(imageRequirements, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, imageMemory)
+                || vk.vkBindImageMemory(m_Device, image, imageMemory, 0) != VK_SUCCESS)
+                return false;
+
+            VkImageViewCreateInfo viewInfo {};
+            viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+            viewInfo.image = image;
+            viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+            viewInfo.format = format;
+            viewInfo.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+            if (vk.vkCreateImageView(m_Device, &viewInfo, nullptr, &imageView) != VK_SUCCESS)
+                return false;
+
+            // Same attachment format, sample count and single-subpass shape as the
+            // presentation pass the ImGui pipeline was built for, so the pipeline is
+            // compatible; only the layouts differ.
+            VkAttachmentDescription attachment {};
+            attachment.format = format;
+            attachment.samples = VK_SAMPLE_COUNT_1_BIT;
+            attachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+            attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+            attachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+            attachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+            attachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+            attachment.finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+            VkAttachmentReference colorReference { 0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL };
+            VkSubpassDescription subpass {};
+            subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+            subpass.colorAttachmentCount = 1;
+            subpass.pColorAttachments = &colorReference;
+            // The single dependency is identical to the presentation pass so the
+            // ImGui pipeline built for that pass remains compatible.
+            VkSubpassDependency dependency {};
+            dependency.srcSubpass = VK_SUBPASS_EXTERNAL;
+            dependency.dstSubpass = 0;
+            dependency.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+            dependency.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+            dependency.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+            VkRenderPassCreateInfo renderPassInfo {};
+            renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
+            renderPassInfo.attachmentCount = 1;
+            renderPassInfo.pAttachments = &attachment;
+            renderPassInfo.subpassCount = 1;
+            renderPassInfo.pSubpasses = &subpass;
+            renderPassInfo.dependencyCount = 1;
+            renderPassInfo.pDependencies = &dependency;
+            if (vk.vkCreateRenderPass(m_Device, &renderPassInfo, nullptr, &renderPass) != VK_SUCCESS)
+                return false;
+
+            VkFramebufferCreateInfo framebufferInfo {};
+            framebufferInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+            framebufferInfo.renderPass = renderPass;
+            framebufferInfo.attachmentCount = 1;
+            framebufferInfo.pAttachments = &imageView;
+            framebufferInfo.width = width;
+            framebufferInfo.height = height;
+            framebufferInfo.layers = 1;
+            if (vk.vkCreateFramebuffer(m_Device, &framebufferInfo, nullptr, &framebuffer) != VK_SUCCESS)
+                return false;
+
+            const VkDeviceSize readbackBytes = static_cast<VkDeviceSize>(width) * height * 4u;
+            VkBufferCreateInfo bufferInfo {};
+            bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+            bufferInfo.size = readbackBytes;
+            bufferInfo.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+            bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+            if (vk.vkCreateBuffer(m_Device, &bufferInfo, nullptr, &readback) != VK_SUCCESS)
+                return false;
+            VkMemoryRequirements bufferRequirements {};
+            vk.vkGetBufferMemoryRequirements(m_Device, readback, &bufferRequirements);
+            if (!allocate(bufferRequirements, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, readbackMemory)
+                || vk.vkBindBufferMemory(m_Device, readback, readbackMemory, 0) != VK_SUCCESS)
+                return false;
+
+            VkCommandPoolCreateInfo poolInfo {};
+            poolInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+            poolInfo.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
+            poolInfo.queueFamilyIndex = m_QueueFamily;
+            if (vk.vkCreateCommandPool(m_Device, &poolInfo, nullptr, &commandPool) != VK_SUCCESS)
+                return false;
+            VkCommandBufferAllocateInfo commandInfo {};
+            commandInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+            commandInfo.commandPool = commandPool;
+            commandInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+            commandInfo.commandBufferCount = 1;
+            VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
+            if (vk.vkAllocateCommandBuffers(m_Device, &commandInfo, &commandBuffer) != VK_SUCCESS)
+                return false;
+
+            VkCommandBufferBeginInfo beginInfo {};
+            beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+            beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+            if (vk.vkBeginCommandBuffer(commandBuffer, &beginInfo) != VK_SUCCESS)
+                return false;
+            VkClearValue clearValue {};
+            clearValue.color.float32[3] = 1.0f;
+            VkRenderPassBeginInfo passBegin {};
+            passBegin.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+            passBegin.renderPass = renderPass;
+            passBegin.framebuffer = framebuffer;
+            passBegin.renderArea.extent = { width, height };
+            passBegin.clearValueCount = 1;
+            passBegin.pClearValues = &clearValue;
+            vk.vkCmdBeginRenderPass(commandBuffer, &passBegin, VK_SUBPASS_CONTENTS_INLINE);
+            ImGui_ImplVulkan_RenderDrawData(drawData, commandBuffer);
+            vk.vkCmdEndRenderPass(commandBuffer);
+            VkImageMemoryBarrier toTransfer {};
+            toTransfer.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+            toTransfer.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+            toTransfer.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+            toTransfer.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+            toTransfer.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+            toTransfer.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            toTransfer.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            toTransfer.image = image;
+            toTransfer.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+            vk.vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                0, 0, nullptr, 0, nullptr, 1, &toTransfer);
+            VkBufferImageCopy copy {};
+            copy.imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
+            copy.imageExtent = { width, height, 1 };
+            vk.vkCmdCopyImageToBuffer(commandBuffer, image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, readback, 1, &copy);
+            if (vk.vkEndCommandBuffer(commandBuffer) != VK_SUCCESS)
+                return false;
+
+            VkFenceCreateInfo fenceInfo {};
+            fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+            if (vk.vkCreateFence(m_Device, &fenceInfo, nullptr, &fence) != VK_SUCCESS)
+                return false;
+            VkSubmitInfo submitInfo {};
+            submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+            submitInfo.commandBufferCount = 1;
+            submitInfo.pCommandBuffers = &commandBuffer;
+            if (vk.vkQueueSubmit(m_GraphicsQueue, 1, &submitInfo, fence) != VK_SUCCESS)
+            {
+                vk.vkDeviceWaitIdle(m_Device);
+                return false;
+            }
+            constexpr u64 kCaptureTimeoutNanoseconds = 10ull * 1000ull * 1000ull * 1000ull;
+            if (vk.vkWaitForFences(m_Device, 1, &fence, VK_TRUE, kCaptureTimeoutNanoseconds) != VK_SUCCESS)
+            {
+                // The GPU may still own the resources; drain before they are destroyed.
+                vk.vkDeviceWaitIdle(m_Device);
+                return false;
+            }
+
+            void* mapped = nullptr;
+            if (vk.vkMapMemory(m_Device, readbackMemory, 0, readbackBytes, 0, &mapped) != VK_SUCCESS || !mapped)
+                return false;
+            outRgba.resize(static_cast<size_t>(readbackBytes));
+            std::memcpy(outRgba.data(), mapped, outRgba.size());
+            vk.vkUnmapMemory(m_Device, readbackMemory);
+            if (bgra)
+            {
+                for (size_t offset = 0; offset < outRgba.size(); offset += 4)
+                    std::swap(outRgba[offset], outRgba[offset + 2]);
+            }
+            return true;
+        }
+
         bool CreateOrResizeSwapchain(u32 width, u32 height)
         {
             if (width == 0 || height == 0)
@@ -415,6 +700,7 @@ namespace Engine
                 return false;
             VULKAN_HPP_DEFAULT_DISPATCHER.vkDeviceWaitIdle(m_Device);
             m_SubmittedFrameIds.clear();
+            m_InFlightSerialByImage.clear();
             ImGui_ImplVulkanH_CreateOrResizeWindow(
                 m_Instance,
                 m_PhysicalDevice,
@@ -529,6 +815,9 @@ namespace Engine
         bool m_ViewportTextureQueued = false;
         struct SubmittedFrameAssociation { u64 ApplicationFrameIndex = 0; u64 SwapchainGeneration = 0; };
         std::unordered_map<u32, SubmittedFrameAssociation> m_SubmittedFrameIds;
+        u64 m_SubmittedSerial = 0;
+        // Presentation serial still in flight per swapchain image.
+        std::unordered_map<u32, u64> m_InFlightSerialByImage;
 #endif
         RendererPresentationTiming m_Timing;
         u64 m_SuccessfulPresentCount = 0;
@@ -594,4 +883,54 @@ namespace Engine
     void NVRHIVulkanPresentation::ReleaseViewportOutput() { m_Impl->ReleaseViewportOutput(); }
     u64 NVRHIVulkanPresentation::GetViewportTextureId() const { return m_Impl->m_ViewportTextureId; }
     void NVRHIVulkanPresentation::MarkViewportTextureQueued(u64 textureId) { m_Impl->MarkViewportTextureQueued(textureId); }
+
+    u64 NVRHIVulkanPresentation::RegisterUiTexture(RHI::Texture& texture)
+    {
+#if defined(GE_HAS_NVRHI_VULKAN)
+        return m_Impl->RegisterUiTexture(texture);
+#else
+        (void)texture;
+        return 0;
+#endif
+    }
+
+    void NVRHIVulkanPresentation::UnregisterUiTexture(u64 imGuiId)
+    {
+#if defined(GE_HAS_NVRHI_VULKAN)
+        m_Impl->UnregisterUiTexture(imGuiId);
+#else
+        (void)imGuiId;
+#endif
+    }
+
+    u64 NVRHIVulkanPresentation::GetSubmittedPresentationSerial() const
+    {
+#if defined(GE_HAS_NVRHI_VULKAN)
+        return m_Impl->m_SubmittedSerial;
+#else
+        return 0;
+#endif
+    }
+
+    u64 NVRHIVulkanPresentation::PollCompletedPresentationSerial()
+    {
+#if defined(GE_HAS_NVRHI_VULKAN)
+        return m_Impl->PollCompletedPresentationSerial();
+#else
+        return 0;
+#endif
+    }
+
+    bool NVRHIVulkanPresentation::CaptureDrawDataOffscreen(ImDrawData* drawData, u32 width, u32 height, std::vector<u8>& outRgba)
+    {
+#if defined(GE_HAS_NVRHI_VULKAN)
+        return m_Impl->CaptureDrawDataOffscreen(drawData, width, height, outRgba);
+#else
+        (void)drawData;
+        (void)width;
+        (void)height;
+        outRgba.clear();
+        return false;
+#endif
+    }
 }

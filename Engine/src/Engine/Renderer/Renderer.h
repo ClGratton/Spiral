@@ -8,6 +8,7 @@
 #include "Engine/Renderer/OpticalInputCorrelation.h"
 #include "Engine/RHI/RHICommon.h"
 #include "Engine/Renderer/SceneRasterPreparation.h"
+#include "Engine/Renderer/UiTexture.h"
 #include "Engine/Scene/SceneRenderSnapshot.h"
 
 #include <algorithm>
@@ -403,6 +404,19 @@ namespace Engine
         static u64 GetViewportTextureId();
         static void MarkViewportTextureQueued(u64 textureId);
         static bool CaptureViewportToFile(std::string_view path);
+
+        // Dynamic RGBA8 UI textures for Editor panels (see UiTexture.h for the
+        // full contract). Main thread only; none of these calls waits for the
+        // GPU. Available once native ImGui is enabled; otherwise Create returns
+        // kInvalidUiTextureHandle with ServiceUnavailable.
+        static UiTextureHandle CreateUiTexture(u32 width, u32 height, std::string_view debugName = {});
+        static bool UpdateUiTexture(UiTextureHandle handle, const UiTextureUpdate& update);
+        static bool ResizeUiTexture(UiTextureHandle handle, u32 width, u32 height);
+        static bool DestroyUiTexture(UiTextureHandle handle);
+        static u64 GetUiTextureImGuiId(UiTextureHandle handle);
+        static bool GetUiTextureExtent(UiTextureHandle handle, u32& outWidth, u32& outHeight);
+        static UiTextureCounters GetUiTextureCounters();
+        static UiTextureError GetLastUiTextureError();
         static RendererBackend GetActiveBackend();
         static const char* GetActiveBackendName();
         static const std::vector<RendererBackendOption>& GetBackendOptions();

@@ -16,6 +16,8 @@
 #include "Engine/RHI/TextureBindingTable.h"
 #include "Engine/RenderGraph/RenderGraph.h"
 
+#include <imgui.h>
+
 #include <algorithm>
 #include <array>
 #include <bit>
@@ -23,10 +25,42 @@
 #include <cmath>
 #include <cstring>
 #include <filesystem>
+#include <stdexcept>
+#include <string>
 #include <thread>
+#include <vector>
 
 namespace Engine
 {
+    namespace
+    {
+        // Connects the backend-neutral UI-texture service to one native
+        // presentation. While an ImGui frame is open its draw data may already
+        // name a texture, so a texture released now can still be referenced by
+        // that frame's not yet issued submission.
+        template<typename Presentation>
+        class PresentationUiTextureBridge final : public UiTextureNativeBridge
+        {
+        public:
+            PresentationUiTextureBridge(Presentation& presentation, const bool& frameOpen)
+                : m_Presentation(presentation), m_FrameOpen(frameOpen)
+            {
+            }
+
+            u64 Register(RHI::Texture& texture) override { return m_Presentation.RegisterUiTexture(texture); }
+            void Unregister(u64 imGuiId) override { m_Presentation.UnregisterUiTexture(imGuiId); }
+            u64 ReferenceBoundSerial() override
+            {
+                return m_Presentation.GetSubmittedPresentationSerial() + (m_FrameOpen ? 1u : 0u);
+            }
+            u64 CompletedSerial() override { return m_Presentation.PollCompletedPresentationSerial(); }
+
+        private:
+            Presentation& m_Presentation;
+            const bool& m_FrameOpen;
+        };
+    }
+
     const char* NVRHIRenderBackend::GetName() const
     {
         switch (m_RendererBackend)
@@ -350,7 +384,11 @@ namespace Engine
             if (!m_VulkanPresentation)
                 m_VulkanPresentation = CreateScope<NVRHIVulkanPresentation>();
             m_VulkanPresentation->SetPresentationPolicy(Renderer::GetPresentationPolicy());
-            return m_VulkanPresentation->Initialize(m_VulkanContext.get(), nativeWindow, width, height);
+            if (!m_VulkanPresentation->Initialize(m_VulkanContext.get(), nativeWindow, width, height))
+                return false;
+            InitializeUiTextureService(*m_VulkanContext->GetRHIDevice(),
+                CreateScope<PresentationUiTextureBridge<NVRHIVulkanPresentation>>(*m_VulkanPresentation, m_ImGuiFrameOpen), "Vulkan");
+            return true;
         }
 
         if (m_RendererBackend != RendererBackend::NVRHID3D12 || !m_Device)
@@ -360,11 +398,16 @@ namespace Engine
             m_D3D12Presentation = CreateScope<NVRHID3D12Presentation>();
         m_D3D12Presentation->SetPresentationPolicy(Renderer::GetPresentationPolicy());
 
-        return m_D3D12Presentation->Initialize(nativeWindow, m_Device.get(), m_D3D12NativeHandles, width, height);
+        if (!m_D3D12Presentation->Initialize(nativeWindow, m_Device.get(), m_D3D12NativeHandles, width, height))
+            return false;
+        InitializeUiTextureService(*m_Device,
+            CreateScope<PresentationUiTextureBridge<NVRHID3D12Presentation>>(*m_D3D12Presentation, m_ImGuiFrameOpen), "D3D12");
+        return true;
     }
 
     void NVRHIRenderBackend::ShutdownImGui()
     {
+        ShutdownUiTextureService();
         if (m_D3D12Presentation)
         {
             m_D3D12Presentation->Shutdown();
@@ -389,6 +432,13 @@ namespace Engine
             m_D3D12Presentation->BeginImGuiFrame();
         else if (m_VulkanPresentation)
             m_VulkanPresentation->BeginImGuiFrame();
+        m_ImGuiFrameOpen = true;
+        if (m_UiTextureService)
+        {
+            CollectUiTextureRetirements();
+            if (m_UiTextureSmokeStage == UiTextureSmokeStage::Pending)
+                RunUiTextureSmoke();
+        }
     }
 
     void NVRHIRenderBackend::RenderImGuiDrawData(ImDrawData* drawData, const ClearColor& clearColor, u32 width, u32 height)
@@ -397,6 +447,9 @@ namespace Engine
             m_D3D12Presentation->RenderImGuiDrawData(drawData, clearColor, width, height);
         else if (m_VulkanPresentation)
             m_VulkanPresentation->RenderImGuiDrawData(drawData, clearColor, width, height);
+        m_ImGuiFrameOpen = false;
+        if (m_UiTextureService)
+            CollectUiTextureRetirements();
     }
 
     bool NVRHIRenderBackend::PrepareViewportTexture(u32 width, u32 height)
@@ -472,6 +525,407 @@ namespace Engine
     bool NVRHIRenderBackend::CaptureViewportToFile(std::string_view path)
     {
         return m_D3D12Presentation && m_D3D12Presentation->CaptureViewportToFile(path);
+    }
+
+    UiTextureHandle NVRHIRenderBackend::CreateUiTexture(u32 width, u32 height, std::string_view debugName)
+    {
+        return m_UiTextureService ? m_UiTextureService->Create(width, height, debugName) : kInvalidUiTextureHandle;
+    }
+
+    bool NVRHIRenderBackend::UpdateUiTexture(UiTextureHandle handle, const UiTextureUpdate& update)
+    {
+        return m_UiTextureService && m_UiTextureService->Update(handle, update);
+    }
+
+    bool NVRHIRenderBackend::ResizeUiTexture(UiTextureHandle handle, u32 width, u32 height)
+    {
+        return m_UiTextureService && m_UiTextureService->Resize(handle, width, height);
+    }
+
+    bool NVRHIRenderBackend::DestroyUiTexture(UiTextureHandle handle)
+    {
+        return m_UiTextureService && m_UiTextureService->Destroy(handle);
+    }
+
+    u64 NVRHIRenderBackend::GetUiTextureImGuiId(UiTextureHandle handle) const
+    {
+        return m_UiTextureService ? m_UiTextureService->GetImGuiId(handle) : 0;
+    }
+
+    bool NVRHIRenderBackend::GetUiTextureExtent(UiTextureHandle handle, u32& outWidth, u32& outHeight) const
+    {
+        return m_UiTextureService && m_UiTextureService->GetExtent(handle, outWidth, outHeight);
+    }
+
+    UiTextureCounters NVRHIRenderBackend::GetUiTextureCounters() const
+    {
+        return m_UiTextureService ? m_UiTextureService->GetCounters() : UiTextureCounters {};
+    }
+
+    UiTextureError NVRHIRenderBackend::GetLastUiTextureError() const
+    {
+        return m_UiTextureService ? m_UiTextureService->GetLastError() : UiTextureError::ServiceUnavailable;
+    }
+
+    void NVRHIRenderBackend::InitializeUiTextureService(RHI::Device& device, Scope<UiTextureNativeBridge> bridge, std::string_view backendName)
+    {
+        m_UiTextureBridge = std::move(bridge);
+        m_UiTextureService = CreateScope<UiTextureService>(device, *m_UiTextureBridge);
+        m_UiTextureBackendName = std::string(backendName);
+        m_ImGuiFrameOpen = false;
+        m_UiTextureSmokeEvidence = {};
+        m_UiTextureSmokeStage = UiTextureSmokeStage::Disabled;
+        if (!Application::Get().GetSpecification().CommandLineArgs.HasFlag("--ui-texture-smoke"))
+            return;
+        if (m_RendererBackend == RendererBackend::NVRHIVulkan)
+            m_UiTextureSmokeStage = UiTextureSmokeStage::Pending;
+        else
+            Log::Warn("UiTextureHandoffV1 backend=", backendName, ", result=not-executed, reason=offscreen-ImGui-capture-is-Vulkan-only");
+    }
+
+    void NVRHIRenderBackend::ShutdownUiTextureService()
+    {
+        if (!m_UiTextureService)
+            return;
+        if (m_UiTextureSmokeStage == UiTextureSmokeStage::AwaitingRetirement)
+        {
+            Log::Error("UiTextureHandoffV1 backend=", m_UiTextureBackendName, ", failedStage=shutdown-before-retirement, result=fail");
+            m_UiTextureSmokeStage = UiTextureSmokeStage::Finished;
+        }
+        // Registrations are removed and textures released only once nothing can
+        // still be reading them; the service itself never waits.
+        if (m_VulkanContext)
+            m_VulkanContext->WaitIdle();
+        else if (m_Device)
+            m_Device->WaitIdle();
+        m_UiTextureService->Shutdown();
+        const UiTextureCounters counters = m_UiTextureService->GetCounters();
+        Log::Info("UiTextureServiceShutdownV1 backend=", m_UiTextureBackendName,
+            " created=", counters.Created, " resized=", counters.Resized, " destroyed=", counters.Destroyed,
+            " updates=", counters.UpdatesSubmitted, " rejected=", counters.Rejected,
+            " retirementsQueued=", counters.RetirementsQueued, " released=", counters.RetirementsReleased,
+            " drainedAtShutdown=", counters.RetirementsDrainedAtShutdown, " leaked=", counters.LeakedAtShutdown,
+            " balanced=", counters.IsBalanced() && counters.IsDrained() ? "yes" : "no");
+        m_UiTextureService.reset();
+        m_UiTextureBridge.reset();
+        m_ImGuiFrameOpen = false;
+    }
+
+    void NVRHIRenderBackend::CollectUiTextureRetirements()
+    {
+        m_UiTextureService->CollectRetired();
+        FinishUiTextureSmokeIfRetired();
+    }
+
+    namespace
+    {
+        constexpr u32 kUiSmokeCaptureWidth = 96;
+        constexpr u32 kUiSmokeCaptureHeight = 64;
+        constexpr u32 kUiSmokeOriginX = 8;
+        constexpr u32 kUiSmokeOriginY = 8;
+        constexpr u32 kUiSmokeFirstWidth = 48;
+        constexpr u32 kUiSmokeFirstHeight = 32;
+        constexpr u32 kUiSmokeResizedWidth = 32;
+        constexpr u32 kUiSmokeResizedHeight = 24;
+        constexpr u32 kUiSmokeCaptures = 4;
+        constexpr u32 kUiSmokeRejections = 6;
+
+        // One analytic opaque texel per (frame, x, y). Expected images are built
+        // from it independently of the buffers handed to the service.
+        std::array<u8, 4> UiSmokeTexel(u32 frame, u32 x, u32 y)
+        {
+            return { static_cast<u8>(31u * frame + 7u * x + 3u * y + 1u), static_cast<u8>(97u * frame + 5u * x + 11u * y + 2u),
+                static_cast<u8>(13u * frame + 17u * x + 29u * y + 3u), u8 { 255 } };
+        }
+    }
+
+    void NVRHIRenderBackend::RunUiTextureSmoke()
+    {
+        m_UiTextureSmokeStage = UiTextureSmokeStage::Finished;
+        UiTextureService& service = *m_UiTextureService;
+        UiTextureSmokeEvidence& evidence = m_UiTextureSmokeEvidence;
+        std::string failedStage;
+        const auto fail = [&](std::string stage)
+        {
+            if (failedStage.empty())
+                failedStage = std::move(stage);
+            return false;
+        };
+
+        struct Expectation
+        {
+            u32 Width = 0;
+            u32 Height = 0;
+            bool Transparent = false;
+            u32 BaseFrame = 0;
+            bool HasRegion = false;
+            UiTextureRect Region;
+            u32 RegionFrame = 0;
+        };
+        const auto expectedPixel = [](const Expectation& expectation, u32 x, u32 y) -> std::array<u8, 4>
+        {
+            const bool insideQuad = x >= kUiSmokeOriginX && y >= kUiSmokeOriginY
+                && x < kUiSmokeOriginX + expectation.Width && y < kUiSmokeOriginY + expectation.Height;
+            // Outside the image, and under fully transparent texels, the opaque
+            // black clear colour of the capture target shows through.
+            if (!insideQuad || expectation.Transparent)
+                return { 0, 0, 0, 255 };
+            const u32 textureX = x - kUiSmokeOriginX;
+            const u32 textureY = y - kUiSmokeOriginY;
+            const UiTextureRect& region = expectation.Region;
+            const bool inRegion = expectation.HasRegion && textureX >= region.X && textureX < region.X + region.Width
+                && textureY >= region.Y && textureY < region.Y + region.Height;
+            return UiSmokeTexel(inRegion ? expectation.RegionFrame : expectation.BaseFrame, textureX, textureY);
+        };
+
+        // Draws the texture with ImGui::Image in one real ImGui frame and renders
+        // that frame's draw data through the ImGui Vulkan backend into a private
+        // target, then compares every captured pixel with the oracle.
+        const auto captureAndCompare = [&](UiTextureHandle handle, const Expectation& expectation, const char* stage)
+        {
+            const u64 imGuiId = service.GetImGuiId(handle);
+            if (imGuiId == 0)
+                return fail(std::string(stage) + "-id");
+
+            ImGuiIO& io = ImGui::GetIO();
+            const ImVec2 savedDisplaySize = io.DisplaySize;
+            const ImVec2 savedFramebufferScale = io.DisplayFramebufferScale;
+            io.DisplaySize = ImVec2(static_cast<float>(kUiSmokeCaptureWidth), static_cast<float>(kUiSmokeCaptureHeight));
+            io.DisplayFramebufferScale = ImVec2(1.0f, 1.0f);
+            ImGui::NewFrame();
+            ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
+            ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
+            ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
+            ImGui::SetNextWindowPos(ImVec2(0.0f, 0.0f));
+            ImGui::SetNextWindowSize(io.DisplaySize);
+            ImGui::Begin("##UiTextureSmoke", nullptr,
+                ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoBackground | ImGuiWindowFlags_NoSavedSettings
+                    | ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoDocking);
+            ImGui::SetCursorPos(ImVec2(static_cast<float>(kUiSmokeOriginX), static_cast<float>(kUiSmokeOriginY)));
+            ImGui::Image(ImTextureRef(static_cast<ImTextureID>(imGuiId)),
+                ImVec2(static_cast<float>(expectation.Width), static_cast<float>(expectation.Height)));
+            ImGui::End();
+            ImGui::PopStyleVar(3);
+            ImGui::Render();
+            std::vector<u8> pixels;
+            const bool captured = m_VulkanPresentation
+                && m_VulkanPresentation->CaptureDrawDataOffscreen(ImGui::GetDrawData(), kUiSmokeCaptureWidth, kUiSmokeCaptureHeight, pixels);
+            io.DisplaySize = savedDisplaySize;
+            io.DisplayFramebufferScale = savedFramebufferScale;
+            if (!captured || pixels.size() != static_cast<size_t>(kUiSmokeCaptureWidth) * kUiSmokeCaptureHeight * 4u)
+                return fail(std::string(stage) + "-capture");
+
+            for (u32 y = 0; y < kUiSmokeCaptureHeight; ++y)
+                for (u32 x = 0; x < kUiSmokeCaptureWidth; ++x)
+                {
+                    const std::array<u8, 4> expected = expectedPixel(expectation, x, y);
+                    const u8* actual = pixels.data() + (static_cast<size_t>(y) * kUiSmokeCaptureWidth + x) * 4u;
+                    u32 pixelDelta = 0;
+                    for (size_t channel = 0; channel < 4; ++channel)
+                        pixelDelta = std::max<u32>(pixelDelta,
+                            actual[channel] > expected[channel] ? actual[channel] - expected[channel] : expected[channel] - actual[channel]);
+                    evidence.MaximumChannelDelta = std::max(evidence.MaximumChannelDelta, pixelDelta);
+                    // Texel-centre sampling is exact on conforming GPUs; one
+                    // code of slack absorbs filter-weight rounding only.
+                    evidence.Mismatches += pixelDelta > 1 ? 1u : 0u;
+                    ++evidence.PixelsCompared;
+                }
+            ++evidence.Captures;
+            return evidence.Mismatches == 0 || fail(std::string(stage) + "-pixels");
+        };
+
+        const auto updateWhole = [&](UiTextureHandle handle, u32 width, u32 height, u32 frame, u32 pitchBytes)
+        {
+            std::vector<u8> bytes(static_cast<size_t>(pitchBytes) * height, u8 { 0xEE });
+            for (u32 y = 0; y < height; ++y)
+                for (u32 x = 0; x < width; ++x)
+                {
+                    const std::array<u8, 4> texel = UiSmokeTexel(frame, x, y);
+                    std::copy(texel.begin(), texel.end(), bytes.begin() + static_cast<std::ptrdiff_t>(y) * pitchBytes + x * 4);
+                }
+            UiTextureUpdate update;
+            update.Rect = { 0, 0, width, height };
+            update.Pixels = bytes.data();
+            update.RowPitchBytes = pitchBytes;
+            update.PixelBytes = bytes.size();
+            const bool updated = service.Update(handle, update);
+            // The caller's memory is free to change as soon as Update returns.
+            std::fill(bytes.begin(), bytes.end(), u8 { 0xCD });
+            return updated;
+        };
+
+        UiTextureHandle first = service.Create(kUiSmokeFirstWidth, kUiSmokeFirstHeight, "ui-texture-smoke");
+        if (first == kInvalidUiTextureHandle)
+            fail("create");
+        if (failedStage.empty()
+            && (service.Create(0, 8, "invalid") != kInvalidUiTextureHandle || service.GetLastError() != UiTextureError::InvalidSize))
+            fail("invalid-create");
+
+        // Frame 0: whole texture from padded rows.
+        if (failedStage.empty() && !updateWhole(first, kUiSmokeFirstWidth, kUiSmokeFirstHeight, 0, kUiSmokeFirstWidth * 4u + 16u))
+            fail("write-whole");
+        if (failedStage.empty())
+            captureAndCompare(first, { kUiSmokeFirstWidth, kUiSmokeFirstHeight, false, 0, false, {}, 0 }, "frame0");
+
+        // Refused updates change nothing: the next capture must still equal frame 0
+        // plus only the accepted region below.
+        std::vector<u8> mirror(static_cast<size_t>(kUiSmokeFirstWidth) * kUiSmokeFirstHeight * 4u);
+        for (u32 y = 0; y < kUiSmokeFirstHeight; ++y)
+            for (u32 x = 0; x < kUiSmokeFirstWidth; ++x)
+            {
+                const std::array<u8, 4> texel = UiSmokeTexel(0, x, y);
+                std::copy(texel.begin(), texel.end(), mirror.begin() + (static_cast<std::ptrdiff_t>(y) * kUiSmokeFirstWidth + x) * 4);
+            }
+        if (failedStage.empty())
+        {
+            const auto refused = [&](UiTextureUpdate update)
+            {
+                return !service.Update(first, update) && service.GetLastError() == UiTextureError::InvalidUpdate;
+            };
+            UiTextureUpdate outOfBounds;
+            outOfBounds.Rect = { 40, 0, 16, 4 };
+            outOfBounds.Pixels = mirror.data();
+            outOfBounds.RowPitchBytes = kUiSmokeFirstWidth * 4u;
+            outOfBounds.PixelBytes = mirror.size();
+            UiTextureUpdate shortData = outOfBounds;
+            shortData.Rect = { 0, 0, 8, 8 };
+            shortData.PixelBytes = 7u * kUiSmokeFirstWidth * 4u + 8u * 4u - 1u;
+            UiTextureUpdate noPixels = outOfBounds;
+            noPixels.Rect = { 0, 0, 4, 4 };
+            noPixels.Pixels = nullptr;
+            if (!refused(outOfBounds) || !refused(shortData) || !refused(noPixels))
+                fail("rejections");
+        }
+
+        // Frame 1: a dirty rectangle inside a larger CPU mirror, as a browser
+        // panel would submit it (pointer at the rectangle, row pitch of the mirror).
+        const UiTextureRect region { 10, 5, 20, 12 };
+        if (failedStage.empty())
+        {
+            const u32 mirrorPitch = kUiSmokeFirstWidth * 4u;
+            for (u32 y = region.Y; y < region.Y + region.Height; ++y)
+                for (u32 x = region.X; x < region.X + region.Width; ++x)
+                {
+                    const std::array<u8, 4> texel = UiSmokeTexel(1, x, y);
+                    std::copy(texel.begin(), texel.end(), mirror.begin() + static_cast<std::ptrdiff_t>(y) * mirrorPitch + x * 4);
+                }
+            const size_t offset = static_cast<size_t>(region.Y) * mirrorPitch + static_cast<size_t>(region.X) * 4u;
+            UiTextureUpdate update;
+            update.Rect = region;
+            update.Pixels = mirror.data() + offset;
+            update.RowPitchBytes = mirrorPitch;
+            update.PixelBytes = mirror.size() - offset;
+            const bool updated = service.Update(first, update);
+            std::fill(mirror.begin(), mirror.end(), u8 { 0xCD });
+            if (!updated)
+                fail("write-region");
+        }
+        if (failedStage.empty())
+            captureAndCompare(first, { kUiSmokeFirstWidth, kUiSmokeFirstHeight, false, 0, true, region, 1 }, "frame1");
+
+        // Resize: new transparent texture and a new ImGui id; the old one retires.
+        const u64 idBeforeResize = failedStage.empty() ? service.GetImGuiId(first) : 0;
+        if (failedStage.empty() && !service.Resize(first, kUiSmokeResizedWidth, kUiSmokeResizedHeight))
+            fail("resize");
+        u32 resizedWidth = 0;
+        u32 resizedHeight = 0;
+        if (failedStage.empty())
+        {
+            evidence.IdChangedOnResize = service.GetImGuiId(first) != 0 && service.GetImGuiId(first) != idBeforeResize;
+            if (!evidence.IdChangedOnResize || !service.GetExtent(first, resizedWidth, resizedHeight)
+                || resizedWidth != kUiSmokeResizedWidth || resizedHeight != kUiSmokeResizedHeight)
+                fail("resize-state");
+        }
+        if (failedStage.empty())
+            captureAndCompare(first, { kUiSmokeResizedWidth, kUiSmokeResizedHeight, true, 0, false, {}, 0 }, "resized-transparent");
+        if (failedStage.empty() && !updateWhole(first, kUiSmokeResizedWidth, kUiSmokeResizedHeight, 2, kUiSmokeResizedWidth * 4u))
+            fail("write-resized");
+        if (failedStage.empty())
+            captureAndCompare(first, { kUiSmokeResizedWidth, kUiSmokeResizedHeight, false, 2, false, {}, 0 }, "frame2");
+
+        // The ImGui frame is still open here, so its own submission may already
+        // reference both textures. Their retirements must therefore be held.
+        UiTextureHandle second = kInvalidUiTextureHandle;
+        bool deferred = false;
+        if (failedStage.empty())
+        {
+            second = service.Create(16, 16, "ui-texture-smoke-retire");
+            if (second == kInvalidUiTextureHandle || !updateWhole(second, 16, 16, 3, 16u * 4u))
+                fail("second-texture");
+        }
+        if (failedStage.empty())
+        {
+            const std::vector<u8> bytes(16u * 16u * 4u, u8 { 0 });
+            UiTextureUpdate update;
+            update.Rect = { 0, 0, 16, 16 };
+            update.Pixels = bytes.data();
+            update.PixelBytes = bytes.size();
+            const bool destroyed = service.Destroy(second) && service.Destroy(first);
+            const bool staleRefused = !service.Update(second, update) && service.GetLastError() == UiTextureError::InvalidHandle
+                && !service.Destroy(second) && service.GetLastError() == UiTextureError::InvalidHandle
+                && service.GetImGuiId(second) == 0 && service.GetImGuiId(first) == 0;
+            const UiTextureCounters counters = service.GetCounters();
+            deferred = destroyed && staleRefused && service.CollectRetired() == 0
+                && counters.PendingRetirements == 3 && counters.RetirementsQueued == 3 && counters.RetirementsReleased == 0;
+            if (!deferred)
+                fail("deferred-retirement");
+        }
+
+        if (!failedStage.empty() || evidence.Captures != kUiSmokeCaptures)
+        {
+            Log::Error("UiTextureHandoffV1 backend=Vulkan, failedStage=", failedStage.empty() ? "captures" : failedStage,
+                ", captures=", evidence.Captures, ", pixelsCompared=", evidence.PixelsCompared, ", mismatches=", evidence.Mismatches,
+                ", maxChannelDelta=", evidence.MaximumChannelDelta, ", result=fail");
+            throw std::runtime_error("UI texture smoke failed at stage " + (failedStage.empty() ? std::string("captures") : failedStage));
+        }
+        m_UiTextureSmokeStage = UiTextureSmokeStage::AwaitingRetirement;
+    }
+
+    void NVRHIRenderBackend::FinishUiTextureSmokeIfRetired()
+    {
+        if (m_UiTextureSmokeStage != UiTextureSmokeStage::AwaitingRetirement)
+            return;
+        const UiTextureCounters counters = m_UiTextureService->GetCounters();
+        if (counters.PendingRetirements != 0)
+            return;
+        m_UiTextureSmokeStage = UiTextureSmokeStage::Finished;
+
+        const UiTextureSmokeEvidence& evidence = m_UiTextureSmokeEvidence;
+        const bool countersExact = counters.IsBalanced() && counters.IsDrained()
+            && counters.Created == 2 && counters.Resized == 1 && counters.Destroyed == 2
+            && counters.UpdatesSubmitted == 4 && counters.InitialWritesSubmitted == 3
+            && counters.GpuTexturesCreated == 3 && counters.GpuTexturesReleased == 3
+            && counters.NativeRegistrations == 3 && counters.NativeUnregistrations == 3
+            && counters.RetirementsQueued == 3 && counters.RetirementsReleased == 3
+            && counters.RetirementsDrainedAtShutdown == 0 && counters.LeakedAtShutdown == 0
+            && counters.Rejected == kUiSmokeRejections && counters.WrongThreadRejections == 0
+            && counters.RetirementHoldsPresentation > 0;
+        const bool passed = countersExact && evidence.Captures == kUiSmokeCaptures && evidence.Mismatches == 0
+            && evidence.PixelsCompared == static_cast<u64>(kUiSmokeCaptures) * kUiSmokeCaptureWidth * kUiSmokeCaptureHeight
+            && evidence.IdChangedOnResize;
+        Log::Info("UiTextureCaptureDetailV1 backend=Vulkan, capture=", kUiSmokeCaptureWidth, "x", kUiSmokeCaptureHeight,
+            ", maxChannelDelta=", evidence.MaximumChannelDelta, ", tolerance=1, holdsPresentation=", counters.RetirementHoldsPresentation,
+            ", holdsWriteToken=", counters.RetirementHoldsWriteToken, ", commandListsCreated=", counters.CommandListsCreated,
+            ", commandListReuses=", counters.CommandListReuses);
+        if (passed)
+        {
+            Log::Info("UiTextureHandoffV1 backend=Vulkan, imgui=Image-drawn-offscreen, texture=", kUiSmokeFirstWidth, "x", kUiSmokeFirstHeight,
+                ", resized=", kUiSmokeResizedWidth, "x", kUiSmokeResizedHeight,
+                ", writes=whole-padded+region-from-mirror+whole-after-resize, captures=", evidence.Captures,
+                ", pixelsCompared=", evidence.PixelsCompared, ", mismatches=", evidence.Mismatches,
+                ", idChangedOnResize=yes, rejected=", counters.Rejected,
+                ", sharedSampler=imgui-backend-linear-clamp, updateCompletionWait=none, retirementDeferredUntilPresentation=pass",
+                ", created=", counters.Created, ", resizes=", counters.Resized, ", destroyed=", counters.Destroyed,
+                ", retired=", counters.RetirementsQueued, ", released=", counters.RetirementsReleased,
+                ", drainedAtShutdown=", counters.RetirementsDrainedAtShutdown, ", leaked=", counters.LeakedAtShutdown,
+                ", balanced=yes, result=pass");
+            return;
+        }
+        Log::Error("UiTextureHandoffV1 backend=Vulkan, failedStage=", countersExact ? "evidence" : "counters",
+            ", captures=", evidence.Captures, ", mismatches=", evidence.Mismatches, ", created=", counters.Created,
+            ", resizes=", counters.Resized, ", destroyed=", counters.Destroyed, ", retired=", counters.RetirementsQueued,
+            ", released=", counters.RetirementsReleased, ", rejected=", counters.Rejected, ", result=fail");
+        throw std::runtime_error("UI texture smoke counters or evidence did not match");
     }
 
     bool NVRHIRenderBackend::RunVulkanRHICoreSmoke()
