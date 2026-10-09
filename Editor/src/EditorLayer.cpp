@@ -25,6 +25,8 @@
 namespace
 {
     constexpr const char* AssetDragPayloadType = "SPIRAL_ASSET_HANDLE";
+    constexpr int kKeyEscape = 256;
+    constexpr int kKeyHome = 268;
     constexpr int EditorSettingsFormatVersion = 1;
 
     bool HasCommandLineOption(const Engine::ApplicationCommandLineArgs& args,
@@ -396,6 +398,7 @@ void EditorLayer::OnAttach()
         throw std::runtime_error("Invalid --presentation-policy; expected synchronized or tearing-allowed");
     LoadEditorSettings();
     m_RendererCapabilitySmokeRequested = args.HasFlag("--renderer-capability-smoke");
+    LoadPanelVisibility();
     const Engine::RHI::DeviceCapabilities* deviceCapabilities = Engine::Renderer::GetDeviceCapabilities();
     if (deviceCapabilities)
     {
@@ -459,6 +462,14 @@ void EditorLayer::OnAttach()
         args.HasFlag("--editor-control-live-helper-smoke");
     m_EditorSceneControlV2HelperSmokeRequested =
         args.HasFlag("--editor-control-scene-v3-helper-smoke");
+    m_EditorViewportPickingHelperSmokeRequested =
+        args.HasFlag("--editor-control-viewport-picking-helper-smoke");
+    m_PanelUiSmokeRequested = args.HasFlag("--editor-panel-ui-smoke");
+    if (m_PanelUiSmokeRequested && !Engine::Application::Get().GetSpecification().Window.Headless)
+        throw std::runtime_error("--editor-panel-ui-smoke requires --headless");
+    m_ViewportClickSmokeRequested = args.HasFlag("--editor-viewport-click-smoke");
+    if (m_ViewportClickSmokeRequested && !Engine::Application::Get().GetSpecification().Window.Headless)
+        throw std::runtime_error("--editor-viewport-click-smoke requires --headless");
     m_EditorFabHelperSmokeRequested = args.HasFlag("--editor-control-fab-helper-smoke");
     m_EditorFabReopenSmokeRequested = args.HasFlag("--editor-control-fab-reopen-smoke");
     m_FabPanelUiSmokeRequested = args.HasFlag("--fab-panel-ui-smoke");
@@ -478,6 +489,7 @@ void EditorLayer::OnAttach()
         (m_EditorMaterialControlSmokeRequested ? 1u : 0u)
         + (m_EditorMaterialControlLiveHelperSmokeRequested ? 1u : 0u)
         + (m_EditorSceneControlV2HelperSmokeRequested ? 1u : 0u)
+        + (m_EditorViewportPickingHelperSmokeRequested ? 1u : 0u)
         + (m_EditorFabHelperSmokeRequested ? 1u : 0u)
         + (m_EditorFabReopenSmokeRequested ? 1u : 0u)
         + (m_EditorMaterialControlCapacitySmokeRequested ? 1u : 0u)
@@ -604,8 +616,10 @@ void EditorLayer::OnUpdate(Engine::Timestep timestep)
     RunColorPipelineSettingsSmoke();
     RunEditorSettingsSmoke();
     RunViewportNavigationSmoke();
+    RunViewportClickSmoke();
     AdvanceSceneOriginRasterSmoke();
     HandleAssetWatchEvents();
+    AdvanceFocusAnimation(timestep);
     UpdateViewportNavigation(timestep);
 
     UpdateFabIntegration();
@@ -625,6 +639,7 @@ void EditorLayer::OnUpdate(Engine::Timestep timestep)
     RunEditorMaterialControlSmokeAfterDrain();
     RunEditorMaterialControlLiveHelperSmokeAfterDrain();
     RunEditorSceneControlV2HelperSmokeAfterDrain();
+    RunEditorViewportPickingHelperSmokeAfterDrain();
     RunEditorMaterialControlCapacitySmokeAfterDrain();
     RunEditorMaterialControlDurabilitySmokeAfterDrain();
     RunEditorMaterialControlRollbackFailureSmokeAfterDrain();
@@ -668,6 +683,7 @@ void EditorLayer::InitializeEditorMaterialControl()
         if (m_EditorMaterialControlSmokeRequested
             || m_EditorMaterialControlLiveHelperSmokeRequested
             || m_EditorSceneControlV2HelperSmokeRequested
+            || m_EditorViewportPickingHelperSmokeRequested
             || m_EditorFabHelperSmokeRequested
             || m_EditorFabReopenSmokeRequested
             || m_EditorMaterialControlCapacitySmokeRequested
@@ -758,7 +774,7 @@ void EditorLayer::InitializeEditorMaterialControl()
         if (!prototype || !prototype->MeshRenderer || !directional
             || !cameraTransform || !light || !mainCamera)
             throw std::runtime_error(
-                "editor scene-control V4 smoke requires prototype mesh, main camera, and light");
+                "editor scene-control V5 smoke requires prototype mesh, main camera, and light");
 
         m_SelectedEntity = mainCamera;
         ResetFusionNavigationPivotFromSelectionOrScene();
@@ -851,7 +867,7 @@ void EditorLayer::InitializeEditorMaterialControl()
                 m_EditorSceneControlV2ColorAfter))
         {
             throw std::runtime_error(
-                "could not construct valid editor scene-control V4 smoke values");
+                "could not construct valid editor scene-control V5 smoke values");
         }
     }
 
@@ -875,7 +891,7 @@ void EditorLayer::InitializeEditorMaterialControl()
         const Engine::Entity mainCamera = m_ActiveScene.GetMainCameraEntity();
         const Engine::SceneEntity* camera = m_ActiveScene.TryGetEntity(mainCamera);
         if (!prototype || !directional || !camera)
-            throw std::runtime_error("editor scene-control V4 smoke target disappeared");
+            throw std::runtime_error("editor scene-control V5 smoke target disappeared");
         const std::string& session = m_EditorMaterialControl.GetSessionId();
         const std::string wrongProject =
             EditorMaterialControlMailbox::FormatInspectEntityRequest(
@@ -907,7 +923,7 @@ void EditorLayer::InitializeEditorMaterialControl()
                 "v2-schema-stale", staleSchema, error))
         {
             throw std::runtime_error(
-                "could not publish editor scene-control V4 rejection fixtures: " + error);
+                "could not publish editor scene-control V5 rejection fixtures: " + error);
         }
         const auto writeTransform = [](std::ostringstream& stream, std::string_view label,
                                         const Engine::Math::SectorLocalPosition& position,
@@ -986,7 +1002,32 @@ void EditorLayer::InitializeEditorMaterialControl()
         if (!m_EditorMaterialControl.PublishSceneControlTargetForSmoke(
                 target.str(), error))
             throw std::runtime_error(
-                "could not publish editor scene-control V4 target: " + error);
+                "could not publish editor scene-control V5 target: " + error);
+    }
+    if (m_EditorViewportPickingHelperSmokeRequested)
+    {
+        // One fixture proves the schema bump is enforced by the server: the previous
+        // request header must be rejected with the schema-5 reason.
+        const Engine::SceneEntity* prototype = m_ActiveScene.TryGetEntity(m_PrototypeMeshEntity);
+        if (!prototype)
+            throw std::runtime_error("editor viewport picking smoke requires Prototype Mesh");
+        std::string staleSchema = EditorMaterialControlMailbox::FormatInspectEntityRequest(
+            "vp-schema-stale", m_EditorMaterialControl.GetSessionId(), m_ProjectPath,
+            m_PrototypeMeshEntity.Id, prototype->Name);
+        staleSchema.replace(0, staleSchema.find('\n'), "SpiralEditorControlRequest 4");
+        if (!m_EditorMaterialControl.PublishRequestForSmoke("vp-schema-stale", staleSchema, error))
+            throw std::runtime_error(
+                "could not publish editor viewport picking rejection fixture: " + error);
+        // A second server-side rejection: a viewport point outside [0, 1] is not parsed.
+        std::string outOfRange = EditorMaterialControlMailbox::FormatInspectEntityRequest(
+            "vp-16-pick-out-of-range", m_EditorMaterialControl.GetSessionId(), m_ProjectPath,
+            m_PrototypeMeshEntity.Id, prototype->Name);
+        outOfRange.erase(outOfRange.find("Action InspectEntity"));
+        outOfRange += "Action PickAtViewportPoint\nExpectedSelectedEntityId 0\nViewportPoint 1.5 0.25\n";
+        if (!m_EditorMaterialControl.PublishRequestForSmoke("vp-16-pick-out-of-range", outOfRange, error))
+            throw std::runtime_error(
+                "could not publish editor viewport picking rejection fixture: " + error);
+        PublishEditorViewportPickingTarget();
     }
 }
 
@@ -1132,6 +1173,8 @@ EditorMaterialControlTransaction EditorLayer::ExecuteEditorMaterialControlReques
     receipt.DebugVisualizationGeneration =
         Engine::Renderer::GetSceneDebugVisualization().Generation;
 
+    if (IsViewportControlAction(request.Action))
+        return ExecuteViewportControlRequest(request, std::move(transaction));
     if (IsFabControlAction(request.Action))
         return ExecuteFabControlRequest(request, std::move(transaction));
 
@@ -2174,8 +2217,8 @@ void EditorLayer::RunEditorMaterialControlSmokeAfterDrain()
             throw std::runtime_error("editor material-control project guard smoke failed");
 
         Engine::Log::Info(
-            "EditorMaterialControlMailboxV4 interface=private-filesystem "
-            "actions=material-and-typed-scene session=exact schema=4 "
+            "EditorMaterialControlMailboxV5 interface=private-filesystem "
+            "actions=material-and-typed-scene session=exact schema=5 "
             "mainThread=before-scene-snapshot invalid=transactional-pass "
             "rollback=readback-and-receipt-pass inspect=pass commit=pass "
             "idempotency=exact-bytes conflicts=A-B-C-consumed "
@@ -2243,7 +2286,7 @@ void EditorLayer::RunEditorMaterialControlLiveHelperSmokeAfterDrain()
         throw std::runtime_error("live external editor material-control helper smoke failed");
 
     Engine::Log::Info(
-        "EditorMaterialControlLiveHelperV4 producer=external-python requests=fresh "
+        "EditorMaterialControlLiveHelperV5 producer=external-python requests=fresh "
         "inspect=semantic-pass set=semantic-pass close=editor-condition "
         "identity=session-pid-project affected=bounded-exact "
         "pollCadenceMs=16 idleSkips=", m_EditorMaterialControl.GetCadenceSkipCount(),
@@ -2323,7 +2366,7 @@ void EditorLayer::RunEditorSceneControlV2HelperSmokeAfterDrain()
     };
     if (std::any_of(receipts.begin(), receipts.end(), [](const auto* value)
         { return value == nullptr; }))
-        throw std::runtime_error("editor scene-control V4 receipt sequence is incomplete");
+        throw std::runtime_error("editor scene-control V5 receipt sequence is incomplete");
 
     const auto sameTransform = [](const Engine::TransformComponent& value,
         const Engine::Math::SectorLocalPosition& position,
@@ -2487,7 +2530,7 @@ void EditorLayer::RunEditorSceneControlV2HelperSmokeAfterDrain()
         && parserRejected(wrongProject, "wrong_project")
         && parserRejected(unexpectedField, "missing_or_unexpected_action_field")
         && parserRejected(duplicateField, "invalid_or_duplicate_entity_id")
-        && parserRejected(staleSchema, "unsupported_schema_expected_v4")
+        && parserRejected(staleSchema, "unsupported_schema_expected_v5")
         && successful(inspect, EditorMaterialControlAction::InspectEntity,
             "ReadOnly", "None")
         && inspect->EntityId == m_PrototypeMeshEntity.Id && historyUnchanged(inspect)
@@ -2688,10 +2731,10 @@ void EditorLayer::RunEditorSceneControlV2HelperSmokeAfterDrain()
         && finalInspect->UndoDepthBefore == baseUndo + 10
         && exactAffected(finalInspect, mainCamera);
     if (!valid)
-        throw std::runtime_error("external editor scene-control V4 helper smoke failed");
+        throw std::runtime_error("external editor scene-control V5 helper smoke failed");
 
     Engine::Log::Info(
-        "EditorSceneControlV4 producer=external-python actions=inspect-select-transform-"
+        "EditorSceneControlV5 producer=external-python actions=inspect-select-transform-"
         "typed-light-project-color-main-camera-debug-mesh cas=complete-values-selection stale=rejected "
         "rollbacks=transform-and-debug-verified history=one-per-document-action "
         "selection=session-only restore=exact "
@@ -2763,7 +2806,7 @@ void EditorLayer::RunEditorMaterialControlCapacitySmokeAfterDrain()
     if (!valid)
         throw std::runtime_error("editor material-control capacity retention smoke failed");
     Engine::Log::Info(
-        "EditorMaterialControlCapacityV4 retained=256 accepting=no "
+        "EditorMaterialControlCapacityV5 retained=256 accepting=no "
         "pendingUnclaimed=1 response=absent session=closed "
         "affectedTotal=42 affectedSample=32 truncated=yes result=pass");
     m_EditorMaterialControlCapacitySmokeCompleted = true;
@@ -2828,7 +2871,7 @@ void EditorLayer::RunEditorMaterialControlDurabilitySmokeAfterDrain()
         throw std::runtime_error(
             "editor material-control visible-publication durability smoke failed");
     Engine::Log::Info(
-        "EditorMaterialControlDurabilityV4 visibility=rename-authoritative "
+        "EditorMaterialControlDurabilityV5 visibility=rename-authoritative "
         "parentSync=injected-failure committed=preserved rollback=no "
         "acceptance=closed crashDurability=degraded result=pass");
     m_EditorMaterialControlDurabilitySmokeCompleted = true;
@@ -2920,7 +2963,7 @@ void EditorLayer::RunEditorMaterialControlRollbackFailureSmokeAfterDrain()
     }
 
     Engine::Log::Info(
-        "EditorMaterialControlRollbackFailureV4 path=",
+        "EditorMaterialControlRollbackFailureV5 path=",
         postCommit ? "postcommit-publication" : "commit",
         " closeReason=",
         postCommit ? "postcommit_rollback_verification_failed"
@@ -2940,6 +2983,8 @@ void EditorLayer::OnUiRender()
     PollFabDownloads();
     if (m_FabPanelUiSmokeRequested && RunFabPanelUiSmokeFrame())
         return;
+    if (m_PanelUiSmokeRequested && RunPanelUiSmokeFrame())
+        return;
     if (!ImGui::GetCurrentContext())
         return;
 
@@ -2952,6 +2997,8 @@ void EditorLayer::OnUiRender()
             Redo();
     }
 
+    // DrawViewportPanel marks the image rectangle valid again when the panel is drawn.
+    m_ViewportImageValid = false;
     DrawDockspace();
     DrawSceneHierarchyPanel();
     DrawInspectorPanel();
@@ -2961,6 +3008,7 @@ void EditorLayer::OnUiRender()
     DrawProjectPanel();
     DrawNewProjectDialog();
     DrawFabIntegration();
+    PersistPanelVisibilityIfChanged();
 
     if (m_CaptureViewportRequested && !m_CaptureViewportComplete && m_FrameCounter >= 2)
     {
@@ -3028,6 +3076,20 @@ void EditorLayer::OnEvent(Engine::Event& event)
         if (!keyEvent.IsRepeat() && key == 'F' && m_ViewportNavigationInputEnabled
             && !m_FabBrowser.WantsKeyboard())
             FocusSelectedEntity();
+
+        // Esc clears the selection and Home frames every visible mesh while the viewport
+        // is focused. Typing in a text field, an open popup, the Fab page owning the
+        // keyboard, or an active navigation drag all leave the keys alone.
+        const bool typingOrPopup = ImGui::GetCurrentContext()
+            && (ImGui::GetIO().WantTextInput
+                || ImGui::IsPopupOpen(static_cast<const char*>(nullptr),
+                    ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel));
+        const bool viewportKeyAvailable = !keyEvent.IsRepeat() && m_WindowFocused && m_ViewportFocused
+            && !m_CursorCaptured && !typingOrPopup && !m_FabBrowser.WantsKeyboard();
+        if (viewportKeyAvailable && key == kKeyEscape)
+            ClearSelection(SelectionSource::Keyboard);
+        else if (viewportKeyAvailable && key == kKeyHome)
+            FrameAllVisibleMeshes(true);
     }
     else if (event.GetEventType() == Engine::EventType::KeyReleased)
     {
@@ -3041,6 +3103,12 @@ void EditorLayer::OnEvent(Engine::Event& event)
         m_LeftMouseDown |= button == 0;
         m_RightMouseDown |= button == 1;
         m_MiddleMouseDown |= button == 2;
+        // A left press that starts over the viewport image may become a click-to-select;
+        // any other button press cancels a pending click.
+        if (button == 0)
+            BeginViewportClick();
+        else
+            CancelViewportClick();
         const bool capturesNavigation = m_ViewportNavigationPreset == ViewportNavigationPreset::Unreal
             ? (button == 0 || button == 1 || button == 2)
             : button == 2;
@@ -3060,12 +3128,15 @@ void EditorLayer::OnEvent(Engine::Event& event)
             m_RightMouseDown = false;
         else if (button == 2)
             m_MiddleMouseDown = false;
+        if (button == 0)
+            FinishViewportClick();
         if (!m_LeftMouseDown && !m_RightMouseDown && !m_MiddleMouseDown)
             EndViewportCursorCapture();
     }
     else if (event.GetEventType() == Engine::EventType::MouseMoved)
     {
         const auto& mouseEvent = static_cast<const Engine::MouseMovedEvent&>(event);
+        TrackViewportClickMotion(mouseEvent.GetX(), mouseEvent.GetY());
         if (m_HasMousePosition && m_CursorCaptured && m_CursorCaptureBaselineArmed)
         {
             m_MouseDeltaX += mouseEvent.GetX() - static_cast<float>(m_MouseX);
@@ -3295,7 +3366,15 @@ void EditorLayer::DrawMainMenuBar()
 
     if (ImGui::BeginMenu("View"))
     {
-        ImGui::MenuItem("ImGui Demo", nullptr, &m_ShowDemoWindow);
+        const bool canFrameSelection = m_ActiveScene.IsEntityValid(m_SelectedEntity)
+            && m_SelectedEntity != m_ActiveScene.GetMainCameraEntity();
+        if (ImGui::MenuItem("Frame Selected", "F", false, canFrameSelection))
+            FocusSelectedEntity(true);
+        if (!canFrameSelection && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+            ImGui::SetTooltip("Select an entity first; the viewport camera cannot be framed");
+        if (ImGui::MenuItem("Frame All", "Home"))
+            FrameAllVisibleMeshes(true);
+        ImGui::Separator();
         if (ImGui::BeginMenu("Scene Debug View"))
         {
             const Engine::SceneDebugView views[] = {
@@ -3315,13 +3394,25 @@ void EditorLayer::DrawMainMenuBar()
         ImGui::MenuItem("Selected Mesh Bounds", nullptr, &m_ShowSelectedBounds);
         ImGui::MenuItem("Show Occluded Selection Edges", nullptr,
             &m_ShowOccludedSelectionBounds, m_ShowSelectedBounds);
+        ImGui::Separator();
         if (ImGui::MenuItem("Reset Layout"))
+        {
             m_ResetDockLayout = true;
+            ResetPanelVisibility();
+        }
         ImGui::EndMenu();
     }
 
     if (ImGui::BeginMenu("Window"))
     {
+        // Every dockable panel can be closed with its tab button and reopened here.
+        ImGui::MenuItem("Scene Hierarchy", nullptr, &m_PanelVisible[PanelSceneHierarchy]);
+        ImGui::MenuItem("Inspector", nullptr, &m_PanelVisible[PanelInspector]);
+        ImGui::MenuItem("Viewport", nullptr, &m_PanelVisible[PanelViewport]);
+        ImGui::MenuItem("Content Browser", nullptr, &m_PanelVisible[PanelContentBrowser]);
+        ImGui::MenuItem("Console", nullptr, &m_PanelVisible[PanelConsole]);
+        ImGui::MenuItem("Profiler", nullptr, &m_PanelVisible[PanelProfiler]);
+        ImGui::Separator();
         bool browserVisible = m_FabBrowser.IsVisible();
         if (ImGui::MenuItem("Fab Browser", nullptr, &browserVisible))
             m_FabBrowser.SetVisible(browserVisible);
@@ -3342,8 +3433,6 @@ void EditorLayer::DrawMainMenuBar()
                     : "Project validation not started: " + validationError);
             m_FabImport.SetVisible(true);
         }
-        if (ImGui::MenuItem("Compile Shaders"))
-            m_ConsoleLines.emplace_back("Shader compiler is not implemented yet");
         if (ImGui::MenuItem("Rescan Asset Sources"))
         {
             m_AssetWatcher.SyncRegistry(m_AssetRegistry);
@@ -3355,8 +3444,8 @@ void EditorLayer::DrawMainMenuBar()
             m_CaptureViewportComplete = false;
             m_ConsoleLines.emplace_back(std::string("Viewport capture queued: ") + m_CaptureViewportPath);
         }
-        if (ImGui::MenuItem("Build Motion Pack"))
-            m_ConsoleLines.emplace_back("Motion pack builder is not implemented yet");
+        ImGui::Separator();
+        ImGui::MenuItem("ImGui Demo (developer tool)", nullptr, &m_ShowDemoWindow);
         ImGui::EndMenu();
     }
 
@@ -3606,7 +3695,9 @@ void EditorLayer::DrawSceneHierarchyPanel()
 {
     bool createEntityRequested = false;
     Engine::Entity deleteEntityRequested;
-    ImGui::Begin("Scene Hierarchy");
+    Engine::Entity focusEntityRequested;
+    if (!BeginClosablePanel(PanelSceneHierarchy, "Scene Hierarchy"))
+        return;
     ImGui::TextUnformatted(m_ActiveScene.GetName().c_str());
     ImGui::SameLine();
     if (ImGui::SmallButton("+"))
@@ -3648,16 +3739,46 @@ void EditorLayer::DrawSceneHierarchyPanel()
 
             ImGui::PushID(static_cast<int>(entity.EntityHandle.Id));
             const bool selected = entity.EntityHandle == m_SelectedEntity;
-            if (ImGui::Selectable(entity.Name.c_str(), selected))
+            // The selection tokens from DESIGN.md, spelled out so the highlight cannot drift
+            // with an unrelated header-color change.
+            ImGui::PushStyleColor(ImGuiCol_Header, IM_COL32(51, 79, 107, 255));
+            ImGui::PushStyleColor(ImGuiCol_HeaderHovered, IM_COL32(61, 97, 128, 255));
+            if (ImGui::Selectable(entity.Name.c_str(), selected, ImGuiSelectableFlags_AllowDoubleClick))
             {
-                m_SelectedEntity = entity.EntityHandle;
-                RetargetFusionNavigationPivotToSelectedEntity();
+                SetSelectedEntity(entity.EntityHandle, SelectionSource::Hierarchy);
+                if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
+                    focusEntityRequested = entity.EntityHandle;
+            }
+            ImGui::PopStyleColor(2);
+            // A selection that came from the viewport (or a typed request) scrolls to its
+            // row once; the flag is consumed by the first frame the row is drawn.
+            if (selected && m_HierarchyScrollRequest)
+            {
+                ImGui::SetScrollHereY(0.5f);
+                m_HierarchyScrollRequest = false;
+            }
+            if (ImGui::BeginItemTooltip())
+            {
+                ImGui::TextUnformatted(entity.Name.c_str());
+                ImGui::TextDisabled("Entity ID %u%s", entity.EntityHandle.Id,
+                    entity.EntityHandle == m_ActiveScene.GetMainCameraEntity() ? " (primary camera)" : "");
+                std::string components = "Transform";
+                if (entity.Camera)
+                    components += ", Camera";
+                if (entity.Light)
+                    components += std::string(", Light (") + Engine::ToString(entity.Light->Type) + ")";
+                if (entity.MeshRenderer)
+                    components += entity.MeshRenderer->Visible ? ", Mesh Renderer" : ", Mesh Renderer (hidden)";
+                ImGui::TextDisabled("Components: %s", components.c_str());
+                ImGui::EndTooltip();
             }
             if (ImGui::BeginPopupContextItem("EntityContext"))
             {
                 if (ImGui::MenuItem("Create Empty"))
                     createEntityRequested = true;
                 const bool isMainCamera = entity.EntityHandle == m_ActiveScene.GetMainCameraEntity();
+                if (ImGui::MenuItem("Frame", "F", false, !isMainCamera))
+                    focusEntityRequested = entity.EntityHandle;
                 if (ImGui::MenuItem("Delete", nullptr, false, !isMainCamera))
                     deleteEntityRequested = entity.EntityHandle;
                 ImGui::EndPopup();
@@ -3666,6 +3787,9 @@ void EditorLayer::DrawSceneHierarchyPanel()
         }
         ImGui::TreePop();
     }
+    // The row never drew (filtered out or the World node is collapsed): drop the request
+    // rather than scrolling later when the user changes the filter.
+    m_HierarchyScrollRequest = false;
 
     if (createEntityRequested)
         CreateSceneEntity();
@@ -3674,15 +3798,21 @@ void EditorLayer::DrawSceneHierarchyPanel()
         m_SelectedEntity = deleteEntityRequested;
         DeleteSelectedEntity();
     }
+    // Double-click and the context-menu Frame item use the same code as the F key.
+    if (focusEntityRequested)
+        FocusEntity(focusEntityRequested, true);
 
     ImGui::End();
 }
 
 void EditorLayer::DrawInspectorPanel()
 {
-    ImGui::Begin("Inspector");
+    if (!BeginClosablePanel(PanelInspector, "Inspector"))
+        return;
 
-    if (!m_ActiveScene.IsEntityValid(m_SelectedEntity))
+    // An empty selection (cleared by a viewport click or Esc) stays empty; only a
+    // selection that no longer exists falls back to the prototype mesh.
+    if (m_SelectedEntity && !m_ActiveScene.IsEntityValid(m_SelectedEntity))
         m_SelectedEntity = m_PrototypeMeshEntity;
 
     Engine::SceneEntity* selectedEntity = m_ActiveScene.TryGetEntity(m_SelectedEntity);
@@ -4054,6 +4184,8 @@ void EditorLayer::ApplyEditorCameraStateToScene()
 
 void EditorLayer::SyncEditorCameraStateFromMainCamera(bool discontinuousRelocation)
 {
+    // The camera was changed from outside navigation (undo, typed pose, project load).
+    CancelFocusAnimation();
     const Engine::TransformComponent& cameraTransform = m_ActiveScene.GetMainCameraTransform();
     const Engine::CameraComponent& camera = m_ActiveScene.GetMainCamera();
 
@@ -4142,6 +4274,8 @@ void EditorLayer::ClearViewportNavigationInput()
     m_HasMousePosition = false;
     m_ViewportNavigationFocusAvailable = false;
     m_ViewportFocusRequested = false;
+    m_ViewportPickAvailable = false;
+    CancelViewportClick();
 }
 
 bool EditorLayer::TryAcquireViewportNavigationFocus()
@@ -4288,31 +4422,6 @@ void EditorLayer::LoadEditorSettings()
 
     m_ViewportNavigationPreset = settings.ViewportNavigation;
     Engine::Log::Info("Editor settings loaded: viewportNavigation=", ToEditorSettingsNavigationPreset(m_ViewportNavigationPreset));
-}
-
-void EditorLayer::FocusSelectedEntity()
-{
-    Engine::Math::DVec3 focusPosition;
-    if (!m_ActiveScene.TryGetEntityApproximateWorldPosition(m_SelectedEntity, focusPosition))
-        return;
-
-    const float yaw = Engine::Math::DegreesToRadians(m_CameraRotation[1]);
-    const float pitch = Engine::Math::DegreesToRadians(m_CameraRotation[0]);
-    const Engine::Math::DVec3 forward {
-        std::sin(yaw) * std::cos(pitch),
-        -std::sin(pitch),
-        std::cos(yaw) * std::cos(pitch)
-    };
-    constexpr double focusDistance = 3.35;
-    m_CameraPosition = {
-        focusPosition.X - forward.X * focusDistance,
-        focusPosition.Y - forward.Y * focusDistance,
-        focusPosition.Z - forward.Z * focusDistance
-    };
-    SetFusionNavigationPivot(focusPosition);
-    m_EditorCamera.SetPosition({ m_CameraPosition[0], m_CameraPosition[1], m_CameraPosition[2] });
-    ApplyEditorCameraStateToScene();
-    m_ViewportDiscontinuousRelocationPending = true;
 }
 
 void EditorLayer::UpdateViewportNavigation(Engine::Timestep timestep)
@@ -4577,14 +4686,35 @@ void EditorLayer::DrawRendererBackendSelector()
 
 void EditorLayer::DrawViewportPanel()
 {
-    ImGui::SetNextWindowBgAlpha(0.0f);
-    ImGui::Begin("Viewport", nullptr, ImGuiWindowFlags_NoBackground);
-    const ImVec2 size = ImGui::GetContentRegionAvail();
-    if (size.x < 1.0f || size.y < 1.0f)
+    const auto clearViewportState = [this]()
     {
+        m_ViewportHovered = false;
+        m_ViewportFocused = false;
+        m_ViewportNavigationFocusAvailable = false;
+        m_ViewportNavigationInputEnabled = false;
+        m_ViewportPickAvailable = false;
+        m_ViewportImageValid = false;
         EndViewportCursorCapture();
         ClearViewportNavigationInput();
         Engine::Renderer::SetViewportRect({});
+    };
+    // A closed Viewport panel behaves like a collapsed one: no navigation or picking
+    // input is accepted and the typed pick path falls back to the virtual rectangle.
+    if (!m_PanelVisible[PanelViewport])
+    {
+        clearViewportState();
+        return;
+    }
+
+    ImGui::SetNextWindowBgAlpha(0.0f);
+    bool viewportOpen = true;
+    ImGui::Begin("Viewport", &viewportOpen, ImGuiWindowFlags_NoBackground);
+    if (!viewportOpen)
+        m_PanelVisible[PanelViewport] = false;
+    const ImVec2 size = ImGui::GetContentRegionAvail();
+    if (size.x < 1.0f || size.y < 1.0f)
+    {
+        clearViewportState();
         ImGui::End();
         return;
     }
@@ -4630,6 +4760,9 @@ void EditorLayer::DrawViewportPanel()
     const ImGuiIO& io = ImGui::GetIO();
     m_ViewportNavigationFocusAvailable = m_WindowFocused && m_ViewportHovered
         && !io.WantTextInput && !ImGui::IsAnyItemActive();
+    // The same latch gates click-to-select: the pointer is over the image itself, with
+    // no widget, popup, or text field in the way.
+    m_ViewportPickAvailable = m_ViewportNavigationFocusAvailable;
     m_ViewportNavigationInputEnabled = m_WindowFocused
         && !io.WantTextInput
         && (m_CursorCaptured || (m_ViewportNavigationFocusAvailable && m_ViewportFocused));
@@ -4640,6 +4773,7 @@ void EditorLayer::DrawViewportPanel()
     m_ViewportImageY = min.y;
     m_ViewportImageWidth = std::max(1.0f, max.x - min.x);
     m_ViewportImageHeight = std::max(1.0f, max.y - min.y);
+    m_ViewportImageValid = true;
     ImDrawList* drawList = ImGui::GetWindowDrawList();
 
     drawList->AddRect(min, max, IM_COL32(70, 80, 90, 255));
@@ -4651,28 +4785,17 @@ void EditorLayer::DrawViewportPanel()
     viewportRect.Height = static_cast<int>(max.y - min.y);
     Engine::Renderer::SetViewportRect(viewportRect);
 
-    const char* title = hasNativeViewportTexture ? "Renderer target" : "Renderer preview";
-    const std::string subtitle = hasNativeViewportTexture
-        ? std::string("Active backend: ") + Engine::Renderer::GetActiveBackendName() + "; native Scene mesh pass"
-        : std::string("Active backend: ") + Engine::Renderer::GetActiveBackendName() + "; native viewport unavailable";
-    drawList->AddText(ImVec2(min.x + 18.0f, min.y + 18.0f), IM_COL32(230, 235, 240, 255), title);
-    drawList->AddText(ImVec2(min.x + 18.0f, min.y + 40.0f), IM_COL32(150, 160, 170, 255), subtitle.c_str());
-
-    const Engine::RendererBuildInfo& buildInfo = Engine::Renderer::GetBuildInfo();
-    if (!hasNativeViewportTexture && !buildInfo.HasNVRHID3D12)
-        drawList->AddText(ImVec2(min.x + 18.0f, min.y + 62.0f), IM_COL32(120, 130, 140, 255), "Open the VS2022 build for D3D12 rendering.");
+    DrawViewportOverlays(min, max, hasNativeViewportTexture);
 
     ImGui::End();
 }
 
 void EditorLayer::DrawConsolePanel()
 {
-    ImGui::Begin("Console");
+    if (!BeginClosablePanel(PanelConsole, "Console"))
+        return;
     if (ImGui::Button("Clear"))
         m_ConsoleLines.clear();
-    ImGui::SameLine();
-    if (ImGui::Button("Add Test Message"))
-        m_ConsoleLines.emplace_back("Manual console message");
     ImGui::Separator();
 
     for (const std::string& line : m_ConsoleLines)
@@ -4686,9 +4809,11 @@ void EditorLayer::DrawConsolePanel()
 
 void EditorLayer::DrawProfilerPanel()
 {
+    if (!m_PanelVisible[PanelProfiler])
+        return;
     if (m_RendererCapabilitySmokeRequested && !m_RendererCapabilitySmokeComplete)
         ImGui::SetNextWindowFocus();
-    ImGui::Begin("Profiler");
+    BeginClosablePanel(PanelProfiler, "Profiler");
     const Engine::RendererFrameTiming& timing = Engine::Renderer::GetLastCompletedFrameTiming();
 
     ImGui::Text("Frame: %u", m_FrameCounter);
@@ -5065,7 +5190,8 @@ void EditorLayer::DrawProfilerPanel()
 
 void EditorLayer::DrawProjectPanel()
 {
-    ImGui::Begin("Content Browser");
+    if (!BeginClosablePanel(PanelContentBrowser, "Content Browser"))
+        return;
     ImGui::TextUnformatted("Assets");
     ImGui::Separator();
     ImGui::TextUnformatted("Import glTF");
@@ -6486,7 +6612,7 @@ void EditorLayer::RunViewportNavigationSmoke()
         || afterKeyboardNavigation.Y != beforeKeyboardNavigation.Y
         || afterKeyboardNavigation.Z != beforeKeyboardNavigation.Z;
     m_SelectedEntity = m_PrototypeMeshEntity;
-    FocusSelectedEntity();
+    FocusSelectedEntity(false);
     const bool focusDiscontinuous = m_ViewportDiscontinuousRelocationPending;
     m_RightMouseDown = true;
     m_KeyDown[static_cast<size_t>('W')] = true;
@@ -6862,7 +6988,9 @@ bool EditorLayer::RestoreHistoryState(const HistoryState& state)
     m_PrototypeMeshEntity = m_ActiveScene.FindEntityByName("Prototype Mesh");
     m_DirectionalLightEntity = m_ActiveScene.FindEntityByName("Directional Light");
     m_PlayerStartEntity = m_ActiveScene.FindEntityByName("Player Start");
-    if (!m_ActiveScene.IsEntityValid(m_SelectedEntity))
+    // An empty recorded selection (cleared by a viewport click or Esc) stays empty; only
+    // a selection that no longer exists falls back.
+    if (m_SelectedEntity && !m_ActiveScene.IsEntityValid(m_SelectedEntity))
         m_SelectedEntity = m_PrototypeMeshEntity ? m_PrototypeMeshEntity : m_ActiveScene.GetMainCameraEntity();
 
     SyncEditorCameraStateFromMainCamera(true);

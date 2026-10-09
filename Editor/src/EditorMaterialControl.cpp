@@ -6,6 +6,7 @@
 #include <array>
 #include <charconv>
 #include <chrono>
+#include <cmath>
 #include <fstream>
 #include <iomanip>
 #include <iterator>
@@ -32,9 +33,9 @@
 
 namespace
 {
-    constexpr std::string_view kRequestHeader = "SpiralEditorControlRequest 4";
-    constexpr std::string_view kReceiptHeader = "SpiralEditorControlReceipt 4";
-    constexpr std::string_view kSessionHeader = "SpiralEditorControlSession 4";
+    constexpr std::string_view kRequestHeader = "SpiralEditorControlRequest 5";
+    constexpr std::string_view kReceiptHeader = "SpiralEditorControlReceipt 5";
+    constexpr std::string_view kSessionHeader = "SpiralEditorControlSession 5";
 
     const char* ToString(EditorMaterialControlAction action)
     {
@@ -54,6 +55,8 @@ namespace
                 return "SetSceneDebugVisualization";
             case EditorMaterialControlAction::SetMeshRendererFlags:
                 return "SetMeshRendererFlags";
+            case EditorMaterialControlAction::PickAtViewportPoint: return "PickAtViewportPoint";
+            case EditorMaterialControlAction::FocusSelection: return "FocusSelection";
             case EditorMaterialControlAction::InspectFabImport: return "InspectFabImport";
             case EditorMaterialControlAction::SelectFabPackage: return "SelectFabPackage";
             case EditorMaterialControlAction::SetFabProvenance: return "SetFabProvenance";
@@ -230,6 +233,25 @@ namespace
         else if (shadowsText == "no") castsShadows = false;
         else return false;
         return true;
+    }
+
+    // Two finite coordinates in [0, 1]. Parsed with from_chars so a locale can never
+    // change the decimal separator.
+    bool ParseViewportPoint(std::istringstream& stream, double& x, double& y)
+    {
+        std::string first;
+        std::string second;
+        if (!(stream >> first >> second) || !AtEnd(stream))
+            return false;
+        const auto parse = [](const std::string& text, double& value)
+        {
+            const char* begin = text.data();
+            const char* end = text.data() + text.size();
+            const auto result = std::from_chars(begin, end, value);
+            return result.ec == std::errc {} && result.ptr == end && std::isfinite(value)
+                && value >= 0.0 && value <= 1.0;
+        };
+        return parse(first, x) && parse(second, y);
     }
 
     bool IsLowerHex64(std::string_view text)
@@ -678,6 +700,42 @@ namespace
                << "FabPanelError " << std::quoted(SanitizeFabText(fab.PanelError)) << '\n';
     }
 
+    // The schema-5 viewport block. Its line order is part of the receipt contract and
+    // is mirrored by Scripts/EditorMaterialControl.py.
+    void WriteViewportBlock(std::ostringstream& stream, const EditorViewportControlReceipt& viewport)
+    {
+        const auto yesNo = [](bool value) { return value ? "yes" : "no"; };
+        // Earlier blocks leave the stream at float precision; these are doubles that
+        // the helper compares numerically, so print them round-trip exact.
+        const std::streamsize previousPrecision =
+            stream.precision(std::numeric_limits<double>::max_digits10);
+        const auto writePose = [&stream](std::string_view label, const double (&pose)[6])
+        {
+            stream << label;
+            for (const double value : pose)
+                stream << ' ' << value;
+            stream << '\n';
+        };
+        stream << "ViewportPick " << viewport.PickState << ' ' << viewport.PickEntityId << ' '
+               << viewport.PickDistance << ' ' << viewport.PickRefinement << ' '
+               << viewport.PickCandidates << ' ' << viewport.PickBoxHits << ' '
+               << viewport.PickTrianglesTested << '\n'
+               << "ViewportPickPoint " << viewport.PickNormalizedX << ' ' << viewport.PickNormalizedY
+               << ' ' << viewport.PickPixelX << ' ' << viewport.PickPixelY << ' '
+               << yesNo(viewport.PickRectVirtual) << '\n'
+               << "ViewportRect " << viewport.RectX << ' ' << viewport.RectY << ' ' << viewport.RectWidth
+               << ' ' << viewport.RectHeight << ' ' << viewport.RectAspect << ' '
+               << viewport.RectFovDegrees << '\n'
+               << "ViewportFocus " << viewport.FocusState << ' ' << viewport.FocusSubject << ' '
+               << yesNo(viewport.FocusAnimated) << ' ' << viewport.FocusMargin << '\n';
+        writePose("ViewportFocusBefore", viewport.FocusBefore);
+        writePose("ViewportFocusAfter", viewport.FocusAfter);
+        stream << "ViewportFocusBounds " << viewport.FocusCenter[0] << ' ' << viewport.FocusCenter[1]
+               << ' ' << viewport.FocusCenter[2] << ' ' << viewport.FocusRadius << ' '
+               << viewport.FocusDistance << '\n';
+        stream.precision(previousPrecision);
+    }
+
     std::string FormatReceipt(const EditorMaterialControlReceipt& receipt)
     {
         const auto writeSurface = [](std::ostringstream& stream,
@@ -811,6 +869,7 @@ namespace
                << "EditorCameraSynchronized "
                << (receipt.EditorCameraSynchronized ? "yes" : "no") << '\n';
         WriteFabBlock(stream, receipt.Fab);
+        WriteViewportBlock(stream, receipt.Viewport);
         return stream.str();
     }
 
@@ -821,7 +880,7 @@ namespace
         std::string line;
         if (!std::getline(input, line) || line != kRequestHeader)
         {
-            error = "unsupported_schema_expected_v4";
+            error = "unsupported_schema_expected_v5";
             return false;
         }
 
@@ -872,7 +931,9 @@ namespace
             NewMaterialAsset = 1ull << 42,
             MeshAsset = 1ull << 43,
             ExpectedManifestSha256 = 1ull << 44,
-            PanelVisible = 1ull << 45
+            PanelVisible = 1ull << 45,
+            ViewportPoint = 1ull << 46,
+            FocusAnimation = 1ull << 47
         };
         Engine::u64 seen = 0;
         const auto claim = [&seen](Field field)
@@ -941,6 +1002,8 @@ namespace
                 else if (action == "SetViewportMainCameraPose") request.Action = EditorMaterialControlAction::SetViewportMainCameraPose;
                 else if (action == "SetSceneDebugVisualization") request.Action = EditorMaterialControlAction::SetSceneDebugVisualization;
                 else if (action == "SetMeshRendererFlags") request.Action = EditorMaterialControlAction::SetMeshRendererFlags;
+                else if (action == "PickAtViewportPoint") request.Action = EditorMaterialControlAction::PickAtViewportPoint;
+                else if (action == "FocusSelection") request.Action = EditorMaterialControlAction::FocusSelection;
                 else if (action == "InspectFabImport") request.Action = EditorMaterialControlAction::InspectFabImport;
                 else if (action == "SelectFabPackage") request.Action = EditorMaterialControlAction::SelectFabPackage;
                 else if (action == "SetFabProvenance") request.Action = EditorMaterialControlAction::SetFabProvenance;
@@ -1339,6 +1402,29 @@ namespace
                 }
                 request.Fab.PanelVisible = text == "yes";
             }
+            else if (key == "ViewportPoint")
+            {
+                if (!claim(Field::ViewportPoint)
+                    || !ParseViewportPoint(fieldStream, request.ViewportNormalizedX,
+                        request.ViewportNormalizedY))
+                {
+                    error = "invalid_or_duplicate_viewport_point";
+                    return false;
+                }
+                request.HasViewportPoint = true;
+            }
+            else if (key == "FocusAnimation")
+            {
+                std::string text;
+                if (!claim(Field::FocusAnimation) || !(fieldStream >> text) || !AtEnd(fieldStream)
+                    || (text != "yes" && text != "no"))
+                {
+                    error = "invalid_or_duplicate_focus_animation";
+                    return false;
+                }
+                request.FocusAnimate = text == "yes";
+                request.HasFocusAnimation = true;
+            }
             else
             {
                 error = "unknown_field";
@@ -1368,6 +1454,7 @@ namespace
                    | Field::ExpectedMaterialAsset)) != 0;
         const bool needsEntity = (request.Action != EditorMaterialControlAction::SetProjectColorPipeline
                 && request.Action != EditorMaterialControlAction::SetSceneDebugVisualization
+                && !IsViewportControlAction(request.Action)
                 && !IsFabControlAction(request.Action))
             || request.Action == EditorMaterialControlAction::SetEntityMeshRendererAssets
             || commitAssignment;
@@ -1418,6 +1505,12 @@ namespace
             case EditorMaterialControlAction::SetMeshRendererFlags:
                 exactFields |= entityIdentity | Field::ExpectedMeshRendererFlags
                     | Field::NewMeshRendererFlags;
+                break;
+            case EditorMaterialControlAction::PickAtViewportPoint:
+                exactFields |= Field::ViewportPoint | Field::ExpectedSelectedEntityId;
+                break;
+            case EditorMaterialControlAction::FocusSelection:
+                exactFields |= Field::FocusAnimation | Field::ExpectedSelectedEntityId;
                 break;
             case EditorMaterialControlAction::InspectFabImport:
                 optionalFields = Field::ExpectedFabJobId;
@@ -1565,7 +1658,7 @@ bool EditorMaterialControlMailbox::Initialize(const std::filesystem::path& root,
     }
     if (m_DurabilityDegradationCount != 0)
         TransitionToClosed("ready_manifest_parent_sync_failed");
-    Engine::Log::Info("EditorMaterialControlV4 state=ready session=", m_SessionId,
+    Engine::Log::Info("EditorMaterialControlV5 state=ready session=", m_SessionId,
         " path=", m_Root.string(), " maxBytes=", MaximumRequestBytes,
         " maxPerFrame=", MaximumRequestsPerFrame,
         " maxRetained=", MaximumTerminalRequests);
@@ -1600,7 +1693,7 @@ void EditorMaterialControlMailbox::Close()
     if (!IsOpen())
         return;
     TransitionToClosed("editor_detach");
-    Engine::Log::Info("EditorMaterialControlV4 state=closed session=", m_SessionId,
+    Engine::Log::Info("EditorMaterialControlV5 state=closed session=", m_SessionId,
         " terminal=", m_Terminals.size(), " collisions=", m_ResponseCollisionCount);
 }
 
@@ -1629,8 +1722,8 @@ bool EditorMaterialControlMailbox::PublishSessionFile(
              << "State " << state << '\n'
              << "ProcessId " << m_ProcessId << '\n'
              << "ProjectPath " << std::quoted(m_ProjectPath) << '\n'
-             << "RequestSchema 4\nReceiptSchema 4\n"
-             << "Actions InspectMaterialSurface,SelectEntityPatchMaterialSurface,InspectEntity,SelectEntity,SetEntityTransform,SetTypedLight,SetProjectColorPipeline,SetViewportMainCameraPose,SetSceneDebugVisualization,SetMeshRendererFlags,InspectFabImport,SelectFabPackage,SetFabProvenance,ConfirmFabProvenance,CommitFabImport,CancelFabImport,DismissFabImport,PlaceMeshAsset,SetEntityMeshRendererAssets,SaveProjectState,ValidateProject,SetFabPanelVisible,InspectFabPanel\n"
+             << "RequestSchema 5\nReceiptSchema 5\n"
+             << "Actions InspectMaterialSurface,SelectEntityPatchMaterialSurface,InspectEntity,SelectEntity,SetEntityTransform,SetTypedLight,SetProjectColorPipeline,SetViewportMainCameraPose,SetSceneDebugVisualization,SetMeshRendererFlags,PickAtViewportPoint,FocusSelection,InspectFabImport,SelectFabPackage,SetFabProvenance,ConfirmFabProvenance,CommitFabImport,CancelFabImport,DismissFabImport,PlaceMeshAsset,SetEntityMeshRendererAssets,SaveProjectState,ValidateProject,SetFabPanelVisible,InspectFabPanel\n"
              << "FabInbox " << std::quoted(m_FabInbox.string()) << '\n'
              << "MaximumRequestBytes " << MaximumRequestBytes << '\n'
              << "MaximumRequestsPerFrame " << MaximumRequestsPerFrame << '\n'
@@ -1659,7 +1752,7 @@ void EditorMaterialControlMailbox::TransitionToClosed(std::string_view reason)
         Engine::Log::Error(
             "Editor material-control close is visible but not confirmed crash-durable: ",
             error);
-    Engine::Log::Info("EditorMaterialControlV4 accepting=no reason=", reason,
+    Engine::Log::Info("EditorMaterialControlV5 accepting=no reason=", reason,
         " retained=", m_Terminals.size());
 }
 
@@ -2119,6 +2212,7 @@ void EditorMaterialControlMailbox::ProcessRequest(const std::filesystem::path& p
         receipt.PostconditionVerified = false;
         receipt.RollbackVerified = true;
         receipt.EditorCameraSynchronized = false;
+        receipt.Viewport = {};
         terminal.Receipt = receipt;
         terminal.Text = FormatReceipt(receipt);
         Engine::Log::Error("Editor material-control commit rolled back: ", receipt.Reason);
@@ -2269,6 +2363,21 @@ bool EditorMaterialControlMailbox::PublishFabControlTargetForSmoke(
     return WriteOwnerOnlyTemporary(temporary, contents, error)
         && PublishFileNoReplace(temporary, m_Root / "fab-control-target.info",
             "fab-control smoke target", true, error);
+}
+
+bool EditorMaterialControlMailbox::PublishViewportPickingTargetForSmoke(
+    std::string_view contents, std::string& error)
+{
+    if (!IsOpen() || contents.empty() || contents.size() > MaximumResponseBytes)
+    {
+        error = "invalid_viewport_picking_smoke_target";
+        return false;
+    }
+    const std::filesystem::path temporary = m_Root
+        / (".viewport-picking-target." + std::to_string(++m_TemporarySequence) + ".tmp");
+    return WriteOwnerOnlyTemporary(temporary, contents, error)
+        && PublishFileNoReplace(temporary, m_Root / "viewport-picking-target.info",
+            "viewport-picking smoke target", true, error);
 }
 
 std::string EditorMaterialControlMailbox::FormatInspectRequest(std::string_view requestId,

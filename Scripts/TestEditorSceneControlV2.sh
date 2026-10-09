@@ -51,7 +51,7 @@ cleanup() {
         wait "$live_process" 2>/dev/null || true
     fi
     if [[ "${SPIRAL_KEEP_SMOKE_ARTIFACTS:-0}" == "1" ]]; then
-        echo "Preserved scene-control V4 smoke artifacts: $smoke_root" >&2
+        echo "Preserved scene-control V5 smoke artifacts: $smoke_root" >&2
     else
         rm -rf -- "$smoke_root"
     fi
@@ -141,7 +141,7 @@ run_sequence() {
             echo "Headed Editor placement mismatch: expected $headed_monitor/workspace $headed_workspace, got $actual_monitor/workspace $actual_workspace" >&2
             exit 1
         fi
-        echo "EditorSceneControlV4Placement address=$address monitor=$actual_monitor workspace=$actual_workspace result=pass"
+        echo "EditorSceneControlV5Placement address=$address monitor=$actual_monitor workspace=$actual_workspace result=pass"
         if [[ -n "$capture_dir" ]]; then
             sleep 0.1
             grim -o "$headed_monitor" "$capture_dir/$label-initial.png"
@@ -201,7 +201,7 @@ run_sequence() {
             grim -o "$headed_monitor" "$capture_dir/$label-$1.png"
         fi
         if [[ "$label" == "vulkan" && "$step_observation_seconds" != "0" ]]; then
-            echo "EditorSceneControlV4Observation step=$1 seconds=$step_observation_seconds"
+            echo "EditorSceneControlV5Observation step=$1 seconds=$step_observation_seconds"
             sleep "$step_observation_seconds"
         fi
     }
@@ -417,7 +417,7 @@ expected = {
 }
 for index, (reason, effect, rolled_back) in expected.items():
     receipt = json.load((root / f"{label}-{index:02}.json").open(encoding="utf-8"))
-    assert receipt["schema"] == 4 and receipt["status"] == "Rejected"
+    assert receipt["schema"] == 5 and receipt["status"] == "Rejected"
     assert receipt["reason"] == reason and receipt["effect"] == effect
     assert receipt["recovery"] == "None" and not receipt["postconditionVerified"]
     assert receipt["rollbackVerified"] == rolled_back
@@ -452,11 +452,11 @@ PY
     if ! wait "$live_process"; then
         live_process=""
         cat "$log_path" >&2
-        echo "Editor scene-control V4 process failed ($label)" >&2
+        echo "Editor scene-control V5 process failed ($label)" >&2
         exit 1
     fi
     live_process=""
-    grep -Fq -- "EditorSceneControlV4 producer=external-python" "$log_path"
+    grep -Fq -- "EditorSceneControlV5 producer=external-python" "$log_path"
     grep -Fq -- "backend=$expected_backend result=pass" "$log_path"
     grep -Fq -- "Renderer initialized with backend: $expected_backend" "$log_path"
     test -f "$control_dir/session.closed"
@@ -468,7 +468,7 @@ PY
         "$control_dir/responses/v2-mask-unexpected.response"
     grep -Fq -- 'Reason "invalid_or_duplicate_entity_id"' \
         "$control_dir/responses/v2-mask-duplicate.response"
-    grep -Fq -- 'Reason "unsupported_schema_expected_v4"' \
+    grep -Fq -- 'Reason "unsupported_schema_expected_v5"' \
         "$control_dir/responses/v2-schema-stale.response"
 
     python3 - "$smoke_root" "$label" "$project" <<'PY'
@@ -482,7 +482,7 @@ project = sys.argv[3]
 receipts = [json.load(path.open(encoding="utf-8"))
             for path in sorted(root.glob(f"{label}-[0-9][0-9].json"))]
 assert len(receipts) == 30
-assert all(value["schema"] == 4 for value in receipts)
+assert all(value["schema"] == 5 for value in receipts)
 assert all(value["projectPath"] == project for value in receipts)
 assert all(value["editorProcessId"] > 0 for value in receipts)
 assert sum(value["status"] == "Succeeded" for value in receipts) == 19
@@ -513,8 +513,8 @@ after_fingerprint="$(fingerprint)"
 if [[ "$after_fingerprint" != "$before_fingerprint" ]]; then
     diff -u <(printf '%s\n' "$before_fingerprint") \
         <(printf '%s\n' "$after_fingerprint") >&2 || true
-    echo "Scene-control V4 changed persistent project bytes" >&2
+    echo "Scene-control V5 changed persistent project bytes" >&2
     exit 1
 fi
 
-echo "EditorSceneControlV4Test helper=typed schema=4 requests=30 succeeded=19 rejected=11 headless=pass vulkan=$([[ "$run_vulkan" == "--vulkan" ]] && echo pass || echo skipped) security=project-mask-duplicate-rejected cas=selection-transform-light-color-camera-debug-mesh stale=rejected selectedIdentity=bound mainCameraAuthority=dedicated invalid-camera=client-rejected rollbacks=2-verified history=one-per-document-action restore=exact save=not-invoked persistentBytes=unchanged input=no-ui-synthesis result=pass"
+echo "EditorSceneControlV5Test helper=typed schema=5 requests=30 succeeded=19 rejected=11 headless=pass vulkan=$([[ "$run_vulkan" == "--vulkan" ]] && echo pass || echo skipped) security=project-mask-duplicate-rejected cas=selection-transform-light-color-camera-debug-mesh stale=rejected selectedIdentity=bound mainCameraAuthority=dedicated invalid-camera=client-rejected rollbacks=2-verified history=one-per-document-action restore=exact save=not-invoked persistentBytes=unchanged input=no-ui-synthesis result=pass"

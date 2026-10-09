@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Headless end-to-end test of the Editor Fab import workflow through the typed
-# control (schema 4): GLB import -> provenance -> confirm -> commit -> place ->
+# control (schema 5): GLB import -> provenance -> confirm -> commit -> place ->
 # save, then a relaunch of the same --project that proves save/reopen, identical
 # reimport (ExactReuse), hostile and corrupt packages, cancellation, an
 # assignment commit, immutable-material protection, and project validation.
@@ -370,7 +370,7 @@ expect fa-14-place-forced-rollback 'd["rollbackVerified"] and d["effect"] == "Ro
 ok fa-15-save save-project-state
 manifest_after_a="$(val fa-15-save 'd["fab"]["manifestSha256"]')"
 ok fa-99-final inspect-fab
-finish "EditorFabControlV4 phase=import"
+finish "EditorFabControlV5 phase=import"
 a_fingerprint="$(fingerprint all)"
 generations_a="$(fingerprint generations)"
 grep -Fq 'ProjectRevision 1' "$project" || fail "manifest revision after phase A"
@@ -563,7 +563,7 @@ ok fb-91-panel-hide set-fab-panel-visible --visible no
 ok fb-92-panel-inspect inspect-fab-panel
 expect fb-92-panel-inspect 'd["fab"]["panel"]["state"] == "NotStarted" and not d["fab"]["panel"]["visible"]' "panel diagnostics"
 ok fb-99-final inspect-fab
-finish "EditorFabControlV4 phase=reopen"
+finish "EditorFabControlV5 phase=reopen"
 staging_clean
 grep -Fq 'ProjectRevision 2' "$project" || fail "final manifest revision"
 
@@ -636,4 +636,4 @@ if [[ "$default_after" != "$default_before" ]]; then
     fail "the default project changed"
 fi
 
-echo "EditorFabImportTestV4 schema=4 project=temporary phases=import-then-reopen import=glb-provenance-confirm-commit place=one-history-entry rollback=verified save-reopen=entity-mesh-material-receipt exact-reuse=no-new-revision intake=glb-zip-directory rejected=corrupt-zip-traversal-bad-png-truncated-notes-symlink-wrong-kind schema-paths=leaf-only cancellation=awaiting-and-cooking panelUi=all-states-headless legacyLayout=commit-and-reopen staging=clean assignment=cas-stale-rejected-then-applied immutable=patch-rejected-no-logical-file validation=full-hash-worker panel=headless-guarded defaultProject=unchanged input=no-ui-synthesis result=pass"
+echo "EditorFabImportTestV5 schema=5 project=temporary phases=import-then-reopen import=glb-provenance-confirm-commit place=one-history-entry rollback=verified save-reopen=entity-mesh-material-receipt exact-reuse=no-new-revision intake=glb-zip-directory rejected=corrupt-zip-traversal-bad-png-truncated-notes-symlink-wrong-kind schema-paths=leaf-only cancellation=awaiting-and-cooking panelUi=all-states-headless legacyLayout=commit-and-reopen staging=clean assignment=cas-stale-rejected-then-applied immutable=patch-rejected-no-logical-file validation=full-hash-worker panel=headless-guarded defaultProject=unchanged input=no-ui-synthesis result=pass"

@@ -8,6 +8,7 @@
 #include <Engine.h>
 
 #include <array>
+#include <chrono>
 #include <filesystem>
 #include <memory>
 #include <optional>
@@ -59,7 +60,57 @@ private:
     void SetFusionNavigationPivot(const Engine::Math::DVec3& pivot);
     bool SaveEditorSettings();
     void LoadEditorSettings();
-    void FocusSelectedEntity();
+    // Selection, viewport picking, and camera framing. Defined in EditorLayerPicking.cpp.
+    struct ViewportPickGeometry;
+    struct ViewportPickReport;
+    struct FocusPlan;
+    struct PickMeshData;
+    enum class SelectionSource
+    {
+        Hierarchy,
+        Viewport,
+        Keyboard
+    };
+    // The one selection path: hierarchy rows, viewport clicks, typed picks and Esc all
+    // end here, so the Inspector, Fusion pivot, selected-bounds overlay and hierarchy
+    // highlight follow the same state. Returns whether the selection changed.
+    bool SetSelectedEntity(Engine::Entity entity, SelectionSource source);
+    bool ClearSelection(SelectionSource source);
+    ViewportPickGeometry GetViewportPickGeometry() const;
+    ViewportPickReport PickAtViewportPixel(double pixelX, double pixelY);
+    ViewportPickReport PickAtViewportNormalized(double normalizedX, double normalizedY);
+    void BeginViewportClick();
+    void TrackViewportClickMotion(double x, double y);
+    void FinishViewportClick();
+    void CancelViewportClick();
+    // F: frames the selected entity. Returns false (and says why in the Console) when
+    // nothing can be framed. `animate` false jumps and flags a discontinuous relocation.
+    bool FocusSelectedEntity(bool animate = true);
+    bool FocusEntity(Engine::Entity entity, bool animate);
+    bool FrameAllVisibleMeshes(bool animate = true);
+    bool PlanFocusForEntity(Engine::Entity entity, FocusPlan& outPlan, std::string& outError);
+    bool PlanFocusForAllMeshes(FocusPlan& outPlan, std::string& outError);
+    void StartFocus(const FocusPlan& plan, bool animate);
+    void AdvanceFocusAnimation(Engine::Timestep timestep);
+    void CancelFocusAnimation();
+    std::shared_ptr<const PickMeshData> GetPickMesh(Engine::AssetHandle mesh);
+    EditorMaterialControlTransaction ExecuteViewportControlRequest(
+        const EditorMaterialControlRequest& request, EditorMaterialControlTransaction transaction);
+    void RunEditorViewportPickingHelperSmokeAfterDrain();
+    void RunViewportClickSmoke();
+    // Draws the dockspace and every EditorLayer panel through frames of a private,
+    // headless ImGui context so ImGui's own stack, ID, and window assertions cover the
+    // close-button, hidden-panel, and selection code. Returns true while it owns the UI phase.
+    bool RunPanelUiSmokeFrame();
+    void PublishEditorViewportPickingTarget();
+    // Panels: close buttons, Window menu entries, persisted visibility.
+    void LoadPanelVisibility();
+    void PersistPanelVisibilityIfChanged();
+    bool BeginClosablePanel(size_t panel, const char* title, int windowFlags = 0);
+    void DrawViewportOverlays(const ImVec2& imageMin, const ImVec2& imageMax, bool hasNativeViewportTexture);
+    bool CollectFramePoints(const Engine::SceneEntity& entity, bool visibleMeshesOnly,
+        std::vector<Engine::Math::DVec3>& points, bool& usedBounds);
+    void ResetPanelVisibility();
     void DrawViewportPanel();
     void DrawConsolePanel();
     void DrawProfilerPanel();
@@ -395,4 +446,74 @@ private:
     unsigned int m_ProjectColorPipelineInteractionItemId = 0;
     bool m_ProjectColorPipelineInteractionChanged = false;
     std::string m_ProjectColorPipelineInteractionLabel;
+
+    // Click-to-select: a left press and release in the viewport image that stays under
+    // a distance and time limit is a pick, anything longer is navigation. Tracked from
+    // engine events, resolved when the button is released.
+    struct ViewportClickState
+    {
+        bool Armed = false;
+        double PressX = 0.0;
+        double PressY = 0.0;
+        double LastX = 0.0;
+        double LastY = 0.0;
+        double Movement = 0.0;
+        std::chrono::steady_clock::time_point PressTime {};
+    };
+    ViewportClickState m_ViewportClick;
+    // Latched by DrawViewportPanel: the pointer is over the viewport image itself and
+    // no ImGui widget, popup, or active item owns it.
+    bool m_ViewportPickAvailable = false;
+    // The viewport image rectangle (m_ViewportImage*) was refreshed by the last UI
+    // frame. Headless runs and a closed Viewport panel use a deterministic virtual
+    // rectangle instead (see GetViewportPickGeometry).
+    bool m_ViewportImageValid = false;
+    // Scroll the hierarchy row of the selected entity into view once (selection came
+    // from somewhere other than a hierarchy click).
+    bool m_HierarchyScrollRequest = false;
+    // Animated F framing: the camera eases from Start to Target; any navigation input
+    // cancels it.
+    struct FocusAnimationState
+    {
+        bool Active = false;
+        std::array<double, 3> Start {};
+        std::array<double, 3> Target {};
+        double Elapsed = 0.0;
+    };
+    FocusAnimationState m_FocusAnimation;
+    // Immutable mesh geometry for picking, keyed by asset handle and cooked root. A
+    // legacy (empty) cooked root is mutable and is reloaded for every pick instead.
+    std::vector<std::shared_ptr<const PickMeshData>> m_PickMeshCache;
+    std::vector<std::shared_ptr<const PickMeshData>> m_PickMeshScratch;
+
+    // Panel visibility (close buttons and the Window menu), persisted workspace-wide.
+    enum PanelIndex : size_t
+    {
+        PanelSceneHierarchy,
+        PanelInspector,
+        PanelViewport,
+        PanelContentBrowser,
+        PanelConsole,
+        PanelProfiler,
+        kPanelCount
+    };
+    std::array<bool, kPanelCount> m_PanelVisible { true, true, true, true, true, true };
+    std::array<bool, kPanelCount> m_PanelVisiblePersisted { true, true, true, true, true, true };
+    std::string m_PanelVisibilityPath = "output/editor/panel-visibility.spiralsettings";
+
+    // Seam for `--editor-viewport-click-smoke`: the headless window has no cursor, so the
+    // smoke supplies the press position here instead of reading it from the window.
+    std::optional<std::array<double, 2>> m_ViewportClickCursorOverride;
+    bool m_PanelUiSmokeRequested = false;
+    ImGuiContext* m_PanelUiSmokeContext = nullptr;
+    unsigned int m_PanelUiSmokeFrames = 0;
+    bool m_ViewportClickSmokeRequested = false;
+    bool m_ViewportClickSmokeCompleted = false;
+
+    // `--editor-control-viewport-picking-helper-smoke`: an external helper drives
+    // PickAtViewportPoint and FocusSelection through the mailbox.
+    bool m_EditorViewportPickingHelperSmokeRequested = false;
+    bool m_EditorViewportPickingHelperSmokeCompleted = false;
+    Engine::Entity m_EditorViewportPickingInitialSelection;
+    Engine::u32 m_EditorViewportPickingBaseUndoDepth = 0;
 };

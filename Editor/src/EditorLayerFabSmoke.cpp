@@ -214,7 +214,7 @@ void EditorLayer::RunEditorFabControlSmokeAfterDrain()
     if (!check.Failure.empty())
         throw std::runtime_error("Fab control smoke failed: " + check.Failure);
 
-    Engine::Log::Info("EditorFabControlV4 phase=", importPhase ? "import" : "reopen",
+    Engine::Log::Info("EditorFabControlV5 phase=", importPhase ? "import" : "reopen",
         " producer=external-python identity=session-pid-project paths=leaf-only controller=typed-actions"
         " liveState=cross-checked staging=clean input=mailbox-no-ui-synthesis result=pass");
     m_EditorFabSmokeCompleted = true;

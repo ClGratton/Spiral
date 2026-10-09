@@ -24,7 +24,11 @@ project "EngineTests"
         -- Pure Editor-private History core (plain types, no ImGui/GLFW/Scene/RHI).
         "../Editor/src/History/EditGesture.cpp",
         "../Editor/src/History/HistoryLabel.cpp",
-        "../Editor/src/History/ShortcutDispatch.cpp"
+        "../Editor/src/History/ShortcutDispatch.cpp",
+        -- Pure Editor-private viewport picking and framing math (Engine::Math only).
+        "../Editor/src/Viewport/PickingMath.cpp",
+        -- Pure Editor-private panel visibility codec (standard C++ only).
+        "../Editor/src/Layout/PanelVisibility.cpp"
     }
 
     removefiles { "src/EngineFuzzTests.cpp" }
@@ -34,6 +38,8 @@ project "EngineTests"
         "%{wks.location}/Engine/src",
         "%{wks.location}/Editor/src/Fab",
         "%{wks.location}/Editor/src/History",
+        "%{wks.location}/Editor/src/Viewport",
+        "%{wks.location}/Editor/src/Layout",
         "%{wks.location}/Vendor/miniz"
     }
 

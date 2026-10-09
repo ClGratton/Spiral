@@ -18,16 +18,18 @@ import time
 import uuid
 
 
-REQUEST_HEADER = "SpiralEditorControlRequest 4"
-RECEIPT_HEADER = "SpiralEditorControlReceipt 4"
-SESSION_HEADER = "SpiralEditorControlSession 4"
+SCHEMA = 5
+REQUEST_HEADER = f"SpiralEditorControlRequest {SCHEMA}"
+RECEIPT_HEADER = f"SpiralEditorControlReceipt {SCHEMA}"
+SESSION_HEADER = f"SpiralEditorControlSession {SCHEMA}"
 MAXIMUM_REQUEST_BYTES = 16 * 1024
 MAXIMUM_RECEIPT_BYTES = 64 * 1024
 MAXIMUM_ATTRIBUTION_BYTES = 2 * 1024
 SESSION_ACTIONS = (
     "InspectMaterialSurface,SelectEntityPatchMaterialSurface,InspectEntity,SelectEntity,"
     "SetEntityTransform,SetTypedLight,SetProjectColorPipeline,SetViewportMainCameraPose,"
-    "SetSceneDebugVisualization,SetMeshRendererFlags,InspectFabImport,SelectFabPackage,"
+    "SetSceneDebugVisualization,SetMeshRendererFlags,PickAtViewportPoint,FocusSelection,"
+    "InspectFabImport,SelectFabPackage,"
     "SetFabProvenance,ConfirmFabProvenance,CommitFabImport,CancelFabImport,DismissFabImport,"
     "PlaceMeshAsset,SetEntityMeshRendererAssets,SaveProjectState,ValidateProject,"
     "SetFabPanelVisible,InspectFabPanel")
@@ -115,7 +117,7 @@ def _parse_session(control_dir: Path) -> dict[str, object]:
     lines = _read_private_regular(control_dir / "session.info", 8192).splitlines()
     if len(lines) != 13 or lines[0] != SESSION_HEADER:
         raise ControlError(
-            "editor-control schema 4 required; stale or malformed session manifest rejected")
+            f"editor-control schema {SCHEMA} required; stale or malformed session manifest rejected")
     session_id = _parse_tokens(lines[1], "SessionId", 1)[0]
     state = _parse_tokens(lines[2], "State", 1)[0]
     process_id = int(_parse_tokens(lines[3], "ProcessId", 1)[0])
@@ -128,14 +130,14 @@ def _parse_session(control_dir: Path) -> dict[str, object]:
     maximum_per_frame = int(_parse_tokens(lines[10], "MaximumRequestsPerFrame", 1)[0])
     maximum_terminal = int(_parse_tokens(lines[11], "MaximumTerminalRequests", 1)[0])
     maximum_affected = int(_parse_tokens(lines[12], "MaximumAffectedEntityIds", 1)[0])
-    if (state != "Ready" or request_schema != 4 or receipt_schema != 4
+    if (state != "Ready" or request_schema != SCHEMA or receipt_schema != SCHEMA
             or actions != SESSION_ACTIONS
             or maximum_request != MAXIMUM_REQUEST_BYTES
             or maximum_per_frame != 4 or maximum_terminal != 256
             or maximum_affected != 32 or process_id <= 0 or not project_path
             or Path(fab_inbox) != control_dir / "fab-inbox"):
         raise ControlError(
-            "editor-control schema 4 contract required; stale or unsupported session rejected")
+            f"editor-control schema {SCHEMA} contract required; stale or unsupported session rejected")
     return {"session_id": session_id, "state": state,
             "process_id": process_id, "project_path": project_path,
             "fab_inbox": fab_inbox}
@@ -458,13 +460,68 @@ def _parse_fab_block(values: dict[str, list[str]]) -> dict[str, object]:
     }
 
 
+VIEWPORT_PICK_STATES = ("none", "hit", "miss")
+VIEWPORT_PICK_REFINEMENTS = ("none", "box", "triangles")
+VIEWPORT_FOCUS_STATES = ("none", "framed")
+VIEWPORT_FOCUS_SUBJECTS = ("none", "bounds", "default-radius")
+FRAMING_MARGIN = 0.15
+DEFAULT_FRAMING_RADIUS = 2.0
+
+
+def _parse_viewport_block(values: dict[str, list[str]]) -> dict[str, object]:
+    pick = values["ViewportPick"]
+    point = values["ViewportPickPoint"]
+    rect = values["ViewportRect"]
+    focus = values["ViewportFocus"]
+    before = values["ViewportFocusBefore"]
+    after = values["ViewportFocusAfter"]
+    bounds = values["ViewportFocusBounds"]
+    if (pick[0] not in VIEWPORT_PICK_STATES or pick[3] not in VIEWPORT_PICK_REFINEMENTS
+            or focus[0] not in VIEWPORT_FOCUS_STATES or focus[1] not in VIEWPORT_FOCUS_SUBJECTS):
+        raise ControlError("receipt has an unknown viewport state")
+    return {
+        "pick": {
+            "state": pick[0],
+            "entityId": _parse_integer(pick[1], "pick entity", 0, 0xFFFFFFFF),
+            "distance": _finite_float(pick[2], "pick distance"),
+            "refinement": pick[3],
+            "candidates": _parse_integer(pick[4], "pick candidates", 0, (1 << 64) - 1),
+            "boxHits": _parse_integer(pick[5], "pick box hits", 0, (1 << 64) - 1),
+            "trianglesTested": _parse_integer(pick[6], "pick triangles", 0, (1 << 64) - 1),
+            "normalizedX": _finite_float(point[0], "pick x"),
+            "normalizedY": _finite_float(point[1], "pick y"),
+            "pixelX": _finite_float(point[2], "pick pixel x"),
+            "pixelY": _finite_float(point[3], "pick pixel y"),
+            "virtualRect": _parse_bool(point[4], "virtual rect"),
+        },
+        "rect": {
+            "x": _finite_float(rect[0], "rect x"), "y": _finite_float(rect[1], "rect y"),
+            "width": _finite_float(rect[2], "rect width"),
+            "height": _finite_float(rect[3], "rect height"),
+            "aspect": _finite_float(rect[4], "rect aspect"),
+            "fovDegrees": _finite_float(rect[5], "rect fov"),
+        },
+        "focus": {
+            "state": focus[0],
+            "subject": focus[1],
+            "animated": _parse_bool(focus[2], "focus animated"),
+            "margin": _finite_float(focus[3], "focus margin"),
+            "before": [_finite_float(token, "focus before pose") for token in before],
+            "after": [_finite_float(token, "focus after pose") for token in after],
+            "center": [_finite_float(token, "focus center") for token in bounds[:3]],
+            "radius": _finite_float(bounds[3], "focus radius"),
+            "distance": _finite_float(bounds[4], "focus distance"),
+        },
+    }
+
+
 def _parse_receipt(text: str, request_id: str, session_id: str,
                    project_path: str, digest: str, expected_action: str,
                    allow_request_id_conflict: bool = False) -> dict[str, object]:
     lines = text.splitlines()
-    if len(lines) != 98 or lines[0] != RECEIPT_HEADER:
+    if len(lines) != 105 or lines[0] != RECEIPT_HEADER:
         raise ControlError(
-            "editor-control schema 4 required; stale or malformed receipt rejected")
+            f"editor-control schema {SCHEMA} required; stale or malformed receipt rejected")
     keys = [
         ("RequestId", 1), ("SessionId", 1), ("ProjectPath", 1),
         ("RequestDigest", 1), ("Action", 1), ("Status", 1), ("Reason", 1),
@@ -505,6 +562,9 @@ def _parse_receipt(text: str, request_id: str, session_id: str,
         ("FabProjectStructuralMessage", 1), ("FabProjectValidation", 1),
         ("FabProjectValidationMessage", 1), ("FabPanel", 12), ("FabPanelHost", 1),
         ("FabPanelError", 1),
+        ("ViewportPick", 7), ("ViewportPickPoint", 5), ("ViewportRect", 6),
+        ("ViewportFocus", 4), ("ViewportFocusBefore", 6), ("ViewportFocusAfter", 6),
+        ("ViewportFocusBounds", 5),
     ]
     values = {key: _parse_tokens(line, key, count)
               for line, (key, count) in zip(lines[1:], keys, strict=True)}
@@ -567,7 +627,7 @@ def _parse_receipt(text: str, request_id: str, session_id: str,
         return [tokens[0], _parse_bool(tokens[1], f"{label} selected bounds")]
 
     receipt = {
-        "schema": 4,
+        "schema": SCHEMA,
         "requestId": request_id,
         "sessionId": session_id,
         "projectPath": project_path,
@@ -639,6 +699,7 @@ def _parse_receipt(text: str, request_id: str, session_id: str,
         "editorCameraSynchronized": _parse_bool(
             values["EditorCameraSynchronized"][0], "editor-camera synchronization"),
         "fab": _parse_fab_block(values),
+        "viewport": _parse_viewport_block(values),
     }
     if receipt["frame"] < 0:
         raise ControlError("receipt frame is invalid")
@@ -775,6 +836,13 @@ def _build_parser() -> argparse.ArgumentParser:
     action.add_argument("--expected-casts-shadows", required=True, choices=("yes", "no"))
     action.add_argument("--new-visible", required=True, choices=("yes", "no"))
     action.add_argument("--new-casts-shadows", required=True, choices=("yes", "no"))
+    action = subcommands.add_parser("pick-viewport")
+    action.add_argument("--expected-selected-entity-id", required=True, type=int)
+    action.add_argument("--x", required=True, type=float)
+    action.add_argument("--y", required=True, type=float)
+    action = subcommands.add_parser("focus-selection")
+    action.add_argument("--expected-selected-entity-id", required=True, type=int)
+    action.add_argument("--animate", required=True, choices=("yes", "no"))
     _add_fab_subcommands(subcommands)
     return parser
 
@@ -1196,6 +1264,111 @@ def _run_fab_command(args, control_dir: Path, session: dict[str, object],
 
 
 
+def _camera_forward(pitch_degrees: float, yaw_degrees: float) -> tuple[float, float, float]:
+    """World forward axis of a camera with roll 0, derived from the renderer's view
+    rotation View = Ry(-yaw) * Rx(-pitch) (row vectors, +Z forward): the third column."""
+    pitch = math.radians(pitch_degrees)
+    yaw = math.radians(yaw_degrees)
+    return (math.sin(yaw) * math.cos(pitch), -math.sin(pitch), math.cos(yaw) * math.cos(pitch))
+
+
+def _validate_viewport_success(command: str, receipt: dict[str, object],
+                              args) -> None:
+    viewport = receipt["viewport"]
+    pick = viewport["pick"]
+    focus = viewport["focus"]
+    rect = viewport["rect"]
+    expected_selected = args.expected_selected_entity_id
+    history_unchanged = (receipt["undoDepthAfter"] == receipt["undoDepthBefore"]
+                         and receipt["redoDepthAfter"] == receipt["redoDepthBefore"])
+    common = (receipt["reason"] == "ok" and receipt["persistence"] == "SessionOnly"
+              and not receipt["saved"] and receipt["postconditionVerified"]
+              and not receipt["rollbackVerified"] and history_unchanged
+              and receipt["selectedEntityIdBefore"] == expected_selected
+              and rect["width"] > 0.0 and rect["height"] > 0.0 and rect["aspect"] > 0.0
+              and 0.0 < rect["fovDegrees"] < 180.0
+              and not receipt["rendererReadbackVerified"])
+    if command == "pick-viewport":
+        hit = pick["state"] == "hit"
+        entity = pick["entityId"]
+        ok = (common and receipt["action"] == "PickAtViewportPoint"
+              and pick["state"] in ("hit", "miss")
+              and receipt["effect"] == ("ViewportPickHit" if hit else "ViewportPickMiss")
+              and (entity > 0) == hit
+              and receipt["entityId"] == entity
+              and receipt["selectedEntityIdAfter"] == entity
+              and receipt["selectionCommitted"] == (entity != expected_selected)
+              and receipt["recovery"] == ("SelectPreviousEntity" if entity != expected_selected else "None")
+              and receipt["affectedEntityIds"] == ([entity] if hit else [])
+              and receipt["affectedEntityCount"] == (1 if hit else 0)
+              and not receipt["isMainCamera"]
+              and (pick["refinement"] != "none") == hit
+              and (pick["distance"] > 0.0) == hit
+              and pick["boxHits"] >= (1 if hit else 0) and pick["boxHits"] <= pick["candidates"]
+              and abs(pick["normalizedX"] - args.x) <= 1e-12
+              and abs(pick["normalizedY"] - args.y) <= 1e-12
+              and abs(pick["pixelX"] - (rect["x"] + args.x * rect["width"])) <= 1e-9
+              and abs(pick["pixelY"] - (rect["y"] + args.y * rect["height"])) <= 1e-9
+              and focus["state"] == "none"
+              and receipt["editorCameraSynchronized"] is False)
+    else:
+        before, after = focus["before"], focus["after"]
+        forward = _camera_forward(after[3], after[4])
+        look_target = [after[axis] + forward[axis] * focus["distance"] for axis in range(3)]
+        ok = (common and receipt["action"] == "FocusSelection"
+              and receipt["effect"] == "SelectionFocused"
+              and receipt["recovery"] == "RestoreCameraPose"
+              and focus["state"] == "framed" and focus["subject"] in ("bounds", "default-radius")
+              and focus["animated"] == (args.animate == "yes")
+              and abs(focus["margin"] - FRAMING_MARGIN) <= 1e-12
+              and receipt["entityId"] == expected_selected
+              and receipt["selectedEntityIdAfter"] == expected_selected
+              and receipt["affectedEntityIds"] == [expected_selected]
+              and not receipt["selectionCommitted"] and receipt["pivotRetargeted"]
+              and receipt["editorCameraSynchronized"] == (args.animate == "no")
+              and pick["state"] == "none"
+              # The view direction is kept exactly and the camera looks at the framed center.
+              and before[3:] == after[3:]
+              and focus["radius"] > 0.0 and focus["distance"] > focus["radius"]
+              and all(abs(look_target[axis] - focus["center"][axis])
+                      <= 1e-6 * max(1.0, focus["distance"]) for axis in range(3))
+              and (focus["subject"] != "default-radius"
+                   or abs(focus["radius"] - DEFAULT_FRAMING_RADIUS) <= 1e-9))
+    if not ok:
+        print(json.dumps(receipt, separators=(",", ":"), sort_keys=True), file=sys.stderr)
+        raise ControlError("successful receipt failed action-specific semantic validation")
+
+
+def _run_viewport_command(args, control_dir: Path, session: dict[str, object],
+                          request_id: str) -> int:
+    command = args.command
+    action = "PickAtViewportPoint" if command == "pick-viewport" else "FocusSelection"
+    if not 0 <= args.expected_selected_entity_id <= 0xFFFFFFFF:
+        raise ControlError("expected selected entity ID is outside the numeric ID range")
+    lines = [
+        REQUEST_HEADER,
+        f"RequestId {_quote(request_id, 'request ID', 64)}",
+        f"SessionId {_quote(str(session['session_id']), 'session ID', 128)}",
+        f"ProjectPath {_quote(str(session['project_path']), 'project path', 4096)}",
+        f"Action {action}",
+        f"ExpectedSelectedEntityId {args.expected_selected_entity_id}",
+    ]
+    if command == "pick-viewport":
+        for label, value in (("x", args.x), ("y", args.y)):
+            if not math.isfinite(value) or not 0.0 <= value <= 1.0:
+                raise ControlError(f"viewport {label} must be finite and in [0,1]")
+        lines.append(f"ViewportPoint {format(args.x, '.17g')} {format(args.y, '.17g')}")
+    else:
+        lines.append(f"FocusAnimation {args.animate}")
+    receipt = _submit_request(control_dir, session, request_id, action, lines,
+                              args.timeout_seconds)
+    if receipt["status"] == "Succeeded":
+        _validate_viewport_success(command, receipt, args)
+    receipt["editorProcessId"] = session["process_id"]
+    print(json.dumps(receipt, separators=(",", ":"), sort_keys=True))
+    return 0 if receipt["status"] == "Succeeded" else 2
+
+
 def main() -> int:
     args = _build_parser().parse_args()
     control_dir = args.control_dir
@@ -1220,6 +1393,8 @@ def main() -> int:
     project_path = str(session["project_path"])
     if args.command in FAB_COMMANDS:
         return _run_fab_command(args, control_dir, session, request_id)
+    if args.command in ("pick-viewport", "focus-selection"):
+        return _run_viewport_command(args, control_dir, session, request_id)
     entity_actions = {"inspect", "set", "inspect-entity", "select-entity",
                       "set-transform", "set-viewport-main-camera-pose", "set-typed-light",
                       "set-mesh-renderer-flags"}

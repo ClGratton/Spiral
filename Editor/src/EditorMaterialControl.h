@@ -27,6 +27,12 @@ enum class EditorMaterialControlAction
     SetViewportMainCameraPose,
     SetSceneDebugVisualization,
     SetMeshRendererFlags,
+    // Schema 5: viewport interaction. PickAtViewportPoint runs the same ray cast and
+    // selection path as a viewport click; FocusSelection runs the same framing code
+    // as the F key. Neither carries a path, a command string, or a pixel (the point is
+    // normalized to the viewport image so it is independent of window size).
+    PickAtViewportPoint,
+    FocusSelection,
     // Schema 4: the Fab import workflow and project-level actions. Every one has a
     // fixed typed field set; none carries a filesystem path, URL, or credential.
     InspectFabImport,
@@ -47,6 +53,12 @@ enum class EditorMaterialControlAction
 inline bool IsFabControlAction(EditorMaterialControlAction action)
 {
     return action >= EditorMaterialControlAction::InspectFabImport;
+}
+
+inline bool IsViewportControlAction(EditorMaterialControlAction action)
+{
+    return action == EditorMaterialControlAction::PickAtViewportPoint
+        || action == EditorMaterialControlAction::FocusSelection;
 }
 
 // Attribution text is capped here so a provenance request fits the mailbox
@@ -134,6 +146,13 @@ struct EditorMaterialControlRequest
     bool HasNewMeshRendererFlags = false;
     Engine::EntityId ExpectedSelectedEntityId = Engine::kInvalidEntityId;
     bool HasExpectedSelectedEntityId = false;
+    // PickAtViewportPoint: a point of the viewport image, each coordinate in [0, 1],
+    // origin top-left. FocusSelection: whether the camera eases or jumps.
+    double ViewportNormalizedX = 0.0;
+    double ViewportNormalizedY = 0.0;
+    bool HasViewportPoint = false;
+    bool FocusAnimate = false;
+    bool HasFocusAnimation = false;
     EditorFabControlRequest Fab;
 };
 
@@ -204,6 +223,42 @@ struct EditorFabControlReceipt
     std::string PanelError;
 };
 
+// Always present in a receipt, like the Fab block: the schema-5 viewport block holds
+// the "unused" spelling for every other action.
+struct EditorViewportControlReceipt
+{
+    // PickAtViewportPoint
+    std::string PickState = "none"; // none | hit | miss
+    Engine::EntityId PickEntityId = Engine::kInvalidEntityId;
+    double PickDistance = 0.0;
+    std::string PickRefinement = "none"; // none | box | triangles
+    Engine::u64 PickCandidates = 0;
+    Engine::u64 PickBoxHits = 0;
+    Engine::u64 PickTrianglesTested = 0;
+    double PickNormalizedX = 0.0;
+    double PickNormalizedY = 0.0;
+    double PickPixelX = 0.0;
+    double PickPixelY = 0.0;
+    bool PickRectVirtual = false;
+    // The viewport image rectangle and camera the pick used (virtual when headless).
+    double RectX = 0.0;
+    double RectY = 0.0;
+    double RectWidth = 0.0;
+    double RectHeight = 0.0;
+    double RectAspect = 0.0;
+    double RectFovDegrees = 0.0;
+    // FocusSelection
+    std::string FocusState = "none"; // none | framed
+    std::string FocusSubject = "none"; // none | bounds | default-radius
+    bool FocusAnimated = false;
+    double FocusMargin = 0.0;
+    double FocusBefore[6] {}; // camera position xyz, rotation pitch yaw roll
+    double FocusAfter[6] {};
+    double FocusCenter[3] {};
+    double FocusRadius = 0.0;
+    double FocusDistance = 0.0;
+};
+
 struct EditorMaterialControlReceipt
 {
     std::string RequestId;
@@ -264,6 +319,7 @@ struct EditorMaterialControlReceipt
     bool RollbackVerified = false;
     bool EditorCameraSynchronized = false;
     EditorFabControlReceipt Fab;
+    EditorViewportControlReceipt Viewport;
 };
 
 struct EditorMaterialControlTransaction
@@ -322,6 +378,7 @@ public:
         const Engine::MaterialSurface& after, std::string& error);
     bool PublishSceneControlTargetForSmoke(std::string_view contents, std::string& error);
     bool PublishFabControlTargetForSmoke(std::string_view contents, std::string& error);
+    bool PublishViewportPickingTargetForSmoke(std::string_view contents, std::string& error);
     void InjectParentDirectorySyncFailureForSmoke()
     {
         m_ForceParentDirectorySyncFailureOnce = true;

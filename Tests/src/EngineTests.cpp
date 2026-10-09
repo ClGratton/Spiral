@@ -65,6 +65,8 @@
 #include "HistoryStoreTests.h"
 #include "LogSinkTests.h"
 #include "MeshBoundsTests.h"
+#include "PickingMathTests.h"
+#include "PanelVisibilityTests.h"
 #include "ScenePrerequisiteTests.h"
 #include "BrowserPanelTests.h"
 #include "FabImportControllerTests.h"
@@ -12865,6 +12867,17 @@ int main(int argc, char** argv)
         INTEGRATION_TEST("Mesh bounds generated meshes match brute force and transforms contain geometry", SpiralTests::TestMeshBoundsGeneratedMeshesMatchBruteForceAndTransformsContainGeometry),
         INTEGRATION_TEST("Mesh bounds resolve cooked artifacts and fail closed", SpiralTests::TestMeshBoundsResolveCookedArtifactsAndFailClosed),
         INTEGRATION_TEST("Mesh bounds of transformed scene instances match hand-computed boxes", SpiralTests::TestMeshBoundsTransformedSceneInstancesMatchHandComputedBoxes),
+        FAST_TEST("Picking rays and projection match the renderer view matrices under generated cameras", SpiralTests::TestPickingRayConventionsMatchRendererMatrices),
+        FAST_TEST("Picking viewport mapping matches hand-computed rays and round-trips", SpiralTests::TestPickingViewportMappingHandComputedAndRoundTrip),
+        FAST_TEST("Picking oriented box matches hand-computed rotated and scaled cases", SpiralTests::TestPickingOrientedBoxHandComputedCases),
+        FAST_TEST("Picking oriented box matches a 12-triangle brute force and interior rays always hit", SpiralTests::TestPickingOrientedBoxMatchesBruteForceAndContainsInteriorRays),
+        FAST_TEST("Picking triangle refinement matches a plane oracle and honors the triangle budget", SpiralTests::TestPickingTriangleRefinementMatchesPlaneOracleAndBudgetPolicy),
+        FAST_TEST("Picking nearest hit breaks ties by order, misses beside concave meshes, and differences sector-local positions", SpiralTests::TestPickingNearestHitTieBreakConcaveMissAndSectorPrecision),
+        FAST_TEST("Picking framing is tangent to the tight frustum plane and keeps the view direction", SpiralTests::TestPickingFramingFitsSphereAndKeepsViewDirection),
+        INTEGRATION_TEST("Picking latency of brute-force refinement on 250k and 500k triangle meshes is reported and bounded", SpiralTests::TestPickingLatencyForLargeMeshes),
+        FAST_TEST("Panel visibility codec round-trips every combination and matches hand-written text", SpiralTests::TestPanelVisibilityRoundTripsEveryCombinationAndMatchesHandWrittenText),
+        FAST_TEST("Panel visibility codec rejects a malformed corpus without changing the output", SpiralTests::TestPanelVisibilityRejectsMalformedFilesWithoutChangingTheOutput),
+        FAST_TEST("Panel visibility codec rejects or stays self-consistent under structure-aware mutation", SpiralTests::TestPanelVisibilityMutatedFilesAreRejectedOrSelfConsistent),
         INTEGRATION_TEST("Log sink delivers filtered lines in order and leaves console output unchanged", SpiralTests::TestLogSinkDeliversFilteredLinesInOrderAndLeavesConsoleOutputUnchanged),
         INTEGRATION_TEST("Log sink registration removal and shutdown follow the contract", SpiralTests::TestLogSinkRegistrationRemovalAndShutdownContract),
         INTEGRATION_TEST("Log sink reentrancy and throwing sinks cannot break logging", SpiralTests::TestLogSinkReentrancyAndThrowingSinksCannotBreakLogging),
