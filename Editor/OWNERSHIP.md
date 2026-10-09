@@ -24,4 +24,3 @@ The project manifest codec is no longer Editor code: `EditorLayer` reads and wri
 ## Fab Import Controller And CEF Host Library
 
 `Editor/src/Fab/FabImportController.*` is the headless import state machine: it includes Engine headers only (no ImGui, GLFW, CEF, or RHI), is compiled into `EngineTests`, and never touches live Editor state; the Editor adopts a committed result. `Editor/src/Fab/CefBrowserSurface.cpp` is the only CEF-including adapter and is compiled solely into `libSpiralBrowserHost.so` (`Editor/browserhost/`), which the Editor must load with `dlopen` and never link; `SpiralBrowserSmoke` drives it headlessly through the same factory. The Editor, Engine, Sandbox, and `EngineTests` targets never include or link CEF.
-
