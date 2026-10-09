@@ -2100,6 +2100,8 @@ namespace
         }
 
         void OnNavigationDenied(std::string_view host) override { DeniedHosts.emplace_back(host); }
+        void OnNavigationConsentOffered(std::string_view host) override { ConsentHosts.emplace_back(host); }
+        void OnPopupRedirected(std::string_view host) override { PopupHosts.emplace_back(host); }
         void OnFailed(std::string_view reason) override { Failures.emplace_back(reason); }
         void OnClosed() override { ++ClosedCount; }
 
@@ -2116,6 +2118,8 @@ namespace
         std::vector<LoadState> LoadStates;
         std::vector<BrowserDownloadEvent> Downloads;
         std::vector<std::string> DeniedHosts;
+        std::vector<std::string> ConsentHosts;
+        std::vector<std::string> PopupHosts;
         std::vector<std::string> Failures;
         size_t ClosedCount = 0;
         Bytes StagedBytes;
@@ -2199,6 +2203,9 @@ namespace
         surface.SendMouseCaptureLost();
         surface.SendMouseWheel({}, 1, 1);
         surface.SendKey({});
+        surface.SetScreenInfo({});
+        surface.SetGrantedHosts({});
+        check.Expect(!surface.RetryDeniedNavigation(), "the null surface has nothing to repeat");
         surface.Navigate("https://www.fab.com/");
         surface.GoBack();
         surface.GoForward();
@@ -2238,6 +2245,7 @@ namespace
         surface.Navigate("https://www.fab.com/listings/abc?token=secret");
         surface.ScriptNavigationRequest("https://evil.example/phish?x=1", BrowserNavigationKind::TopLevel);
         surface.ScriptNavigationRequest("https://www.fab.com/new-window", BrowserNavigationKind::Popup);
+        surface.ScriptNavigationRequest("https://popup.example.net/open?x=1", BrowserNavigationKind::Popup);
         surface.ScriptNavigationRequest("http://www.fab.com/", BrowserNavigationKind::TopLevel);
         surface.ScriptNavigationRequest("https://user:pw@www.fab.com/", BrowserNavigationKind::TopLevel);
         surface.ScriptNavigationRequest("https://accounts.example.com/signin", BrowserNavigationKind::TopLevel);
@@ -2245,13 +2253,18 @@ namespace
         surface.ScriptCursor(BrowserCursor::Hand);
         check.Expect(listener.Addresses.empty() && listener.DeniedHosts.empty() && listener.Cursors.empty(), "nothing is delivered before Pump");
         surface.Pump();
-        check.Expect(listener.Addresses == std::vector<std::string> { "www.fab.com/listings/abc", "accounts.example.com/signin" },
-            "allowed top-level navigations show a query-free display address");
-        check.Expect(listener.DeniedHosts == std::vector<std::string> { "evil.example", "www.fab.com", "www.fab.com", "<invalid-host>" },
-            "denied navigations, including the popup, report a log-safe host only");
-        check.Expect(listener.LoadStates.size() == 4 && listener.LoadStates[0].Loading && !listener.LoadStates[0].CanBack
+        check.Expect(listener.Addresses
+                == std::vector<std::string> { "www.fab.com/listings/abc", "www.fab.com/new-window", "accounts.example.com/signin" },
+            "allowed top-level navigations, including the allowed popup, show a query-free display address");
+        check.Expect(listener.PopupHosts == std::vector<std::string> { "www.fab.com" }, "only the allowed popup is reported as redirected");
+        check.Expect(listener.DeniedHosts
+                == std::vector<std::string> { "evil.example", "popup.example.net", "www.fab.com", "<invalid-host>" },
+            "denied navigations, including the popup to an unlisted host, report a log-safe host only");
+        check.Expect(listener.ConsentHosts == std::vector<std::string> { "evil.example", "popup.example.net" },
+            "only a well-formed https denial on a valid unlisted host offers consent");
+        check.Expect(listener.LoadStates.size() == 6 && listener.LoadStates[0].Loading && !listener.LoadStates[0].CanBack
                 && !listener.LoadStates[1].Loading && listener.LoadStates[1].CanBack && listener.LoadStates[2].CanBack,
-            "load state transitions for the two allowed navigations");
+            "load state transitions for the three allowed navigations");
         check.Expect(listener.Cursors == std::vector<BrowserCursor> { BrowserCursor::Hand }, "scripted cursor delivered");
         for (const std::string& host : listener.DeniedHosts)
             check.Expect(host.find("secret") == std::string::npos && host.find("pw") == std::string::npos && host.find('?') == std::string::npos,

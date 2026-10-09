@@ -3,6 +3,7 @@
 #include "Engine/Platform/ExternalUrl.h"
 
 #include <algorithm>
+#include <utility>
 
 namespace Fab
 {
@@ -113,11 +114,19 @@ namespace Fab
     {
     }
 
+    bool BrowserNavigationPolicy::IsValidProviderHost(std::string_view host, std::string& error)
+    {
+        if (!ValidateProviderHost(host, error))
+            return false;
+        error.clear();
+        return true;
+    }
+
     bool BrowserNavigationPolicy::AddProviderHost(std::string_view host, std::string& error)
     {
         if (!ValidateProviderHost(host, error))
             return false;
-        if (std::find(m_Hosts.begin(), m_Hosts.end(), host) != m_Hosts.end())
+        if (IsHostAllowed(host))
         {
             error = "provider host is already allowed";
             return false;
@@ -125,6 +134,43 @@ namespace Fab
         m_Hosts.emplace_back(host);
         error.clear();
         return true;
+    }
+
+    size_t BrowserNavigationPolicy::AddDefaultProviderHosts()
+    {
+        size_t added = 0;
+        for (const BrowserSignInProvider& provider : kDefaultSignInProviders)
+        {
+            std::string error;
+            if (AddProviderHost(provider.Host, error))
+                ++added;
+        }
+        return added;
+    }
+
+    bool BrowserNavigationPolicy::IsHostAllowed(std::string_view host) const
+    {
+        const auto matches = [host](const std::string& entry) { return entry == host; };
+        return std::any_of(m_Hosts.begin(), m_Hosts.end(), matches) || std::any_of(m_Granted.begin(), m_Granted.end(), matches);
+    }
+
+    size_t BrowserNavigationPolicy::SetGrantedHosts(std::span<const std::string> hosts)
+    {
+        std::vector<std::string> next;
+        for (const std::string& host : hosts)
+        {
+            std::string error;
+            if (next.size() >= kMaximumGrantedHosts || !ValidateProviderHost(host, error))
+                continue;
+            if (std::find(m_Hosts.begin(), m_Hosts.end(), host) != m_Hosts.end()
+                || std::find(next.begin(), next.end(), host) != next.end())
+            {
+                continue;
+            }
+            next.push_back(host);
+        }
+        m_Granted = std::move(next);
+        return m_Granted.size();
     }
 
     std::span<const std::string> BrowserNavigationPolicy::ProviderHosts() const
@@ -140,6 +186,11 @@ namespace Fab
             return BrowserNavigationVerdict::AllowSubFrame;
 
         for (const std::string& host : m_Hosts)
+        {
+            if (Engine::IsAllowedExternalHttpsUrl(url, host))
+                return BrowserNavigationVerdict::Allow;
+        }
+        for (const std::string& host : m_Granted)
         {
             if (Engine::IsAllowedExternalHttpsUrl(url, host))
                 return BrowserNavigationVerdict::Allow;
@@ -171,6 +222,22 @@ namespace Fab
     bool BrowserNavigationPolicy::IsTopLevelAllowed(std::string_view url) const
     {
         return Evaluate(url, BrowserNavigationKind::TopLevel) == BrowserNavigationVerdict::Allow;
+    }
+
+    BrowserNavigationVerdict BrowserNavigationPolicy::EvaluatePopupTarget(std::string_view url) const
+    {
+        return Evaluate(url, BrowserNavigationKind::TopLevel);
+    }
+
+    std::string BrowserNavigationPolicy::ConsentHost(std::string_view url) const
+    {
+        if (Evaluate(url, BrowserNavigationKind::TopLevel) != BrowserNavigationVerdict::DenyHost)
+            return {};
+        std::string host = HostForLog(url);
+        std::string error;
+        if (!ValidateProviderHost(host, error) || IsHostAllowed(host))
+            return {};
+        return host;
     }
 
     std::string BrowserNavigationPolicy::HostForLog(std::string_view url)

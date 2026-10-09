@@ -677,6 +677,20 @@ namespace
             m_Inner.SendKey(key);
         }
 
+        void SetScreenInfo(const BrowserScreenInfo& info) override { m_Inner.SetScreenInfo(info); }
+
+        void SetGrantedHosts(std::span<const std::string> hosts) override
+        {
+            m_Log.push_back("SetGrantedHosts " + std::to_string(hosts.size()));
+            m_Inner.SetGrantedHosts(hosts);
+        }
+
+        bool RetryDeniedNavigation() override
+        {
+            m_Log.push_back("RetryDeniedNavigation");
+            return m_Inner.RetryDeniedNavigation();
+        }
+
         void Navigate(std::string_view url) override
         {
             m_Log.push_back("Navigate " + std::string(url));
@@ -856,7 +870,7 @@ namespace
             check.Expect(s.Log.size() >= 2 && s.Log[0] == "Initialize" && s.Log[1] == "SetVisible 0", "initialize first, then the exact hidden bookkeeping");
             const BrowserSurfaceConfig& passed = s.Fake.Config();
             check.Expect(passed.ProfileDir == s.Config.ProfileDirectory && passed.DownloadStagingDir == s.Config.DownloadStagingDirectory
-                    && passed.MaxFps == BrowserPanelLimits::kMaximumBrowserFps && passed.SoftwareRendering,
+                    && passed.MaxFps == BrowserPanelLimits::kMaximumBrowserFps && passed.RenderMode == BrowserRenderMode::Software,
                 "the surface config carries the panel directories, the 30 fps cap, and software rendering");
             check.Expect(s.Core->GetDiagnostics().Initialized && s.Core->GetDiagnostics().Visible, "diagnostics report the initialized visible panel");
 

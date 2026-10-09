@@ -17,6 +17,7 @@ project "EngineTests"
         "../Editor/src/Fab/BrowserInputRouter.cpp",
         "../Editor/src/Fab/BrowserPanelCore.cpp",
         "../Editor/src/Fab/BrowserNavigationPolicy.cpp",
+        "../Editor/src/Fab/BrowserSignInHosts.cpp",
         "../Editor/src/Fab/BrowserSurface.cpp",
         "../Editor/src/Fab/FabImportController.cpp",
         "../Editor/src/Fab/FabIntake.cpp",
@@ -28,7 +29,26 @@ project "EngineTests"
         -- Pure Editor-private viewport picking and framing math (Engine::Math only).
         "../Editor/src/Viewport/PickingMath.cpp",
         -- Pure Editor-private panel visibility codec (standard C++ only).
-        "../Editor/src/Layout/PanelVisibility.cpp"
+        "../Editor/src/Layout/PanelVisibility.cpp",
+        "../Editor/src/Commands/CommandRegistry.cpp",
+        "../Editor/src/Commands/FuzzyMatch.cpp",
+        "../Editor/src/Commands/ShortcutMap.cpp",
+        "../Editor/src/Core/LogBuffer.cpp",
+        "../Editor/src/Core/Notifications.cpp",
+        "../Editor/src/Core/EntityClipboard.cpp",
+        "../Editor/src/Core/EntityNaming.cpp",
+        "../Editor/src/Core/HierarchyModel.cpp",
+        "../Editor/src/Core/SelectionModel.cpp",
+        "../Editor/src/Layout/LayoutFile.cpp",
+        "../Editor/src/Layout/LayoutMigration.cpp",
+        "../Editor/src/Gizmo/EulerRotation.cpp",
+        "../Editor/src/Gizmo/GizmoApply.cpp",
+        "../Editor/src/Gizmo/GizmoHandles.cpp",
+        "../Editor/src/Gizmo/GizmoProjection.cpp",
+        "../Editor/src/Gizmo/GizmoSolvers.cpp",
+        "../Editor/src/Gizmo/SnapMath.cpp",
+        "../Editor/src/Gizmo/SnapSettings.cpp",
+        "../Editor/src/Gizmo/TransformGizmo.cpp"
     }
 
     removefiles { "src/EngineFuzzTests.cpp" }
@@ -36,8 +56,11 @@ project "EngineTests"
     includedirs
     {
         "%{wks.location}/Engine/src",
+        "%{wks.location}/Editor/src",
         "%{wks.location}/Editor/src/Fab",
         "%{wks.location}/Editor/src/History",
+        "%{wks.location}/Editor/src/Core",
+        "%{wks.location}/Editor/src/Gizmo",
         "%{wks.location}/Editor/src/Viewport",
         "%{wks.location}/Editor/src/Layout",
         "%{wks.location}/Vendor/miniz"

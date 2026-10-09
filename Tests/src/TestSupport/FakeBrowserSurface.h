@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <functional>
+#include <span>
 #include <string>
 #include <utility>
 #include <vector>
@@ -16,7 +17,9 @@ namespace SpiralTests
     // and every listener callback is made from inside Pump(), the contract of
     // the real interface; OutOfPumpCallbacks() counts any violation. Page
     // navigation and downloads run through the real BrowserNavigationPolicy and
-    // BrowserDownloadPolicy from the configuration passed to Initialize.
+    // BrowserDownloadPolicy from the configuration passed to Initialize. Like the
+    // real adapter, a popup whose target is allowed becomes a top-level load, and
+    // a denial that could be repeated offers its host and keeps the target.
     class FakeBrowserSurface final : public Fab::IBrowserSurface
     {
     public:
@@ -139,6 +142,25 @@ namespace SpiralTests
         void SendMouseWheel(const Fab::BrowserMouse& mouse, float deltaX, float deltaY) override { Wheels.push_back({ mouse, deltaX, deltaY }); }
         void SendKey(const Fab::BrowserKey& key) override { Keys.push_back(key); }
 
+        void SetScreenInfo(const Fab::BrowserScreenInfo& info) override { ScreenInfos.push_back(info); }
+
+        void SetGrantedHosts(std::span<const std::string> hosts) override
+        {
+            GrantedHostCalls.emplace_back(hosts.begin(), hosts.end());
+            m_Config.Navigation.SetGrantedHosts(hosts);
+        }
+
+        bool RetryDeniedNavigation() override
+        {
+            ++RetryCalls;
+            std::string url = std::move(m_LastDeniedUrl);
+            m_LastDeniedUrl.clear();
+            if (url.empty() || m_Config.Navigation.Evaluate(url, Fab::BrowserNavigationKind::TopLevel) != Fab::BrowserNavigationVerdict::Allow)
+                return false;
+            ScriptNavigationRequest(std::move(url), Fab::BrowserNavigationKind::TopLevel);
+            return true;
+        }
+
         void Navigate(std::string_view httpsUrl) override
         {
             ScriptNavigationRequest(std::string(httpsUrl), Fab::BrowserNavigationKind::TopLevel);
@@ -183,6 +205,9 @@ namespace SpiralTests
         size_t ReloadCount = 0;
         size_t StopCount = 0;
         size_t ClearBrowsingDataCount = 0;
+        size_t RetryCalls = 0;
+        std::vector<Fab::BrowserScreenInfo> ScreenInfos;
+        std::vector<std::vector<std::string>> GrantedHostCalls;
         bool ShutdownBeforeClose = false;
 
     private:
@@ -194,12 +219,34 @@ namespace SpiralTests
             callback();
         }
 
+        void Deny(const std::string& url)
+        {
+            Emit([&] { m_Listener->OnNavigationDenied(Fab::BrowserNavigationPolicy::HostForLog(url)); });
+            m_LastDeniedUrl.clear();
+            const std::string consent = m_Config.Navigation.ConsentHost(url);
+            if (consent.empty())
+                return;
+            m_LastDeniedUrl = url;
+            Emit([&] { m_Listener->OnNavigationConsentOffered(consent); });
+        }
+
         void ProcessNavigation(const std::string& url, Fab::BrowserNavigationKind kind)
         {
+            if (kind == Fab::BrowserNavigationKind::Popup)
+            {
+                if (m_Config.Navigation.EvaluatePopupTarget(url) != Fab::BrowserNavigationVerdict::Allow)
+                {
+                    Deny(url);
+                    return;
+                }
+                Emit([&] { m_Listener->OnPopupRedirected(Fab::BrowserNavigationPolicy::HostForLog(url)); });
+                ProcessNavigation(url, Fab::BrowserNavigationKind::TopLevel);
+                return;
+            }
             const Fab::BrowserNavigationVerdict verdict = m_Config.Navigation.Evaluate(url, kind);
             if (!Fab::IsNavigationAllowed(verdict))
             {
-                Emit([&] { m_Listener->OnNavigationDenied(Fab::BrowserNavigationPolicy::HostForLog(url)); });
+                Deny(url);
                 return;
             }
             if (kind != Fab::BrowserNavigationKind::TopLevel)
@@ -256,6 +303,7 @@ namespace SpiralTests
         }
 
         Fab::BrowserSurfaceConfig m_Config;
+        std::string m_LastDeniedUrl;
         Listener* m_Listener = nullptr;
         std::vector<std::function<void()>> m_Script;
         size_t m_OutOfPumpCallbacks = 0;

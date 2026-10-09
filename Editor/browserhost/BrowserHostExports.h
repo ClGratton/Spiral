@@ -11,7 +11,7 @@
 namespace Fab
 {
     // Bumped whenever IBrowserSurface, its Listener, or any type they carry changes layout.
-    inline constexpr Engine::u32 kBrowserHostAbiVersion = 1;
+    inline constexpr Engine::u32 kBrowserHostAbiVersion = 2;
     inline constexpr const char* kBrowserHostLibraryName = "libSpiralBrowserHost.so";
     inline constexpr const char* kBrowserHostCreateSymbol = "SpiralBrowserHost_CreateSurface";
     inline constexpr const char* kBrowserHostCreateForTestSymbol = "SpiralBrowserHost_CreateSurfaceForTest";

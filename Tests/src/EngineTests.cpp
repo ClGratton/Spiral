@@ -63,12 +63,18 @@
 #include "ProjectManifestTests.h"
 #include "FabBrowserCoreTests.h"
 #include "HistoryStoreTests.h"
+#include "CommandsCoreTests.h"
+#include "SelectionLayoutTests.h"
+#include "GizmoInteractionTests.h"
+#include "MathRayTests.h"
+#include "GizmoSnapTests.h"
 #include "LogSinkTests.h"
 #include "MeshBoundsTests.h"
 #include "PickingMathTests.h"
 #include "PanelVisibilityTests.h"
 #include "ScenePrerequisiteTests.h"
 #include "BrowserPanelTests.h"
+#include "BrowserSigninPolicyTests.h"
 #include "FabImportControllerTests.h"
 #include "UiTextureServiceTests.h"
 #include "InputEventTests.h"
@@ -12863,6 +12869,52 @@ int main(int argc, char** argv)
         FAST_TEST("History edit gesture tracker matches an interval reference under generated widget streams", SpiralTests::TestHistoryEditGestureTracker),
         FAST_TEST("History store matches a vector-of-states reference model under 600-operation generated sequences", SpiralTests::TestHistoryStoreMatchesReferenceModel),
         FAST_TEST("History shortcut table matches a hand-written oracle over the whole input space", SpiralTests::TestHistoryShortcutDecisionTable),
+        FAST_TEST("Editor chord key table matches the GLFW key codes and every chord round trips through text", SpiralTests::TestShortcutKeyTableMatchesGlfwAndChordsRoundTrip),
+        FAST_TEST("Editor chord parser rejects malformed text and leaves its output untouched", SpiralTests::TestShortcutChordParsingRejectsMalformedText),
+        FAST_TEST("Editor shortcut map matches a brute-force overlap and resolution oracle under generated bindings", SpiralTests::TestShortcutMapMatchesBruteForceOracle),
+        FAST_TEST("Editor shortcut rebinding is atomic and reports the conflicting command", SpiralTests::TestShortcutMapRebindIsAtomic),
+        FAST_TEST("Editor shortcut file codec round trips and fails closed on malformed input", SpiralTests::TestShortcutCodecRoundTripsAndFailsClosed),
+        FAST_TEST("Editor command registry enforces registration rules and keeps default shortcuts conflict-free", SpiralTests::TestCommandRegistryRegistrationRules),
+        FAST_TEST("Editor command dispatch matches a model for sources, arguments, availability, and failure reasons", SpiralTests::TestCommandRegistryDispatchMatchesModel),
+        FAST_TEST("Editor command registry bounds reentrant dispatch and gates typed control per command", SpiralTests::TestCommandRegistryReentrancyAndSources),
+        FAST_TEST("Editor command arguments are a closed typed set validated before execution", SpiralTests::TestCommandRegistryTypedArguments),
+        FAST_TEST("Editor fuzzy match scores and highlights agree with hand-computed golden cases", SpiralTests::TestFuzzyMatchGoldenCases),
+        FAST_TEST("Editor fuzzy match agrees with an exhaustive alignment oracle under generated text", SpiralTests::TestFuzzyMatchAgreesWithBruteForceOracle),
+        FAST_TEST("Editor fuzzy ranking is total, stable, and prefers prefixes under generated candidates", SpiralTests::TestFuzzyRankProperties),
+        FAST_TEST("Editor log buffer ring keeps exact capacity, order, and counters at B-1, B, and B+1", SpiralTests::TestLogBufferRingBoundaries),
+        FAST_TEST("Editor log buffer matches a naive vector model under generated appends, clears, and filters", SpiralTests::TestLogBufferMatchesNaiveModel),
+        FAST_TEST("Editor log buffer stays consistent under concurrent producers, readers, and clears", SpiralTests::TestLogBufferConcurrentProducers),
+        FAST_TEST("Editor bounded text is cut at UTF-8 sequence boundaries", SpiralTests::TestTextTruncationNeverSplitsUtf8),
+        FAST_TEST("Editor notifications expire, dedupe, hold, and evict against an injected clock", SpiralTests::TestNotificationsExpiryUsesInjectedClock),
+        FAST_TEST("Editor notifications match a deadline model under generated post, hold, dismiss, and clock sequences", SpiralTests::TestNotificationsMatchModel),
+        FAST_TEST("Selection model matches a stamp-based reference over generated click, toggle, range and prune sequences", SpiralTests::TestSelectionModelAgainstReferenceModel),
+        FAST_TEST("Selection model scripted semantics: anchors, primary promotion, restore after removal", SpiralTests::TestSelectionModelScriptedSequences),
+        FAST_TEST("Entity naming validates, sanitizes and resolves unique names that never collide with lookup-reserved names", SpiralTests::TestEntityNamingPolicy),
+        FAST_TEST("Hierarchy model filters, locks, plans renames and reorders against naive oracles", SpiralTests::TestHierarchyModelFilterLocksReorderAndRename),
+        FAST_TEST("Entity clipboard round-trips and rejects corrupt, truncated, oversized and foreign payloads atomically", SpiralTests::TestEntityClipboardRoundTripAndCorruption),
+        FAST_TEST("Layout codec is canonical, golden-byte exact and round-trips generated workspace stores", SpiralTests::TestLayoutCodecRoundTripAndGrammar),
+        FAST_TEST("Layout codec rejects hostile, truncated, oversized and duplicate-key input with the previous state untouched", SpiralTests::TestLayoutCodecRejectsHostileInputAtomically),
+        FAST_TEST("Layout store operations, reset-to-default, detached-restore opt-in and legacy migration", SpiralTests::TestLayoutStoreOperationsAndLegacyMigration),
+        INTEGRATION_TEST("Layout persistence is atomic under injected write failures and fails closed on disk", SpiralTests::TestLayoutPersistenceIsAtomicAndFailClosed),
+        FAST_TEST("Math ray-plane and line intersections match hand-computed cases", SpiralTests::TestMathRayPlaneAndLineHandCases),
+        FAST_TEST("Math ray-AABB covers hand cases, boundary contact, and degenerate boxes", SpiralTests::TestMathRayAabbHandCasesAndEdges),
+        FAST_TEST("Math ray-AABB matches a 12-triangle Moller-Trumbore model under generated rays", SpiralTests::TestMathRayAabbMatchesTriangleOracle),
+        FAST_TEST("Math ray-to-segment distance and skew-line closest points match independent oracles", SpiralTests::TestMathRaySegmentDistanceMatchesOracle),
+        FAST_TEST("Gizmo snap settings default off, validate their ranges, and invert with Ctrl", SpiralTests::TestGizmoSnapSettingsValidationAndCtrlInversion),
+        FAST_TEST("Gizmo test Int128 oracle matches native 128-bit arithmetic", SpiralTests::TestGizmoOracleInt128MatchesNativeArithmetic),
+        FAST_TEST("Gizmo snap rounding matches an exact integer model including ties and large indices", SpiralTests::TestGizmoSnapRoundingMatchesExactOracle),
+        FAST_TEST("Gizmo sector-local translation snapping matches the Int128 model across sectors", SpiralTests::TestGizmoSnapTranslationMatchesInt128Oracle),
+        FAST_TEST("Gizmo translation snapping handles sector rollover and fails atomically", SpiralTests::TestGizmoSnapTranslationBoundariesAndFailureAtomicity),
+        FAST_TEST("Gizmo Euler recomposition matches engine rotation matrices with continuity and gimbal handling", SpiralTests::TestGizmoEulerRecompositionContinuityAndGimbal),
+        FAST_TEST("Gizmo apply operations match Rodrigues, lattice and clamp oracles", SpiralTests::TestGizmoApplyOperationsMatchOracles),
+        FAST_TEST("Gizmo projection round-trips against a pinhole oracle and keeps a constant screen size", SpiralTests::TestGizmoProjectionRoundTripsAndConstantSize),
+        FAST_TEST("Gizmo view construction rejects invalid cameras without writing", SpiralTests::TestGizmoViewValidationAndAtomicity),
+        FAST_TEST("Gizmo handle geometry and hit testing match hand-computed pixels and a sampled reference", SpiralTests::TestGizmoHandleGeometryAndHitTesting),
+        FAST_TEST("Gizmo solvers recover true displacements, angles and scale factors", SpiralTests::TestGizmoSolversRecoverTrueDisplacements),
+        FAST_TEST("Gizmo drag solve then apply then re-project returns the cursor", SpiralTests::TestGizmoDragRoundTripsThroughApply),
+        FAST_TEST("Gizmo draw list uses the injected palette, outlines, hover and active states", SpiralTests::TestGizmoDrawListContracts),
+        FAST_TEST("Gizmo state machine runs scripted drags, snaps, cancels and rejected writes", SpiralTests::TestGizmoStateMachineScriptedGestures),
+        FAST_TEST("Gizmo state machine matches a phase reference under generated pointer traces", SpiralTests::TestGizmoStateMachineModelProperty),
         INTEGRATION_TEST("Mesh bounds match hand-computed values and only cover drawn geometry", SpiralTests::TestMeshBoundsMatchHandComputedValuesAndOnlyCoverDrawnGeometry),
         INTEGRATION_TEST("Mesh bounds generated meshes match brute force and transforms contain geometry", SpiralTests::TestMeshBoundsGeneratedMeshesMatchBruteForceAndTransformsContainGeometry),
         INTEGRATION_TEST("Mesh bounds resolve cooked artifacts and fail closed", SpiralTests::TestMeshBoundsResolveCookedArtifactsAndFailClosed),
@@ -12892,6 +12944,14 @@ int main(int argc, char** argv)
         FAST_TEST("Browser panel lifecycle loads once shuts down in contract order and fails closed on every startup error", SpiralTests::TestBrowserPanelLifecycleAndStartupFailures),
         FAST_TEST("Browser panel routes events through the input router with DIP conversion and focus rules", SpiralTests::TestBrowserPanelInputRouting),
         FAST_TEST("Browser panel downloads status and failure containment never leak URLs or escape exceptions", SpiralTests::TestBrowserPanelDownloadsStatusAndContainment),
+        FAST_TEST("Browser sign-in default host table lists only documented providers and stays exact-host https-only", SpiralTests::TestBrowserSigninDefaultHostTable),
+        FAST_TEST("Browser sign-in consent host popup target and granted hosts follow the exact-host policy", SpiralTests::TestBrowserSigninConsentAndPopupPolicy),
+        FAST_TEST("Browser accept-language list follows the locale variables and rejects anything that is not a plain tag", SpiralTests::TestBrowserSigninAcceptLanguageList),
+        FAST_TEST("Browser sign-in host codec and file are strict owner-only atomic and transactional against malformed input", SpiralTests::TestBrowserSigninHostCodecAndFile),
+        FAST_TEST("Browser sign-in host codec survives generated mutations without changing the book on rejection", SpiralTests::TestBrowserSigninHostCodecProperty),
+        FAST_TEST("Browser sign-in host book matches an independent model under generated operations", SpiralTests::TestBrowserSigninHostBookModel),
+        FAST_TEST("Browser sign-in consent state machine matches an independent model under generated events", SpiralTests::TestBrowserSigninConsentModel),
+        FAST_TEST("Browser panel sign-in flow denies consents grants persists and diagnoses by host only", SpiralTests::TestBrowserSigninPanelFlow),
 #if defined(GE_PLATFORM_LINUX) || defined(GE_PLATFORM_WINDOWS)
         INTEGRATION_TEST("Local package snapshot copies deterministic immutable directory input", TestLocalPackageSnapshotCopiesDeterministically),
         INTEGRATION_TEST("Local package snapshot rejects hostile roots paths and objects", TestLocalPackageSnapshotRejectsHostileInputs),

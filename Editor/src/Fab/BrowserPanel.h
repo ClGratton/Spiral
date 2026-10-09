@@ -1,10 +1,12 @@
 #pragma once
 
+#include "BrowserSurface.h"
 #include "Engine/Core/Base.h"
 #include "Engine/Events/Event.h"
 
 #include <filesystem>
 #include <memory>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -27,6 +29,17 @@ namespace Fab
         // Extra exact identity-provider hosts allowed for top-level sign-in
         // navigation (e.g. accounts.google.com), supplied by the user.
         std::vector<std::string> ProviderHosts;
+        // File that keeps the "Allow always" sign-in hosts (see BrowserSignInHosts.h).
+        // Empty selects "SignInHosts.json" beside ProfileDirectory, inside the same
+        // owner-only parent, never in a project and never in the profile itself, so
+        // signing out (which deletes the profile) does not discard host decisions.
+        std::filesystem::path SignInHostsFile;
+        // Software until a headed run shows that hardware rendering works beside
+        // the Editor's own graphics device.
+        BrowserRenderMode RenderMode = BrowserRenderMode::Software;
+        // The window's content scale at startup (the window reports changes
+        // through events only). Clamped like any device scale.
+        float InitialDeviceScale = 1.0f;
     };
 
     struct BrowserPanelDownload
@@ -53,6 +66,17 @@ namespace Fab
         Engine::u32 DownloadsCompleted = 0;
         std::string DisplayHost;
         std::string Error;
+        // Hosts only (BrowserNavigationPolicy::HostForLog text), never a URL.
+        // DeniedHosts lists the most recent distinct denied hosts, newest last,
+        // at most 16.
+        std::string LastDeniedHost;
+        std::vector<std::string> DeniedHosts;
+        // The host the consent banner currently asks about, empty when none.
+        std::string ConsentHost;
+        Engine::u32 PopupRedirects = 0;
+        // User-granted sign-in hosts ("Allow once" plus "Allow always").
+        Engine::u32 GrantedHostCount = 0;
+        std::string RenderMode; // "software" or "hardware"
     };
 
     class BrowserPanel

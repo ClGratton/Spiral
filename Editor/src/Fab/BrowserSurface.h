@@ -8,6 +8,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <vector>
 
 // Editor-private browser abstraction. This header and everything it includes
 // use plain C++ types only: no CEF, ImGui, GLFW, or RHI. Every Listener
@@ -139,6 +140,40 @@ namespace Fab
         Engine::u64 TotalBytes = 0;
     };
 
+    // Software: the engine composites and rasterizes on the CPU (SwiftShader for
+    // WebGL); known to work with the windowless panel on every host. Hardware:
+    // the engine is allowed to use the GPU; an experiment, off by default, that
+    // is only trusted once a headed run shows it works beside the Editor's own
+    // graphics device.
+    enum class BrowserRenderMode
+    {
+        Software,
+        Hardware
+    };
+
+    // The monitor the Editor window sits on and its work area, in window
+    // (screen) pixels, so the page sees truthful screen.width/height and
+    // availWidth/availHeight that do not change when the panel is resized.
+    // Valid is false when the platform reported nothing usable; the adapter then
+    // keeps the view rectangle as its screen, as before this record existed.
+    // (window.outerWidth/outerHeight and screenX/screenY stay 0 under CEF 154
+    // windowless rendering whatever is reported, so the window position is not
+    // part of the record.)
+    struct BrowserScreenInfo
+    {
+        bool Valid = false;
+        int MonitorX = 0;
+        int MonitorY = 0;
+        int MonitorWidth = 0;
+        int MonitorHeight = 0;
+        int WorkX = 0;
+        int WorkY = 0;
+        int WorkWidth = 0;
+        int WorkHeight = 0;
+
+        bool operator==(const BrowserScreenInfo&) const = default;
+    };
+
     struct BrowserSurfaceConfig
     {
         std::filesystem::path ProfileDir;
@@ -148,8 +183,18 @@ namespace Fab
         BrowserNavigationPolicy Navigation;
         BrowserDownloadPolicy Downloads;
         Engine::u32 MaxFps = 60;
-        bool SoftwareRendering = true;
+        BrowserRenderMode RenderMode = BrowserRenderMode::Software;
     };
+
+    // The value for the engine's accept-language list from the process locale
+    // variables, in the precedence the platform uses (LANGUAGE, LC_ALL,
+    // LC_MESSAGES, LANG; the first non-empty one wins). "it_IT.UTF-8:en_US"
+    // becomes "it-IT,it,en-US,en". The C/POSIX locales and anything that is not
+    // a plain language[_REGION][.charset][@modifier] tag are ignored; at most 8
+    // tags are kept and an empty result is "en-US,en". Never reads the
+    // environment itself and never derives anything from a site.
+    std::string BuildAcceptLanguageList(
+        std::string_view language, std::string_view lcAll, std::string_view lcMessages, std::string_view lang);
 
     // Lexical checks that an engine adapter can rely on before touching the
     // disk. The 2026-10-09 CEF spike showed that a relative profile path, a path
@@ -176,8 +221,16 @@ namespace Fab
             virtual void OnAddress(std::string_view displayAddress) = 0;
             virtual void OnLoadState(bool loading, bool canGoBack, bool canGoForward) = 0;
             virtual void OnDownload(const BrowserDownloadEvent& event) = 0;
-            // Host text from BrowserNavigationPolicy::HostForLog.
+            // Host text from BrowserNavigationPolicy::HostForLog. Delivered once per
+            // refused top-level navigation or popup, host only.
             virtual void OnNavigationDenied(std::string_view host) = 0;
+            // Follows OnNavigationDenied for the same navigation when the surface
+            // kept the target so RetryDeniedNavigation can repeat it after the
+            // user allows `host` (BrowserNavigationPolicy::ConsentHost).
+            virtual void OnNavigationConsentOffered(std::string_view /*host*/) {}
+            // A popup whose target host is allowed was opened as a top-level
+            // navigation in the panel itself (no window was created).
+            virtual void OnPopupRedirected(std::string_view /*host*/) {}
             virtual void OnFailed(std::string_view reason) = 0;
             virtual void OnClosed() = 0;
         };
@@ -197,6 +250,18 @@ namespace Fab
         virtual void SendMouseCaptureLost() = 0;
         virtual void SendMouseWheel(const BrowserMouse& mouse, float deltaX, float deltaY) = 0;
         virtual void SendKey(const BrowserKey& key) = 0;
+
+        // The monitor the Editor window is on; cheap to call every frame.
+        virtual void SetScreenInfo(const BrowserScreenInfo& info) = 0;
+
+        // Replaces the user-granted exact hosts of the navigation policy
+        // (BrowserNavigationPolicy::SetGrantedHosts). The fixed list is untouched.
+        virtual void SetGrantedHosts(std::span<const std::string> hosts) = 0;
+        // Repeats the most recent denied navigation as a main-frame load when
+        // its host is allowed now; the target never leaves the surface. False
+        // when there is nothing to repeat (none kept, a non-GET request, or
+        // still denied). The kept target is consumed either way.
+        virtual bool RetryDeniedNavigation() = 0;
 
         // Validated against BrowserNavigationPolicy exactly like a page-initiated top-level load.
         virtual void Navigate(std::string_view httpsUrl) = 0;

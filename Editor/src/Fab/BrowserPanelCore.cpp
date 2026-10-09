@@ -426,7 +426,10 @@ namespace Fab
     void BrowserPanelCore::Configure(BrowserPanelConfig config)
     {
         if (m_State == State::NotStarted)
+        {
             m_Config = std::move(config);
+            SetDeviceScale(m_Config.InitialDeviceScale);
+        }
     }
 
     void BrowserPanelCore::SetVisible(bool visible)
@@ -462,10 +465,14 @@ namespace Fab
         surfaceConfig.ProfileDir = m_Config.ProfileDirectory;
         surfaceConfig.DownloadStagingDir = m_Config.DownloadStagingDirectory;
         surfaceConfig.MaxFps = BrowserPanelLimits::kMaximumBrowserFps;
-        surfaceConfig.SoftwareRendering = true;
+        surfaceConfig.RenderMode = m_Config.RenderMode;
+        surfaceConfig.Navigation.AddDefaultProviderHosts();
         std::string error;
         for (const std::string& host : m_Config.ProviderHosts)
         {
+            // A supplied host that the fixed list already allows is not an error.
+            if (surfaceConfig.Navigation.IsHostAllowed(host))
+                continue;
             if (!surfaceConfig.Navigation.AddProviderHost(host, error))
             {
                 Fail(DescribeBrowserStartupFailure("a sign-in provider host is invalid: " + error));
@@ -502,12 +509,19 @@ namespace Fab
             }
             m_Surface = std::move(loaded.Surface);
             m_Initialized = true;
+            m_Baseline = surfaceConfig.Navigation;
+            m_Effective = m_Baseline;
+            LoadGrantedHosts();
+            if (!m_Granted.Entries().empty())
+                ApplyGrantedHosts();
             // The engine starts visible; keep the hidden/visible bookkeeping exact so the
             // first drawn frame is a visible transition that also forces a full repaint.
             m_Surface->SetVisible(false);
             m_SurfaceVisible = false;
             m_Surface->SetFocus(false);
-            Info(std::string("Fab browser initialized (backend ") + std::string(m_Surface->BackendName()) + ")");
+            Info(std::string("Fab browser initialized (backend ") + std::string(m_Surface->BackendName()) + ", render mode "
+                + (m_Config.RenderMode == BrowserRenderMode::Hardware ? "hardware" : "software") + ", "
+                + std::to_string(m_Granted.Entries().size()) + " user-allowed sign-in hosts)");
         });
     }
 
@@ -517,6 +531,7 @@ namespace Fab
         // that is inside IBrowserSurface::Pump() uses m_DeferredFailure instead.
         m_Error = finalText;
         m_State = State::Failed;
+        m_Consent.Reset();
         m_Surface.reset();
         m_Uploader.Release();
         m_ContentShown = false;
@@ -627,6 +642,11 @@ namespace Fab
             {
                 m_AppliedScale = view.DeviceScale;
                 m_Surface->SetViewSize(view);
+            }
+            if (!(layout.Screen == m_SentScreen))
+            {
+                m_SentScreen = layout.Screen;
+                m_Surface->SetScreenInfo(layout.Screen);
             }
             SetContentShown(true);
             if (!m_HomeRequested)
@@ -911,6 +931,109 @@ namespace Fab
             m_State = State::Closed;
     }
 
+    // ---- sign-in hosts --------------------------------------------------------------------
+
+    void BrowserPanelCore::LoadGrantedHosts()
+    {
+        m_SignInHostsFile = m_Config.SignInHostsFile;
+        if (m_SignInHostsFile.empty() && m_Config.ProfileDirectory.has_parent_path())
+            m_SignInHostsFile = m_Config.ProfileDirectory.parent_path() / "SignInHosts.json";
+        if (m_SignInHostsFile.empty())
+            return;
+        std::string error;
+        if (LoadSignInHostsFile(m_SignInHostsFile, m_Granted, m_Baseline, error) == SignInFileStatus::Rejected)
+        {
+            m_SignInNotice = "The saved sign-in host list was ignored: " + error + ".";
+            Warn(m_SignInNotice);
+        }
+    }
+
+    void BrowserPanelCore::ApplyGrantedHosts()
+    {
+        const std::vector<std::string> hosts = m_Granted.HostList();
+        m_Effective = m_Baseline;
+        m_Effective.SetGrantedHosts(hosts);
+        m_Consent.Withdraw(m_Effective);
+        if (Live())
+            m_Surface->SetGrantedHosts(hosts);
+    }
+
+    bool BrowserPanelCore::SaveGrantedHosts()
+    {
+        std::string error;
+        if (m_SignInHostsFile.empty())
+            error = "there is no place to save the sign-in host list";
+        else if (SaveSignInHostsFile(m_SignInHostsFile, m_Granted, error))
+            return true;
+        m_SignInNotice = "The sign-in host list could not be saved: " + error + ".";
+        Warn(m_SignInNotice);
+        return false;
+    }
+
+    void BrowserPanelCore::ResolveConsent(SignInConsentChoice choice)
+    {
+        if (!Live())
+        {
+            m_Consent.Reset();
+            return;
+        }
+        Guarded("sign-in consent", [&]
+        {
+            const SignInConsentOutcome outcome = m_Consent.Resolve(choice, m_Env.NowMs());
+            if (!outcome.Resolved)
+                return;
+            if (!outcome.Grant)
+            {
+                m_Notice = "Kept blocking " + outcome.Host + ".";
+                return;
+            }
+
+            std::string error;
+            const SignInGrantResult result = m_Granted.Grant(outcome.Host, outcome.Persistent, m_Baseline, error);
+            if (result == SignInGrantResult::Invalid || result == SignInGrantResult::LimitReached)
+            {
+                m_SignInNotice = "Could not allow " + outcome.Host + ": " + error + ".";
+                m_Notice = m_SignInNotice;
+                Warn(m_SignInNotice);
+                return;
+            }
+            m_SignInNotice.clear();
+            ApplyGrantedHosts();
+            const bool saved = !outcome.Persistent || SaveGrantedHosts();
+            const bool repeated = outcome.Retry && m_Surface->RetryDeniedNavigation();
+            m_Notice = "Allowed " + outcome.Host + (outcome.Persistent ? (saved ? " and saved the choice" : " for this session (saving failed)")
+                                                                          : " for this session")
+                + (repeated ? "." : "; repeat the sign-in step.");
+            Info("Fab sign-in host allowed: host=" + outcome.Host + " persistent=" + (outcome.Persistent ? "1" : "0")
+                + " saved=" + (saved ? "1" : "0") + " repeated=" + (repeated ? "1" : "0"));
+        });
+    }
+
+    bool BrowserPanelCore::RevokeGrantedHost(std::string_view host)
+    {
+        bool persistent = false;
+        if (!m_Granted.Revoke(host, &persistent))
+            return false;
+        m_SignInNotice.clear();
+        ApplyGrantedHosts();
+        if (persistent)
+            SaveGrantedHosts();
+        m_Notice = "Stopped allowing " + std::string(host) + ".";
+        return true;
+    }
+
+    void BrowserPanelCore::ClearGrantedHosts()
+    {
+        if (m_Granted.Entries().empty())
+            return;
+        const bool hadPersistent = m_Granted.Clear();
+        m_SignInNotice.clear();
+        ApplyGrantedHosts();
+        if (hadPersistent)
+            SaveGrantedHosts();
+        m_Notice = "Removed every sign-in host you allowed.";
+    }
+
     // ---- Listener -------------------------------------------------------------------------
 
     void BrowserPanelCore::OnFrame(const BrowserFrameView& frame)
@@ -991,7 +1114,35 @@ namespace Fab
     void BrowserPanelCore::OnNavigationDenied(std::string_view host)
     {
         ++m_NavigationDenials;
-        m_Notice = "Blocked navigation to " + std::string(host) + ".";
+        m_LastDeniedHost = std::string(host);
+        const auto known = std::find(m_DeniedHosts.begin(), m_DeniedHosts.end(), m_LastDeniedHost);
+        if (known != m_DeniedHosts.end())
+            m_DeniedHosts.erase(known);
+        m_DeniedHosts.push_back(m_LastDeniedHost);
+        if (m_DeniedHosts.size() > BrowserPanelLimits::kMaximumRememberedDeniedHosts)
+            m_DeniedHosts.erase(m_DeniedHosts.begin());
+
+        const std::string counter = std::to_string(m_NavigationDenials);
+        m_Notice = "Blocked navigation to " + m_LastDeniedHost + " (blocked: " + counter + ").";
+        // Host only, never a path or query. A page that redirects in a loop is
+        // still counted but stops filling the log.
+        if (m_NavigationDenials <= BrowserPanelLimits::kMaximumLoggedDenials)
+            Warn("Fab navigation denied: host=" + m_LastDeniedHost + " blocked=" + counter);
+        else if (m_NavigationDenials == BrowserPanelLimits::kMaximumLoggedDenials + 1)
+            Warn("Fab navigation denials are still counted, but further ones are not logged");
+    }
+
+    void BrowserPanelCore::OnNavigationConsentOffered(std::string_view host)
+    {
+        if (m_Consent.Offer(host, m_Env.NowMs(), m_Effective))
+            Info("Fab sign-in consent offered: host=" + std::string(host));
+    }
+
+    void BrowserPanelCore::OnPopupRedirected(std::string_view host)
+    {
+        ++m_PopupRedirects;
+        m_Notice = "A pop-up to " + std::string(host) + " was opened in this panel.";
+        Info("Fab pop-up opened in the panel: host=" + std::string(host));
     }
 
     void BrowserPanelCore::OnFailed(std::string_view reason)
@@ -1060,6 +1211,12 @@ namespace Fab
         diagnostics.NavigationDenials = m_NavigationDenials;
         diagnostics.DownloadsCompleted = m_DownloadsCompleted;
         diagnostics.DisplayHost = m_DisplayHost;
+        diagnostics.LastDeniedHost = m_LastDeniedHost;
+        diagnostics.DeniedHosts = m_DeniedHosts;
+        diagnostics.ConsentHost = m_Consent.PendingHost();
+        diagnostics.PopupRedirects = m_PopupRedirects;
+        diagnostics.GrantedHostCount = static_cast<u32>(m_Granted.Entries().size());
+        diagnostics.RenderMode = m_Config.RenderMode == BrowserRenderMode::Hardware ? "hardware" : "software";
         if (m_State == State::Failed)
             diagnostics.Error = m_Error;
         else if (m_Uploader.Failed())

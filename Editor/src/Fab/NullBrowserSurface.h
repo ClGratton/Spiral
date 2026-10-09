@@ -26,6 +26,10 @@ namespace Fab
         void SendMouseWheel(const BrowserMouse&, float, float) override {}
         void SendKey(const BrowserKey&) override {}
 
+        void SetScreenInfo(const BrowserScreenInfo&) override {}
+        void SetGrantedHosts(std::span<const std::string>) override {}
+        bool RetryDeniedNavigation() override { return false; }
+
         void Navigate(std::string_view) override {}
         void GoBack() override {}
         void GoForward() override {}

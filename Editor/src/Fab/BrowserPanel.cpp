@@ -8,6 +8,7 @@
 #include <imgui.h>
 
 #include <algorithm>
+#include <cmath>
 #include <string>
 #include <utility>
 
@@ -98,7 +99,55 @@ namespace Fab
         }
 
         constexpr const char* kSignOutPopup = "Sign out of Fab";
+        constexpr const char* kSignInHostsPopup = "Sign-in hosts";
         constexpr size_t kMaximumToolbarHostCharacters = 48;
+
+        // The monitor with the largest overlap with the Editor window, as the
+        // platform backend reports them. Everything is window (screen) pixels. When
+        // the backend does not report the window position (no multi-viewport
+        // support) the window counts as sitting at the origin, which picks the
+        // monitor that contains it: exact with one monitor, a best guess with several.
+        BrowserScreenInfo ReadScreenInfo()
+        {
+            BrowserScreenInfo info;
+            const ImGuiViewport* viewport = ImGui::GetMainViewport();
+            const ImVector<ImGuiPlatformMonitor>& monitors = ImGui::GetPlatformIO().Monitors;
+            if (viewport == nullptr || monitors.Size == 0 || viewport->Size.x < 1.0f || viewport->Size.y < 1.0f)
+                return info;
+
+            const ImGuiPlatformMonitor* best = nullptr;
+            float bestOverlap = -1.0f;
+            for (const ImGuiPlatformMonitor& monitor : monitors)
+            {
+                if (monitor.MainSize.x < 1.0f || monitor.MainSize.y < 1.0f)
+                    continue;
+                const float width = std::min(viewport->Pos.x + viewport->Size.x, monitor.MainPos.x + monitor.MainSize.x)
+                    - std::max(viewport->Pos.x, monitor.MainPos.x);
+                const float height = std::min(viewport->Pos.y + viewport->Size.y, monitor.MainPos.y + monitor.MainSize.y)
+                    - std::max(viewport->Pos.y, monitor.MainPos.y);
+                const float overlap = std::max(width, 0.0f) * std::max(height, 0.0f);
+                if (overlap > bestOverlap)
+                {
+                    bestOverlap = overlap;
+                    best = &monitor;
+                }
+            }
+            if (best == nullptr)
+                return info;
+
+            const auto round = [](float value) { return static_cast<int>(std::lround(value)); };
+            info.Valid = true;
+            info.MonitorX = round(best->MainPos.x);
+            info.MonitorY = round(best->MainPos.y);
+            info.MonitorWidth = round(best->MainSize.x);
+            info.MonitorHeight = round(best->MainSize.y);
+            const bool hasWorkArea = best->WorkSize.x >= 1.0f && best->WorkSize.y >= 1.0f;
+            info.WorkX = round(hasWorkArea ? best->WorkPos.x : best->MainPos.x);
+            info.WorkY = round(hasWorkArea ? best->WorkPos.y : best->MainPos.y);
+            info.WorkWidth = round(hasWorkArea ? best->WorkSize.x : best->MainSize.x);
+            info.WorkHeight = round(hasWorkArea ? best->WorkSize.y : best->MainSize.y);
+            return info;
+        }
 
         float ButtonWidth(const char* label)
         {
@@ -140,7 +189,7 @@ namespace Fab
 
             const bool ownsKeyboard = core.WantsKeyboard();
             const float releaseWidth = ownsKeyboard ? ButtonWidth("Release keyboard") + style.ItemSpacing.x : 0.0f;
-            const float groupWidth = releaseWidth + ButtonWidth("Sign out");
+            const float groupWidth = releaseWidth + ButtonWidth(kSignInHostsPopup) + style.ItemSpacing.x + ButtonWidth("Sign out");
             ImGui::SameLine(std::max(ImGui::GetCursorPosX() - rowStart + style.ItemSpacing.x, rowWidth - groupWidth));
             if (ownsKeyboard)
             {
@@ -149,9 +198,88 @@ namespace Fab
                 ImGui::SameLine();
             }
             ImGui::BeginDisabled(!core.Live());
+            if (ImGui::Button(kSignInHostsPopup))
+                ImGui::OpenPopup(kSignInHostsPopup);
+            ImGui::SameLine();
             if (ImGui::Button("Sign out"))
                 ImGui::OpenPopup(kSignOutPopup);
             ImGui::EndDisabled();
+        }
+
+        // Shown above the page while a denied navigation waits for the user's
+        // decision. Host only; the target address never reaches the panel.
+        void DrawConsentBanner(BrowserPanelCore& core)
+        {
+            const std::string host = core.PendingConsentHost();
+            if (host.empty())
+                return;
+            ImGui::Separator();
+            ImGui::PushTextWrapPos(0.0f);
+            ImGui::Text("The page tried to open %s. Allow for sign-in?", host.c_str());
+            ImGui::PopTextWrapPos();
+            if (ImGui::Button("Allow once"))
+                core.ResolveConsent(SignInConsentChoice::AllowOnce);
+            ImGui::SameLine();
+            if (ImGui::Button("Allow always"))
+                core.ResolveConsent(SignInConsentChoice::AllowAlways);
+            ImGui::SameLine();
+            if (ImGui::Button("Dismiss"))
+                core.ResolveConsent(SignInConsentChoice::Dismiss);
+            ImGui::SameLine();
+            ImGui::TextDisabled("Once: until the Editor closes. Always: remembered.");
+            ImGui::Separator();
+        }
+
+        void DrawSignInHostsPopup(BrowserPanelCore& core)
+        {
+            if (!ImGui::BeginPopup(kSignInHostsPopup))
+                return;
+            ImGui::PushTextWrapPos(ImGui::GetFontSize() * 34.0f);
+            ImGui::TextUnformatted("Pages may open these hosts while you sign in. Anything else is blocked until you allow it.");
+            ImGui::PopTextWrapPos();
+            ImGui::Spacing();
+
+            ImGui::SeparatorText("Fab and Epic");
+            for (const std::string_view host : { BrowserNavigationPolicy::kFabHost, BrowserNavigationPolicy::kEpicHost })
+                ImGui::TextUnformatted(host.data(), host.data() + host.size());
+
+            ImGui::SeparatorText("Sign-in providers");
+            for (const BrowserSignInProvider& provider : BrowserPanelCore::DefaultSignInProviders())
+            {
+                ImGui::Text("%.*s  %.*s", static_cast<int>(provider.Provider.size()), provider.Provider.data(),
+                    static_cast<int>(provider.Host.size()), provider.Host.data());
+            }
+
+            ImGui::SeparatorText("Allowed by you");
+            const std::vector<BrowserGrantedHost> granted(core.GrantedHosts().begin(), core.GrantedHosts().end());
+            if (granted.empty())
+                ImGui::TextDisabled("None");
+            std::string removed;
+            for (size_t index = 0; index < granted.size(); ++index)
+            {
+                ImGui::PushID(static_cast<int>(index));
+                ImGui::Text("%s  (%s)", granted[index].Host.c_str(), granted[index].Persistent ? "remembered" : "this session");
+                ImGui::SameLine();
+                if (ImGui::SmallButton("Remove"))
+                    removed = granted[index].Host;
+                ImGui::PopID();
+            }
+            if (!removed.empty())
+                core.RevokeGrantedHost(removed);
+            if (!granted.empty())
+            {
+                ImGui::Spacing();
+                if (ImGui::Button("Remove all"))
+                    core.ClearGrantedHosts();
+            }
+            if (!core.SignInHostsNotice().empty())
+            {
+                ImGui::Spacing();
+                ImGui::PushTextWrapPos(ImGui::GetFontSize() * 34.0f);
+                ImGui::TextDisabled("%s", core.SignInHostsNotice().c_str());
+                ImGui::PopTextWrapPos();
+            }
+            ImGui::EndPopup();
         }
 
         void DrawSignOutPopup(BrowserPanelCore& core)
@@ -222,6 +350,7 @@ namespace Fab
             layout.ModalOrPopupOpen = ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel);
             layout.Modifiers = (io.KeyShift ? BrowserModifier::Shift : 0u) | (io.KeyCtrl ? BrowserModifier::Control : 0u)
                 | (io.KeyAlt ? BrowserModifier::Alt : 0u) | (io.KeySuper ? BrowserModifier::Super : 0u);
+            layout.Screen = ReadScreenInfo();
             core.UpdateLayout(layout);
 
             if ((hovered || core.Router().HasMouseCapture()) && !layout.ModalOrPopupOpen)
@@ -234,6 +363,8 @@ namespace Fab
         {
             const ImGuiStyle& style = ImGui::GetStyle();
             DrawToolbar(core);
+            if (core.Live())
+                DrawConsentBanner(core);
 
             const float statusHeight = ImGui::GetTextLineHeightWithSpacing();
             const ImVec2 available = ImGui::GetContentRegionAvail();
@@ -257,6 +388,7 @@ namespace Fab
                 ImGui::SetCursorScreenPos(ImVec2(origin.x, origin.y + size.y + style.ItemSpacing.y));
                 ImGui::TextDisabled("%s", core.StatusLine().c_str());
             }
+            DrawSignInHostsPopup(core);
             DrawSignOutPopup(core);
         }
     }

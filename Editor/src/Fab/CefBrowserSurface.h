@@ -70,6 +70,12 @@ namespace Fab
         // has no native shortcut handling) and not forwarded to the page.
         void SendKey(const BrowserKey& key) override;
 
+        // With a valid record the page sees the real monitor, work area, and
+        // window position; without one its screen is its view rectangle.
+        void SetScreenInfo(const BrowserScreenInfo& info) override;
+        void SetGrantedHosts(std::span<const std::string> hosts) override;
+        bool RetryDeniedNavigation() override;
+
         void Navigate(std::string_view httpsUrl) override;
         void GoBack() override;
         void GoForward() override;

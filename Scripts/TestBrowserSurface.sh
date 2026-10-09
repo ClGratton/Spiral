@@ -140,7 +140,7 @@ PORT="$(cat "$WORK/port")"
 COMMON_ARGS=(
     "--lib=$LIBRARY"
     "--provider-host=$HOST_NAME"
-    "--test-switch=host-resolver-rules=MAP $HOST_NAME 127.0.0.1:$PORT, MAP * ~NOTFOUND"
+    "--test-switch=host-resolver-rules=MAP $HOST_NAME 127.0.0.1:$PORT, MAP consent.spiral.test 127.0.0.1:$PORT, MAP third.party.test 127.0.0.1:$PORT, MAP * ~NOTFOUND"
     "--test-switch=ignore-certificate-errors-spki-list=$SPKI"
 )
 URL="https://$HOST_NAME"
@@ -202,6 +202,19 @@ for line in open(sys.argv[1]):
     entry = json.loads(line)
     if entry["path"] == "/whoami" and entry["query"] == "run=" + sys.argv[2]:
         last = entry["cookie"] if entry["cookie"] is not None else "null"
+print(last)
+PY
+}
+
+# Any request header the fixture logged for /whoami?run=<tag> (key: lang, ua, cookie).
+server_field() {
+    python3 - "$SERVER_LOG" "$1" "$2" <<'PY'
+import json, sys
+last = "missing"
+for line in open(sys.argv[1]):
+    entry = json.loads(line)
+    if entry["path"] == "/whoami" and entry["query"] == "run=" + sys.argv[2]:
+        last = entry[sys.argv[3]] if entry[sys.argv[3]] is not None else "null"
 print(last)
 PY
 }
@@ -341,6 +354,27 @@ assert_clean_run "cookies-control"
 [[ "$(server_cookie control)" == "null" ]] || die "a fresh profile must send no cookie" "server saw: $(server_cookie control)"
 pass "fresh_profile_sends_no_cookie"
 
+# --- Third-party cookies keep the engine default (nothing is configured): a
+# cross-site frame (the shape of a captcha frame inside a sign-in page) can set
+# and read a SameSite=None cookie and gets it back on the next visit. The fixture
+# server's log of the Cookie header is the independent oracle.
+run_smoke third-party-cookies "$WORK/profile-third-party" \
+    "navigate:$URL/tp;wait-load;expect-pixel:300,200,00ff00;wait-ms:300;navigate:$URL/tp?again=1;wait-load;expect-pixel:300,200,00ff00;wait-ms:300"
+assert_clean_run "third-party-cookies"
+THIRD_PARTY_COOKIE="$(python3 - "$SERVER_LOG" <<'PY'
+import json, sys
+last = "missing"
+for line in open(sys.argv[1]):
+    entry = json.loads(line)
+    if entry["path"] == "/tpframe":
+        last = entry["cookie"] if entry["cookie"] is not None else "null"
+print(last)
+PY
+)"
+[[ "$THIRD_PARTY_COOKIE" == *"tp_header=1"* && "$THIRD_PARTY_COOKIE" == *"tp_js=1"* ]] \
+    || die "a cross-site frame must send back the cookies it set" "server saw: $THIRD_PARTY_COOKIE"
+pass "third_party_cookies_work_in_a_cross_site_frame_with_engine_defaults"
+
 # --- Downloads: staged owner-only with matching SHA-256, type policy enforced,
 # and no URL, token, or query reaches any output.
 DOWNLOAD_STAGING="$WORK/staging-download"
@@ -371,10 +405,54 @@ run_smoke navigation "$WORK/profile-navigation" \
     "--provider-host=unreachable.spiral.test"
 assert_clean_run "navigation"
 DENIED_HOSTS="$(sed -n 's/^BROWSER_SMOKE navigation_denied host=//p' "$LAST_LOG" | sort | tr '\n' ' ')"
-[[ "$DENIED_HOSTS" == "example.com example.net example.org $HOST_NAME $HOST_NAME " ]] || die "denied navigation hosts" "got: $DENIED_HOSTS"
+[[ "$DENIED_HOSTS" == "example.com example.net example.org $HOST_NAME popup.spiral.test " ]] || die "denied navigation hosts" "got: $DENIED_HOSTS"
 expect_log "$LAST_LOG" "BROWSER_SMOKE summary .*denials=5 failures=1" "an allowed host that fails to load is a failure, not a denial"
 expect_log "$LAST_LOG" "BROWSER_SMOKE failed reason=the page failed to load" "load failure reported"
 pass "off_list_navigation_scheme_and_popups_denied"
+
+# --- A popup whose target host is allowed opens in the panel itself (no window is
+# created); the denial counter stays at zero.
+run_smoke popup-redirect "$WORK/profile-popup-redirect" \
+    "navigate:$URL/popup-ok;wait-load;expect-pixel:400,300,405030;focus:1;click:100,40;wait-popups:1;expect-pixel:100,100,c8640a;wait-ms:300"
+assert_clean_run "popup-redirect"
+expect_log "$LAST_LOG" "BROWSER_SMOKE popup_redirected host=$HOST_NAME" "the allowed popup target was reported"
+expect_log "$LAST_LOG" "BROWSER_SMOKE summary .*denials=0 failures=0" "an allowed popup is not a denial"
+reject_log "$LAST_LOG" "navigation_denied" "an allowed popup is not denied"
+pass "allowed_popup_opens_in_the_panel"
+
+# --- Denied-navigation consent: the denial offers its host, the target is kept
+# inside the surface, a retry without a grant stays denied, and a grant followed
+# by a retry loads the kept target. The target is consumed by every retry.
+run_smoke consent "$WORK/profile-consent" \
+    "navigate:$URL/consent;wait-load;expect-pixel:400,300,304050;focus:1;click:100,40;wait-consents:1;retry-denied;wait-ms:300;expect-pixel:400,300,304050;navigate:$URL/consent;wait-load;click:100,40;wait-consents:2;grant:consent.spiral.test;retry-denied;expect-pixel:100,100,c8640a;retry-denied;ungrant-all;navigate:https://consent.spiral.test/paint;wait-denials:3;wait-consents:3;wait-ms:300"
+assert_clean_run "consent"
+[[ "$(grep -c 'BROWSER_SMOKE consent_offered host=consent.spiral.test$' "$LAST_LOG")" == "3" ]] || die "consent was offered three times for the denied host"
+[[ "$(sed -n 's/^BROWSER_SMOKE retry_denied result=//p' "$LAST_LOG" | tr '\n' ' ')" == "0 1 0 " ]] \
+    || die "retry results (without a grant, with a grant, with nothing kept)" "got: $(sed -n 's/^BROWSER_SMOKE retry_denied result=//p' "$LAST_LOG" | tr '\n' ' ')"
+expect_log "$LAST_LOG" "BROWSER_SMOKE summary .*denials=3 failures=0" "three denials, no load failure"
+pass "denied_navigation_consent_grants_and_retries_the_kept_target"
+reject_log "$LAST_LOG" "/paint|step=1" "no denied address or query reaches any output"
+pass "consent_markers_carry_the_host_only"
+
+# --- Truthful screen geometry: the page sees the monitor and work area it was
+# told about, unchanged when the view is resized, in DIPs at a device scale.
+SCREEN_CHECKS="expect-pixel:30,30,00ff00;expect-pixel:80,30,00ff00;expect-pixel:130,30,00ff00;expect-pixel:180,30,00ff00"
+run_smoke screen-info "$WORK/profile-screen" \
+    "screen:0,0,2560,1440:0,0,2560,1400;navigate:$URL/screen?e=2560,1440,2560,1400;wait-load;$SCREEN_CHECKS;view:480x270@1;navigate:$URL/screen?e=2560,1440,2560,1400;wait-load;$SCREEN_CHECKS;view:320x200@1;navigate:$URL/screen?e=2560,1440,2560,1400;wait-load;$SCREEN_CHECKS;view:480x270@2;navigate:$URL/screen?e=1280,720,1280,700;wait-load;expect-pixel:60,60,00ff00;expect-pixel:160,60,00ff00;expect-pixel:260,60,00ff00;expect-pixel:360,60,00ff00"
+assert_clean_run "screen-info"
+pass "page_screen_geometry_is_the_reported_monitor_and_ignores_view_size"
+
+# --- Accept-Language and navigator.languages follow the user's locale
+# variables; the user agent stays untouched (checked above).
+LANGUAGE="it_IT:en_US" LC_ALL="" LC_MESSAGES="" LANG="en_US.UTF-8" run_smoke language-italian "$WORK/profile-lang-it" \
+    "navigate:$URL/lang?e=it-IT%2Cit%2Cen-US%2Cen;wait-load;expect-pixel:300,300,00ff00;navigate:$URL/whoami?run=lang-it;wait-load;expect-pixel:100,100,602040"
+assert_clean_run "language-italian"
+ITALIAN_LANGUAGE="$(server_field lang-it lang)"
+[[ "$ITALIAN_LANGUAGE" == it-IT,it\;q=* ]] || die "Accept-Language must follow LANGUAGE" "server saw: $ITALIAN_LANGUAGE"
+LANGUAGE="" LC_ALL="" LC_MESSAGES="" LANG="en_US.UTF-8" run_smoke language-english "$WORK/profile-lang-en" \
+    "navigate:$URL/lang?e=en-US%2Cen;wait-load;expect-pixel:300,300,00ff00"
+assert_clean_run "language-english"
+pass "accept_language_follows_the_locale_variables"
 
 # --- Single instance: a second surface on a live profile reports it as in use.
 IN_USE_PROFILE="$WORK/profile-in-use"

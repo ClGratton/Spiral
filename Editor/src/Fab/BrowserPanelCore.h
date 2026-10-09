@@ -3,12 +3,15 @@
 #include "BrowserFrameMirror.h"
 #include "BrowserInputRouter.h"
 #include "BrowserPanel.h"
+#include "BrowserSignInHosts.h"
 #include "BrowserSurface.h"
 #include "Engine/Renderer/UiTexture.h"
 
 #include <deque>
+#include <filesystem>
 #include <functional>
 #include <memory>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -42,6 +45,9 @@ namespace Fab
         constexpr float kMinimumSurfaceExtent = 16.0f;
         constexpr float kMinimumDeviceScale = 0.25f;
         constexpr float kMaximumDeviceScale = 8.0f;
+        // Denials are always counted; only this many are logged.
+        constexpr Engine::u32 kMaximumLoggedDenials = 64;
+        constexpr size_t kMaximumRememberedDeniedHosts = 16;
     }
 
     // A surface created by the dynamically loaded host library must be destroyed
@@ -268,6 +274,9 @@ namespace Fab
         bool ModalOrPopupOpen = false;
         // Current Shift/Ctrl/Alt/Super state (BrowserModifier::KeyMask bits).
         Engine::u32 Modifiers = 0;
+        // Monitor and work area in window pixels, as the platform reports them.
+        // Valid=false leaves the page's screen equal to its view rectangle.
+        BrowserScreenInfo Screen;
     };
 
     class BrowserPanelCore final : public IBrowserSurface::Listener
@@ -317,6 +326,23 @@ namespace Fab
         // The toolbar's "release keyboard" affordance.
         void ReleaseKeyboard();
 
+        // ---- sign-in hosts ----
+        // The host the banner asks about ("The page tried to open <host>. Allow for
+        // sign-in?"), empty when no banner is shown.
+        const std::string& PendingConsentHost() const { return m_Consent.PendingHost(); }
+        // Allow once: this session only. Allow always: also saved to the sign-in
+        // host file. Both repeat the denied navigation when the surface kept it.
+        // Dismiss hides the banner and suppresses this host for a short time.
+        void ResolveConsent(SignInConsentChoice choice);
+        std::span<const BrowserGrantedHost> GrantedHosts() const { return m_Granted.Entries(); }
+        static std::span<const BrowserSignInProvider> DefaultSignInProviders() { return BrowserNavigationPolicy::DefaultSignInProviders(); }
+        bool RevokeGrantedHost(std::string_view host);
+        // Removes every user-granted host, saved ones included.
+        void ClearGrantedHosts();
+        // Why the last grant, revoke, or load of the saved list failed; empty when fine.
+        const std::string& SignInHostsNotice() const { return m_SignInNotice; }
+        const std::filesystem::path& SignInHostsFile() const { return m_SignInHostsFile; }
+
         // ---- commands ----
         void GoBack();
         void GoForward();
@@ -355,6 +381,8 @@ namespace Fab
         void OnLoadState(bool loading, bool canGoBack, bool canGoForward) override;
         void OnDownload(const BrowserDownloadEvent& event) override;
         void OnNavigationDenied(std::string_view host) override;
+        void OnNavigationConsentOffered(std::string_view host) override;
+        void OnPopupRedirected(std::string_view host) override;
         void OnFailed(std::string_view reason) override;
         void OnClosed() override;
 
@@ -369,6 +397,9 @@ namespace Fab
         void FeedRouterHidden();
         void ApplyRoute(const BrowserInputRoute& route);
         BrowserMouse ToDip(const BrowserMouse& mouse) const;
+        void LoadGrantedHosts();
+        void ApplyGrantedHosts();
+        bool SaveGrantedHosts();
         template <typename Function>
         bool Guarded(const char* where, Function&& function);
         void Info(std::string_view message) const;
@@ -414,6 +445,18 @@ namespace Fab
         std::string m_DeferredFailure;
         mutable std::string m_Status;
         Engine::u32 m_NavigationDenials = 0;
+        Engine::u32 m_PopupRedirects = 0;
+        std::string m_LastDeniedHost;
+        std::vector<std::string> m_DeniedHosts;
+        // m_Baseline is the fixed list the surface started with; m_Effective adds
+        // the user's grants and is what the banner decides against.
+        BrowserNavigationPolicy m_Baseline;
+        BrowserNavigationPolicy m_Effective;
+        BrowserSignInHostBook m_Granted;
+        BrowserSignInConsent m_Consent;
+        std::filesystem::path m_SignInHostsFile;
+        std::string m_SignInNotice;
+        BrowserScreenInfo m_SentScreen;
         Engine::u32 m_DownloadsCompleted = 0;
         Engine::u64 m_LoggedTextureFailures = 0;
     };

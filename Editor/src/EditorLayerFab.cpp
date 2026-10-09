@@ -252,12 +252,18 @@ void EditorLayer::InitializeFabIntegration()
         config.DownloadStagingDirectory = downloads;
         const Engine::ApplicationCommandLineArgs& commandLine = Engine::Application::Get().GetSpecification().CommandLineArgs;
         constexpr std::string_view providerOption = "--fab-provider-host=";
+        constexpr std::string_view renderOption = "--fab-render-mode=";
         for (int index = 1; index < commandLine.Count; ++index)
         {
             const std::string_view argument = commandLine[index];
             if (argument.starts_with(providerOption) && argument.size() > providerOption.size())
                 config.ProviderHosts.emplace_back(argument.substr(providerOption.size()));
+            else if (argument == "--fab-render-mode=hardware")
+                config.RenderMode = Fab::BrowserRenderMode::Hardware;
+            else if (argument.starts_with(renderOption) && argument != "--fab-render-mode=software")
+                Engine::Log::Warn("Ignoring unknown --fab-render-mode value; the Fab browser stays on software rendering");
         }
+        config.InitialDeviceScale = Engine::Application::Get().GetWindow().GetContentScale().X;
         m_FabBrowser.Configure(std::move(config));
         m_FabImport.SetDownloadStagingRoot(downloads);
     }

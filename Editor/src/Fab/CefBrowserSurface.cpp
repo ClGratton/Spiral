@@ -11,6 +11,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <functional>
@@ -44,6 +45,27 @@ namespace Fab
         constexpr char kBlankUrl[] = "about:blank";
         constexpr char kLogFileName[] = "SpiralBrowser.log";
         constexpr int kVkReturn = 0x0D;
+
+        // Hardware mode: no CPU rasterizer switches, and ANGLE is pointed at Vulkan,
+        // which the Chromium headless-GPU notes describe as the route that needs
+        // no window-system connection. Unverified here: whether this host's GPU
+        // process comes up under the headless platform. Off unless requested.
+        struct EngineSwitch
+        {
+            const char* Name;
+            const char* Value;
+        };
+        constexpr EngineSwitch kHardwareSwitches[] = {
+            { "use-angle", "vulkan" },
+            { "enable-features", "Vulkan" },
+            { "disable-vulkan-surface", nullptr },
+        };
+
+        std::string EnvironmentValue(const char* name)
+        {
+            const char* value = std::getenv(name);
+            return value != nullptr ? std::string(value) : std::string();
+        }
 
         // CEF supports one initialize/shutdown cycle per process, and a failed
         // CefInitialize leaves the process unusable for a second attempt, so the
@@ -400,6 +422,13 @@ namespace Fab
         CefRefPtr<CefBrowser> Browser;
 
         BrowserViewSize View { 800, 600, 1.0f };
+        BrowserScreenInfo Screen;
+
+        // The most recent refused navigation the user could be asked about; empty
+        // when there is none or it cannot be repeated (not a GET). It never leaves
+        // this object and is never logged.
+        std::string LastDeniedUrl;
+        std::string PendingLoad;
 
         std::vector<Engine::u8> Frame;
         Engine::u32 FrameWidth = 0;
@@ -430,8 +459,10 @@ namespace Fab
         void BlitPopup();
         void AddDirty(const BrowserDirtyRect& rect);
 
-        bool AllowTopLevel(const std::string& url);
-        void DenyNavigation(const std::string& url);
+        bool AllowTopLevel(const std::string& url, bool repeatable = true);
+        void DenyNavigation(const std::string& url, bool repeatable = true);
+        void OpenPopupTarget(const std::string& url);
+        CefRect ScaledRect(int x, int y, int width, int height) const;
         bool BeforeDownload(CefRefPtr<CefDownloadItem> item, const std::string& suggestedName,
             CefRefPtr<CefBeforeDownloadCallback> callback);
         void DownloadUpdated(CefRefPtr<CefDownloadItem> item, CefRefPtr<CefDownloadItemCallback> callback);
@@ -451,10 +482,10 @@ namespace Fab
         class BrowserApp final : public CefApp, public CefBrowserProcessHandler
         {
         public:
-            BrowserApp(std::shared_ptr<PumpSignal> signal, std::vector<std::string> switches, bool softwareRendering)
+            BrowserApp(std::shared_ptr<PumpSignal> signal, std::vector<std::string> switches, BrowserRenderMode renderMode)
                 : m_Signal(std::move(signal))
                 , m_Switches(std::move(switches))
-                , m_SoftwareRendering(softwareRendering)
+                , m_RenderMode(renderMode)
             {
             }
 
@@ -467,10 +498,20 @@ namespace Fab
                 // No display-server connection at all: the panel renders off screen
                 // and the Editor bridges cursor, IME and clipboard itself.
                 commandLine->AppendSwitchWithValue("ozone-platform", "headless");
-                if (m_SoftwareRendering)
+                if (m_RenderMode == BrowserRenderMode::Software)
                 {
                     commandLine->AppendSwitch("disable-gpu");
                     commandLine->AppendSwitch("enable-unsafe-swiftshader");
+                }
+                else
+                {
+                    for (const EngineSwitch& entry : kHardwareSwitches)
+                    {
+                        if (entry.Value != nullptr)
+                            commandLine->AppendSwitchWithValue(entry.Name, entry.Value);
+                        else
+                            commandLine->AppendSwitch(entry.Name);
+                    }
                 }
                 for (const std::string& entry : m_Switches)
                 {
@@ -490,7 +531,7 @@ namespace Fab
         private:
             std::shared_ptr<PumpSignal> m_Signal;
             std::vector<std::string> m_Switches;
-            bool m_SoftwareRendering;
+            BrowserRenderMode m_RenderMode;
 
             IMPLEMENT_REFCOUNTING(BrowserApp);
         };
@@ -552,10 +593,25 @@ namespace Fab
             rect = m_State != nullptr ? m_State->ViewRect() : CefRect(0, 0, 1, 1);
         }
 
+        // With platform geometry the page sees the real monitor and work area, which
+        // do not change when the panel is resized; without it the view rectangle
+        // stands in for both, as before. GetRootScreenRect and GetScreenPoint are
+        // deliberately not implemented: with CEF 154 windowless rendering neither
+        // changes window.outerWidth/outerHeight or window.screenX/screenY (measured:
+        // they stay 0 whatever is returned), and a root rectangle larger than the
+        // view would only move popup widgets such as select lists out of the view.
         bool GetScreenInfo(CefRefPtr<CefBrowser>, CefScreenInfo& info) override
         {
             if (m_State == nullptr)
                 return false;
+            const BrowserScreenInfo& screen = m_State->Screen;
+            if (screen.Valid)
+            {
+                info.Set(m_State->View.DeviceScale, 24, 8, false,
+                    m_State->ScaledRect(screen.MonitorX, screen.MonitorY, screen.MonitorWidth, screen.MonitorHeight),
+                    m_State->ScaledRect(screen.WorkX, screen.WorkY, screen.WorkWidth, screen.WorkHeight));
+                return true;
+            }
             const CefRect rect = m_State->ViewRect();
             info.Set(m_State->View.DeviceScale, 24, 8, false, rect, rect);
             return true;
@@ -597,13 +653,15 @@ namespace Fab
 
         bool OnDragEnter(CefRefPtr<CefBrowser>, CefRefPtr<CefDragData>, cef_drag_operations_mask_t) override { return true; }
 
-        // Life span: every popup is denied and reported.
+        // Life span: a popup window is never created. A target on the allow list is
+        // opened in this panel instead (window.opener does not survive that); any
+        // other target is denied and reported.
         bool OnBeforePopup(CefRefPtr<CefBrowser>, CefRefPtr<CefFrame>, int, const CefString& targetUrl, const CefString&,
             cef_window_open_disposition_t, bool, const CefPopupFeatures&, CefWindowInfo&, CefRefPtr<CefClient>&,
             CefBrowserSettings&, CefRefPtr<CefDictionaryValue>&, bool*) override
         {
             if (m_State != nullptr)
-                m_State->DenyNavigation(targetUrl.ToString());
+                m_State->OpenPopupTarget(targetUrl.ToString());
             return true;
         }
 
@@ -629,14 +687,16 @@ namespace Fab
         {
             if (m_State == nullptr || !frame->IsMain())
                 return false;
-            return !m_State->AllowTopLevel(request->GetURL().ToString());
+            // The decision looks at the destination only; the method is used just to
+            // know whether a denied request could be repeated as a plain load.
+            return !m_State->AllowTopLevel(request->GetURL().ToString(), request->GetMethod().ToString() == "GET");
         }
 
         bool OnOpenURLFromTab(CefRefPtr<CefBrowser>, CefRefPtr<CefFrame>, const CefString& targetUrl,
             cef_window_open_disposition_t, bool) override
         {
             if (m_State != nullptr)
-                m_State->DenyNavigation(targetUrl.ToString());
+                m_State->OpenPopupTarget(targetUrl.ToString());
             return true;
         }
 
@@ -834,7 +894,7 @@ namespace Fab
         Config = config;
         Sink = &listener;
 
-        App = new BrowserApp(Signal, Options.CommandLineSwitches, config.SoftwareRendering);
+        App = new BrowserApp(Signal, Options.CommandLineSwitches, config.RenderMode);
         static char programName[] = "SpiralBrowserHost";
         static char* arguments[] = { programName, nullptr };
         CefMainArgs mainArgs(1, arguments);
@@ -854,6 +914,12 @@ namespace Fab
         CefString(&settings.resources_dir_path) = resourceDirectory.string();
         CefString(&settings.locales_dir_path) = (resourceDirectory / "locales").string();
         CefString(&settings.locale) = "en-US";
+        // Accept-Language and navigator.languages follow the user's own locale
+        // variables (settings.locale above is ignored on Linux). Nothing else about
+        // the browser identity is set: the user agent, client hints, and cookie
+        // policy stay at the engine defaults.
+        CefString(&settings.accept_language_list) = BuildAcceptLanguageList(
+            EnvironmentValue("LANGUAGE"), EnvironmentValue("LC_ALL"), EnvironmentValue("LC_MESSAGES"), EnvironmentValue("LANG"));
 
         // CefInitialize installs Chromium's shutdown detector over SIGHUP, SIGINT and
         // SIGTERM even with disable_signal_handlers, which would make a terminal
@@ -921,6 +987,13 @@ namespace Fab
             Signal->DueMilliseconds.store(std::numeric_limits<int64_t>::max());
             CefDoMessageLoopWork();
             LastPumpMilliseconds = NowMilliseconds();
+        }
+        if (!PendingLoad.empty() && Browser)
+        {
+            // Started outside the engine callback that asked for it.
+            const std::string url = std::move(PendingLoad);
+            PendingLoad.clear();
+            Browser->GetMainFrame()->LoadURL(url);
         }
         DeliverQueued();
         InPump = false;
@@ -1063,20 +1136,49 @@ namespace Fab
 
     // State: navigation
 
-    bool CefBrowserSurface::State::AllowTopLevel(const std::string& url)
+    bool CefBrowserSurface::State::AllowTopLevel(const std::string& url, bool repeatable)
     {
         if (url == kBlankUrl)
             return true;
         if (IsNavigationAllowed(Config.Navigation.Evaluate(url, BrowserNavigationKind::TopLevel)))
             return true;
-        DenyNavigation(url);
+        DenyNavigation(url, repeatable);
         return false;
     }
 
-    void CefBrowserSurface::State::DenyNavigation(const std::string& url)
+    void CefBrowserSurface::State::DenyNavigation(const std::string& url, bool repeatable)
     {
         const std::string host = BrowserNavigationPolicy::HostForLog(url);
         Queue([host](IBrowserSurface::Listener& listener) { listener.OnNavigationDenied(host); });
+
+        // Only a target the user could sensibly be asked about is kept; any other
+        // denial forgets the previous one so a stale address is never repeated.
+        const std::string consent = Config.Navigation.ConsentHost(url);
+        LastDeniedUrl.clear();
+        if (consent.empty())
+            return;
+        if (repeatable)
+            LastDeniedUrl = url;
+        Queue([consent](IBrowserSurface::Listener& listener) { listener.OnNavigationConsentOffered(consent); });
+    }
+
+    void CefBrowserSurface::State::OpenPopupTarget(const std::string& url)
+    {
+        if (Config.Navigation.EvaluatePopupTarget(url) == BrowserNavigationVerdict::Allow)
+        {
+            PendingLoad = url;
+            const std::string host = BrowserNavigationPolicy::HostForLog(url);
+            Queue([host](IBrowserSurface::Listener& listener) { listener.OnPopupRedirected(host); });
+            return;
+        }
+        DenyNavigation(url);
+    }
+
+    CefRect CefBrowserSurface::State::ScaledRect(int x, int y, int width, int height) const
+    {
+        const float scale = std::max(View.DeviceScale, 0.25f);
+        const auto toDip = [scale](int value) { return static_cast<int>(std::lround(static_cast<float>(value) / scale)); };
+        return CefRect(toDip(x), toDip(y), std::max(toDip(width), 1), std::max(toDip(height), 1));
     }
 
     // State: downloads
@@ -1462,6 +1564,41 @@ namespace Fab
     void CefBrowserSurface::SendKey(const BrowserKey& key)
     {
         m_State->SendKey(key);
+    }
+
+    void CefBrowserSurface::SetScreenInfo(const BrowserScreenInfo& info)
+    {
+        State& state = *m_State;
+        BrowserScreenInfo next = info;
+        if (next.MonitorWidth < 1 || next.MonitorHeight < 1 || next.WorkWidth < 1 || next.WorkHeight < 1)
+            next = BrowserScreenInfo {};
+        const BrowserScreenInfo& previous = state.Screen;
+        const bool monitorChanged = next.Valid != previous.Valid || next.MonitorX != previous.MonitorX
+            || next.MonitorY != previous.MonitorY || next.MonitorWidth != previous.MonitorWidth
+            || next.MonitorHeight != previous.MonitorHeight || next.WorkX != previous.WorkX || next.WorkY != previous.WorkY
+            || next.WorkWidth != previous.WorkWidth || next.WorkHeight != previous.WorkHeight;
+        state.Screen = next;
+        if (monitorChanged && state.Browser)
+            state.Browser->GetHost()->NotifyScreenInfoChanged();
+    }
+
+    void CefBrowserSurface::SetGrantedHosts(std::span<const std::string> hosts)
+    {
+        m_State->Config.Navigation.SetGrantedHosts(hosts);
+    }
+
+    bool CefBrowserSurface::RetryDeniedNavigation()
+    {
+        State& state = *m_State;
+        const std::string url = std::move(state.LastDeniedUrl);
+        state.LastDeniedUrl.clear();
+        if (!state.Browser || url.empty()
+            || state.Config.Navigation.Evaluate(url, BrowserNavigationKind::TopLevel) != BrowserNavigationVerdict::Allow)
+        {
+            return false;
+        }
+        state.Browser->GetMainFrame()->LoadURL(url);
+        return true;
     }
 
     void CefBrowserSurface::Navigate(std::string_view httpsUrl)

@@ -158,6 +158,18 @@ namespace
             Marker("navigation_denied", "host=%.*s", static_cast<int>(host.size()), host.data());
         }
 
+        void OnNavigationConsentOffered(std::string_view host) override
+        {
+            ++m_Consents;
+            Marker("consent_offered", "host=%.*s", static_cast<int>(host.size()), host.data());
+        }
+
+        void OnPopupRedirected(std::string_view host) override
+        {
+            ++m_Popups;
+            Marker("popup_redirected", "host=%.*s", static_cast<int>(host.size()), host.data());
+        }
+
         void OnFailed(std::string_view reason) override
         {
             ++m_Failures;
@@ -213,6 +225,8 @@ namespace
         Engine::u32 Height() const { return m_Height; }
         Engine::u64 Frames() const { return m_Frames; }
         size_t Denials() const { return m_Denials; }
+        size_t Consents() const { return m_Consents; }
+        size_t Popups() const { return m_Popups; }
         size_t Failures() const { return m_Failures; }
         bool Closed() const { return m_Closed; }
         bool LoadFinished() const { return m_LoadFinished; }
@@ -236,6 +250,8 @@ namespace
         Engine::u64 m_Frames = 0;
         size_t m_AddressChanges = 0;
         size_t m_Denials = 0;
+        size_t m_Consents = 0;
+        size_t m_Popups = 0;
         size_t m_Failures = 0;
         bool m_Closed = false;
         bool m_Loading = false;
@@ -454,6 +470,43 @@ namespace
             {
                 done = m_Listener.Denials() >= static_cast<size_t>(std::atoi(argument.c_str()));
             }
+            else if (name == "wait-consents")
+            {
+                done = m_Listener.Consents() >= static_cast<size_t>(std::atoi(argument.c_str()));
+            }
+            else if (name == "wait-popups")
+            {
+                done = m_Listener.Popups() >= static_cast<size_t>(std::atoi(argument.c_str()));
+            }
+            else if (name == "grant")
+            {
+                m_Granted.push_back(argument);
+                m_Surface.SetGrantedHosts(m_Granted);
+                Marker("granted", "count=%zu", m_Granted.size());
+            }
+            else if (name == "ungrant-all")
+            {
+                m_Granted.clear();
+                m_Surface.SetGrantedHosts(m_Granted);
+                Marker("granted", "count=0");
+            }
+            else if (name == "retry-denied")
+            {
+                m_Listener.ResetLoad();
+                Marker("retry_denied", "result=%d", m_Surface.RetryDeniedNavigation() ? 1 : 0);
+            }
+            else if (name == "screen")
+            {
+                // monitor x,y,w,h : work x,y,w,h
+                Fab::BrowserScreenInfo info;
+                info.Valid = true;
+                if (std::sscanf(argument.c_str(), "%d,%d,%d,%d:%d,%d,%d,%d", &info.MonitorX, &info.MonitorY, &info.MonitorWidth,
+                        &info.MonitorHeight, &info.WorkX, &info.WorkY, &info.WorkWidth, &info.WorkHeight) != 8)
+                {
+                    return false;
+                }
+                m_Surface.SetScreenInfo(info);
+            }
             else if (name == "wait-failures")
             {
                 done = m_Listener.Failures() >= static_cast<size_t>(std::atoi(argument.c_str()));
@@ -508,6 +561,7 @@ namespace
         bool m_Failed = false;
         double m_StepStart = 0.0;
         size_t m_DownloadBaseline = 0;
+        std::vector<std::string> m_Granted;
     };
 
     bool ParseOptions(int argc, char** argv, Options& options)
@@ -611,7 +665,7 @@ int main(int argc, char** argv)
     config.ProfileDir = options.Profile;
     config.DownloadStagingDir = options.Staging;
     config.MaxFps = options.MaxFps;
-    config.SoftwareRendering = options.Software;
+    config.RenderMode = options.Software ? Fab::BrowserRenderMode::Software : Fab::BrowserRenderMode::Hardware;
     for (const std::string& host : options.ProviderHosts)
     {
         std::string error;

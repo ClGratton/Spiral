@@ -35,11 +35,38 @@ PAGES = {
     "/nav": (
         '<title>nav</title><body style="margin:0;background:#405030">'
         '<button style="position:absolute;left:10px;top:10px;width:300px;height:60px" '
-        'onclick="window.open(\'https://fixture.spiral.test/idle\',\'_blank\')">popup</button>'
+        'onclick="window.open(\'https://popup.spiral.test/idle\',\'_blank\')">popup</button>'
         '<button style="position:absolute;left:10px;top:100px;width:300px;height:60px" '
         'onclick="location.href=\'https://example.com/offsite\'">offsite</button>'
         '<a href="https://example.org/x" target="_blank" '
         'style="position:absolute;left:10px;top:200px;width:300px;height:60px;display:block;background:#ccc">blank</a>'
+    ),
+    "/popup-ok": (
+        '<title>popup-ok</title><body style="margin:0;background:#405030">'
+        '<button style="position:absolute;left:10px;top:10px;width:300px;height:60px" '
+        'onclick="window.open(\'https://fixture.spiral.test/paint\',\'_blank\')">popup</button>'
+    ),
+    "/consent": (
+        '<title>consent</title><body style="margin:0;background:#304050">'
+        '<button style="position:absolute;left:10px;top:10px;width:300px;height:60px" '
+        'onclick="location.href=\'https://consent.spiral.test/paint?step=1\'">sign in</button>'
+    ),
+    "/screen": (
+        '<title>screen</title><body style="margin:0;background:#808080">'
+        '<script>var e=location.search.slice(3).split(",").map(Number);'
+        'var v=[screen.width,screen.height,screen.availWidth,screen.availHeight];'
+        'for(var i=0;i<v.length;i++){var d=document.createElement("div");'
+        'd.style.cssText="position:fixed;top:10px;width:40px;height:40px;left:"+(10+i*50)+"px;background:"+(v[i]==e[i]?"#00ff00":"#ff0000");'
+        'document.body.appendChild(d)}</script>'
+    ),
+    "/tp": (
+        '<title>tp</title><body style="margin:0;background:#808080">'
+        '<iframe src="https://third.party.test/tpframe" style="border:0;width:640px;height:360px"></iframe>'
+    ),
+    "/lang": (
+        '<title>lang</title><body style="margin:0;background:#808080">'
+        '<script>var want=decodeURIComponent(location.search.slice(3));'
+        'document.body.style.background=navigator.languages.join(",")==want?"#00ff00":"#ff0000"</script>'
     ),
     "/input": (
         '<title>input</title><body style="margin:0;height:9000px;background:linear-gradient(#ff0000 0,#ff0000 400px,#0000ff 400px)">'
@@ -90,13 +117,21 @@ class Handler(http.server.BaseHTTPRequestHandler):
         parsed = urllib.parse.urlsplit(self.path)
         Handler.log_file.write(json.dumps({
             "t": round(time.time(), 3), "path": parsed.path, "query": parsed.query, "cookie": self.headers.get("Cookie"),
-            "ua": self.headers.get("User-Agent"),
+            "ua": self.headers.get("User-Agent"), "lang": self.headers.get("Accept-Language"),
         }) + "\n")
         if parsed.path == "/":
             self.respond(200, "text/html", b'<title>index</title><body style="margin:0;background:#204060">', [
                 ("Set-Cookie", "spiral_persist=abc123; Max-Age=86400; Path=/; HttpOnly"),
                 ("Set-Cookie", "spiral_session=sess456; Path=/"),
             ])
+        elif parsed.path == "/tpframe":
+            # Cross-site frame: a cookie set by header, one set by script, and a page that
+            # reports whether the header cookie is readable in this third-party context.
+            self.respond(200, "text/html", (
+                '<title>tpframe</title><body style="margin:0;background:#ff0000"><script>'
+                'var c=document.cookie;document.cookie="tp_js=1; SameSite=None; Secure; Path=/; Max-Age=3600";'
+                'document.body.style.background=c.indexOf("tp_header=1")>=0?"#00ff00":"#ff0000"</script>'
+            ).encode(), [("Set-Cookie", "tp_header=1; SameSite=None; Secure; Path=/; Max-Age=3600")])
         elif parsed.path == "/whoami":
             self.respond(200, "text/html", b'<title>whoami</title><body style="margin:0;background:#602040">')
         elif parsed.path == "/dl.zip":
