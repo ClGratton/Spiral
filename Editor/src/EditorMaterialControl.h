@@ -33,6 +33,14 @@ enum class EditorMaterialControlAction
     // normalized to the viewport image so it is independent of window size).
     PickAtViewportPoint,
     FocusSelection,
+    // Undo history, added to schema 5 without a version bump. InspectHistory is read
+    // only. UndoHistory and RedoHistory run the same Undo/Redo as the Edit menu and the
+    // shortcuts, guarded by a compare-and-swap on the history head revision; they never
+    // record an entry. They sit before the Fab group because IsFabControlAction
+    // compares enum order.
+    InspectHistory,
+    UndoHistory,
+    RedoHistory,
     // Schema 4: the Fab import workflow and project-level actions. Every one has a
     // fixed typed field set; none carries a filesystem path, URL, or credential.
     InspectFabImport,
@@ -53,6 +61,13 @@ enum class EditorMaterialControlAction
 inline bool IsFabControlAction(EditorMaterialControlAction action)
 {
     return action >= EditorMaterialControlAction::InspectFabImport;
+}
+
+inline bool IsHistoryControlAction(EditorMaterialControlAction action)
+{
+    return action == EditorMaterialControlAction::InspectHistory
+        || action == EditorMaterialControlAction::UndoHistory
+        || action == EditorMaterialControlAction::RedoHistory;
 }
 
 inline bool IsViewportControlAction(EditorMaterialControlAction action)
@@ -153,7 +168,62 @@ struct EditorMaterialControlRequest
     bool HasViewportPoint = false;
     bool FocusAnimate = false;
     bool HasFocusAnimation = false;
+    // UndoHistory and RedoHistory: the history head revision the caller last saw.
+    Engine::u64 ExpectedHistoryRevision = 0;
+    bool HasExpectedHistoryRevision = false;
     EditorFabControlRequest Fab;
+};
+
+// One row of the History panel as InspectHistory reports it, base row first.
+struct EditorHistoryRowReceipt
+{
+    Engine::u64 Index = 0;
+    Engine::u64 Revision = 0;
+    // HistoryLabel::Display() plus " (barrier)" for a barrier base row.
+    std::string Display;
+    std::string Verb;
+    std::string Target;
+    std::string Source = "user";
+    Engine::u64 Bytes = 0;
+    bool Applied = false;
+    bool Current = false;
+    bool Base = false;
+    bool Barrier = false;
+};
+
+// Always present in a receipt, like the Fab and viewport blocks. RevisionBefore is the
+// history head when the request was handled. RevisionAfter is exact for the three
+// history actions and for rejections and rollbacks (equal to RevisionBefore); a request
+// that records an entry stages its receipt before the entry exists, so it reports 0
+// there and the new head is read with InspectHistory.
+struct EditorHistoryControlReceipt
+{
+    Engine::u64 RevisionBefore = 0;
+    Engine::u64 RevisionAfter = 0;
+    Engine::u64 Cursor = 0;
+    Engine::u64 UndoDepth = 0;
+    Engine::u64 RedoDepth = 0;
+    Engine::u64 EntryCount = 0;
+    bool GestureOpen = false;
+    bool BaseIsBarrier = false;
+    Engine::u64 UsedBytes = 0;
+    Engine::u64 BudgetBytes = 0;
+    Engine::u64 MaximumEntries = 0;
+    Engine::u64 EvictedEntries = 0;
+    Engine::u64 EvictedBytes = 0;
+    Engine::u64 EvictionEvents = 0;
+    bool UndoEnabled = false;
+    bool RedoEnabled = false;
+    // Exactly what the Edit menu shows and its tooltip says.
+    std::string UndoLabel;
+    std::string UndoReason;
+    std::string RedoLabel;
+    std::string RedoReason;
+    std::string Announcement;
+    // The History panel's persistent line about dropped entries, empty until one was.
+    std::string EvictionNotice;
+    Engine::u64 RowTotal = 0;
+    std::vector<EditorHistoryRowReceipt> Rows;
 };
 
 // Always present in a receipt. Fields default to the "unused" spelling that the
@@ -320,6 +390,7 @@ struct EditorMaterialControlReceipt
     bool EditorCameraSynchronized = false;
     EditorFabControlReceipt Fab;
     EditorViewportControlReceipt Viewport;
+    EditorHistoryControlReceipt History;
 };
 
 struct EditorMaterialControlTransaction
@@ -340,6 +411,8 @@ public:
     static constexpr std::size_t MaximumAffectedEntityIds = 32;
     static constexpr std::size_t MaximumResponseBytes = 64 * 1024;
     static constexpr std::size_t MaximumFabResultHandles = 32;
+    // InspectHistory reports at most this many rows, newest first after the base row.
+    static constexpr std::size_t MaximumHistoryRows = 128;
 
     using Handler = std::function<EditorMaterialControlTransaction(
         const EditorMaterialControlRequest&, Engine::u64)>;

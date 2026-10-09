@@ -1,15 +1,22 @@
 #pragma once
 
+#include "Core/Notifications.h"
+#include "EditorHistoryState.h"
 #include "EditorMaterialControl.h"
 #include "Fab/BrowserPanel.h"
 #include "FabEditorAdoption.h"
 #include "FabImportPanel.h"
+#include "History/EditGesture.h"
+#include "History/HistoryNaming.h"
+#include "History/HistoryStore.h"
 
 #include <Engine.h>
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
@@ -36,8 +43,23 @@ public:
     void OnEvent(Engine::Event& event) override;
 
 private:
-    struct HistoryState;
-    struct HistoryEntry;
+    // The whole project state one undo snapshot holds (see EditorHistoryState.h).
+    using HistoryState = EditorHistoryState;
+    using HistorySnapshot = std::shared_ptr<const HistoryState>;
+    using HistoryStoreType = EditorHistory::HistoryStore<HistoryState>;
+
+    // The only seam between the history store and live project state.
+    class HistoryAdapter final : public EditorHistory::IHistoryStateAdapter<HistoryState>
+    {
+    public:
+        explicit HistoryAdapter(EditorLayer& owner) : m_Owner(owner) {}
+        bool Restore(const HistorySnapshot& snapshot) override;
+        Engine::u64 EstimateBytes(const HistoryState& state) const override;
+        bool Equal(const HistoryState& first, const HistoryState& second) const override;
+
+    private:
+        EditorLayer& m_Owner;
+    };
 
     void DrawDockspace();
     void DrawMainMenuBar();
@@ -123,10 +145,10 @@ private:
     bool PublishProjectColorPipelineSettings(
         const Engine::RendererColorPipelineSettings& settings);
     bool ApplyProjectColorPipelineSettings(const Engine::RendererColorPipelineSettings& settings,
-        std::string label = "Edit project color pipeline settings");
+        EditorHistory::EditProperty property);
     void HandleProjectColorPipelineInput(
         const Engine::RendererColorPipelineSettings& settings, bool edited,
-        std::string label = "Edit project color pipeline settings");
+        EditorHistory::EditProperty property);
     void DrawNewProjectDialog();
     bool DrawMaterialAssetControls(Engine::AssetHandle handle);
     void HandleAssetWatchEvents();
@@ -144,6 +166,9 @@ private:
     void InitializeEditorMaterialControl();
     EditorMaterialControlTransaction ExecuteEditorMaterialControlRequest(
         const EditorMaterialControlRequest& request, Engine::u64 frame);
+    EditorMaterialControlTransaction ExecuteEditorMaterialControlRequestCore(
+        const EditorMaterialControlRequest& request, Engine::u64 frame);
+    static bool ActionNeedsIdleHistory(EditorMaterialControlAction action);
     void RunEditorMaterialControlSmokeBeforeDrain();
     void RunEditorMaterialControlSmokeAfterDrain();
     void RunEditorMaterialControlLiveHelperSmokeAfterDrain();
@@ -168,12 +193,79 @@ private:
     bool SaveAssetRegistry();
     bool SaveMaterialAsset(Engine::AssetHandle handle);
     bool SaveMaterialAssets();
-    void RecordHistory(std::string label, HistoryState before);
+    // ---- Undo history (EditorLayerHistory.cpp) ----
+    HistoryStoreType& History() { return *m_HistoryStore; }
+    const HistoryStoreType& History() const { return *m_HistoryStore; }
+    // A copy of the live project state, stamped with the live camera epoch and the
+    // special entity ids. The non-const pointer lets the recorder stamp After.
+    std::shared_ptr<HistoryState> CaptureHistorySnapshot() const;
+    // exact == false keeps the live navigation camera when no entry between the live
+    // state and the snapshot edited the camera (undo and redo); exact == true always
+    // applies the snapshot's camera (typed-control rollback to a captured state).
+    bool RestoreHistoryState(const HistoryState& state, bool preserveViewportCamera);
+    bool RestoreHistoryStateExact(const HistoryState& state) { return RestoreHistoryState(state, false); }
+    // Records one entry from `before` to the live state, or nothing when the two are
+    // the same project content. `before` comes from CaptureBeforeSnapshot, which ended
+    // any open Inspector gesture before the edit began.
+    EditorHistory::HistoryResult RecordHistory(EditorHistory::HistoryLabel label, const HistorySnapshot& before);
+    // Ends any open gesture, then copies the live state: the Before of an edit that is
+    // about to mutate live state and be recorded with RecordHistory.
+    HistorySnapshot CaptureBeforeSnapshot();
+    // Captures Before, runs apply, and records one entry when apply returned true and
+    // changed something. For checkboxes, combos, drops and menu commands.
+    bool DiscreteEdit(const EditorHistory::HistoryLabel& label, const std::function<bool()>& apply);
+    // Continuous Inspector and menu widgets. Call right after the widget with its
+    // returned `edited` value; the widget must have edited a local copy. Returns whether
+    // apply ran (the caller then owns any follow-up such as camera synchronisation).
+    bool TrackedEdit(Engine::u64 entityKey, EditorHistory::EditProperty property, bool edited,
+        const std::function<EditorHistory::HistoryLabel()>& makeLabel, const std::function<bool()>& apply);
+    // Ends a gesture whose widget is gone (end of the UI frame, a project switch, a
+    // typed mutation, an undo barrier). Safe when none is open.
+    void FlushEditGesture();
+    void FinishGesture(const EditorHistory::EditGestureResult& gesture);
+    void AnnounceRecordResult(const EditorHistory::HistoryResult& result);
+    void EndOfFrameEditGestureFlush();
+    void ResetHistoryForProject(EditorHistory::HistoryLabel baseLabel);
+    void InstallHistoryBarrier(const std::string& label, const std::string& reason);
     bool Undo();
     bool Redo();
-    HistoryState CaptureHistoryState() const;
-    bool RestoreHistoryState(const HistoryState& state);
+    bool JumpToHistoryRow(size_t row);
+    void AnnounceHistory(const std::string& text);
+    void ApplyHistoryCommandLine(const Engine::ApplicationCommandLineArgs& args);
+    // Edit menu, History panel, status text, shortcuts.
+    void DrawEditMenu();
+    void DrawHistoryPanel();
+    void DrawClearHistoryPopup();
+    void DrawHistoryStatus();
+    // The announcement the status text currently shows, empty once its four seconds passed.
+    std::string HistoryStatusText() const;
+    void PollHistoryShortcuts();
+    bool IsHistoryModalOpen() const;
+    EditorHistory::HistoryCommandText UndoCommandText() const;
+    EditorHistory::HistoryCommandText RedoCommandText() const;
+    // `--editor-history-smoke`: drives the Inspector and the shortcuts through a private
+    // headless ImGui context and checks the history it records. Returns true while it owns
+    // the UI phase.
+    bool RunEditorHistorySmoke();
+    // `--editor-history-benchmark`: per-frame Inspector cost on a 1000-entity scene.
+    bool RunEditorHistoryBenchmark();
+    void ProbeWidget(EditorHistory::EditProperty property);
+    // History cap a recorded edit leaves behind: Before + 1, bounded by the entry cap.
+    // Byte-budget eviction can only make the real depth smaller.
+    size_t PredictedUndoDepthAfterRecord(size_t depthBefore) const
+    {
+        return std::min(depthBefore + 1, History().Config().MaximumEntries);
+    }
+    // Fills the receipt's history block from the store; rows only for InspectHistory.
+    void FillHistoryReceiptBlock(EditorHistoryControlReceipt& block, bool includeRows) const;
+    EditorMaterialControlTransaction ExecuteHistoryControlRequest(
+        const EditorMaterialControlRequest& request, EditorMaterialControlTransaction transaction);
     void EnsureDefaultSceneEntities();
+    // The scene file carries no role marker for the Prototype Mesh, Directional
+    // Light and Player Start entities, so a freshly loaded scene is the one place the
+    // Editor resolves them by their persisted names. From then on they are tracked
+    // by EntityId and history restores carry the ids.
+    void AdoptDefaultEntitiesFromLoadedScene();
 
     // Project location and Fab integration. Defined in EditorLayerFab.cpp so the
     // 7,000-line EditorLayer.cpp only carries the hook calls.
@@ -193,7 +285,8 @@ private:
     void ResetFabProjectState(const Engine::FabProjectState& loaded, std::string manifestSha256);
     bool RefreshManifestDigest();
     Engine::AssetHandle FindFabMaterialForMesh(Engine::AssetHandle mesh) const;
-    Engine::Entity PlaceMeshAssetInScene(Engine::AssetHandle mesh, std::string& error);
+    Engine::Entity PlaceMeshAssetInScene(Engine::AssetHandle mesh, std::string& error,
+        EditorHistory::HistorySource source = EditorHistory::HistorySource::User);
     bool OnFabAssetDrop(Engine::AssetHandle handle);
     void FillFabReceiptBlock(EditorFabControlReceipt& block) const;
     EditorMaterialControlTransaction ExecuteFabControlRequest(
@@ -419,33 +512,36 @@ private:
     bool m_EditorSceneControlV2BoundsBefore = true;
     bool m_EditorSceneControlV2BoundsAfter = false;
 
-    struct HistoryState
-    {
-        Engine::Scene Scene { "History Scene" };
-        Engine::AssetRegistry AssetRegistry;
-        Engine::MaterialLibrary MaterialLibrary;
-        Engine::Entity SelectedEntity;
-        std::array<double, 3> CameraPosition {};
-        std::array<float, 3> CameraRotation {};
-        float CameraFovDegrees = 60.0f;
-        float CameraNearClip = 0.1f;
-        float CameraFarClip = 100.0f;
-        Engine::RendererColorPipelineSettings ProjectColorPipelineSettings;
-    };
-
-    struct HistoryEntry
-    {
-        std::string Label;
-        HistoryState Before;
-        HistoryState After;
-    };
-
-    std::vector<HistoryEntry> m_UndoHistory;
-    std::vector<HistoryEntry> m_RedoHistory;
-    std::optional<HistoryState> m_ProjectColorPipelineInteractionBefore;
-    unsigned int m_ProjectColorPipelineInteractionItemId = 0;
-    bool m_ProjectColorPipelineInteractionChanged = false;
-    std::string m_ProjectColorPipelineInteractionLabel;
+    // ---- Undo history state ----
+    HistoryAdapter m_HistoryAdapter { *this };
+    std::unique_ptr<HistoryStoreType> m_HistoryStore = std::make_unique<HistoryStoreType>(m_HistoryAdapter);
+    EditorHistory::EditGestureTracker m_EditGestureTracker;
+    // Before of the open Inspector gesture, kept so End can stamp After and detect "no change".
+    HistorySnapshot m_EditGestureBefore;
+    // Count of recorded entries that edited the viewport camera (see EditorHistoryState).
+    Engine::u64 m_CameraEpoch = 0;
+    // Latest history announcement: the menu-bar status text shows it for four seconds
+    // (m_StatusExpiresAtMs on the steady millisecond clock), the Console keeps it, and
+    // the typed receipt carries it.
+    std::string m_LastHistoryAnnouncement;
+    Engine::u64 m_StatusExpiresAtMs = 0;
+    // The History panel's persistent eviction line (cleared when the history is re-based).
+    std::string m_LastEvictionNotice;
+    bool m_ShowClearHistoryPopup = false;
+    // `--editor-history-budget-bytes=N` and `--editor-history-max-entries=N` shrink the
+    // limits so a smoke can reach eviction without recording 512 entries.
+    EditorHistory::HistoryConfig m_HistoryConfig;
+    bool m_EditorHistorySmokeRequested = false;
+    bool m_EditorHistorySmokeCompleted = false;
+    bool m_EditorHistoryBenchmarkRequested = false;
+    // Snapshots captured since start-up (a Scene, registry and library copy each). The
+    // Inspector must add none while idle and two per gesture; the smokes assert it.
+    mutable Engine::u64 m_HistorySnapshotCaptures = 0;
+    // Smoke seam: receives the screen rectangle of every Inspector widget that records
+    // history, so an in-process ImGui test can aim its pointer without hard-coded layout.
+    std::function<void(EditorHistory::EditProperty, const ImVec2&, const ImVec2&)> m_WidgetProbe;
+    // Smoke seam: receives the row index and screen rectangle of each History panel row.
+    std::function<void(size_t, const ImVec2&, const ImVec2&)> m_HistoryRowProbe;
 
     // Click-to-select: a left press and release in the viewport image that stays under
     // a distance and time limit is a pick, anything longer is navigation. Tracked from
@@ -495,10 +591,11 @@ private:
         PanelContentBrowser,
         PanelConsole,
         PanelProfiler,
+        PanelHistory,
         kPanelCount
     };
-    std::array<bool, kPanelCount> m_PanelVisible { true, true, true, true, true, true };
-    std::array<bool, kPanelCount> m_PanelVisiblePersisted { true, true, true, true, true, true };
+    std::array<bool, kPanelCount> m_PanelVisible { true, true, true, true, true, true, true };
+    std::array<bool, kPanelCount> m_PanelVisiblePersisted { true, true, true, true, true, true, true };
     std::string m_PanelVisibilityPath = "output/editor/panel-visibility.spiralsettings";
 
     // Seam for `--editor-viewport-click-smoke`: the headless window has no cursor, so the
@@ -515,5 +612,5 @@ private:
     bool m_EditorViewportPickingHelperSmokeRequested = false;
     bool m_EditorViewportPickingHelperSmokeCompleted = false;
     Engine::Entity m_EditorViewportPickingInitialSelection;
-    Engine::u32 m_EditorViewportPickingBaseUndoDepth = 0;
+    size_t m_EditorViewportPickingBaseUndoDepth = 0;
 };

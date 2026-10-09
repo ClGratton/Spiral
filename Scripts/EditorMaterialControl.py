@@ -29,6 +29,7 @@ SESSION_ACTIONS = (
     "InspectMaterialSurface,SelectEntityPatchMaterialSurface,InspectEntity,SelectEntity,"
     "SetEntityTransform,SetTypedLight,SetProjectColorPipeline,SetViewportMainCameraPose,"
     "SetSceneDebugVisualization,SetMeshRendererFlags,PickAtViewportPoint,FocusSelection,"
+    "InspectHistory,UndoHistory,RedoHistory,"
     "InspectFabImport,SelectFabPackage,"
     "SetFabProvenance,ConfirmFabProvenance,CommitFabImport,CancelFabImport,DismissFabImport,"
     "PlaceMeshAsset,SetEntityMeshRendererAssets,SaveProjectState,ValidateProject,"
@@ -515,11 +516,71 @@ def _parse_viewport_block(values: dict[str, list[str]]) -> dict[str, object]:
     }
 
 
+HISTORY_ROW_FLAGS = set("ACBK")
+
+
+def _parse_history_block(values: dict[str, list[str]]) -> dict[str, object]:
+    revision = values["HistoryRevision"]
+    position = values["HistoryPosition"]
+    budget = values["HistoryBudget"]
+    commands = values["HistoryCommands"]
+    announcement = values["HistoryAnnouncement"][0]
+    notice = values["HistoryNotice"][0]
+    rows_tokens = values["HistoryRows"]
+    if len(rows_tokens) < 2:
+        raise ControlError("receipt history rows header is malformed")
+    row_total = _parse_integer(rows_tokens[0], "history row total", 0, (1 << 32) - 1)
+    row_count = _parse_integer(rows_tokens[1], "history row count", 0, (1 << 32) - 1)
+    if len(rows_tokens) != 2 + 8 * row_count or row_count > 128 or row_count > row_total:
+        raise ControlError("receipt history rows are inconsistent or unbounded")
+    rows = []
+    for index in range(row_count):
+        token = rows_tokens[2 + 8 * index: 10 + 8 * index]
+        flags = token[2]
+        if flags != "-" and (not set(flags) <= HISTORY_ROW_FLAGS or len(set(flags)) != len(flags)):
+            raise ControlError("receipt history row has invalid flags")
+        rows.append({
+            "index": _parse_integer(token[0], "history row index", 0, (1 << 32) - 1),
+            "revision": _parse_integer(token[1], "history row revision", 1, (1 << 64) - 1),
+            "applied": "A" in flags, "current": "C" in flags,
+            "base": "B" in flags, "barrier": "K" in flags,
+            "bytes": _parse_integer(token[3], "history row bytes", 0, (1 << 64) - 1),
+            "display": token[4], "verb": token[5], "target": token[6], "source": token[7],
+        })
+    for row in rows:
+        if row["source"] not in ("user", "agent", "system"):
+            raise ControlError("receipt history row has an unknown source")
+    return {
+        "revisionBefore": _parse_integer(revision[0], "history revision", 0, (1 << 64) - 1),
+        "revisionAfter": _parse_integer(revision[1], "history revision", 0, (1 << 64) - 1),
+        "cursor": _parse_integer(position[0], "history cursor", 0, (1 << 32) - 1),
+        "undoDepth": _parse_integer(position[1], "history undo depth", 0, (1 << 32) - 1),
+        "redoDepth": _parse_integer(position[2], "history redo depth", 0, (1 << 32) - 1),
+        "entryCount": _parse_integer(position[3], "history entry count", 0, (1 << 32) - 1),
+        "gestureOpen": _parse_bool(position[4], "history gesture"),
+        "baseIsBarrier": _parse_bool(position[5], "history barrier"),
+        "usedBytes": _parse_integer(budget[0], "history used bytes", 0, (1 << 64) - 1),
+        "budgetBytes": _parse_integer(budget[1], "history budget", 0, (1 << 64) - 1),
+        "maximumEntries": _parse_integer(budget[2], "history entry cap", 0, (1 << 32) - 1),
+        "evictedEntries": _parse_integer(budget[3], "history evicted entries", 0, (1 << 64) - 1),
+        "evictedBytes": _parse_integer(budget[4], "history evicted bytes", 0, (1 << 64) - 1),
+        "evictionEvents": _parse_integer(budget[5], "history eviction events", 0, (1 << 64) - 1),
+        "undoEnabled": _parse_bool(commands[0], "history undo enabled"),
+        "redoEnabled": _parse_bool(commands[1], "history redo enabled"),
+        "undoLabel": commands[2], "undoReason": commands[3],
+        "redoLabel": commands[4], "redoReason": commands[5],
+        "announcement": announcement,
+        "evictionNotice": notice,
+        "rowTotal": row_total,
+        "rows": rows,
+    }
+
+
 def _parse_receipt(text: str, request_id: str, session_id: str,
                    project_path: str, digest: str, expected_action: str,
                    allow_request_id_conflict: bool = False) -> dict[str, object]:
     lines = text.splitlines()
-    if len(lines) != 105 or lines[0] != RECEIPT_HEADER:
+    if len(lines) != 112 or lines[0] != RECEIPT_HEADER:
         raise ControlError(
             f"editor-control schema {SCHEMA} required; stale or malformed receipt rejected")
     keys = [
@@ -565,6 +626,9 @@ def _parse_receipt(text: str, request_id: str, session_id: str,
         ("ViewportPick", 7), ("ViewportPickPoint", 5), ("ViewportRect", 6),
         ("ViewportFocus", 4), ("ViewportFocusBefore", 6), ("ViewportFocusAfter", 6),
         ("ViewportFocusBounds", 5),
+        ("HistoryRevision", 2), ("HistoryPosition", 6), ("HistoryBudget", 6),
+        ("HistoryCommands", 6), ("HistoryAnnouncement", 1), ("HistoryNotice", 1),
+        ("HistoryRows", None),
     ]
     values = {key: _parse_tokens(line, key, count)
               for line, (key, count) in zip(lines[1:], keys, strict=True)}
@@ -700,6 +764,7 @@ def _parse_receipt(text: str, request_id: str, session_id: str,
             values["EditorCameraSynchronized"][0], "editor-camera synchronization"),
         "fab": _parse_fab_block(values),
         "viewport": _parse_viewport_block(values),
+        "history": _parse_history_block(values),
     }
     if receipt["frame"] < 0:
         raise ControlError("receipt frame is invalid")
@@ -843,6 +908,10 @@ def _build_parser() -> argparse.ArgumentParser:
     action = subcommands.add_parser("focus-selection")
     action.add_argument("--expected-selected-entity-id", required=True, type=int)
     action.add_argument("--animate", required=True, choices=("yes", "no"))
+    subcommands.add_parser("inspect-history")
+    for name in ("undo-history", "redo-history"):
+        action = subcommands.add_parser(name)
+        action.add_argument("--expected-history-revision", required=True, type=int)
     _add_fab_subcommands(subcommands)
     return parser
 
@@ -1106,7 +1175,7 @@ def _validate_fab_success(command: str, receipt: dict[str, object],
     fab = receipt["fab"]
     undo_unchanged = (receipt["undoDepthAfter"] == receipt["undoDepthBefore"]
                       and receipt["redoDepthAfter"] == receipt["redoDepthBefore"])
-    one_history = (receipt["undoDepthAfter"] == min(receipt["undoDepthBefore"] + 1, 128)
+    one_history = (receipt["undoDepthAfter"] == min(receipt["undoDepthBefore"] + 1, receipt["history"]["maximumEntries"])
                    and receipt["redoDepthAfter"] == 0)
     common = (receipt["action"] == FAB_COMMANDS[command] and receipt["reason"] == "ok"
               and receipt["postconditionVerified"] and not receipt["rollbackVerified"]
@@ -1369,6 +1438,82 @@ def _run_viewport_command(args, control_dir: Path, session: dict[str, object],
     return 0 if receipt["status"] == "Succeeded" else 2
 
 
+HISTORY_COMMANDS = {
+    "inspect-history": "InspectHistory",
+    "undo-history": "UndoHistory",
+    "redo-history": "RedoHistory",
+}
+
+
+def _validate_history_success(command: str, receipt: dict[str, object], args) -> None:
+    history = receipt["history"]
+    rows = history["rows"]
+    common = (receipt["reason"] == "ok" and receipt["persistence"] == "SessionOnly"
+              and not receipt["saved"] and receipt["postconditionVerified"]
+              and not receipt["rollbackVerified"] and not receipt["rendererReadbackVerified"]
+              and receipt["entityId"] == 0 and receipt["affectedEntityCount"] == 0
+              and receipt["affectedEntityIds"] == [])
+    if command == "inspect-history":
+        indexes = [row["index"] for row in rows]
+        current = [row for row in rows if row["current"]]
+        ok = (common and receipt["effect"] == "ReadOnly" and receipt["recovery"] == "None"
+              and receipt["undoDepthAfter"] == receipt["undoDepthBefore"]
+              and receipt["redoDepthAfter"] == receipt["redoDepthBefore"]
+              and history["revisionAfter"] == history["revisionBefore"]
+              and history["undoDepth"] + history["redoDepth"] == history["entryCount"]
+              and history["cursor"] == history["undoDepth"]
+              and history["rowTotal"] == history["entryCount"] + 1
+              and history["usedBytes"] >= 0 and history["budgetBytes"] > 0
+              and indexes == sorted(indexes, reverse=True)
+              and len(current) == 1 and current[0]["index"] == history["cursor"]
+              and current[0]["revision"] == history["revisionBefore"]
+              and all(row["applied"] == (row["index"] <= history["cursor"]) for row in rows)
+              and all(row["base"] == (row["index"] == 0) for row in rows)
+              and all(not row["barrier"] or row["base"] for row in rows)
+              and all(row["base"] or row["verb"] for row in rows)
+              and history["undoEnabled"] == (history["undoDepth"] > 0 and not history["gestureOpen"])
+              and history["redoEnabled"] == (history["redoDepth"] > 0 and not history["gestureOpen"])
+              and (history["undoEnabled"] == (history["undoReason"] == ""))
+              and (history["redoEnabled"] == (history["redoReason"] == "")))
+    else:
+        undo = command == "undo-history"
+        ok = (common and receipt["action"] == HISTORY_COMMANDS[command]
+              and receipt["effect"] == ("HistoryUndone" if undo else "HistoryRedone")
+              and receipt["recovery"] == ("RedoHistory" if undo else "UndoHistory")
+              and history["revisionBefore"] == args.expected_history_revision
+              and history["revisionAfter"] != history["revisionBefore"]
+              and receipt["undoDepthAfter"] == receipt["undoDepthBefore"] + (-1 if undo else 1)
+              and receipt["redoDepthAfter"] == receipt["redoDepthBefore"] + (1 if undo else -1)
+              and history["announcement"].startswith("Undo: " if undo else "Redo: "))
+    if not ok:
+        print(json.dumps(receipt, separators=(",", ":"), sort_keys=True), file=sys.stderr)
+        raise ControlError("successful receipt failed action-specific semantic validation")
+
+
+def _run_history_command(args, control_dir: Path, session: dict[str, object],
+                         request_id: str) -> int:
+    command = args.command
+    action = HISTORY_COMMANDS[command]
+    lines = [
+        REQUEST_HEADER,
+        f"RequestId {_quote(request_id, 'request ID', 64)}",
+        f"SessionId {_quote(str(session['session_id']), 'session ID', 128)}",
+        f"ProjectPath {_quote(str(session['project_path']), 'project path', 4096)}",
+        f"Action {action}",
+    ]
+    if command != "inspect-history":
+        if not 0 <= args.expected_history_revision <= 0xFFFFFFFFFFFFFFFF:
+            raise ControlError("expected history revision is outside the numeric range")
+        lines.append(f"ExpectedHistoryRevision {args.expected_history_revision}")
+    receipt = _submit_request(control_dir, session, request_id, action, lines,
+                              args.timeout_seconds)
+    if receipt["status"] == "Succeeded":
+        _validate_history_success(command, receipt, args)
+    receipt["editorProcessId"] = session["process_id"]
+    print(json.dumps(receipt, separators=(",", ":"), sort_keys=True))
+    return 0 if receipt["status"] == "Succeeded" else 2
+
+
 def main() -> int:
     args = _build_parser().parse_args()
     control_dir = args.control_dir
@@ -1391,6 +1536,8 @@ def main() -> int:
             f"mailbox project mismatch: expected {expected_project}, got {session['project_path']}")
     request_id = _stable_id(args.request_id)
     project_path = str(session["project_path"])
+    if args.command in HISTORY_COMMANDS:
+        return _run_history_command(args, control_dir, session, request_id)
     if args.command in FAB_COMMANDS:
         return _run_fab_command(args, control_dir, session, request_id)
     if args.command in ("pick-viewport", "focus-selection"):
@@ -1492,7 +1639,7 @@ def main() -> int:
         history_unchanged = (receipt["undoDepthAfter"] == receipt["undoDepthBefore"]
                              and receipt["redoDepthAfter"] == receipt["redoDepthBefore"])
         one_history_entry = (receipt["undoDepthAfter"]
-                             == min(receipt["undoDepthBefore"] + 1, 128)
+                             == min(receipt["undoDepthBefore"] + 1, receipt["history"]["maximumEntries"])
                              and receipt["redoDepthAfter"] == 0)
         transform_unchanged = receipt["beforeTransform"] == receipt["afterTransform"]
         camera_unchanged = (receipt["beforeCameraPresent"] == receipt["afterCameraPresent"]

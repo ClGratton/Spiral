@@ -332,9 +332,9 @@ bool EditorLayer::ReloadCommittedFabProject(std::string& error)
     ++m_EditorFabAdoptionReloads;
     m_ConsoleLines.emplace_back("Reloading the committed project from disk");
     const bool loaded = LoadProject();
-    m_UndoHistory.clear();
-    m_RedoHistory.clear();
-    if (!loaded)
+    if (loaded)
+        InstallHistoryBarrier("Import Fab Asset", "Fab import changed the project");
+    else
         error = "the committed project could not be reloaded from disk";
     return loaded;
 }
@@ -371,16 +371,18 @@ bool EditorLayer::AdoptFabImportCommit(std::string& error)
     // Undo barrier: undo snapshots embed the registry and materials, so undoing
     // across this commit would resurrect a registry without the committed assets.
     if (result->Commit.UndoBarrier.ClearUndoRedoHistory)
-    {
-        m_UndoHistory.clear();
-        m_RedoHistory.clear();
-    }
+        InstallHistoryBarrier("Import Fab Asset", "Fab import changed the project");
     if (result->AssignmentApplied)
     {
         m_ActiveScene = std::move(assignedScene);
-        m_PrototypeMeshEntity = m_ActiveScene.FindEntityByName("Prototype Mesh");
-        m_DirectionalLightEntity = m_ActiveScene.FindEntityByName("Directional Light");
-        m_PlayerStartEntity = m_ActiveScene.FindEntityByName("Player Start");
+        // The assignment only edits an existing entity's mesh renderer, so the special
+        // entities keep their ids; one that the adopted scene no longer has is dropped.
+        if (!m_ActiveScene.IsEntityValid(m_PrototypeMeshEntity))
+            m_PrototypeMeshEntity = {};
+        if (!m_ActiveScene.IsEntityValid(m_DirectionalLightEntity))
+            m_DirectionalLightEntity = {};
+        if (!m_ActiveScene.IsEntityValid(m_PlayerStartEntity))
+            m_PlayerStartEntity = {};
         if (!m_ActiveScene.IsEntityValid(m_SelectedEntity))
             m_SelectedEntity = m_PrototypeMeshEntity ? m_PrototypeMeshEntity : m_ActiveScene.GetMainCameraEntity();
         SyncEditorCameraStateFromMainCamera(true);
@@ -418,7 +420,8 @@ Engine::AssetHandle EditorLayer::FindFabMaterialForMesh(Engine::AssetHandle mesh
     return Engine::kInvalidAssetHandle;
 }
 
-Engine::Entity EditorLayer::PlaceMeshAssetInScene(Engine::AssetHandle mesh, std::string& error)
+Engine::Entity EditorLayer::PlaceMeshAssetInScene(Engine::AssetHandle mesh, std::string& error,
+    EditorHistory::HistorySource source)
 {
     const Engine::AssetMetadata* meshMetadata = m_AssetRegistry.GetAsset(mesh);
     if (!meshMetadata || meshMetadata->Type != Engine::AssetType::Mesh)
@@ -434,8 +437,9 @@ Engine::Entity EditorLayer::PlaceMeshAssetInScene(Engine::AssetHandle mesh, std:
         material = prototype ? prototype->MaterialAsset : Engine::kInvalidAssetHandle;
     }
 
-    const HistoryState before = CaptureHistoryState();
-    const Engine::Entity entity = m_ActiveScene.CreateEntity(UniqueEntityName(m_ActiveScene, meshMetadata->Name));
+    const HistorySnapshot before = CaptureBeforeSnapshot();
+    const std::string placedName = UniqueEntityName(m_ActiveScene, meshMetadata->Name);
+    const Engine::Entity entity = m_ActiveScene.CreateEntity(placedName);
     Engine::MeshRendererComponent renderer;
     renderer.MeshAsset = mesh;
     renderer.MaterialAsset = material;
@@ -464,7 +468,7 @@ Engine::Entity EditorLayer::PlaceMeshAssetInScene(Engine::AssetHandle mesh, std:
         return {};
     }
     m_SelectedEntity = entity;
-    RecordHistory("Place mesh asset", before);
+    RecordHistory(EditorHistory::MakePlaceLabel(meshMetadata->Name, source), before);
     return entity;
 }
 
@@ -607,8 +611,8 @@ EditorMaterialControlTransaction EditorLayer::ExecuteFabControlRequest(
         receipt.Effect = std::string(effect);
         receipt.Recovery = std::string(recovery);
         receipt.PostconditionVerified = true;
-        receipt.UndoDepthAfter = m_UndoHistory.size();
-        receipt.RedoDepthAfter = m_RedoHistory.size();
+        receipt.UndoDepthAfter = History().UndoDepth();
+        receipt.RedoDepthAfter = History().RedoDepth();
         FillFabReceiptBlock(receipt.Fab);
         return std::move(transaction);
     };
@@ -784,9 +788,12 @@ EditorMaterialControlTransaction EditorLayer::ExecuteFabControlRequest(
     // ---- document mutations: one history entry, with a verified rollback ----
     struct Rollback
     {
-        HistoryState State;
-        std::vector<HistoryEntry> UndoHistory;
-        std::vector<HistoryEntry> RedoHistory;
+        HistorySnapshot State;
+        HistoryStoreType::Mark HistoryMark;
+        std::size_t UndoDepth = 0;
+        std::size_t RedoDepth = 0;
+        Engine::u64 HeadRevision = 0;
+        Engine::u64 CameraEpoch = 0;
         bool FusionPivotValid = false;
         Engine::Math::DVec3 FusionPivot;
         bool ViewportDiscontinuousRelocationPending = false;
@@ -796,9 +803,12 @@ EditorMaterialControlTransaction EditorLayer::ExecuteFabControlRequest(
     const auto captureRollback = [this]()
     {
         auto state = std::make_shared<Rollback>();
-        state->State = CaptureHistoryState();
-        state->UndoHistory = m_UndoHistory;
-        state->RedoHistory = m_RedoHistory;
+        state->State = CaptureHistorySnapshot();
+        state->HistoryMark = History().SaveMark();
+        state->UndoDepth = History().UndoDepth();
+        state->RedoDepth = History().RedoDepth();
+        state->HeadRevision = History().HeadRevision();
+        state->CameraEpoch = m_CameraEpoch;
         state->FusionPivotValid = m_FusionNavigationPivotValid;
         state->FusionPivot = m_FusionNavigationPivot;
         state->ViewportDiscontinuousRelocationPending = m_ViewportDiscontinuousRelocationPending;
@@ -807,17 +817,20 @@ EditorMaterialControlTransaction EditorLayer::ExecuteFabControlRequest(
     };
     const auto restoreRollback = [this](const std::shared_ptr<Rollback>& state, EditorMaterialControlReceipt& rolledBack)
     {
-        const bool restored = !state->MutationStarted || RestoreHistoryState(state->State);
-        m_UndoHistory = state->UndoHistory;
-        m_RedoHistory = state->RedoHistory;
+        const bool restored = !state->MutationStarted || RestoreHistoryStateExact(*state->State);
+        const bool historyRestored = History().LoadMark(state->HistoryMark);
+        m_CameraEpoch = state->CameraEpoch;
         m_FusionNavigationPivotValid = state->FusionPivotValid;
         m_FusionNavigationPivot = state->FusionPivot;
         m_ViewportDiscontinuousRelocationPending = state->ViewportDiscontinuousRelocationPending;
-        rolledBack.UndoDepthAfter = m_UndoHistory.size();
-        rolledBack.RedoDepthAfter = m_RedoHistory.size();
+        rolledBack.UndoDepthAfter = History().UndoDepth();
+        rolledBack.RedoDepthAfter = History().RedoDepth();
         rolledBack.SelectedEntityIdAfter = m_SelectedEntity.Id;
-        return restored && m_UndoHistory.size() == state->UndoHistory.size()
-            && m_RedoHistory.size() == state->RedoHistory.size() && m_SelectedEntity == state->State.SelectedEntity
+        FillHistoryReceiptBlock(rolledBack.History, false);
+        rolledBack.History.RevisionAfter = rolledBack.History.RevisionBefore;
+        return restored && historyRestored && History().UndoDepth() == state->UndoDepth
+            && History().RedoDepth() == state->RedoDepth && History().HeadRevision() == state->HeadRevision
+            && m_SelectedEntity == state->State->SelectedEntity
             && m_ActiveScene.GetEntities().size() == state->EntityCount;
     };
     const auto injectedFailure = [this, requestId = request.RequestId](std::string& error)
@@ -869,7 +882,7 @@ EditorMaterialControlTransaction EditorLayer::ExecuteFabControlRequest(
         receipt.Reason = "ok";
         receipt.Effect = "MeshAssetPlaced";
         receipt.Recovery = "UndoRedo";
-        receipt.UndoDepthAfter = std::min<std::size_t>(rollback->UndoHistory.size() + 1, 128);
+        receipt.UndoDepthAfter = PredictedUndoDepthAfterRecord(rollback->UndoDepth);
         receipt.RedoDepthAfter = 0;
         receipt.PostconditionVerified = true;
         FillFabReceiptBlock(receipt.Fab);
@@ -877,14 +890,14 @@ EditorMaterialControlTransaction EditorLayer::ExecuteFabControlRequest(
         transaction.Commit = [this, meshHandle = fab.MeshAsset, predicted, rollback, injectedFailure](std::string& error)
         {
             rollback->MutationStarted = true;
-            const Engine::Entity placed = PlaceMeshAssetInScene(meshHandle, error);
+            const Engine::Entity placed = PlaceMeshAssetInScene(meshHandle, error, EditorHistory::HistorySource::Agent);
             if (!placed)
                 return false;
             if (injectedFailure(error))
                 return false;
             if (placed != predicted || m_SelectedEntity != placed
-                || m_UndoHistory.size() != std::min<std::size_t>(rollback->UndoHistory.size() + 1, 128)
-                || !m_RedoHistory.empty())
+                || History().UndoDepth() == 0 || History().HeadRevision() <= rollback->HeadRevision
+                || History().RedoDepth() != 0)
             {
                 error = "placement_or_history_postcondition_mismatch";
                 return false;
@@ -936,7 +949,7 @@ EditorMaterialControlTransaction EditorLayer::ExecuteFabControlRequest(
     receipt.Reason = "ok";
     receipt.Effect = "MeshRendererAssetsSet";
     receipt.Recovery = "UndoRedo";
-    receipt.UndoDepthAfter = std::min<std::size_t>(rollback->UndoHistory.size() + 1, 128);
+    receipt.UndoDepthAfter = PredictedUndoDepthAfterRecord(rollback->UndoDepth);
     receipt.RedoDepthAfter = 0;
     receipt.PostconditionVerified = true;
     FillFabReceiptBlock(receipt.Fab);
@@ -954,11 +967,13 @@ EditorMaterialControlTransaction EditorLayer::ExecuteFabControlRequest(
         rollback->MutationStarted = true;
         current->MeshRenderer->MeshAsset = fab.NewMeshAsset;
         current->MeshRenderer->MaterialAsset = fab.NewMaterialAsset;
-        RecordHistory("Agent set mesh renderer assets", rollback->State);
+        const EditorHistory::HistoryResult recorded = RecordHistory(
+            EditorHistory::MakeComponentEditLabel("Mesh Renderer", current->Name, EditorHistory::HistorySource::Agent),
+            rollback->State);
         const Engine::MeshRendererComponent* applied = m_ActiveScene.TryGetMeshRendererComponent(entityHandle);
         if (!applied || applied->MeshAsset != fab.NewMeshAsset || applied->MaterialAsset != fab.NewMaterialAsset
-            || m_UndoHistory.size() != std::min<std::size_t>(rollback->UndoHistory.size() + 1, 128)
-            || !m_RedoHistory.empty())
+            || recorded.Status != EditorHistory::HistoryStatus::Recorded
+            || History().RedoDepth() != 0)
         {
             error = "mesh_renderer_or_history_postcondition_mismatch";
             return false;

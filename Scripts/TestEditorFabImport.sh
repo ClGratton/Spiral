@@ -357,6 +357,10 @@ ok fa-10-commit commit-fab-import --expected-job-id "$job" --expected-generation
 fab_mesh="$(val fa-10-commit 'd["fab"]["meshAsset"]')"
 fab_material="$(val fa-10-commit 'd["fab"]["materialAsset"]')"
 expect fa-10-commit 'd["fab"]["manifestRevision"] == 1 and d["fab"]["projectChanged"] and d["undoDepthAfter"] == 0' "commit"
+# The commit is an undo barrier: no entries, the base row says so, and undo explains itself.
+ok fa-10b-history inspect-history
+expect fa-10b-history 'd["history"]["baseIsBarrier"] and d["history"]["entryCount"] == 0 and not d["history"]["undoEnabled"] and d["history"]["undoLabel"] == "Undo (blocked: Import Fab Asset)" and d["history"]["undoReason"] == "Undo unavailable: Fab import changed the project" and d["history"]["rows"][0]["display"] == "Import Fab Asset (barrier)" and d["history"]["rows"][0]["barrier"] and d["history"]["rows"][0]["base"] and d["history"]["rows"][0]["source"] == "system" and d["history"]["announcement"] == "Undo history cleared: Fab import changed the project"' "the Fab commit must install a named undo barrier"
+rejected fa-10c-undo-barrier undo_barrier undo-history --expected-history-revision "$(val fa-10b-history 'd["history"]["revisionBefore"]')"
 ok fa-11-inspect inspect-fab
 expect fa-11-inspect "d['fab']['state'] == 'Done' and d['fab']['projectReceiptCount'] == 1 and d['fab']['projectMeshAssets'] == [$fab_mesh]" "handles after commit"
 ok fa-12-dismiss dismiss-fab-import --expected-job-id "$job"
@@ -364,6 +368,8 @@ ok fa-13-place place-mesh-asset --mesh-asset "$fab_mesh" --expected-selected-ent
 placed_id="$(val fa-13-place 'd["entityId"]')"
 placed_name="$(val fa-13-place 'd["entityName"]')"
 expect fa-13-place "d['afterMeshRenderer'][:2] == [$fab_mesh, $fab_material]" "placed mesh and receipt-associated material"
+ok fa-13b-history inspect-history
+expect fa-13b-history 'd["history"]["baseIsBarrier"] and d["history"]["entryCount"] == 1 and d["history"]["rows"][0]["display"].startswith("Place ") and d["history"]["rows"][0]["source"] == "agent" and d["history"]["undoEnabled"] and d["history"]["rows"][1]["barrier"]' "the placement is one named Place entry above the barrier"
 rejected fa-14-place-forced-rollback injected_postcondition_failure_rolled_back place-mesh-asset \
     --mesh-asset "$fab_mesh" --expected-selected-entity-id "$placed_id"
 expect fa-14-place-forced-rollback 'd["rollbackVerified"] and d["effect"] == "RolledBack" and d["undoDepthAfter"] == d["undoDepthBefore"]' "rollback"
@@ -538,6 +544,8 @@ ok fb-75-commit-replace commit-fab-import --expected-job-id "$job" --expected-ge
     --expected-relation "$relation" --assign-entity-id "$proto_id" --assign-expected-name "$proto_name" \
     --assign-expected-mesh-asset "$proto_mesh" --assign-expected-material-asset "$proto_material"
 expect fb-75-commit-replace 'd["fab"]["manifestRevision"] == 2 and d["fab"]["assignmentApplied"] and d["fab"]["projectChanged"] and d["undoDepthAfter"] == 0' "replacement commit"
+ok fb-75b-history inspect-history
+expect fb-75b-history 'd["history"]["baseIsBarrier"] and d["history"]["entryCount"] == 0 and d["history"]["rows"][0]["display"] == "Import Fab Asset (barrier)" and d["history"]["undoReason"] == "Undo unavailable: Fab import changed the project"' "a replacement commit is a barrier too, including the in-memory adoption fallback"
 ok fb-76-dismiss dismiss-fab-import --expected-job-id "$job"
 ok fb-77-entity-prototype inspect-entity --entity-id "$proto_id" --expected-name "$proto_name"
 expect fb-77-entity-prototype "d['afterMeshRenderer'][:2] == [$fab_mesh, $fab_material]" "prototype assigned to the imported mesh"

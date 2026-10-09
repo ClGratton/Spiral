@@ -57,6 +57,9 @@ namespace
                 return "SetMeshRendererFlags";
             case EditorMaterialControlAction::PickAtViewportPoint: return "PickAtViewportPoint";
             case EditorMaterialControlAction::FocusSelection: return "FocusSelection";
+            case EditorMaterialControlAction::InspectHistory: return "InspectHistory";
+            case EditorMaterialControlAction::UndoHistory: return "UndoHistory";
+            case EditorMaterialControlAction::RedoHistory: return "RedoHistory";
             case EditorMaterialControlAction::InspectFabImport: return "InspectFabImport";
             case EditorMaterialControlAction::SelectFabPackage: return "SelectFabPackage";
             case EditorMaterialControlAction::SetFabProvenance: return "SetFabProvenance";
@@ -736,6 +739,45 @@ namespace
         stream.precision(previousPrecision);
     }
 
+    // The history block (added to schema 5). Its line order is part of the receipt
+    // contract and is mirrored by Scripts/EditorMaterialControl.py. Text fields are
+    // quoted and sanitised to one line; HistoryRows carries eight tokens per row.
+    void WriteHistoryBlock(std::ostringstream& stream, const EditorHistoryControlReceipt& history)
+    {
+        const auto yesNo = [](bool value) { return value ? "yes" : "no"; };
+        stream << "HistoryRevision " << history.RevisionBefore << ' ' << history.RevisionAfter << '\n'
+               << "HistoryPosition " << history.Cursor << ' ' << history.UndoDepth << ' ' << history.RedoDepth << ' '
+               << history.EntryCount << ' ' << yesNo(history.GestureOpen) << ' ' << yesNo(history.BaseIsBarrier) << '\n'
+               << "HistoryBudget " << history.UsedBytes << ' ' << history.BudgetBytes << ' '
+               << history.MaximumEntries << ' ' << history.EvictedEntries << ' ' << history.EvictedBytes << ' '
+               << history.EvictionEvents << '\n'
+               << "HistoryCommands " << yesNo(history.UndoEnabled) << ' ' << yesNo(history.RedoEnabled) << ' '
+               << std::quoted(SanitizeFabText(history.UndoLabel)) << ' ' << std::quoted(SanitizeFabText(history.UndoReason))
+               << ' ' << std::quoted(SanitizeFabText(history.RedoLabel)) << ' '
+               << std::quoted(SanitizeFabText(history.RedoReason)) << '\n'
+               << "HistoryAnnouncement " << std::quoted(SanitizeFabText(history.Announcement)) << '\n'
+               << "HistoryNotice " << std::quoted(SanitizeFabText(history.EvictionNotice)) << '\n'
+               << "HistoryRows " << history.RowTotal << ' ' << history.Rows.size();
+        for (const EditorHistoryRowReceipt& row : history.Rows)
+        {
+            std::string flags;
+            if (row.Applied)
+                flags += 'A';
+            if (row.Current)
+                flags += 'C';
+            if (row.Base)
+                flags += 'B';
+            if (row.Barrier)
+                flags += 'K';
+            if (flags.empty())
+                flags = "-";
+            stream << ' ' << row.Index << ' ' << row.Revision << ' ' << flags << ' ' << row.Bytes << ' '
+                   << std::quoted(SanitizeFabText(row.Display)) << ' ' << std::quoted(SanitizeFabText(row.Verb)) << ' '
+                   << std::quoted(SanitizeFabText(row.Target)) << ' ' << std::quoted(SanitizeFabText(row.Source));
+        }
+        stream << '\n';
+    }
+
     std::string FormatReceipt(const EditorMaterialControlReceipt& receipt)
     {
         const auto writeSurface = [](std::ostringstream& stream,
@@ -750,11 +792,19 @@ namespace
             std::string_view label, const Engine::TransformComponent& transform)
         {
             const Engine::Math::SectorLocalPosition& position = transform.GetPosition();
+            // The local position is a double and the expected-transform compare-and-swap
+            // is exact, so print it round-trip exact whatever precision the surface lines
+            // before this one left on the stream; rotation and scale are floats.
+            const std::streamsize previousPrecision =
+                stream.precision(std::numeric_limits<double>::max_digits10);
             stream << label << ' ' << position.Sector.X << ' ' << position.Sector.Y << ' '
                    << position.Sector.Z << ' ' << position.Local.X << ' ' << position.Local.Y << ' '
-                   << position.Local.Z << ' ' << transform.RotationDegrees.X << ' '
+                   << position.Local.Z;
+            stream.precision(std::numeric_limits<float>::max_digits10);
+            stream << ' ' << transform.RotationDegrees.X << ' '
                    << transform.RotationDegrees.Y << ' ' << transform.RotationDegrees.Z << ' '
                    << transform.Scale.X << ' ' << transform.Scale.Y << ' ' << transform.Scale.Z << '\n';
+            stream.precision(previousPrecision);
         };
         const auto writeCamera = [](std::ostringstream& stream,
             std::string_view label, const Engine::CameraComponent& camera)
@@ -870,6 +920,7 @@ namespace
                << (receipt.EditorCameraSynchronized ? "yes" : "no") << '\n';
         WriteFabBlock(stream, receipt.Fab);
         WriteViewportBlock(stream, receipt.Viewport);
+        WriteHistoryBlock(stream, receipt.History);
         return stream.str();
     }
 
@@ -933,7 +984,8 @@ namespace
             ExpectedManifestSha256 = 1ull << 44,
             PanelVisible = 1ull << 45,
             ViewportPoint = 1ull << 46,
-            FocusAnimation = 1ull << 47
+            FocusAnimation = 1ull << 47,
+            ExpectedHistoryRevision = 1ull << 48
         };
         Engine::u64 seen = 0;
         const auto claim = [&seen](Field field)
@@ -1004,6 +1056,9 @@ namespace
                 else if (action == "SetMeshRendererFlags") request.Action = EditorMaterialControlAction::SetMeshRendererFlags;
                 else if (action == "PickAtViewportPoint") request.Action = EditorMaterialControlAction::PickAtViewportPoint;
                 else if (action == "FocusSelection") request.Action = EditorMaterialControlAction::FocusSelection;
+                else if (action == "InspectHistory") request.Action = EditorMaterialControlAction::InspectHistory;
+                else if (action == "UndoHistory") request.Action = EditorMaterialControlAction::UndoHistory;
+                else if (action == "RedoHistory") request.Action = EditorMaterialControlAction::RedoHistory;
                 else if (action == "InspectFabImport") request.Action = EditorMaterialControlAction::InspectFabImport;
                 else if (action == "SelectFabPackage") request.Action = EditorMaterialControlAction::SelectFabPackage;
                 else if (action == "SetFabProvenance") request.Action = EditorMaterialControlAction::SetFabProvenance;
@@ -1425,6 +1480,16 @@ namespace
                 request.FocusAnimate = text == "yes";
                 request.HasFocusAnimation = true;
             }
+            else if (key == "ExpectedHistoryRevision")
+            {
+                if (!claim(Field::ExpectedHistoryRevision)
+                    || !ParseInteger(fieldStream, request.ExpectedHistoryRevision))
+                {
+                    error = "invalid_or_duplicate_expected_history_revision";
+                    return false;
+                }
+                request.HasExpectedHistoryRevision = true;
+            }
             else
             {
                 error = "unknown_field";
@@ -1455,6 +1520,7 @@ namespace
         const bool needsEntity = (request.Action != EditorMaterialControlAction::SetProjectColorPipeline
                 && request.Action != EditorMaterialControlAction::SetSceneDebugVisualization
                 && !IsViewportControlAction(request.Action)
+                && !IsHistoryControlAction(request.Action)
                 && !IsFabControlAction(request.Action))
             || request.Action == EditorMaterialControlAction::SetEntityMeshRendererAssets
             || commitAssignment;
@@ -1511,6 +1577,12 @@ namespace
                 break;
             case EditorMaterialControlAction::FocusSelection:
                 exactFields |= Field::FocusAnimation | Field::ExpectedSelectedEntityId;
+                break;
+            case EditorMaterialControlAction::InspectHistory:
+                break;
+            case EditorMaterialControlAction::UndoHistory:
+            case EditorMaterialControlAction::RedoHistory:
+                exactFields |= Field::ExpectedHistoryRevision;
                 break;
             case EditorMaterialControlAction::InspectFabImport:
                 optionalFields = Field::ExpectedFabJobId;
@@ -1723,7 +1795,7 @@ bool EditorMaterialControlMailbox::PublishSessionFile(
              << "ProcessId " << m_ProcessId << '\n'
              << "ProjectPath " << std::quoted(m_ProjectPath) << '\n'
              << "RequestSchema 5\nReceiptSchema 5\n"
-             << "Actions InspectMaterialSurface,SelectEntityPatchMaterialSurface,InspectEntity,SelectEntity,SetEntityTransform,SetTypedLight,SetProjectColorPipeline,SetViewportMainCameraPose,SetSceneDebugVisualization,SetMeshRendererFlags,PickAtViewportPoint,FocusSelection,InspectFabImport,SelectFabPackage,SetFabProvenance,ConfirmFabProvenance,CommitFabImport,CancelFabImport,DismissFabImport,PlaceMeshAsset,SetEntityMeshRendererAssets,SaveProjectState,ValidateProject,SetFabPanelVisible,InspectFabPanel\n"
+             << "Actions InspectMaterialSurface,SelectEntityPatchMaterialSurface,InspectEntity,SelectEntity,SetEntityTransform,SetTypedLight,SetProjectColorPipeline,SetViewportMainCameraPose,SetSceneDebugVisualization,SetMeshRendererFlags,PickAtViewportPoint,FocusSelection,InspectHistory,UndoHistory,RedoHistory,InspectFabImport,SelectFabPackage,SetFabProvenance,ConfirmFabProvenance,CommitFabImport,CancelFabImport,DismissFabImport,PlaceMeshAsset,SetEntityMeshRendererAssets,SaveProjectState,ValidateProject,SetFabPanelVisible,InspectFabPanel\n"
              << "FabInbox " << std::quoted(m_FabInbox.string()) << '\n'
              << "MaximumRequestBytes " << MaximumRequestBytes << '\n'
              << "MaximumRequestsPerFrame " << MaximumRequestsPerFrame << '\n'
@@ -2213,6 +2285,7 @@ void EditorMaterialControlMailbox::ProcessRequest(const std::filesystem::path& p
         receipt.RollbackVerified = true;
         receipt.EditorCameraSynchronized = false;
         receipt.Viewport = {};
+        receipt.History.RevisionAfter = receipt.History.RevisionBefore;
         terminal.Receipt = receipt;
         terminal.Text = FormatReceipt(receipt);
         Engine::Log::Error("Editor material-control commit rolled back: ", receipt.Reason);

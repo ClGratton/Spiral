@@ -844,7 +844,7 @@ void EditorLayer::PublishEditorViewportPickingTarget()
     m_SelectedEntity = mainCamera;
     ResetFusionNavigationPivotFromSelectionOrScene();
     m_EditorViewportPickingInitialSelection = m_SelectedEntity;
-    m_EditorViewportPickingBaseUndoDepth = static_cast<Engine::u32>(m_UndoHistory.size());
+    m_EditorViewportPickingBaseUndoDepth = static_cast<Engine::u32>(History().UndoDepth());
 
     const ViewportPickGeometry geometry = GetViewportPickGeometry();
     const auto writeTransform = [](std::ostringstream& stream, std::string_view label, const Engine::TransformComponent& transform)
@@ -950,7 +950,7 @@ void EditorLayer::RunEditorViewportPickingHelperSmokeAfterDrain()
 
     // None of these actions is a document edit: history is exactly where it started.
     valid = valid && finalInspect->Succeeded && finalInspect->UndoDepthBefore == m_EditorViewportPickingBaseUndoDepth
-        && m_UndoHistory.size() == m_EditorViewportPickingBaseUndoDepth && m_RedoHistory.empty()
+        && History().UndoDepth() == m_EditorViewportPickingBaseUndoDepth && History().RedoDepth() == 0
         && m_SelectedEntity.Id == Engine::kInvalidEntityId && !m_FocusAnimation.Active;
     if (!valid)
         throw std::runtime_error("external editor viewport picking helper smoke failed");
@@ -978,8 +978,8 @@ void EditorLayer::RunViewportClickSmoke()
 
     const Engine::Entity prototype = m_PrototypeMeshEntity;
     const Engine::Entity mainCamera = m_ActiveScene.GetMainCameraEntity();
-    const size_t baseUndo = m_UndoHistory.size();
-    const size_t baseRedo = m_RedoHistory.size();
+    const size_t baseUndo = History().UndoDepth();
+    const size_t baseRedo = History().RedoDepth();
     unsigned int checks = 0;
     const auto expect = [&checks](bool condition, const char* what)
     {
@@ -1163,7 +1163,7 @@ void EditorLayer::RunViewportClickSmoke()
     m_SelectedEntity = prototype;
 
     // Selection is not an undo entry.
-    expect(m_UndoHistory.size() == baseUndo && m_RedoHistory.size() == baseRedo,
+    expect(History().UndoDepth() == baseUndo && History().RedoDepth() == baseRedo,
         "none of this touched the undo history");
 
     m_ViewportClickCursorOverride.reset();

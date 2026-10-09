@@ -144,7 +144,26 @@ void EditorLayer::RunEditorFabControlSmokeAfterDrain()
         check.Expect(renderer && renderer->MeshAsset == commit.Fab.MeshAsset && renderer->MaterialAsset == commit.Fab.MaterialAsset
                 && m_SelectedEntity == placed,
             "the live placed entity must hold the committed handles and be selected");
-        check.Expect(m_UndoHistory.size() == 1 && m_RedoHistory.empty(), "history holds exactly the placement");
+        check.Expect(History().UndoDepth() == 1 && History().RedoDepth() == 0, "history holds exactly the placement");
+        {
+            const std::vector<EditorHistory::HistoryRow> rows = History().Rows();
+            check.Expect(rows.size() == 2 && rows[0].IsBase && rows[0].IsBarrier
+                    && rows[0].Display == "Import Fab Asset (barrier)"
+                    && History().BaseReason() == "Fab import changed the project",
+                "the Fab commit is an undo barrier row with its reason");
+            check.Expect(rows.size() == 2 && rows[1].Display.rfind("Place ", 0) == 0
+                    && rows[1].Label.Source == EditorHistory::HistorySource::Agent,
+                "the typed placement is a named Place entry from the agent");
+            // The Edit menu text a user sees once the barrier is the only thing beneath the placement.
+            Undo();
+            check.Expect(!UndoCommandText().Enabled
+                    && UndoCommandText().Reason == "Undo unavailable: Fab import changed the project"
+                    && UndoCommandText().Label == "Undo (blocked: Import Fab Asset)",
+                "undo stops at the barrier and says why");
+            Redo();
+            check.Expect(History().UndoDepth() == 1 && m_ActiveScene.IsEntityValid(placed),
+                "redo restores the placement after probing the barrier");
+        }
         check.Expect(m_FabProject.Receipts.Receipts.size() == 1 && m_FabProject.Revision == 1, "one receipt at revision 1");
         const Engine::AssetMetadata* material = m_AssetRegistry.GetAsset(commit.Fab.MaterialAsset);
         check.Expect(material && Engine::IsImmutableMaterialAsset(*material) && m_MaterialLibrary.Get(commit.Fab.MaterialAsset),
@@ -203,7 +222,9 @@ void EditorLayer::RunEditorFabControlSmokeAfterDrain()
         check.Expect(prototype && prototype->MeshAsset == m_EditorFabSmokePrototypeMesh
                 && prototype->MaterialAsset == m_EditorFabSmokePrototypeMaterial,
             "the live prototype holds its own assets again");
-        check.Expect(m_UndoHistory.size() == 1, "history holds exactly the typed re-assignment");
+        check.Expect(History().UndoDepth() == 1, "history holds exactly the typed re-assignment");
+        check.Expect(History().Rows().size() == 2 && History().Rows()[1].Display == "Edit Mesh Renderer of Prototype Mesh",
+            "the typed assignment is named for the mesh renderer and its entity");
         check.Expect(m_FabProject.Revision == 2 && m_FabProject.Receipts.Receipts.size() >= 2, "revision 2 with retained receipts");
         check.Expect(m_FabImport.Validator().GetState() == FabEditor::ProjectValidator::State::Passed,
             "the full-hash validation passed");
@@ -349,7 +370,7 @@ bool EditorLayer::RunFabPanelUiSmokeFrame()
             const Fab::FabImportCommitResult* committed = m_FabImport.Controller().GetCommitResult();
             const Engine::MeshRendererComponent* prototype = m_ActiveScene.TryGetMeshRendererComponent(m_PrototypeMeshEntity);
             if (!committed || !committed->AssignmentApplied || !prototype || prototype->MeshAsset != committed->MeshAsset
-                || prototype->MaterialAsset != committed->MaterialHandle || !m_UndoHistory.empty() || !m_RedoHistory.empty()
+                || prototype->MaterialAsset != committed->MaterialHandle || History().UndoDepth() != 0 || History().RedoDepth() != 0
                 || m_EditorFabAdoptionReloads != 0)
                 fail("in-memory adoption must apply the assignment, clear history, and not fall back to a reload");
             if (!m_FabImport.Dismiss(error))

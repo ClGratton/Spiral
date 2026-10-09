@@ -26,7 +26,7 @@ namespace
     // Stable ASCII ids, in EditorLayer::PanelIndex order. The ImGui window titles stay
     // the ini keys, so existing dock layouts keep working.
     const char* const kPanelIds[] = { "scene.hierarchy", "scene.inspector", "scene.viewport",
-        "content.browser", "diagnostics.console", "diagnostics.profiler" };
+        "content.browser", "diagnostics.console", "diagnostics.profiler", "diagnostics.history" };
 
     std::vector<std::string> KnownPanelIds()
     {
@@ -108,7 +108,12 @@ bool EditorLayer::BeginClosablePanel(size_t panel, const char* title, int window
 
 bool EditorLayer::RunPanelUiSmokeFrame()
 {
-    constexpr unsigned int kFrames = 14;
+    // Frames 0-3 draw everything; one panel is hidden per frame after that, then the
+    // selection, filter, and scroll-request frames, then a final all-visible frame.
+    constexpr unsigned int kFrames = 8 + kPanelCount;
+    constexpr unsigned int kClearSelectionFrame = 4 + kPanelCount;
+    constexpr unsigned int kFilterFrame = kClearSelectionFrame + 1;
+    constexpr unsigned int kUnfilterFrame = kClearSelectionFrame + 2;
     if (m_PanelUiSmokeFrames >= kFrames)
         return false;
 
@@ -160,7 +165,7 @@ bool EditorLayer::RunPanelUiSmokeFrame()
         PersistPanelVisibilityIfChanged();
         const std::string expectedText =
             "SpiralEditorPanels 1\nPanel scene.hierarchy 1\nPanel scene.inspector 1\nPanel scene.viewport 1\n"
-            "Panel content.browser 1\nPanel diagnostics.console 0\nPanel diagnostics.profiler 0\n";
+            "Panel content.browser 1\nPanel diagnostics.console 0\nPanel diagnostics.profiler 0\nPanel diagnostics.history 1\n";
         persistenceOk = persistenceOk && readFile(m_PanelVisibilityPath) == expectedText;
         m_PanelVisible.fill(true);
         LoadPanelVisibility();
@@ -184,24 +189,25 @@ bool EditorLayer::RunPanelUiSmokeFrame()
             fail("panel visibility save/load wiring");
     }
 
-    // Frames 0-3 draw everything visible with the prototype selected; frames 4-9 hide one panel
-    // each; frame 10 clears the selection (the Inspector must keep it empty); frame 11 filters the
-    // selected row out of the hierarchy while a scroll request is pending; the last frames show all.
+    // Frames 0-3 draw everything visible with the prototype selected; the next kPanelCount frames
+    // hide one panel each; then one frame clears the selection (the Inspector must keep it empty),
+    // one filters the selected row out of the hierarchy while a scroll request is pending, and the
+    // last frames show all.
     const unsigned int frame = m_PanelUiSmokeFrames;
     m_PanelVisible.fill(true);
     if (frame >= 4 && frame < 4 + kPanelCount)
         m_PanelVisible[frame - 4] = false;
-    if (frame == 10)
+    if (frame == kClearSelectionFrame)
         m_SelectedEntity = Engine::Entity {};
     if (frame == 3)
         m_HierarchyScrollRequest = true;
-    if (frame == 11)
+    if (frame == kFilterFrame)
     {
         m_SelectedEntity = m_PrototypeMeshEntity;
         m_HierarchyScrollRequest = true;
         std::snprintf(m_HierarchyFilter.data(), m_HierarchyFilter.size(), "no-entity-has-this-name");
     }
-    if (frame == 12)
+    if (frame == kUnfilterFrame)
         m_HierarchyFilter.fill('\0');
 
     ImGui::NewFrame();
@@ -211,6 +217,7 @@ bool EditorLayer::RunPanelUiSmokeFrame()
     DrawViewportPanel();
     DrawConsolePanel();
     DrawProfilerPanel();
+    DrawHistoryPanel();
     DrawProjectPanel();
     ImGui::Render();
     ++m_PanelUiSmokeFrames;
@@ -218,7 +225,7 @@ bool EditorLayer::RunPanelUiSmokeFrame()
     // ImGui asserted on unbalanced stacks and duplicate IDs inside Render. Now the visible
     // state: every panel that was shown is an active window, the hidden one is not.
     static const char* const titles[kPanelCount] = { "Scene Hierarchy", "Inspector", "Viewport",
-        "Content Browser", "Console", "Profiler" };
+        "Content Browser", "Console", "Profiler", "History" };
     for (size_t panel = 0; panel < kPanelCount; ++panel)
     {
         const ImGuiWindow* window = ImGui::FindWindowByName(titles[panel]);
@@ -229,9 +236,9 @@ bool EditorLayer::RunPanelUiSmokeFrame()
     }
     if (frame == 3 && m_HierarchyScrollRequest)
         fail("the hierarchy did not consume its scroll request");
-    if (frame == 10 && m_SelectedEntity)
+    if (frame == kClearSelectionFrame && m_SelectedEntity)
         fail("the Inspector re-selected an entity after the selection was cleared");
-    if (frame == 11 && m_HierarchyScrollRequest)
+    if (frame == kFilterFrame && m_HierarchyScrollRequest)
         fail("a filtered-out hierarchy row kept a scroll request alive");
     if (frame == 4 + PanelViewport && (m_ViewportImageValid || m_ViewportPickAvailable || m_ViewportHovered))
         fail("a hidden Viewport left picking state behind");
@@ -245,7 +252,7 @@ bool EditorLayer::RunPanelUiSmokeFrame()
         m_PanelVisible.fill(true);
         m_PanelVisiblePersisted = m_PanelVisible;
         Engine::Log::Info("PanelUiSmokeV1 frames=", kFrames,
-            " panels=hierarchy,inspector,viewport,content,console,profiler hidden=each-once"
+            " panels=hierarchy,inspector,viewport,content,console,profiler,history hidden=each-once"
             " selection=cleared-stays-empty scrollRequest=consumed-or-dropped"
             " persistence=save-load-corrupt-fails-closed result=pass");
         Engine::Application::Get().Close();

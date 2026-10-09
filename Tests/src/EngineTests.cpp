@@ -62,6 +62,7 @@
 #include "FabProjectCommitTests.h"
 #include "ProjectManifestTests.h"
 #include "FabBrowserCoreTests.h"
+#include "EditorHistoryStateTests.h"
 #include "HistoryStoreTests.h"
 #include "CommandsCoreTests.h"
 #include "SelectionLayoutTests.h"
@@ -12869,6 +12870,9 @@ int main(int argc, char** argv)
         FAST_TEST("History edit gesture tracker matches an interval reference under generated widget streams", SpiralTests::TestHistoryEditGestureTracker),
         FAST_TEST("History store matches a vector-of-states reference model under 600-operation generated sequences", SpiralTests::TestHistoryStoreMatchesReferenceModel),
         FAST_TEST("History shortcut table matches a hand-written oracle over the whole input space", SpiralTests::TestHistoryShortcutDecisionTable),
+        FAST_TEST("History naming matches the owner wording for every property and Edit menu state", SpiralTests::TestHistoryNamingTablesAndMenuText),
+        FAST_TEST("Editor history state equality is broken by a mutation of every named field and only those", SpiralTests::TestEditorHistoryStateEqualityNamesEveryField),
+        FAST_TEST("Editor history state detects main camera edits and estimates monotonically", SpiralTests::TestEditorHistoryStateCameraEditAndEstimate),
         FAST_TEST("Editor chord key table matches the GLFW key codes and every chord round trips through text", SpiralTests::TestShortcutKeyTableMatchesGlfwAndChordsRoundTrip),
         FAST_TEST("Editor chord parser rejects malformed text and leaves its output untouched", SpiralTests::TestShortcutChordParsingRejectsMalformedText),
         FAST_TEST("Editor shortcut map matches a brute-force overlap and resolution oracle under generated bindings", SpiralTests::TestShortcutMapMatchesBruteForceOracle),

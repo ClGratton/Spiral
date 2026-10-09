@@ -476,7 +476,7 @@ if ! timeout 90s "$editor" --headless --editor-panel-ui-smoke >"$panel_log" 2>&1
     echo "Panel UI smoke failed" >&2
     exit 1
 fi
-grep -Eq -- "PanelUiSmokeV1 frames=14 .*persistence=save-load-corrupt-fails-closed result=pass" "$panel_log"
+grep -Eq -- "PanelUiSmokeV1 frames=15 .*persistence=save-load-corrupt-fails-closed result=pass" "$panel_log"
 
 run_sequence headless Headless --headless
 if [[ "$run_vulkan" == "--vulkan" ]]; then

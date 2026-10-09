@@ -26,6 +26,9 @@ project "EngineTests"
         "../Editor/src/History/EditGesture.cpp",
         "../Editor/src/History/HistoryLabel.cpp",
         "../Editor/src/History/ShortcutDispatch.cpp",
+        "../Editor/src/History/HistoryNaming.cpp",
+        -- Project-state snapshot for undo: equality, estimate, camera-edit test (Engine types only).
+        "../Editor/src/EditorHistoryState.cpp",
         -- Pure Editor-private viewport picking and framing math (Engine::Math only).
         "../Editor/src/Viewport/PickingMath.cpp",
         -- Pure Editor-private panel visibility codec (standard C++ only).

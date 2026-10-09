@@ -536,6 +536,10 @@ namespace EditorHistory
 
         bool BaseIsBarrier() const { return m_Base.Kind == BaseKind::Barrier; }
 
+        // Why the base row exists beyond "project opened": the barrier reason or
+        // the dropped-history explanation; empty for a freshly opened project.
+        const std::string& BaseReason() const { return m_Base.Reason; }
+
         HistoryAvailability UndoAvailability() const
         {
             HistoryAvailability result;
