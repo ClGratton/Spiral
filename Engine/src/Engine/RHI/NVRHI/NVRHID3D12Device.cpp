@@ -848,13 +848,13 @@ namespace Engine::RHI
                 }
 
                 D3D12_RENDER_TARGET_BLEND_DESC renderTargetBlend {};
-                renderTargetBlend.BlendEnable = FALSE;
+                renderTargetBlend.BlendEnable = m_Description.AlphaBlendEnable ? TRUE : FALSE;
                 renderTargetBlend.LogicOpEnable = FALSE;
-                renderTargetBlend.SrcBlend = D3D12_BLEND_ONE;
-                renderTargetBlend.DestBlend = D3D12_BLEND_ZERO;
+                renderTargetBlend.SrcBlend = m_Description.AlphaBlendEnable ? D3D12_BLEND_SRC_ALPHA : D3D12_BLEND_ONE;
+                renderTargetBlend.DestBlend = m_Description.AlphaBlendEnable ? D3D12_BLEND_INV_SRC_ALPHA : D3D12_BLEND_ZERO;
                 renderTargetBlend.BlendOp = D3D12_BLEND_OP_ADD;
-                renderTargetBlend.SrcBlendAlpha = D3D12_BLEND_ONE;
-                renderTargetBlend.DestBlendAlpha = D3D12_BLEND_ZERO;
+                renderTargetBlend.SrcBlendAlpha = m_Description.AlphaBlendEnable ? D3D12_BLEND_ZERO : D3D12_BLEND_ONE;
+                renderTargetBlend.DestBlendAlpha = m_Description.AlphaBlendEnable ? D3D12_BLEND_ONE : D3D12_BLEND_ZERO;
                 renderTargetBlend.BlendOpAlpha = D3D12_BLEND_OP_ADD;
                 renderTargetBlend.LogicOp = D3D12_LOGIC_OP_NOOP;
                 renderTargetBlend.RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;

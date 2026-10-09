@@ -1089,7 +1089,10 @@ namespace Engine
             depthTextureDesc.DebugName = "Editor Viewport Depth Texture";
             depthTextureDesc.Extent = { width, height };
             depthTextureDesc.TextureFormat = RHI::Format::D32Float;
-            depthTextureDesc.Usage = RHI::TextureUsage::DepthStencil;
+            // The Scene debug overlay samples this depth after the raster pass.
+            depthTextureDesc.Usage = static_cast<RHI::TextureUsage>(
+                static_cast<u32>(RHI::TextureUsage::DepthStencil)
+                | static_cast<u32>(RHI::TextureUsage::ShaderResource));
             depthTextureDesc.InitialState = RHI::ResourceState::DepthWrite;
             m_ViewportDepthTexture = m_RHIDevice->CreateTexture(depthTextureDesc);
             if (!m_ViewportDepthTexture)

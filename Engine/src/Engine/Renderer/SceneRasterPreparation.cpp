@@ -65,6 +65,11 @@ namespace Engine
 
         frame.TranslationOrigin = view.TranslationOrigin;
         frame.HasValidView = true;
+        // The perspective projection maps view depth z to
+        // ndc = Values[10] + Values[14] / z, which the debug overlay inverts to
+        // compare its edges against the sampled Scene depth.
+        frame.ProjectionDepthScale = view.Projection.Values[10];
+        frame.ProjectionDepthOffset = view.Projection.Values[14];
         std::string skyError;
         if (!TryPrepareSceneSkyAtmosphere(snapshot, viewIndex,
             frame.SkyAtmosphere, skyError))

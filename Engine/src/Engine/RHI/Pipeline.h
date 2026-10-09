@@ -258,6 +258,11 @@ namespace Engine::RHI
         Format DepthFormat = Format::Unknown;
         bool DepthTestEnable = false;
         bool DepthWriteEnable = false;
+        // Straight-alpha "over" blend into color target zero:
+        // color = source.rgb * source.a + destination.rgb * (1 - source.a).
+        // Destination alpha is preserved. Used by post-tone-map overlays that
+        // read depth as a sampled texture rather than binding it as an attachment.
+        bool AlphaBlendEnable = false;
     };
 
     inline bool TryGetVertexInputFormatWidth(Format format, u32& widthBytes)

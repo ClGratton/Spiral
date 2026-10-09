@@ -6,6 +6,7 @@
 #include "Engine/Renderer/TextureRuntimePublication.h"
 #include "Engine/Renderer/Renderer.h"
 #include "Engine/Renderer/SceneDebugVisualization.h"
+#include "Engine/Renderer/SceneShadowMap.h"
 #include "Engine/Renderer/SceneSurfaceConstants.h"
 
 #include "Engine/Core/Log.h"
@@ -4147,17 +4148,382 @@ float4 PSVertexStrideSmoke(RHIVertexStrideOutput input) : SV_Target0
                 && emptyGround[3] == 255u
                 && colorDiffers(emptyUpper, emptyGround, 4u);
 
+            // Occlusion phase. The earlier fixture places the camera inside the
+            // cube with an identity view-projection; this phase uses the real
+            // perspective projection and two cube placements, each rendered with
+            // the overlay off (scene color), on with occluded edges hidden (the
+            // default), and on with the occluded opt-in. The expected image is
+            // modelled on the CPU from the cube's own geometry: an edge of a
+            // convex box is visible exactly when one of its two faces faces the
+            // camera, so no shader or depth value takes part in the oracle.
+            snapshot.Views[0].Camera.ViewProjection
+                = snapshot.Views[0].Camera.Projection;
+            const std::vector<SceneObjectBounds> cubeBounds {
+                { { -0.75f, -0.75f, -0.75f }, { 0.75f, 0.75f, 0.75f } }
+            };
+            constexpr std::array<u32, 3> selectionBytes { 69u, 133u, 179u };
+            const auto renderOcclusionView = [&](u64 frameIndex,
+                bool showBounds, bool showOccluded,
+                RHI::TextureReadback& outReadback,
+                std::shared_ptr<const SceneRasterFrame>& outFrame)
+            {
+                if (!Renderer::SetSceneDebugVisualization({
+                        SceneDebugView::MaterialId, 1, showBounds,
+                        showOccluded }))
+                    return false;
+                snapshot.FrameIndex = frameIndex;
+                Renderer::PublishSceneRenderSnapshot(snapshot);
+                if (!Renderer::PrepareCurrentSceneRasterFrame())
+                    return false;
+                outFrame = Renderer::GetPreparedSceneRasterFrame();
+                return m_VulkanSceneRenderer->RenderCurrentSnapshot(
+                        secondWidth, secondHeight, background)
+                    && m_VulkanSceneRenderer->ReadbackColor(outReadback)
+                    && validColorReadback(outReadback);
+            };
+            const auto smoothStep = [](double low, double high, double x)
+            {
+                const double t = std::clamp((x - low) / (high - low), 0.0, 1.0);
+                return t * t * (3.0 - 2.0 * t);
+            };
+            const auto segmentDistance = [&](const SceneDebugOverlayFrame& overlay,
+                u32 segment, double px, double py)
+            {
+                const auto& v = overlay.Segments[segment].Values;
+                const double x0 = v[0] * secondWidth;
+                const double y0 = v[1] * secondHeight;
+                const double dx = v[2] * secondWidth - x0;
+                const double dy = v[3] * secondHeight - y0;
+                const double lengthSquared = dx * dx + dy * dy;
+                const double amount = lengthSquared > 1.0e-6
+                    ? std::clamp(((px - x0) * dx + (py - y0) * dy)
+                        / lengthSquared, 0.0, 1.0) : 0.0;
+                return std::hypot(px - (x0 + dx * amount),
+                    py - (y0 + dy * amount));
+            };
+            // The cube is rasterized without antialiasing and MaterialId paints
+            // it one flat color, so a pixel is either the cube or background. A
+            // hidden edge's antialiased fringe that reaches background pixels
+            // next to the silhouette is in front of that background and is
+            // legitimately drawn at the visible style.
+            const u8* cubeColor = materialCenter;
+            const auto expectedAlpha = [&](const SceneDebugOverlayFrame& overlay,
+                const std::array<bool, 12>& visibleEdge, const u8* basePixel,
+                u32 x, u32 y, bool showOccluded)
+            {
+                const bool backgroundPixel = colorDiffers(basePixel, cubeColor, 2u);
+                double alpha = 0.0;
+                for (u32 segment = 0; segment < 12; ++segment)
+                {
+                    const double d = segmentDistance(overlay, segment, x + 0.5,
+                        y + 0.5);
+                    if (visibleEdge[segment] || backgroundPixel)
+                        alpha = std::max(alpha, 0.92
+                            * (1.0 - smoothStep(1.25, 2.75, d)));
+                    else if (showOccluded)
+                        alpha = std::max(alpha, 0.25
+                            * (1.0 - smoothStep(0.25, 1.75, d)));
+                }
+                return alpha;
+            };
+            const auto blendMatches = [&](const u8* actual, const u8* base,
+                double alpha, int tolerance)
+            {
+                if (actual[3] != 255u)
+                    return false;
+                for (u32 channel = 0; channel < 3; ++channel)
+                {
+                    const double expected = static_cast<double>(base[channel])
+                            * (1.0 - alpha)
+                        + static_cast<double>(selectionBytes[channel]) * alpha;
+                    if (std::abs(static_cast<int>(actual[channel])
+                            - static_cast<int>(std::lround(expected)))
+                        > tolerance)
+                        return false;
+                }
+                return true;
+            };
+            struct OcclusionFixtureResult
+            {
+                bool Rendered = false;
+                u32 VisibleEdges = 0;
+                u32 ChangedPixels = 0;
+                u32 ModelMismatches = 0;
+                u32 CornerLeakPixels = 0;
+                u32 BackProbe[2] {};
+                u32 FrontProbe[2] {};
+                bool BackEdgeHidden = false;
+                bool BackEdgeDim = false;
+                bool FrontEdgeFull = false;
+                bool FrontEdgeUnchangedByDim = false;
+                bool Pass = false;
+            };
+            const auto runOcclusionFixture = [&](u64 firstFrame,
+                const Math::Vec3& position, const Math::Vec3& rotationDegrees,
+                bool expectProbes)
+            {
+                OcclusionFixtureResult result;
+                SceneRenderMesh cube;
+                cube.SourceEntity = 1;
+                cube.MeshAsset = smokeMesh;
+                cube.MaterialAsset = smokeMaterial;
+                cube.Transform.RotationDegrees = rotationDegrees;
+                if (!Math::TryDecomposeWorldPosition({ position.X, position.Y,
+                        position.Z }, snapshot.WorldGridPolicy,
+                        cube.Transform.Position))
+                    return result;
+                snapshot.Meshes = { cube };
+                RHI::TextureReadback base;
+                RHI::TextureReadback hidden;
+                RHI::TextureReadback dim;
+                std::shared_ptr<const SceneRasterFrame> baseFrame;
+                std::shared_ptr<const SceneRasterFrame> hiddenFrame;
+                std::shared_ptr<const SceneRasterFrame> dimFrame;
+                result.Rendered = renderOcclusionView(firstFrame, false, false,
+                        base, baseFrame)
+                    && renderOcclusionView(firstFrame + 1, true, false, hidden,
+                        hiddenFrame)
+                    && renderOcclusionView(firstFrame + 2, true, true, dim,
+                        dimFrame)
+                    && hiddenFrame && dimFrame && dimFrame->Instances.size() == 1
+                    && !hiddenFrame->DebugVisualization
+                            .ShowOccludedSelectionBounds
+                    && dimFrame->DebugVisualization
+                            .ShowOccludedSelectionBounds;
+                if (!result.Rendered)
+                    return result;
+                SceneDebugOverlayFrame overlay;
+                std::string overlayError;
+                if (!TryPrepareSceneDebugOverlay(*dimFrame, cubeBounds,
+                        secondWidth, secondHeight, overlay, overlayError)
+                    || overlay.SegmentCount != 12)
+                    return result;
+
+                // Ground-truth visibility. Corner i has bit 0/1/2 selecting the
+                // maximum on object axis x/y/z. A face (axis, side) is front
+                // facing when its view-space outward normal points toward the
+                // camera at the view-space origin.
+                const Math::Mat4& modelView = dimFrame->Instances[0].ModelView;
+                const auto toView = [&](double x, double y, double z)
+                {
+                    return std::array<double, 3> {
+                        x * modelView.Values[0] + y * modelView.Values[4]
+                            + z * modelView.Values[8] + modelView.Values[12],
+                        x * modelView.Values[1] + y * modelView.Values[5]
+                            + z * modelView.Values[9] + modelView.Values[13],
+                        x * modelView.Values[2] + y * modelView.Values[6]
+                            + z * modelView.Values[10] + modelView.Values[14] };
+                };
+                const auto faceFrontFacing = [&](u32 axis, u32 side)
+                {
+                    std::array<double, 3> center { 0.0, 0.0, 0.0 };
+                    center[axis] = side != 0 ? 0.75 : -0.75;
+                    std::array<double, 3> axisEnd { 0.0, 0.0, 0.0 };
+                    axisEnd[axis] = side != 0 ? 1.75 : -1.75;
+                    const auto c = toView(center[0], center[1], center[2]);
+                    const auto e = toView(axisEnd[0], axisEnd[1], axisEnd[2]);
+                    const std::array<double, 3> normal {
+                        e[0] - c[0], e[1] - c[1], e[2] - c[2] };
+                    return normal[0] * c[0] + normal[1] * c[1]
+                        + normal[2] * c[2] < 0.0;
+                };
+                std::array<std::array<double, 2>, 8> cornerScreen {};
+                for (u32 corner = 0; corner < 8; ++corner)
+                {
+                    const auto view = toView((corner & 1u) != 0 ? 0.75 : -0.75,
+                        (corner & 2u) != 0 ? 0.75 : -0.75,
+                        (corner & 4u) != 0 ? 0.75 : -0.75);
+                    const double w = view[2];
+                    if (w < 0.2)
+                        return result;
+                    cornerScreen[corner] = {
+                        0.5 + 0.5 * view[0] * snapshot.Views[0].Camera.Projection.Values[0] / w,
+                        0.5 - 0.5 * view[1] * snapshot.Views[0].Camera.Projection.Values[5] / w };
+                }
+                const auto cornerAt = [&](float x, float y)
+                {
+                    u32 best = 8;
+                    double bestDistance = 1.0e-3;
+                    for (u32 corner = 0; corner < 8; ++corner)
+                    {
+                        const double d = std::hypot(cornerScreen[corner][0] - x,
+                            cornerScreen[corner][1] - y);
+                        if (d < bestDistance) { bestDistance = d; best = corner; }
+                    }
+                    return best;
+                };
+                std::array<bool, 12> visibleEdge {};
+                for (u32 segment = 0; segment < 12; ++segment)
+                {
+                    const auto& v = overlay.Segments[segment].Values;
+                    const u32 first = cornerAt(v[0], v[1]);
+                    const u32 second = cornerAt(v[2], v[3]);
+                    const u32 difference = first ^ second;
+                    if (first >= 8 || second >= 8 || (difference != 1u
+                            && difference != 2u && difference != 4u))
+                        return result;
+                    bool frontFacing = false;
+                    for (u32 axis = 0; axis < 3; ++axis)
+                        if ((difference & (1u << axis)) == 0)
+                            frontFacing = frontFacing
+                                || faceFrontFacing(axis, (first >> axis) & 1u);
+                    visibleEdge[segment] = frontFacing;
+                    result.VisibleEdges += frontFacing ? 1u : 0u;
+                }
+                // Within the depth-tolerance footprint of a corner, a hidden edge
+                // that leaves a visible corner is still within the slope term of
+                // the visible faces, so it may draw slightly stronger than the
+                // ideal model for about three pixels. Those pixels are counted
+                // separately and may only be stronger, never weaker.
+                const auto nearCorner = [&](u32 x, u32 y)
+                {
+                    for (u32 corner = 0; corner < 8; ++corner)
+                        if (std::hypot(cornerScreen[corner][0] * secondWidth - x - 0.5,
+                                cornerScreen[corner][1] * secondHeight - y - 0.5) < 3.5)
+                            return true;
+                    return false;
+                };
+                const auto atLeast = [&](const u8* actual, const u8* basePixel,
+                    double alpha)
+                {
+                    for (u32 channel = 0; channel < 3; ++channel)
+                    {
+                        const double expected = static_cast<double>(basePixel[channel])
+                                * (1.0 - alpha)
+                            + static_cast<double>(selectionBytes[channel]) * alpha;
+                        const double target = static_cast<double>(selectionBytes[channel]);
+                        if (std::abs(static_cast<double>(actual[channel]) - target)
+                            > std::abs(expected - target) + 3.0)
+                            return false;
+                    }
+                    return actual[3] == 255u;
+                };
+                for (u32 y = 0; y < secondHeight; ++y)
+                {
+                    for (u32 x = 0; x < secondWidth; ++x)
+                    {
+                        const u8* basePixel = pixel(base, x, y);
+                        if (colorDiffers(basePixel, pixel(hidden, x, y), 2u))
+                            ++result.ChangedPixels;
+                        const double hiddenAlpha = expectedAlpha(overlay,
+                            visibleEdge, basePixel, x, y, false);
+                        const double dimAlpha = expectedAlpha(overlay,
+                            visibleEdge, basePixel, x, y, true);
+                        if (blendMatches(pixel(hidden, x, y), basePixel, hiddenAlpha, 3)
+                            && blendMatches(pixel(dim, x, y), basePixel, dimAlpha, 3))
+                            continue;
+                        if (nearCorner(x, y)
+                            && atLeast(pixel(hidden, x, y), basePixel, hiddenAlpha)
+                            && atLeast(pixel(dim, x, y), basePixel, dimAlpha))
+                            ++result.CornerLeakPixels;
+                        else
+                            ++result.ModelMismatches;
+                    }
+                }
+                // Named probes for the front-on fixture: the highest edge of the
+                // far square (behind the near face) and of the near square.
+                if (expectProbes)
+                {
+                    const auto probeOf = [&](bool wantVisible, u32 (&out)[2])
+                    {
+                        double bestY = 2.0;
+                        for (u32 segment = 0; segment < 12; ++segment)
+                        {
+                            const auto& v = overlay.Segments[segment].Values;
+                            if (visibleEdge[segment] != wantVisible
+                                || std::abs(v[1] - v[3]) > 1.0e-6 || v[1] >= bestY)
+                                continue;
+                            bestY = v[1];
+                            out[0] = static_cast<u32>(0.5 * (v[0] + v[2]) * secondWidth);
+                            out[1] = static_cast<u32>(v[1] * secondHeight);
+                        }
+                        return bestY < 2.0 && out[0] < secondWidth
+                            && out[1] < secondHeight;
+                    };
+                    const auto distanceTo = [&](bool wantVisible, const u32 (&probe)[2])
+                    {
+                        double nearest = 1.0e9;
+                        for (u32 segment = 0; segment < 12; ++segment)
+                            if (visibleEdge[segment] == wantVisible)
+                                nearest = std::min(nearest, segmentDistance(overlay,
+                                    segment, probe[0] + 0.5, probe[1] + 0.5));
+                        return nearest;
+                    };
+                    // Coverage is exactly one inside (thickness - 0.75) px of an
+                    // edge, so each probe pixel centre must be within 0.25 px of
+                    // the 1 px occluded treatment or 1.25 px of the 2 px visible.
+                    if (probeOf(false, result.BackProbe)
+                        && probeOf(true, result.FrontProbe)
+                        && distanceTo(false, result.BackProbe) < 0.25
+                        && distanceTo(true, result.FrontProbe) < 1.25)
+                    {
+                        const u8* backBase = pixel(base, result.BackProbe[0],
+                            result.BackProbe[1]);
+                        result.BackEdgeHidden = !colorDiffers(pixel(hidden,
+                            result.BackProbe[0], result.BackProbe[1]), backBase, 1u);
+                        result.BackEdgeDim = blendMatches(pixel(dim,
+                            result.BackProbe[0], result.BackProbe[1]), backBase,
+                            0.25, 2);
+                        const u8* frontBase = pixel(base, result.FrontProbe[0],
+                            result.FrontProbe[1]);
+                        result.FrontEdgeFull = blendMatches(pixel(hidden,
+                            result.FrontProbe[0], result.FrontProbe[1]), frontBase,
+                            0.92, 2);
+                        result.FrontEdgeUnchangedByDim = !colorDiffers(
+                            pixel(dim, result.FrontProbe[0], result.FrontProbe[1]),
+                            pixel(hidden, result.FrontProbe[0], result.FrontProbe[1]),
+                            1u);
+                    }
+                }
+                result.Pass = result.ChangedPixels >= 32u
+                    && result.ModelMismatches == 0u
+                    && result.CornerLeakPixels <= 8u
+                    && (!expectProbes || (result.BackEdgeHidden
+                        && result.BackEdgeDim && result.FrontEdgeFull
+                        && result.FrontEdgeUnchangedByDim));
+                return result;
+            };
+            // Front-on: the far square and four connecting edges project inside
+            // the near face, so exactly the four near-square edges are visible.
+            const OcclusionFixtureResult frontOn = emptyFrameRendered && shapesValid
+                ? runOcclusionFixture(7, { 0.0f, 0.0f, 2.5f }, { 0.0f, 0.0f, 0.0f },
+                    true) : OcclusionFixtureResult {};
+            // Rotated: every visible edge lies on a face slanted against the
+            // view ray, which is what the slope term of the tolerance covers;
+            // a zero tolerance drops the antialiased fringe of those edges.
+            const OcclusionFixtureResult rotated = frontOn.Rendered
+                ? runOcclusionFixture(10, { 0.3f, -0.2f, 3.0f },
+                    { 22.0f, 38.0f, 0.0f }, false) : OcclusionFixtureResult {};
+            const bool occlusionOracle = frontOn.Pass && frontOn.VisibleEdges == 4
+                && rotated.Pass && rotated.VisibleEdges >= 7;
+
             const bool debugVisualizationOracle = shapesValid
                 && debugModesDistinct && exactDiagnosticPixels
                 && retainedFrameCoherent
                 && nextFrameAdopted && postToneMapOverlay
-                && emptyFrameRendered && emptySkyRetained;
+                && emptyFrameRendered && emptySkyRetained
+                && occlusionOracle;
             Renderer::SetColorPipelineSettings(previousColorSettings);
             Log::Info("SceneDebugVisualizationV1 backend=Vulkan modes=Lit,MaterialId,GeometricNormal,ShadowCaster settings=immutable-prepared readback=exact-diagnostic selectedBounds=post-tone-map overlayPixels=",
                 changedOverlayPixels, " fullOpacityBlendPixels=",
                 fullOpacityBlendPixels,
                 " graphPasses=8-on,7-off emptyVisibleMeshes=sky-retained result=",
                 debugVisualizationOracle ? "pass" : "fail");
+            Log::Info("SceneSelectionBoundsOcclusionV1 backend=Vulkan depth=sampled-scene-depth blend=fixed-function-over occludedDefault=hidden backEdge=",
+                frontOn.BackEdgeHidden ? "scene-color" : "drawn",
+                " occludedOptIn=", frontOn.BackEdgeDim ? "dim-25pct-1px" : "wrong",
+                " frontEdge=", frontOn.FrontEdgeFull ? "full-selection-color" : "wrong",
+                " frontEdgeWithOptIn=", frontOn.FrontEdgeUnchangedByDim ? "unchanged" : "changed",
+                " frontOnVisibleEdges=", frontOn.VisibleEdges,
+                " backProbe=", frontOn.BackProbe[0], ",", frontOn.BackProbe[1],
+                " frontProbe=", frontOn.FrontProbe[0], ",", frontOn.FrontProbe[1],
+                " frontOnChangedPixels=", frontOn.ChangedPixels,
+                " frontOnModelMismatches=", frontOn.ModelMismatches,
+                " rotatedVisibleEdges=", rotated.VisibleEdges,
+                " rotatedChangedPixels=", rotated.ChangedPixels,
+                " rotatedModelMismatches=", rotated.ModelMismatches,
+                " rotatedCornerLeakPixels=", rotated.CornerLeakPixels,
+                " result=", occlusionOracle ? "pass" : "fail");
             return debugVisualizationOracle;
         }
         bool finalRaster = resizedRaster;

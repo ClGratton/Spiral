@@ -60,6 +60,10 @@ namespace Engine
         u64 SnapshotFrameIndex = 0;
         Math::DVec3 TranslationOrigin;
         bool HasValidView = false;
+        // ndc depth = ProjectionDepthScale + ProjectionDepthOffset / viewZ for
+        // the prepared perspective view (zero when the view is invalid).
+        float ProjectionDepthScale = 0.0f;
+        float ProjectionDepthOffset = 0.0f;
         u32 IssuedDrawCount = 0;
         Availability RasterAvailability = Availability::Ready;
         std::string Diagnostic;

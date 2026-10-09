@@ -12,11 +12,15 @@ namespace Engine
     struct SceneDebugOverlayGpuConstants
     {
         float Segments[SceneDebugOverlayFrame::MaximumSegmentCount][4] {};
+        // Inverse view depth at both endpoints, two segments per float4.
+        float SegmentDepths[SceneDebugOverlayFrame::MaximumSegmentCount / 2][4] {};
         float OverlayColorAndOpacity[4] {};
         float OverlayState[4] {};
+        float OccludedState[4] {};
+        float DepthState[4] {};
     };
 
-    static_assert(sizeof(SceneDebugOverlayGpuConstants) == 224);
+    static_assert(sizeof(SceneDebugOverlayGpuConstants) == 352);
 
     bool TryBuildSceneDebugOverlayGpuConstants(
         const SceneDebugOverlayFrame& frame,
@@ -43,7 +47,10 @@ namespace Engine
         Ref<SceneDebugOverlayPassConstants> AcquireConstants(
             u64 frameIndex, const SceneDebugOverlayFrame& frame,
             std::string& outError);
-        bool Record(RHI::CommandList& commands, RHI::Texture& input,
+        // Blends the overlay over the tone-mapped color already in output. The
+        // Scene depth is sampled (it must be in ShaderResource state) rather than
+        // bound as an attachment, so the pass declares a depth read and no write.
+        bool Record(RHI::CommandList& commands, RHI::Texture& sceneDepth,
             RHI::Texture& output, u32 width, u32 height,
             const SceneDebugOverlayPassConstants& constants) const;
         bool IsInitialized() const { return m_Pipeline != nullptr; }

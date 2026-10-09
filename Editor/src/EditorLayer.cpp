@@ -3313,6 +3313,8 @@ void EditorLayer::DrawMainMenuBar()
             ImGui::EndMenu();
         }
         ImGui::MenuItem("Selected Mesh Bounds", nullptr, &m_ShowSelectedBounds);
+        ImGui::MenuItem("Show Occluded Selection Edges", nullptr,
+            &m_ShowOccludedSelectionBounds, m_ShowSelectedBounds);
         if (ImGui::MenuItem("Reset Layout"))
             m_ResetDockLayout = true;
         ImGui::EndMenu();
@@ -5196,6 +5198,7 @@ bool EditorLayer::PublishSceneDebugVisualization()
     settings.View = m_SceneDebugView;
     settings.SelectedEntity = GetSceneDebugSelectedEntityId();
     settings.ShowSelectedBounds = m_ShowSelectedBounds;
+    settings.ShowOccludedSelectionBounds = m_ShowOccludedSelectionBounds;
     return Engine::Renderer::SetSceneDebugVisualization(settings);
 }
 

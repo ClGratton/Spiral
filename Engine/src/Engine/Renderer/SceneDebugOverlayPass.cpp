@@ -55,12 +55,12 @@ namespace Engine
             request.ExpectedLayout = {
                 { "SceneDebugOverlayConstants", 'b', 0, 0, stage,
                     "ConstantBuffer",
-                    "struct{Segment0:float32x4@0,Segment1:float32x4@16,Segment2:float32x4@32,Segment3:float32x4@48,Segment4:float32x4@64,Segment5:float32x4@80,Segment6:float32x4@96,Segment7:float32x4@112,Segment8:float32x4@128,Segment9:float32x4@144,Segment10:float32x4@160,Segment11:float32x4@176,OverlayColorAndOpacity:float32x4@192,OverlayState:float32x4@208}",
-                    1, 224, 0, 0 },
-                { "ResolvedSceneSampler", 's', 0, 2, stage,
+                    "struct{Segment0:float32x4@0,Segment1:float32x4@16,Segment2:float32x4@32,Segment3:float32x4@48,Segment4:float32x4@64,Segment5:float32x4@80,Segment6:float32x4@96,Segment7:float32x4@112,Segment8:float32x4@128,Segment9:float32x4@144,Segment10:float32x4@160,Segment11:float32x4@176,SegmentDepth0:float32x4@192,SegmentDepth1:float32x4@208,SegmentDepth2:float32x4@224,SegmentDepth3:float32x4@240,SegmentDepth4:float32x4@256,SegmentDepth5:float32x4@272,OverlayColorAndOpacity:float32x4@288,OverlayState:float32x4@304,OccludedState:float32x4@320,DepthState:float32x4@336}",
+                    1, 352, 0, 0 },
+                { "SceneDepthSampler", 's', 0, 2, stage,
                     "SamplerState", "sampler", 1, 0, 0, 0 },
-                { "ResolvedScene", 't', 0, 2, stage,
-                    "Texture2D", "float32x4", 1, 0, 1, 4 }
+                { "SceneDepth", 't', 0, 2, stage,
+                    "Texture2D", "float32", 1, 0, 1, 1 }
             };
             if (stage == RHI::ShaderStage::Vertex)
             {
@@ -121,14 +121,46 @@ namespace Engine
                 candidate.Segments[segment][component] = value;
             }
         }
+        using Style = SceneDebugOverlayStyle;
+        if (!std::isfinite(frame.DepthScale) || !std::isfinite(frame.DepthOffset)
+            || frame.DepthScale <= 1.0f || frame.DepthOffset >= 0.0f)
+        {
+            outError = "debug overlay depth mapping is not a valid perspective projection";
+            return false;
+        }
+        for (size_t segment = 0; segment < frame.SegmentCount; ++segment)
+        {
+            for (size_t endpoint = 0; endpoint < 2; ++endpoint)
+            {
+                const float depth = frame.Segments[segment].Depth[endpoint];
+                if (!std::isfinite(depth) || depth < 0.0f || depth > 1.0f)
+                {
+                    outError = "debug overlay segment depth is outside the zero-to-one range";
+                    return false;
+                }
+                candidate.SegmentDepths[segment / 2][(segment % 2) * 2 + endpoint]
+                    = SceneDebugInverseViewDepth(depth, frame.DepthScale,
+                        frame.DepthOffset);
+            }
+        }
         candidate.OverlayColorAndOpacity[0] = 69.0f / 255.0f;
         candidate.OverlayColorAndOpacity[1] = 133.0f / 255.0f;
         candidate.OverlayColorAndOpacity[2] = 179.0f / 255.0f;
-        candidate.OverlayColorAndOpacity[3] = 0.92f;
+        candidate.OverlayColorAndOpacity[3] = Style::VisibleOpacity;
         candidate.OverlayState[0] = static_cast<float>(frame.SegmentCount);
         candidate.OverlayState[1] = static_cast<float>(frame.ViewportWidth);
         candidate.OverlayState[2] = static_cast<float>(frame.ViewportHeight);
-        candidate.OverlayState[3] = 2.0f;
+        candidate.OverlayState[3] = Style::VisibleThicknessPixels;
+        candidate.OccludedState[0]
+            = frame.Settings.ShowOccludedSelectionBounds ? 1.0f : 0.0f;
+        candidate.OccludedState[1] = Style::OccludedOpacity;
+        candidate.OccludedState[2] = Style::OccludedThicknessPixels;
+        candidate.OccludedState[3] = Style::DepthQuantizationSteps
+            * Style::DepthQuantizationStep / std::abs(frame.DepthOffset);
+        candidate.DepthState[0] = frame.DepthScale;
+        candidate.DepthState[1] = frame.DepthOffset;
+        candidate.DepthState[2] = Style::RelativeDepthTolerance;
+        candidate.DepthState[3] = Style::SlopeFootprintPixels;
         outConstants = candidate;
         return true;
     }
@@ -203,6 +235,7 @@ namespace Engine
         pipeline.RasterCullMode = RHI::CullMode::None;
         pipeline.ColorFormat = RHI::Format::R8G8B8A8Unorm;
         pipeline.DepthFormat = RHI::Format::Unknown;
+        pipeline.AlphaBlendEnable = true;
         m_Pipeline = m_VertexShader && m_PixelShader
             ? device.CreatePipeline(pipeline) : nullptr;
 
@@ -283,18 +316,18 @@ namespace Engine
     }
 
     bool SceneDebugOverlayPass::Record(RHI::CommandList& commands,
-        RHI::Texture& input, RHI::Texture& output, u32 width, u32 height,
+        RHI::Texture& sceneDepth, RHI::Texture& output, u32 width, u32 height,
         const SceneDebugOverlayPassConstants& constants) const
     {
         if (!m_Pipeline || !m_VertexBuffer || !m_IndexBuffer
             || !constants.Buffer || !constants.Frame.HasPostToneMapOverlay()
             || constants.Frame.ViewportWidth != width
             || constants.Frame.ViewportHeight != height
-            || width == 0 || height == 0 || &input == &output
+            || width == 0 || height == 0 || &sceneDepth == &output
             || !commands.BindViewportOutputs(output, nullptr))
             return false;
         commands.SetGraphicsPipeline(*m_Pipeline);
-        if (!commands.BindGraphicsSampledTexture(input))
+        if (!commands.BindGraphicsSampledTexture(sceneDepth))
             return false;
         commands.SetViewport({ 0.0f, 0.0f, static_cast<float>(width),
             static_cast<float>(height), 0.0f, 1.0f });

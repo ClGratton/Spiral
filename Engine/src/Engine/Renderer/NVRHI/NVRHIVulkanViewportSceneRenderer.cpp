@@ -93,7 +93,6 @@ namespace Engine
         bool RecordBootstrapReference(
             RHI::Texture& hdrTexture,
             RHI::Texture& colorTexture,
-            RHI::Texture* toneMappedTexture,
             RHI::Texture& depthTexture,
             u32 width,
             u32 height,
@@ -171,17 +170,14 @@ namespace Engine
                     for (const SceneMeshDraw& draw : draws) { commands->SetVertexBuffer(0, *draw.Bundle->VertexBuffer); commands->SetIndexBuffer(*draw.Bundle->IndexBuffer, RHI::IndexFormat::Uint32); commands->SetGraphicsConstantBuffer(0, *constants[draw.ConstantIndex].Buffer); commands->DrawIndexed(draw.Primitive.IndexCount, 1, draw.Primitive.FirstIndex, draw.Primitive.BaseVertex, 0); }
                 }
             }
-            RHI::Texture* toneMapOutput = debugOverlayConstants
-                ? toneMappedTexture : &colorTexture;
             {
                 RHI::ScopedDebugMarker marker(*commands,
                     "Scene Viewport Bootstrap Reference Tone Map");
-                if (!toneMapOutput
-                    || !commands->TransitionTexture(hdrTexture,
+                if (!commands->TransitionTexture(hdrTexture,
                         RHI::ResourceState::ShaderResource)
-                    || !commands->TransitionTexture(*toneMapOutput,
+                    || !commands->TransitionTexture(colorTexture,
                         RHI::ResourceState::RenderTarget)
-                    || !m_ToneMap.Record(*commands, hdrTexture, *toneMapOutput,
+                    || !m_ToneMap.Record(*commands, hdrTexture, colorTexture,
                         width, height, toneMapConstants))
                     return false;
             }
@@ -189,11 +185,11 @@ namespace Engine
             {
                 RHI::ScopedDebugMarker marker(*commands,
                     "Scene Viewport Bootstrap Reference Debug Overlay");
-                if (!commands->TransitionTexture(*toneMapOutput,
+                // The overlay samples the raster depth and blends over the
+                // tone-mapped color that is still bound as a render target.
+                if (!commands->TransitionTexture(depthTexture,
                         RHI::ResourceState::ShaderResource)
-                    || !commands->TransitionTexture(colorTexture,
-                        RHI::ResourceState::RenderTarget)
-                    || !m_DebugOverlay.Record(*commands, *toneMapOutput,
+                    || !m_DebugOverlay.Record(*commands, depthTexture,
                         colorTexture, width, height, *debugOverlayConstants))
                     return false;
             }
@@ -354,30 +350,12 @@ namespace Engine
             // Render rejects replacement while the submitted-frame owner still
             // retains an exact token for the current output generation.
             m_HdrColor.reset(); m_Color.reset(); m_Depth.reset();
-            m_ToneMappedColor.reset();
             RHI::TextureDescription color; color.DebugName = "Vulkan Scene Viewport Color"; color.Extent = { width, height }; color.TextureFormat = RHI::Format::R8G8B8A8Unorm; color.Usage = static_cast<RHI::TextureUsage>(static_cast<u32>(RHI::TextureUsage::RenderTarget) | static_cast<u32>(RHI::TextureUsage::CopySource) | static_cast<u32>(RHI::TextureUsage::ShaderResource));
             RHI::TextureDescription hdrColor = color; hdrColor.DebugName = "Vulkan Scene Viewport Linear HDR"; hdrColor.TextureFormat = RHI::Format::R16G16B16A16Float; hdrColor.Usage = static_cast<RHI::TextureUsage>(static_cast<u32>(RHI::TextureUsage::RenderTarget) | static_cast<u32>(RHI::TextureUsage::ShaderResource) | static_cast<u32>(RHI::TextureUsage::CopySource));
-            RHI::TextureDescription depth = color; depth.DebugName = "Vulkan Scene Viewport Depth"; depth.TextureFormat = RHI::Format::D32Float; depth.Usage = RHI::TextureUsage::DepthStencil;
+            RHI::TextureDescription depth = color; depth.DebugName = "Vulkan Scene Viewport Depth"; depth.TextureFormat = RHI::Format::D32Float; depth.Usage = static_cast<RHI::TextureUsage>(static_cast<u32>(RHI::TextureUsage::DepthStencil) | static_cast<u32>(RHI::TextureUsage::ShaderResource));
             m_HdrColor = m_Device->CreateTexture(hdrColor); m_Color = m_Device->CreateTexture(color); m_Depth = m_Device->CreateTexture(depth);
             if (!m_HdrColor || !m_Color || !m_Depth) return false;
             m_Width = width; m_Height = height; ++m_OutputGeneration; return true;
-        }
-
-        bool EnsureDebugOverlayOutput(u32 width, u32 height)
-        {
-            if (m_ToneMappedColor)
-            {
-                const RHI::TextureDescription& current =
-                    m_ToneMappedColor->GetDescription();
-                if (current.Extent.Width == width && current.Extent.Height == height)
-                    return true;
-                m_ToneMappedColor.reset();
-            }
-            RHI::TextureDescription description = m_Color->GetDescription();
-            description.DebugName = "Vulkan Scene Viewport Tone-Mapped Intermediate";
-            description.InitialState = RHI::ResourceState::Common;
-            m_ToneMappedColor = m_Device->CreateTexture(description);
-            return m_ToneMappedColor != nullptr;
         }
 
         bool Render(const SceneRenderSnapshot& snapshot, u32 width, u32 height, const ClearColor& clearColor)
@@ -555,11 +533,6 @@ namespace Engine
             Ref<SceneDebugOverlayPassConstants> debugOverlayConstants;
             if (debugOverlayFrame.HasPostToneMapOverlay())
             {
-                if (!EnsureDebugOverlayOutput(width, height))
-                {
-                    Log::Error("Vulkan Scene viewport could not allocate its debug overlay intermediate");
-                    return false;
-                }
                 debugOverlayConstants = m_DebugOverlay.AcquireConstants(
                     snapshot.FrameIndex, debugOverlayFrame, debugOverlayError);
                 if (!debugOverlayConstants)
@@ -571,7 +544,6 @@ namespace Engine
             }
             RHI::ResourceState hdrColorState = RHI::ResourceState::Unknown;
             RHI::ResourceState colorState = RHI::ResourceState::Unknown;
-            RHI::ResourceState toneMappedColorState = RHI::ResourceState::Unknown;
             RHI::ResourceState depthState = RHI::ResourceState::Unknown;
             RHI::ResourceState shadowDepthState = RHI::ResourceState::Unknown;
             RHI::ResourceState lightStagingState = RHI::ResourceState::Unknown;
@@ -581,9 +553,7 @@ namespace Engine
                 || !m_Device->QueryResourceState(m_Depth.get(), depthState)
                 || !m_Device->QueryResourceState(m_ShadowDepth.get(), shadowDepthState)
                 || !m_Device->QueryResourceState(lightPayload->Staging.get(), lightStagingState)
-                || !m_Device->QueryResourceState(lightPayload->Gpu.get(), lightGpuState)
-                || (debugOverlayConstants && !m_Device->QueryResourceState(
-                    m_ToneMappedColor.get(), toneMappedColorState))) return false;
+                || !m_Device->QueryResourceState(lightPayload->Gpu.get(), lightGpuState)) return false;
             Math::Vec3 preExposedClear;
             if (!lightPayload->Payload
                 || lightPayload->Payload->ColorSettings != colorSettings
@@ -608,15 +578,6 @@ namespace Engine
             const RenderGraph::ResourceHandle color = graph->AddTexture(colorDescription, RenderGraph::ResourceLifetimeKind::Imported);
             const RenderGraph::ResourceHandle depth = graph->AddTexture(depthDescription, RenderGraph::ResourceLifetimeKind::Imported);
             const RenderGraph::ResourceHandle shadowDepth = graph->AddTexture(shadowDepthDescription, RenderGraph::ResourceLifetimeKind::Imported);
-            RenderGraph::ResourceHandle toneMappedColor;
-            if (debugOverlayConstants)
-            {
-                RHI::TextureDescription toneMappedColorDescription =
-                    m_ToneMappedColor->GetDescription();
-                toneMappedColorDescription.InitialState = toneMappedColorState;
-                toneMappedColor = graph->AddTexture(toneMappedColorDescription,
-                    RenderGraph::ResourceLifetimeKind::Imported);
-            }
             RHI::BufferDescription lightStagingDescription = lightPayload->Staging->GetDescription(); lightStagingDescription.InitialState = lightStagingState;
             RHI::BufferDescription lightGpuDescription = lightPayload->Gpu->GetDescription(); lightGpuDescription.InitialState = lightGpuState;
             const RenderGraph::ResourceHandle lightStaging = graph->AddBuffer(lightStagingDescription, RenderGraph::ResourceLifetimeKind::Imported);
@@ -701,14 +662,12 @@ namespace Engine
             });
             const RenderGraph::PassHandle toneMapPass = graph->AddPass("Scene Viewport Graph Tone Map", RHI::QueueType::Graphics);
             graph->AddRead(toneMapPass, hdrColor, RHI::ResourceState::ShaderResource, RHI::ShaderStage::Pixel);
-            const RenderGraph::ResourceHandle toneMapOutput = debugOverlayConstants
-                ? toneMappedColor : color;
-            graph->AddWrite(toneMapPass, toneMapOutput, RHI::ResourceState::RenderTarget);
-            graph->SetPassCallback(toneMapPass, [this, hdrColor, toneMapOutput,
+            graph->AddWrite(toneMapPass, color, RHI::ResourceState::RenderTarget);
+            graph->SetPassCallback(toneMapPass, [this, hdrColor, color,
                 width, height, toneMapConstants](RenderGraph::ExecutionContext& context)
             {
                 RHI::Texture* graphHdr = context.GetTexture(hdrColor);
-                RHI::Texture* graphColor = context.GetTexture(toneMapOutput);
+                RHI::Texture* graphColor = context.GetTexture(color);
                 return graphHdr && graphColor && m_ToneMap.Record(
                     context.GetCommandList(), *graphHdr, *graphColor, width, height, *toneMapConstants);
             });
@@ -716,18 +675,22 @@ namespace Engine
             {
                 const RenderGraph::PassHandle debugOverlayPass = graph->AddPass(
                     "Scene Debug Overlay", RHI::QueueType::Graphics);
-                graph->AddRead(debugOverlayPass, toneMappedColor,
+                // The raster depth is sampled, so the pass declares a depth read
+                // (DepthWrite to ShaderResource transition) and no depth write.
+                // Color is blended over the tone-mapped result: the write
+                // declaration orders it after the tone-map pass.
+                graph->AddRead(debugOverlayPass, depth,
                     RHI::ResourceState::ShaderResource, RHI::ShaderStage::Pixel);
                 graph->AddWrite(debugOverlayPass, color,
                     RHI::ResourceState::RenderTarget);
                 graph->SetPassCallback(debugOverlayPass,
-                    [this, toneMappedColor, color, width, height,
+                    [this, depth, color, width, height,
                         debugOverlayConstants](RenderGraph::ExecutionContext& context)
                 {
-                    RHI::Texture* graphInput = context.GetTexture(toneMappedColor);
+                    RHI::Texture* graphDepth = context.GetTexture(depth);
                     RHI::Texture* graphOutput = context.GetTexture(color);
-                    return graphInput && graphOutput && m_DebugOverlay.Record(
-                        context.GetCommandList(), *graphInput, *graphOutput,
+                    return graphDepth && graphOutput && m_DebugOverlay.Record(
+                        context.GetCommandList(), *graphDepth, *graphOutput,
                         width, height, *debugOverlayConstants);
                 });
             }
@@ -748,8 +711,6 @@ namespace Engine
             const RenderGraph::ExecuteResult executed = graph->BindTexture(hdrColor, *m_HdrColor)
                 && graph->BindTexture(color, *m_Color) && graph->BindTexture(depth, *m_Depth)
                 && graph->BindTexture(shadowDepth, *m_ShadowDepth)
-                && (!debugOverlayConstants || graph->BindTexture(
-                    toneMappedColor, *m_ToneMappedColor))
                 && graph->BindBuffer(lightStaging, *lightPayload->Staging) && graph->BindBuffer(lightGpu, *lightPayload->Gpu)
                 ? graph->Execute(*m_Device, compiled, executeOptions) : RenderGraph::ExecuteResult {};
             if (Application::Get().GetSpecification().CommandLineArgs.HasFlag("--scene-viewport-render-graph-smoke")) Log::Info("RenderGraphRecordingV1 backend=Vulkan mode=", executeOptions.RecordingMode == FrameTaskExecutionMode::Parallel ? "worker" : "inline", " workerPasses=", executed.WorkerRecordedPassCount, " overlap=", executed.WorkerRecordingOverlapObserved ? "yes" : "no", " submitted=", executed.AcceptedPassCount, " result=", executed.Success ? "pass" : "fail");
@@ -862,21 +823,11 @@ namespace Engine
                 Scope<RHI::Texture> referenceColor = m_Device->CreateTexture(referenceColorDescription);
                 Scope<RHI::Texture> referenceDepth = m_Device->CreateTexture(referenceDepthDescription);
                 Scope<RHI::Texture> referenceShadow = m_Device->CreateTexture(referenceShadowDescription);
-                Scope<RHI::Texture> referenceToneMapped;
-                if (debugOverlayConstants)
-                {
-                    RHI::TextureDescription referenceToneMappedDescription =
-                        m_ToneMappedColor->GetDescription();
-                    referenceToneMappedDescription.DebugName =
-                        "Scene Viewport Bootstrap Reference Tone-Mapped Intermediate";
-                    referenceToneMapped = m_Device->CreateTexture(
-                        referenceToneMappedDescription);
-                }
                 RHI::TextureReadback graphReadback, referenceReadback;
                 const bool referenceRendered = referenceHdr && referenceColor && referenceDepth
-                    && referenceShadow && (!debugOverlayConstants || referenceToneMapped)
+                    && referenceShadow
                     && RecordBootstrapReference(*referenceHdr,
-                        *referenceColor, referenceToneMapped.get(), *referenceDepth,
+                        *referenceColor, *referenceDepth,
                         width, height, clear,
                         frame, constants, draws, shadowDraws, lightPayload,
                         *referenceShadow, *skyConstants, *toneMapConstants,
@@ -930,7 +881,7 @@ namespace Engine
             m_SkyAtmosphere.Shutdown();
             m_ToneMap.Shutdown();
             m_DebugOverlay.Shutdown();
-            m_HdrColor.reset(); m_Color.reset(); m_ToneMappedColor.reset();
+            m_HdrColor.reset(); m_Color.reset();
             m_Depth.reset(); m_ShadowDepth.reset();
             m_ShadowPipeline.reset(); m_Pipeline.reset();
             m_ShadowPixelShader.reset(); m_ShadowVertexShader.reset();
@@ -945,8 +896,7 @@ namespace Engine
         Scope<RHI::Shader> m_VertexShader, m_PixelShader;
         Scope<RHI::Shader> m_ShadowVertexShader, m_ShadowPixelShader;
         Scope<RHI::Pipeline> m_Pipeline, m_ShadowPipeline;
-        Scope<RHI::Texture> m_HdrColor, m_Color, m_ToneMappedColor, m_Depth,
-            m_ShadowDepth;
+        Scope<RHI::Texture> m_HdrColor, m_Color, m_Depth, m_ShadowDepth;
         SubmittedRenderGraphFrameOwner m_SubmittedGraphFrames;
         SceneLightPayloadPublication m_LightPayloadPublication;
         std::array<Ref<ConstantBufferSet>, SubmittedRenderGraphFrameOwner::Capacity> m_FrameConstantBuffers;

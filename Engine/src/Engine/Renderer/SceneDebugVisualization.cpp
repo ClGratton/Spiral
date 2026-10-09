@@ -179,6 +179,23 @@ namespace Engine
             <= static_cast<u32>(SceneDebugView::ShadowCaster);
     }
 
+    float SceneDebugInverseViewDepth(float ndcDepth, float depthScale,
+        float depthOffset)
+    {
+        return (ndcDepth - depthScale) / depthOffset;
+    }
+
+    bool IsSceneDebugEdgeVisible(float edgeU, float sceneU,
+        float sceneGradient, float depthOffset)
+    {
+        using Style = SceneDebugOverlayStyle;
+        const float tolerance = Style::RelativeDepthTolerance * sceneU
+            + Style::DepthQuantizationSteps * Style::DepthQuantizationStep
+                / std::abs(depthOffset)
+            + Style::SlopeFootprintPixels * sceneGradient;
+        return edgeU >= sceneU - tolerance;
+    }
+
     bool Renderer::SetSceneDebugVisualization(
         const SceneDebugVisualizationSettings& settings)
     {
@@ -234,6 +251,8 @@ namespace Engine
         candidate.SettingsGeneration = frame.DebugVisualizationGeneration;
         candidate.ViewportWidth = width;
         candidate.ViewportHeight = height;
+        candidate.DepthScale = frame.ProjectionDepthScale;
+        candidate.DepthOffset = frame.ProjectionDepthOffset;
         if (!candidate.Settings.ShowSelectedBounds
             || candidate.Settings.SelectedEntity == kInvalidEntityId)
         {
@@ -257,6 +276,18 @@ namespace Engine
         if (!IsFiniteBounds(bounds))
         {
             outError = "selected debug bounds are malformed";
+            return false;
+        }
+
+        // A perspective view maps view depth z to scale + offset / z with
+        // scale > 1 and offset < 0; anything else cannot be inverted for the
+        // depth comparison, so the overlay refuses rather than drawing
+        // unoccluded edges that would look like the through-the-surface bug.
+        if (!std::isfinite(candidate.DepthScale)
+            || !std::isfinite(candidate.DepthOffset)
+            || candidate.DepthScale <= 1.0f || candidate.DepthOffset >= 0.0f)
+        {
+            outError = "selected debug bounds require a valid perspective depth mapping";
             return false;
         }
 
@@ -286,8 +317,13 @@ namespace Engine
                 std::clamp(0.5f - firstY * 0.5f, 0.0f, 1.0f),
                 std::clamp(secondX * 0.5f + 0.5f, 0.0f, 1.0f),
                 std::clamp(0.5f - secondY * 0.5f, 0.0f, 1.0f)
+            }, {
+                std::clamp(first.Z / first.W, 0.0f, 1.0f),
+                std::clamp(second.Z / second.W, 0.0f, 1.0f)
             }};
             if (!std::all_of(std::begin(segment.Values), std::end(segment.Values),
+                    [](float value) { return std::isfinite(value); })
+                || !std::all_of(std::begin(segment.Depth), std::end(segment.Depth),
                     [](float value) { return std::isfinite(value); }))
             {
                 outError = "selected debug projection produced nonfinite viewport coordinates";

@@ -411,8 +411,9 @@ for ((ATTEMPT = 1; ATTEMPT <= ITERATIONS; ++ATTEMPT)); do
     fi
     if ! grep -Eq 'SceneDebugVisualizationV1 backend=Vulkan modes=Lit,MaterialId,GeometricNormal,ShadowCaster settings=immutable-prepared readback=exact-diagnostic selectedBounds=post-tone-map overlayPixels=[1-9][0-9]* fullOpacityBlendPixels=[1-9][0-9]* graphPasses=8-on,7-off emptyVisibleMeshes=sky-retained result=pass' "$DEBUG_VISUALIZATION_LOG" \
         || ! grep -Fq 'SceneViewportRenderGraphV1 backend=Vulkan passes=8 labels=light-payload-copy,primary-directional-shadow-map,clear,sky-atmosphere,raster,tone-map,debug-overlay,output-handoff execution=pass reference=direct comparator=exact-byte-pass' "$DEBUG_VISUALIZATION_LOG" \
-        || ! grep -Fq 'SceneViewportRenderGraphV1 backend=Vulkan passes=7 labels=light-payload-copy,primary-directional-shadow-map,clear,sky-atmosphere,raster,tone-map,output-handoff execution=pass reference=direct comparator=exact-byte-pass' "$DEBUG_VISUALIZATION_LOG"; then
-        echo "Dedicated Vulkan debug-visualization smoke did not prove immutable mode state, post-tone-map selected bounds, conditional graph topology, and sky retention with zero visible meshes." >&2
+        || ! grep -Fq 'SceneViewportRenderGraphV1 backend=Vulkan passes=7 labels=light-payload-copy,primary-directional-shadow-map,clear,sky-atmosphere,raster,tone-map,output-handoff execution=pass reference=direct comparator=exact-byte-pass' "$DEBUG_VISUALIZATION_LOG" \
+        || ! grep -Eq 'SceneSelectionBoundsOcclusionV1 backend=Vulkan depth=sampled-scene-depth blend=fixed-function-over occludedDefault=hidden backEdge=scene-color occludedOptIn=dim-25pct-1px frontEdge=full-selection-color frontEdgeWithOptIn=unchanged frontOnVisibleEdges=4 backProbe=[0-9]+,[0-9]+ frontProbe=[0-9]+,[0-9]+ frontOnChangedPixels=[1-9][0-9]* frontOnModelMismatches=0 rotatedVisibleEdges=[7-9] rotatedChangedPixels=[1-9][0-9]* rotatedModelMismatches=0 rotatedCornerLeakPixels=[0-8] result=pass' "$DEBUG_VISUALIZATION_LOG"; then
+        echo "Dedicated Vulkan debug-visualization smoke did not prove immutable mode state, post-tone-map selected bounds, depth-tested selection-bounds occlusion (hidden by default, dim opt-in, front edge intact), conditional graph topology, and sky retention with zero visible meshes." >&2
         exit 1
     fi
 

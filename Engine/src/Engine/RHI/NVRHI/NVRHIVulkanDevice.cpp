@@ -265,6 +265,16 @@ namespace Engine::RHI
                 pipeline.renderState.rasterState.setCullNone().setFrontCounterClockwise(false);
                 pipeline.renderState.depthStencilState.depthTestEnable = m_Description.DepthTestEnable;
                 pipeline.renderState.depthStencilState.depthWriteEnable = m_Description.DepthWriteEnable;
+                if (m_Description.AlphaBlendEnable)
+                {
+                    pipeline.renderState.blendState.targets[0].setBlendEnable(true)
+                        .setSrcBlend(nvrhi::BlendFactor::SrcAlpha)
+                        .setDestBlend(nvrhi::BlendFactor::InvSrcAlpha)
+                        .setBlendOp(nvrhi::BlendOp::Add)
+                        .setSrcBlendAlpha(nvrhi::BlendFactor::Zero)
+                        .setDestBlendAlpha(nvrhi::BlendFactor::One)
+                        .setBlendOpAlpha(nvrhi::BlendOp::Add);
+                }
                 m_NativePipeline = device->createGraphicsPipeline(pipeline, framebufferInfo);
                 if (m_NativePipeline)
                     m_FramebufferInfo = framebufferInfo;

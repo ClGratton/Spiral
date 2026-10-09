@@ -12,13 +12,29 @@ cbuffer SceneDebugOverlayConstants : register(b0)
     float4 Segment9;
     float4 Segment10;
     float4 Segment11;
+    // Inverse view depth at both endpoints of two segments: xy=even, zw=odd.
+    float4 SegmentDepth0;
+    float4 SegmentDepth1;
+    float4 SegmentDepth2;
+    float4 SegmentDepth3;
+    float4 SegmentDepth4;
+    float4 SegmentDepth5;
+    // rgb=selection color, a=visible opacity.
     float4 OverlayColorAndOpacity;
-    // x=segment count, y=viewport width, z=viewport height, w=thickness px.
+    // x=segment count, y=viewport width, z=viewport height, w=visible thickness px.
     float4 OverlayState;
+    // x=draw occluded edges (0/1), y=occluded opacity, z=occluded thickness px,
+    // w=absolute inverse-depth quantization tolerance.
+    float4 OccludedState;
+    // x=ndc depth scale, y=ndc depth offset (ndc = x + y / viewZ),
+    // z=relative inverse-depth tolerance, w=slope footprint in pixels.
+    float4 DepthState;
 };
 
-Texture2D ResolvedScene : register(t0, space2);
-SamplerState ResolvedSceneSampler : register(s0, space2);
+// The Scene depth the raster pass wrote (zero-to-one, standard Z), sampled with
+// point filtering. The overlay reads it instead of binding it as an attachment.
+Texture2D<float> SceneDepth : register(t0, space2);
+SamplerState SceneDepthSampler : register(s0, space2);
 
 struct VSInput
 {
@@ -57,38 +73,107 @@ float4 GetSegment(uint index)
     return Segment11;
 }
 
-float DistanceToSegment(float2 point, float2 first, float2 second)
+float4 GetSegmentDepthPair(uint pair)
+{
+    if (pair == 0u) return SegmentDepth0;
+    if (pair == 1u) return SegmentDepth1;
+    if (pair == 2u) return SegmentDepth2;
+    if (pair == 3u) return SegmentDepth3;
+    if (pair == 4u) return SegmentDepth4;
+    return SegmentDepth5;
+}
+
+float2 GetSegmentDepth(uint index)
+{
+    const float4 pair = GetSegmentDepthPair(index >> 1u);
+    return (index & 1u) != 0u ? pair.zw : pair.xy;
+}
+
+float DistanceToSegment(float2 point, float2 first, float2 second,
+    out float amount)
 {
     const float2 direction = second - first;
     const float lengthSquared = dot(direction, direction);
-    const float amount = lengthSquared > 0.000001f
+    amount = lengthSquared > 0.000001f
         ? saturate(dot(point - first, direction) / lengthSquared) : 0.0f;
     return length(point - (first + direction * amount));
 }
 
+// Inverse view depth (1 / viewZ, larger is nearer) of the Scene at a UV.
+float SampleSceneInverseDepth(float2 uv)
+{
+    const float ndcDepth = SceneDepth.SampleLevel(SceneDepthSampler, uv, 0.0f);
+    return (ndcDepth - DepthState.x) / DepthState.y;
+}
+
 float4 PSMain(VSOutput input) : SV_Target0
 {
-    const float4 source = ResolvedScene.SampleLevel(
-        ResolvedSceneSampler, input.UV, 0.0f);
     if (!all(isfinite(OverlayState)) || !all(isfinite(OverlayColorAndOpacity))
+        || !all(isfinite(OccludedState)) || !all(isfinite(DepthState))
         || OverlayState.x < 1.0f || OverlayState.x > 12.0f
         || OverlayState.y < 1.0f || OverlayState.z < 1.0f
         || OverlayState.w <= 0.0f || OverlayColorAndOpacity.a < 0.0f
-        || OverlayColorAndOpacity.a > 1.0f)
+        || OverlayColorAndOpacity.a > 1.0f
+        || OccludedState.y < 0.0f || OccludedState.y > 1.0f
+        || OccludedState.z <= 0.0f
+        || DepthState.x <= 1.0f || DepthState.y >= 0.0f)
         return float4(1.0f, 0.0f, 1.0f, 1.0f);
     const uint segmentCount = (uint)OverlayState.x;
     const float2 viewport = OverlayState.yz;
-    float distancePixels = 1000000.0f;
+    const float feather = 0.75f;
+    const float reach = max(OverlayState.w,
+        OccludedState.x > 0.5f ? OccludedState.z : 0.0f) + feather;
+
+    // The Scene depth is sampled lazily: most pixels are nowhere near an edge.
+    bool depthLoaded = false;
+    float sceneU = 0.0f;
+    float sceneGradient = 0.0f;
+    float visibleAlpha = 0.0f;
+    float occludedAlpha = 0.0f;
     [unroll] for (uint index = 0u; index < 12u; ++index)
     {
         if (index >= segmentCount)
             break;
         const float4 segment = GetSegment(index);
-        distancePixels = min(distancePixels, DistanceToSegment(
-            input.Position.xy, segment.xy * viewport, segment.zw * viewport));
+        float amount;
+        const float distancePixels = DistanceToSegment(input.Position.xy,
+            segment.xy * viewport, segment.zw * viewport, amount);
+        if (distancePixels >= reach)
+            continue;
+        if (!depthLoaded)
+        {
+            depthLoaded = true;
+            const float2 texel = 1.0f / viewport;
+            sceneU = SampleSceneInverseDepth(input.UV);
+            const float left = SampleSceneInverseDepth(input.UV - float2(texel.x, 0.0f));
+            const float right = SampleSceneInverseDepth(input.UV + float2(texel.x, 0.0f));
+            const float up = SampleSceneInverseDepth(input.UV - float2(0.0f, texel.y));
+            const float down = SampleSceneInverseDepth(input.UV + float2(0.0f, texel.y));
+            // Inverse depth is affine in screen space on a planar face. The
+            // smaller one-sided difference per axis ignores a depth cliff on
+            // the far side of a silhouette while keeping the face's own slope.
+            sceneGradient = length(float2(
+                min(abs(sceneU - left), abs(right - sceneU)),
+                min(abs(sceneU - up), abs(down - sceneU))));
+        }
+        const float2 depths = GetSegmentDepth(index);
+        const float edgeU = lerp(depths.x, depths.y, amount);
+        const float tolerance = DepthState.z * sceneU + OccludedState.w
+            + DepthState.w * sceneGradient;
+        if (edgeU >= sceneU - tolerance)
+        {
+            const float coverage = 1.0f - smoothstep(
+                OverlayState.w - feather, OverlayState.w + feather, distancePixels);
+            visibleAlpha = max(visibleAlpha, coverage * OverlayColorAndOpacity.a);
+        }
+        else if (OccludedState.x > 0.5f)
+        {
+            const float coverage = 1.0f - smoothstep(
+                OccludedState.z - feather, OccludedState.z + feather, distancePixels);
+            occludedAlpha = max(occludedAlpha, coverage * OccludedState.y);
+        }
     }
-    const float coverage = 1.0f - smoothstep(
-        OverlayState.w - 0.75f, OverlayState.w + 0.75f, distancePixels);
-    const float opacity = coverage * OverlayColorAndOpacity.a;
-    return float4(lerp(source.rgb, OverlayColorAndOpacity.rgb, opacity), 1.0f);
+    // Straight alpha; the pipeline's fixed-function blend composes it over the
+    // tone-mapped color already in the target.
+    return float4(OverlayColorAndOpacity.rgb, max(visibleAlpha, occludedAlpha));
 }

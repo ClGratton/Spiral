@@ -103,6 +103,7 @@
 #if defined(GE_PLATFORM_LINUX)
     #include <fcntl.h>
     #include <signal.h>
+    #include <sys/prctl.h>
     #include <sys/resource.h>
     #include <sys/stat.h>
     #include <sys/types.h>
@@ -559,6 +560,13 @@ namespace
         const struct rlimit coreLimit = { 0, 0 };
         if (::setrlimit(RLIMIT_CORE, &coreLimit) != 0)
             return 122;
+        // RLIMIT_CORE of zero only truncates the dump: with a piped core_pattern
+        // (systemd-coredump) the kernel still starts the helper, which records
+        // a journal entry and raises a desktop "Process crashed" notification
+        // for these deliberate crashes. A non-dumpable process is never handed
+        // to the helper. The terminating signal and receipt are unaffected.
+        if (::prctl(PR_SET_DUMPABLE, 0, 0, 0, 0) != 0)
+            return 126;
 
         Engine::Log::Init();
         Engine::CrashHandler::Install();
@@ -6181,6 +6189,7 @@ namespace
         second.View = SceneDebugView::GeometricNormal;
         second.SelectedEntity = 702;
         second.ShowSelectedBounds = false;
+        second.ShowOccludedSelectionBounds = true;
         const bool secondAccepted = Renderer::SetSceneDebugVisualization(second);
         const SceneDebugVisualizationPublication secondPublication =
             Renderer::GetSceneDebugVisualization();
@@ -6316,7 +6325,13 @@ namespace
             && retainedFrame.DebugVisualization == first
             && retainedFrame.DebugVisualizationGeneration == firstPublication.Generation
             && nextFrame.DebugVisualization == second
-            && nextFrame.DebugVisualizationGeneration == secondPublication.Generation;
+            && nextFrame.DebugVisualizationGeneration == secondPublication.Generation
+            // Occluded edges default off and ride the same immutable per-frame
+            // settings publication as every other debug setting.
+            && !SceneDebugVisualizationSettings {}.ShowOccludedSelectionBounds
+            && !retainedFrame.DebugVisualization.ShowOccludedSelectionBounds
+            && nextFrame.DebugVisualization.ShowOccludedSelectionBounds
+            && !(first == second);
 
         return Expect(parsesAll && unknownRejected,
                 "scene debug view names round-trip exactly and reject unknown spellings transactionally")
@@ -6337,6 +6352,8 @@ namespace
         frame.DebugVisualization.SelectedEntity = 81;
         frame.DebugVisualization.ShowSelectedBounds = true;
         frame.DebugVisualizationGeneration = 17;
+        frame.ProjectionDepthScale = 1.001f;
+        frame.ProjectionDepthOffset = -0.1001f;
         SceneRasterInstance selected;
         selected.SourceEntity = 81;
         selected.ModelViewProjection = Math::Mat4::Identity();
@@ -6391,7 +6408,7 @@ namespace
         const bool gpuAccepted = TryBuildSceneDebugOverlayGpuConstants(
                 projected, gpu, error)
             && error.empty()
-            && sizeof(SceneDebugOverlayGpuConstants) == 224
+            && sizeof(SceneDebugOverlayGpuConstants) == 352
             && gpu.OverlayState[0]
                 == static_cast<float>(SceneDebugOverlayFrame::MaximumSegmentCount)
             && gpu.OverlayState[1] == 800.0f
@@ -6400,7 +6417,20 @@ namespace
             && gpu.OverlayColorAndOpacity[0] == 69.0f / 255.0f
             && gpu.OverlayColorAndOpacity[1] == 133.0f / 255.0f
             && gpu.OverlayColorAndOpacity[2] == 179.0f / 255.0f
-            && gpu.OverlayColorAndOpacity[3] == 0.92f;
+            && gpu.OverlayColorAndOpacity[3] == 0.92f
+            && gpu.OccludedState[0] == 0.0f
+            && gpu.OccludedState[1] == 0.25f && gpu.OccludedState[2] == 1.0f
+            && gpu.DepthState[0] == 1.001f && gpu.DepthState[1] == -0.1001f;
+
+        SceneRasterFrame unmappedDepth = frame;
+        unmappedDepth.ProjectionDepthScale = 0.0f;
+        unmappedDepth.ProjectionDepthOffset = 0.0f;
+        SceneDebugOverlayFrame preservedUnmapped = projected;
+        preservedUnmapped.SettingsGeneration = 4242;
+        const bool unmappedRejected = !TryPrepareSceneDebugOverlay(
+                unmappedDepth, visibleBounds, 800, 600, preservedUnmapped, error)
+            && !error.empty() && preservedUnmapped.SettingsGeneration == 4242
+            && preservedUnmapped.SegmentCount == projected.SegmentCount;
 
         SceneDebugOverlayFrame preservedOverlay = projected;
         preservedOverlay.SettingsGeneration = 991;
@@ -6433,8 +6463,185 @@ namespace
                 "missing or disabled selection publishes an explicit overlay-free frame")
             && Expect(gpuAccepted,
                 "overlay constants preserve every edge plus exact color, opacity, viewport, and thickness state")
-            && Expect(malformedRejected && malformedGpuRejected && emptyGpuRejected,
-                "malformed bounds and empty or out-of-range GPU inputs reject without replacing caller state");
+            && Expect(malformedRejected && malformedGpuRejected && emptyGpuRejected
+                    && unmappedRejected,
+                "malformed bounds, a missing perspective depth mapping, and empty or out-of-range GPU inputs reject without replacing caller state");
+    }
+
+    bool TestSceneDebugOverlayDepthIsPerspectiveCorrectAndOcclusionToleranceHolds()
+    {
+        using namespace Engine;
+        using Style = SceneDebugOverlayStyle;
+        constexpr double nearPlane = 0.1;
+        constexpr double farPlane = 100.0;
+        const Math::Mat4 projection = Math::PerspectiveLH(
+            Math::DegreesToRadians(60.0f), 4.0f / 3.0f,
+            static_cast<float>(nearPlane), static_cast<float>(farPlane));
+        // Independent closed form from near and far, not from the matrix entries
+        // the implementation reads: ndc = far / (far - near) * (1 - near / z).
+        const auto expectedNdc = [](double viewDepth)
+        {
+            return farPlane / (farPlane - nearPlane) * (1.0 - nearPlane / viewDepth);
+        };
+
+        SceneRasterFrame frame;
+        frame.HasValidView = true;
+        frame.DebugVisualization.SelectedEntity = 7;
+        frame.DebugVisualization.ShowSelectedBounds = true;
+        frame.DebugVisualization.ShowOccludedSelectionBounds = true;
+        frame.ProjectionDepthScale = projection.Values[10];
+        frame.ProjectionDepthOffset = projection.Values[14];
+        SceneRasterInstance selected;
+        selected.SourceEntity = 7;
+        selected.ModelViewProjection = Math::Multiply(
+            Math::Translation({ 0.0f, 0.0f, 5.0f }), projection);
+        frame.Instances.push_back(selected);
+        const std::vector<SceneObjectBounds> bounds {
+            { { -0.5f, -0.5f, -0.5f }, { 0.5f, 0.5f, 0.5f } }
+        };
+        std::string error;
+        SceneDebugOverlayFrame overlay;
+        const bool prepared = TryPrepareSceneDebugOverlay(
+            frame, bounds, 640, 480, overlay, error);
+        u32 frontEdges = 0, backEdges = 0, connectingEdges = 0;
+        bool endpointDepthsExact = prepared && overlay.SegmentCount == 12;
+        const double frontNdc = expectedNdc(4.5);
+        const double backNdc = expectedNdc(5.5);
+        for (u32 segment = 0; endpointDepthsExact && segment < overlay.SegmentCount; ++segment)
+        {
+            const double first = overlay.Segments[segment].Depth[0];
+            const double second = overlay.Segments[segment].Depth[1];
+            const bool firstFront = std::abs(first - frontNdc) < 2.0e-6;
+            const bool firstBack = std::abs(first - backNdc) < 2.0e-6;
+            const bool secondFront = std::abs(second - frontNdc) < 2.0e-6;
+            const bool secondBack = std::abs(second - backNdc) < 2.0e-6;
+            if (firstFront && secondFront) ++frontEdges;
+            else if (firstBack && secondBack) ++backEdges;
+            else if ((firstFront && secondBack) || (firstBack && secondFront)) ++connectingEdges;
+            else endpointDepthsExact = false;
+        }
+        endpointDepthsExact = endpointDepthsExact && frontEdges == 4
+            && backEdges == 4 && connectingEdges == 4;
+
+        // The shader interpolates inverse view depth linearly in screen space.
+        // Ground truth: walk the world-space connecting edge at (0.5, 0.5) and
+        // compare against the interpolation at the matching screen parameter.
+        SceneDebugOverlayGpuConstants gpu;
+        const bool gpuBuilt = prepared && TryBuildSceneDebugOverlayGpuConstants(
+            overlay, gpu, error);
+        bool interpolationMatchesGroundTruth = gpuBuilt;
+        for (u32 segment = 0; gpuBuilt && segment < overlay.SegmentCount; ++segment)
+        {
+            const float* depths = &gpu.SegmentDepths[segment / 2][(segment % 2) * 2];
+            const double u0 = depths[0];
+            const double u1 = depths[1];
+            if (std::abs(u0 - u1) < 1.0e-6)
+                continue;
+            const double x0 = overlay.Segments[segment].Values[0];
+            const double x1 = overlay.Segments[segment].Values[2];
+            const double y0 = overlay.Segments[segment].Values[1];
+            const double y1 = overlay.Segments[segment].Values[3];
+            const bool useX = std::abs(x1 - x0) >= std::abs(y1 - y0);
+            for (double lambda : { 0.25, 0.5, 0.75 })
+            {
+                const double viewDepth0 = 1.0 / u0;
+                const double viewDepth1 = 1.0 / u1;
+                const double viewDepth = viewDepth0 + (viewDepth1 - viewDepth0) * lambda;
+                // Screen coordinate of the world point at that view depth: both
+                // x and y scale by the corner's lateral offset over view depth.
+                const double lateral0 = useX ? (x0 - 0.5) * 2.0 * viewDepth0
+                    : (0.5 - y0) * 2.0 * viewDepth0;
+                const double lateral1 = useX ? (x1 - 0.5) * 2.0 * viewDepth1
+                    : (0.5 - y1) * 2.0 * viewDepth1;
+                const double lateral = lateral0 + (lateral1 - lateral0) * lambda;
+                const double screen = lateral / viewDepth;
+                const double screen0 = useX ? (x0 - 0.5) * 2.0 : (0.5 - y0) * 2.0;
+                const double screen1 = useX ? (x1 - 0.5) * 2.0 : (0.5 - y1) * 2.0;
+                const double t = (screen - screen0) / (screen1 - screen0);
+                const double interpolated = u0 + (u1 - u0) * t;
+                interpolationMatchesGroundTruth = interpolationMatchesGroundTruth
+                    && std::abs(interpolated * viewDepth - 1.0) < 1.0e-4;
+            }
+        }
+
+        // Occlusion tolerance. A float32 D32 value near one resolves 2^-24, and
+        // the edge itself is computed in float32 from the same matrices. Sweep
+        // view depth across the whole frustum and require: an edge lying on a
+        // face (agreeing to 8 quantization steps, the worst case a float32 MVP
+        // chain produces) stays visible, and a real occluder 1 percent nearer
+        // than the edge hides it, at every depth.
+        const float depthScale = static_cast<float>(farPlane / (farPlane - nearPlane));
+        const float depthOffset = -static_cast<float>(nearPlane * farPlane / (farPlane - nearPlane));
+        bool onFaceStaysVisible = true;
+        bool occluderHides = true;
+        bool nearerEdgeStaysVisible = true;
+        for (double viewDepth = 0.12; viewDepth < 99.0; viewDepth *= 1.07)
+        {
+            const float edgeNdc = static_cast<float>(expectedNdc(viewDepth));
+            const float edgeU = SceneDebugInverseViewDepth(edgeNdc, depthScale, depthOffset);
+            for (int step = -8; step <= 8; ++step)
+            {
+                const float sceneNdc = std::min(1.0f, edgeNdc
+                    + static_cast<float>(step) * static_cast<float>(Style::DepthQuantizationStep));
+                const float sceneU = SceneDebugInverseViewDepth(sceneNdc, depthScale, depthOffset);
+                onFaceStaysVisible = onFaceStaysVisible
+                    && IsSceneDebugEdgeVisible(edgeU, sceneU, 0.0f, depthOffset);
+            }
+            const float occluderNdc = static_cast<float>(expectedNdc(viewDepth * 0.99));
+            const float occluderU = SceneDebugInverseViewDepth(occluderNdc, depthScale, depthOffset);
+            occluderHides = occluderHides
+                && !IsSceneDebugEdgeVisible(edgeU, occluderU, 0.0f, depthOffset);
+            const float behindNdc = static_cast<float>(expectedNdc(viewDepth * 1.5));
+            const float behindU = SceneDebugInverseViewDepth(behindNdc, depthScale, depthOffset);
+            nearerEdgeStaysVisible = nearerEdgeStaysVisible
+                && IsSceneDebugEdgeVisible(edgeU, behindU, 0.0f, depthOffset);
+        }
+
+        // Slope: inverse depth is affine on a planar face, so an edge lying on a
+        // face with gradient g differs from the face at a pixel d away by g * d.
+        // Covered fringe pixels (d up to 2.75) stay visible; d = 3.5 px does not.
+        const float sceneU = 0.2f;
+        const float gradient = 0.01f;
+        const bool slopeCovered =
+            IsSceneDebugEdgeVisible(sceneU - gradient * 2.75f, sceneU, gradient, depthOffset)
+            && !IsSceneDebugEdgeVisible(sceneU - gradient * 3.5f - 0.01f * sceneU, sceneU,
+                gradient, depthOffset);
+
+        SceneDebugOverlayFrame hidden = overlay;
+        hidden.Settings.ShowOccludedSelectionBounds = false;
+        SceneDebugOverlayGpuConstants hiddenGpu;
+        const bool settingFlows = gpuBuilt
+            && gpu.OccludedState[0] == 1.0f
+            && TryBuildSceneDebugOverlayGpuConstants(hidden, hiddenGpu, error)
+            && hiddenGpu.OccludedState[0] == 0.0f
+            && hiddenGpu.OccludedState[1] == Style::OccludedOpacity
+            && hiddenGpu.OccludedState[2] == Style::OccludedThicknessPixels
+            && Style::OccludedOpacity < 0.3f && Style::OccludedOpacity > 0.2f
+            && Style::OccludedThicknessPixels < Style::VisibleThicknessPixels;
+
+        SceneDebugOverlayFrame badDepth = overlay;
+        badDepth.Segments[3].Depth[1] = 1.5f;
+        SceneDebugOverlayGpuConstants preserved;
+        preserved.OverlayState[0] = 991.0f;
+        SceneDebugOverlayFrame badMapping = overlay;
+        badMapping.DepthScale = 0.5f;
+        const bool badRejected = !TryBuildSceneDebugOverlayGpuConstants(badDepth, preserved, error)
+            && preserved.OverlayState[0] == 991.0f
+            && !TryBuildSceneDebugOverlayGpuConstants(badMapping, preserved, error)
+            && preserved.OverlayState[0] == 991.0f;
+
+        return Expect(endpointDepthsExact,
+                "selected-bounds endpoints carry the exact zero-to-one NDC depth of the perspective closed form (four front, four back, four connecting edges)")
+            && Expect(interpolationMatchesGroundTruth,
+                "inverse view depth interpolated in screen space reproduces world-space ground truth along perspective edges")
+            && Expect(onFaceStaysVisible && nearerEdgeStaysVisible,
+                "an edge lying on a face stays visible within 8 depth quantization steps at every depth, and an edge in front of a farther surface stays visible")
+            && Expect(occluderHides,
+                "a surface 1 percent nearer than the edge hides it at every depth")
+            && Expect(slopeCovered,
+                "the slope term covers the 2.75 px antialias footprint on a sloped face but not 3.5 px")
+            && Expect(settingFlows && badRejected,
+                "the occluded setting reaches the GPU constants with dim thin style, and invalid depth or mapping rejects transactionally");
     }
 
     bool TestSceneSkyAtmospherePreparationIsDeterministicAndBounded()
@@ -12771,6 +12978,7 @@ int main(int argc, char** argv)
         FAST_TEST("Scene surface basis and material rows publish deterministically", TestSceneSurfaceBasisAndMaterialRows),
         FAST_TEST("Scene debug visualization publication is monotonic and frame coherent", TestSceneDebugVisualizationPublicationIsFrameCoherent),
         FAST_TEST("Scene debug visualization overlay clips and packs transactionally", TestSceneDebugVisualizationOverlayClipsAndPacksTransactionally),
+        FAST_TEST("Scene debug overlay depth is perspective correct and occlusion tolerance holds", TestSceneDebugOverlayDepthIsPerspectiveCorrectAndOcclusionToleranceHolds),
         FAST_TEST("Scene sky atmosphere preparation is deterministic and bounded", TestSceneSkyAtmospherePreparationIsDeterministicAndBounded),
         FAST_TEST("Scene shadow map preparation is stabilized and classifies caster modes", TestSceneShadowMapPreparationIsStableAndExplicit),
         FAST_TEST("Basic PBR CPU reference uses accepted convention", TestBasicPbrCpuReferenceUsesAcceptedConvention),

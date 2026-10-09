@@ -288,6 +288,7 @@ private:
     Engine::Entity m_SelectedEntity;
     Engine::SceneDebugView m_SceneDebugView = Engine::SceneDebugView::Lit;
     bool m_ShowSelectedBounds = true;
+    bool m_ShowOccludedSelectionBounds = false;
     Engine::EditorCamera m_EditorCamera;
     Engine::CameraViewOriginTracker m_ViewportOriginTracker;
     bool m_ViewportDiscontinuousRelocationPending = true;
