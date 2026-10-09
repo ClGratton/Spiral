@@ -1,6 +1,9 @@
 #pragma once
 
 #include "EditorMaterialControl.h"
+#include "Fab/BrowserPanel.h"
+#include "FabEditorAdoption.h"
+#include "FabImportPanel.h"
 
 #include <Engine.h>
 
@@ -12,6 +15,7 @@
 #include <vector>
 
 struct ImVec2;
+struct ImGuiContext;
 
 enum class ViewportNavigationPreset
 {
@@ -119,6 +123,63 @@ private:
     HistoryState CaptureHistoryState() const;
     bool RestoreHistoryState(const HistoryState& state);
     void EnsureDefaultSceneEntities();
+
+    // Project location and Fab integration. Defined in EditorLayerFab.cpp so the
+    // 7,000-line EditorLayer.cpp only carries the hook calls.
+    void RefreshProjectLocation();
+    std::filesystem::path ResolveProjectPath(std::string_view path, bool searchLegacyRoots) const;
+    bool OpenCommandLineProject(const Engine::ApplicationCommandLineArgs& args);
+    void InitializeFabIntegration();
+    void ShutdownFabIntegration();
+    void UpdateFabIntegration();
+    void DrawFabIntegration();
+    void PollFabDownloads();
+    bool BuildFabImportProjectContext(std::optional<Fab::FabAssignmentTarget> assignment,
+        Fab::FabImportProjectContext& out, std::string& error);
+    bool AdoptFabImportCommit(std::string& error);
+    bool ReloadCommittedFabProject(std::string& error);
+    std::optional<Fab::FabAssignmentTarget> GetFabAssignmentCandidate() const;
+    void ResetFabProjectState(const Engine::FabProjectState& loaded, std::string manifestSha256);
+    bool RefreshManifestDigest();
+    Engine::AssetHandle FindFabMaterialForMesh(Engine::AssetHandle mesh) const;
+    Engine::Entity PlaceMeshAssetInScene(Engine::AssetHandle mesh, std::string& error);
+    bool OnFabAssetDrop(Engine::AssetHandle handle);
+    void FillFabReceiptBlock(EditorFabControlReceipt& block) const;
+    EditorMaterialControlTransaction ExecuteFabControlRequest(
+        const EditorMaterialControlRequest& request, EditorMaterialControlTransaction transaction);
+    void PublishEditorFabControlSmokeTarget();
+    void RunEditorFabControlSmokeBeforeDrain();
+    void RunEditorFabControlSmokeAfterDrain();
+    // Draws the Fab import panel through every workflow state inside a private
+    // ImGui context, headlessly, so its widget code runs under ImGui's own
+    // stack and ID assertions. Returns true while it owns the UI phase.
+    bool RunFabPanelUiSmokeFrame();
+
+private:
+    // The project root every manifest-relative path resolves beneath: the working
+    // directory for the default project (cwd-relative manifests) and the manifest's
+    // own directory for a project named with --project.
+    std::filesystem::path m_ProjectRoot;
+    std::string m_ProjectManifestRelativePath;
+    bool m_ProjectPathsRelativeToManifest = false;
+    FabEditor::ProjectFabState m_FabProject;
+    FabImportPanel m_FabImport;
+    Fab::BrowserPanel m_FabBrowser;
+    bool m_FabIntegrationInitialized = false;
+    bool m_EditorFabHelperSmokeRequested = false;
+    bool m_EditorFabReopenSmokeRequested = false;
+    bool m_EditorFabSmokeCompleted = false;
+    bool m_EditorFabForceAdoptionFailureOnce = false;
+    unsigned int m_EditorFabAdoptionReloads = 0;
+    bool m_FabPanelUiSmokeRequested = false;
+    ImGuiContext* m_FabPanelUiSmokeContext = nullptr;
+    unsigned int m_FabPanelUiSmokeStage = 0;
+    unsigned int m_FabPanelUiSmokeFrames = 0;
+    double m_FabPanelUiSmokeStageStart = 0.0;
+    std::string m_FabPanelUiSmokeFixtures;
+    Engine::u64 m_EditorFabSmokeInitialRendererGeneration = 0;
+    Engine::AssetHandle m_EditorFabSmokePrototypeMesh = Engine::kInvalidAssetHandle;
+    Engine::AssetHandle m_EditorFabSmokePrototypeMaterial = Engine::kInvalidAssetHandle;
 
 private:
     unsigned int m_FrameCounter = 0;

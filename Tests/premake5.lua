@@ -15,6 +15,7 @@ project "EngineTests"
         "../Editor/src/Fab/BrowserDownloadPolicy.cpp",
         "../Editor/src/Fab/BrowserFrameMirror.cpp",
         "../Editor/src/Fab/BrowserInputRouter.cpp",
+        "../Editor/src/Fab/BrowserPanelCore.cpp",
         "../Editor/src/Fab/BrowserNavigationPolicy.cpp",
         "../Editor/src/Fab/BrowserSurface.cpp",
         "../Editor/src/Fab/FabImportController.cpp",

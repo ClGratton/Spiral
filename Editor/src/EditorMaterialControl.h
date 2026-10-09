@@ -1,5 +1,6 @@
 #pragma once
 
+#include <Engine/Assets/FabImportReceipt.h>
 #include <Engine/Assets/MaterialAsset.h>
 #include <Engine/Core/Base.h>
 #include <Engine/Renderer/ColorPipelineSettings.h>
@@ -25,7 +26,70 @@ enum class EditorMaterialControlAction
     SetProjectColorPipeline,
     SetViewportMainCameraPose,
     SetSceneDebugVisualization,
-    SetMeshRendererFlags
+    SetMeshRendererFlags,
+    // Schema 4: the Fab import workflow and project-level actions. Every one has a
+    // fixed typed field set; none carries a filesystem path, URL, or credential.
+    InspectFabImport,
+    SelectFabPackage,
+    SetFabProvenance,
+    ConfirmFabProvenance,
+    CommitFabImport,
+    CancelFabImport,
+    DismissFabImport,
+    PlaceMeshAsset,
+    SetEntityMeshRendererAssets,
+    SaveProjectState,
+    ValidateProject,
+    SetFabPanelVisible,
+    InspectFabPanel
+};
+
+inline bool IsFabControlAction(EditorMaterialControlAction action)
+{
+    return action >= EditorMaterialControlAction::InspectFabImport;
+}
+
+// Attribution text is capped here so a provenance request fits the mailbox
+// limit; the Editor UI keeps the receipt validator's full limit.
+inline constexpr std::size_t kEditorFabControlMaximumAttributionBytes = 2 * 1024;
+
+struct EditorFabControlRequest
+{
+    Engine::u64 ExpectedJobId = 0;
+    bool HasExpectedJobId = false;
+    // A single leaf inside the session's fab-inbox directory.
+    std::string InboxName;
+    // zip, glb, gltf, or directory.
+    std::string ExpectedSourceKind;
+    std::string ExpectedSourceSha256;
+
+    std::string ProductIdentity;
+    std::string ProductName;
+    std::string Publisher;
+    std::string VersionOrDownloadLabel;
+    Engine::FabLicenseFamily LicenseFamily = Engine::FabLicenseFamily::Unknown;
+    Engine::FabLicenseTier LicenseTier = Engine::FabLicenseTier::Unknown;
+    std::string AttributionText;
+    std::string AttributionLink;
+    Engine::FabMetadataFlag NoAI = Engine::FabMetadataFlag::Unknown;
+    Engine::FabMetadataFlag GeneratedWithAI = Engine::FabMetadataFlag::Unknown;
+    Engine::FabRawSourcePolicy RawSourcePolicy = Engine::FabRawSourcePolicy::ExcludedFromProject;
+
+    std::string ExpectedProvenanceDigest;
+    std::string ExpectedGenerationId;
+    std::string ExpectedRelation;
+
+    // Compare-and-swap handles for SetEntityMeshRendererAssets and for the
+    // optional CommitFabImport assignment (together with EntityId).
+    Engine::AssetHandle ExpectedMeshAsset = Engine::kInvalidAssetHandle;
+    Engine::AssetHandle ExpectedMaterialAsset = Engine::kInvalidAssetHandle;
+    Engine::AssetHandle NewMeshAsset = Engine::kInvalidAssetHandle;
+    Engine::AssetHandle NewMaterialAsset = Engine::kInvalidAssetHandle;
+    Engine::AssetHandle MeshAsset = Engine::kInvalidAssetHandle;
+    bool HasAssignment = false;
+
+    std::string ExpectedManifestSha256;
+    bool PanelVisible = false;
 };
 
 struct EditorMaterialControlRequest
@@ -70,6 +134,74 @@ struct EditorMaterialControlRequest
     bool HasNewMeshRendererFlags = false;
     Engine::EntityId ExpectedSelectedEntityId = Engine::kInvalidEntityId;
     bool HasExpectedSelectedEntityId = false;
+    EditorFabControlRequest Fab;
+};
+
+// Always present in a receipt. Fields default to the "unused" spelling that the
+// formatter prints as none/0, so a non-Fab action carries an inert block.
+struct EditorFabControlReceipt
+{
+    std::string State = "none";
+    Engine::u64 JobId = 0;
+    bool CancelRequested = false;
+    Engine::u64 FilesCompleted = 0;
+    Engine::u64 FileCount = 0;
+    Engine::u64 BytesCompleted = 0;
+    Engine::u64 BytesTotal = 0;
+    std::string SourceKind = "none";
+    std::string SourceOrigin = "none";
+    std::string SourceName;
+    std::string ErrorCode = "None";
+    std::string Message;
+    std::string LastRejection;
+    std::string Note;
+    std::string Format = "none";
+    std::string SourceSha256;
+    std::string ExpandedTreeSha256;
+    Engine::u64 SummaryVertices = 0;
+    Engine::u64 SummaryTriangles = 0;
+    Engine::u64 SummaryPrimitives = 0;
+    Engine::u64 SummaryTextures = 0;
+    Engine::u64 SummaryFiles = 0;
+    Engine::u64 SummaryBytes = 0;
+    std::string SummaryMaterial;
+    bool ProvenanceValid = false;
+    bool ProvenanceConfirmed = false;
+    std::string ProvenanceDigest;
+    std::string ProvenanceError;
+    std::string Relation = "none";
+    std::string StreamId;
+    std::string GenerationId;
+    bool ProjectChanged = false;
+    bool AssignmentApplied = false;
+    std::string CommitOutcome = "none";
+    Engine::u64 ManifestRevision = 0;
+    std::string ManifestSha256;
+    Engine::AssetHandle MeshAsset = Engine::kInvalidAssetHandle;
+    Engine::AssetHandle MaterialAsset = Engine::kInvalidAssetHandle;
+    Engine::u64 ResultHandleCount = 0;
+    std::vector<Engine::AssetHandle> ResultHandles;
+    Engine::u64 ProjectReceiptCount = 0;
+    std::vector<Engine::AssetHandle> ProjectMeshAssets;
+    std::vector<Engine::AssetHandle> ProjectMaterialAssets;
+    std::string ProjectStructural = "none";
+    std::string ProjectStructuralMessage;
+    std::string ProjectValidation = "none";
+    std::string ProjectValidationMessage;
+    std::string PanelState = "none";
+    bool PanelInitialized = false;
+    bool PanelFailed = false;
+    bool PanelVisible = false;
+    bool PanelKeyboardOwnedByPage = false;
+    bool PanelTextureValid = false;
+    bool PanelLoading = false;
+    Engine::u64 PanelFramesReceived = 0;
+    Engine::u64 PanelFrameWidth = 0;
+    Engine::u64 PanelFrameHeight = 0;
+    Engine::u64 PanelNavigationDenials = 0;
+    Engine::u64 PanelDownloadsCompleted = 0;
+    std::string PanelHost;
+    std::string PanelError;
 };
 
 struct EditorMaterialControlReceipt
@@ -131,6 +263,7 @@ struct EditorMaterialControlReceipt
     bool PostconditionVerified = false;
     bool RollbackVerified = false;
     bool EditorCameraSynchronized = false;
+    EditorFabControlReceipt Fab;
 };
 
 struct EditorMaterialControlTransaction
@@ -150,6 +283,7 @@ public:
     static constexpr std::size_t MaximumTerminalRequests = 256;
     static constexpr std::size_t MaximumAffectedEntityIds = 32;
     static constexpr std::size_t MaximumResponseBytes = 64 * 1024;
+    static constexpr std::size_t MaximumFabResultHandles = 32;
 
     using Handler = std::function<EditorMaterialControlTransaction(
         const EditorMaterialControlRequest&, Engine::u64)>;
@@ -172,6 +306,9 @@ public:
     std::size_t GetTerminalCount() const { return m_Terminals.size(); }
     bool IsAcceptingRequests() const { return m_AcceptingRequests; }
     bool EnsureProjectIdentity(const std::filesystem::path& projectPath);
+    // The per-session directory the operator places packages in. A
+    // SelectFabPackage request names one leaf of it, never a path.
+    const std::filesystem::path& GetFabInboxPath() const { return m_FabInbox; }
     const EditorMaterialControlReceipt* FindTerminalReceipt(std::string_view requestId) const;
     const std::string* FindTerminalText(std::string_view requestId) const;
 
@@ -184,6 +321,7 @@ public:
         const Engine::MaterialSurface& before,
         const Engine::MaterialSurface& after, std::string& error);
     bool PublishSceneControlTargetForSmoke(std::string_view contents, std::string& error);
+    bool PublishFabControlTargetForSmoke(std::string_view contents, std::string& error);
     void InjectParentDirectorySyncFailureForSmoke()
     {
         m_ForceParentDirectorySyncFailureOnce = true;
@@ -233,6 +371,7 @@ private:
     std::filesystem::path m_Root;
     std::filesystem::path m_Requests;
     std::filesystem::path m_Responses;
+    std::filesystem::path m_FabInbox;
     std::string m_SessionId;
     std::string m_ProjectPath;
     Engine::u64 m_ProcessId = 0;

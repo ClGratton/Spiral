@@ -21,7 +21,9 @@ project "Editor"
     {
         "%{wks.location}/Engine/src",
         "%{wks.location}/Vendor/ImGui",
-        "%{wks.location}/Vendor/ImGui/backends"
+        "%{wks.location}/Vendor/ImGui/backends",
+        "%{wks.location}/Editor/src/Fab",
+        "%{wks.location}/Editor/browserhost"
     }
 
     links

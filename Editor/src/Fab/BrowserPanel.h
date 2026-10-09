@@ -6,6 +6,7 @@
 #include <filesystem>
 #include <memory>
 #include <string>
+#include <vector>
 
 // ImGui panel that hosts the embedded Fab browser. The panel owns the on-demand
 // load of the CEF host library, the frame mirror, the UI texture, and the input
@@ -23,6 +24,9 @@ namespace Fab
         // Canonical absolute owner-only download staging, distinct from the profile.
         std::filesystem::path DownloadStagingDirectory;
         std::string HomeUrl = "https://www.fab.com/";
+        // Extra exact identity-provider hosts allowed for top-level sign-in
+        // navigation (e.g. accounts.google.com), supplied by the user.
+        std::vector<std::string> ProviderHosts;
     };
 
     struct BrowserPanelDownload

@@ -32,9 +32,9 @@
 
 namespace
 {
-    constexpr std::string_view kRequestHeader = "SpiralEditorControlRequest 3";
-    constexpr std::string_view kReceiptHeader = "SpiralEditorControlReceipt 3";
-    constexpr std::string_view kSessionHeader = "SpiralEditorControlSession 3";
+    constexpr std::string_view kRequestHeader = "SpiralEditorControlRequest 4";
+    constexpr std::string_view kReceiptHeader = "SpiralEditorControlReceipt 4";
+    constexpr std::string_view kSessionHeader = "SpiralEditorControlSession 4";
 
     const char* ToString(EditorMaterialControlAction action)
     {
@@ -54,6 +54,20 @@ namespace
                 return "SetSceneDebugVisualization";
             case EditorMaterialControlAction::SetMeshRendererFlags:
                 return "SetMeshRendererFlags";
+            case EditorMaterialControlAction::InspectFabImport: return "InspectFabImport";
+            case EditorMaterialControlAction::SelectFabPackage: return "SelectFabPackage";
+            case EditorMaterialControlAction::SetFabProvenance: return "SetFabProvenance";
+            case EditorMaterialControlAction::ConfirmFabProvenance: return "ConfirmFabProvenance";
+            case EditorMaterialControlAction::CommitFabImport: return "CommitFabImport";
+            case EditorMaterialControlAction::CancelFabImport: return "CancelFabImport";
+            case EditorMaterialControlAction::DismissFabImport: return "DismissFabImport";
+            case EditorMaterialControlAction::PlaceMeshAsset: return "PlaceMeshAsset";
+            case EditorMaterialControlAction::SetEntityMeshRendererAssets:
+                return "SetEntityMeshRendererAssets";
+            case EditorMaterialControlAction::SaveProjectState: return "SaveProjectState";
+            case EditorMaterialControlAction::ValidateProject: return "ValidateProject";
+            case EditorMaterialControlAction::SetFabPanelVisible: return "SetFabPanelVisible";
+            case EditorMaterialControlAction::InspectFabPanel: return "InspectFabPanel";
         }
         return "Unknown";
     }
@@ -216,6 +230,52 @@ namespace
         else if (shadowsText == "no") castsShadows = false;
         else return false;
         return true;
+    }
+
+    bool IsLowerHex64(std::string_view text)
+    {
+        return text.size() == 64 && std::all_of(text.begin(), text.end(), [](char character)
+        {
+            return (character >= '0' && character <= '9') || (character >= 'a' && character <= 'f');
+        });
+    }
+
+    bool ParseHex64(std::istringstream& stream, std::string& value)
+    {
+        return (stream >> value) && AtEnd(stream) && IsLowerHex64(value);
+    }
+
+    // A single bounded identifier-like token (kinds, relations, license names).
+    bool ParseWord(std::istringstream& stream, std::string& value, std::size_t maximum = 48)
+    {
+        if (!(stream >> value) || !AtEnd(stream) || value.empty() || value.size() > maximum)
+            return false;
+        return std::all_of(value.begin(), value.end(), [](char character)
+        {
+            return (character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z')
+                || (character >= '0' && character <= '9') || character == '-' || character == '_';
+        });
+    }
+
+    template<typename Enum, std::size_t Count>
+    bool ParseFabEnum(const std::string& text, const std::array<Enum, Count>& values, Enum& out)
+    {
+        for (Enum candidate : values)
+        {
+            if (text == Engine::ToString(candidate))
+            {
+                out = candidate;
+                return true;
+            }
+        }
+        return false;
+    }
+
+    bool ParseQuotedBounded(std::istringstream& stream, std::string& value, std::size_t maximumBytes)
+    {
+        return ParseQuoted(stream, value) && value.size() <= maximumBytes
+            && std::none_of(value.begin(), value.end(), [](char character)
+                { return static_cast<unsigned char>(character) < 0x20 || character == 0x7f; });
     }
 
     [[maybe_unused]] bool HasOwnerOnlyPermissions(std::filesystem::perms permissions)
@@ -528,6 +588,96 @@ namespace
 #endif
     }
 
+    std::string TokenOrNone(const std::string& value)
+    {
+        return value.empty() ? std::string("none") : value;
+    }
+
+    std::string SanitizeFabText(std::string_view text)
+    {
+        // Receipts are line-oriented: a message must never carry a control byte
+        // or an unbounded body. Replacement keeps the receipt well-formed.
+        std::string result;
+        result.reserve(std::min<std::size_t>(text.size(), 512));
+        for (unsigned char byte : text)
+        {
+            if (result.size() >= 512)
+                break;
+            result.push_back(byte < 0x20 || byte == 0x7f ? ' ' : static_cast<char>(byte));
+        }
+        return result;
+    }
+
+    void WriteHandleList(std::ostringstream& stream, std::string_view label,
+        const std::vector<Engine::AssetHandle>& handles)
+    {
+        stream << label;
+        const std::size_t count = std::min(handles.size(),
+            EditorMaterialControlMailbox::MaximumFabResultHandles);
+        for (std::size_t index = 0; index < count; ++index)
+            stream << ' ' << handles[index];
+        stream << '\n';
+    }
+
+    // The schema-4 Fab block. Its line order is part of the receipt contract and
+    // is mirrored by Scripts/EditorMaterialControl.py.
+    void WriteFabBlock(std::ostringstream& stream, const EditorFabControlReceipt& fab)
+    {
+        const auto yesNo = [](bool value) { return value ? "yes" : "no"; };
+        stream << "FabState " << fab.State << '\n'
+               << "FabJobId " << fab.JobId << '\n'
+               << "FabCancelRequested " << yesNo(fab.CancelRequested) << '\n'
+               << "FabProgress " << fab.FilesCompleted << ' ' << fab.FileCount << ' '
+               << fab.BytesCompleted << ' ' << fab.BytesTotal << '\n'
+               << "FabSourceKind " << fab.SourceKind << '\n'
+               << "FabSourceOrigin " << fab.SourceOrigin << '\n'
+               << "FabSourceName " << std::quoted(SanitizeFabText(fab.SourceName)) << '\n'
+               << "FabErrorCode " << fab.ErrorCode << '\n'
+               << "FabMessage " << std::quoted(SanitizeFabText(fab.Message)) << '\n'
+               << "FabLastRejection " << std::quoted(SanitizeFabText(fab.LastRejection)) << '\n'
+               << "FabNote " << std::quoted(SanitizeFabText(fab.Note)) << '\n'
+               << "FabFormat " << fab.Format << '\n'
+               << "FabSourceSha256 " << TokenOrNone(fab.SourceSha256) << '\n'
+               << "FabExpandedTreeSha256 " << TokenOrNone(fab.ExpandedTreeSha256) << '\n'
+               << "FabSummary " << fab.SummaryVertices << ' ' << fab.SummaryTriangles << ' '
+               << fab.SummaryPrimitives << ' ' << fab.SummaryTextures << ' '
+               << fab.SummaryFiles << ' ' << fab.SummaryBytes << '\n'
+               << "FabSummaryMaterial " << std::quoted(SanitizeFabText(fab.SummaryMaterial)) << '\n'
+               << "FabProvenanceValid " << yesNo(fab.ProvenanceValid) << '\n'
+               << "FabProvenanceConfirmed " << yesNo(fab.ProvenanceConfirmed) << '\n'
+               << "FabProvenanceDigest " << TokenOrNone(fab.ProvenanceDigest) << '\n'
+               << "FabProvenanceError " << std::quoted(SanitizeFabText(fab.ProvenanceError)) << '\n'
+               << "FabRelation " << fab.Relation << '\n'
+               << "FabStreamId " << TokenOrNone(fab.StreamId) << '\n'
+               << "FabGenerationId " << TokenOrNone(fab.GenerationId) << '\n'
+               << "FabProjectChanged " << yesNo(fab.ProjectChanged) << '\n'
+               << "FabAssignmentApplied " << yesNo(fab.AssignmentApplied) << '\n'
+               << "FabCommitOutcome " << fab.CommitOutcome << '\n'
+               << "FabManifestRevision " << fab.ManifestRevision << '\n'
+               << "FabManifestSha256 " << TokenOrNone(fab.ManifestSha256) << '\n'
+               << "FabMeshAsset " << fab.MeshAsset << '\n'
+               << "FabMaterialAsset " << fab.MaterialAsset << '\n'
+               << "FabResultHandleCount " << fab.ResultHandleCount << '\n';
+        WriteHandleList(stream, "FabResultHandles", fab.ResultHandles);
+        stream << "FabProjectReceiptCount " << fab.ProjectReceiptCount << '\n';
+        WriteHandleList(stream, "FabProjectMeshAssets", fab.ProjectMeshAssets);
+        WriteHandleList(stream, "FabProjectMaterialAssets", fab.ProjectMaterialAssets);
+        stream << "FabProjectStructural " << fab.ProjectStructural << '\n'
+               << "FabProjectStructuralMessage "
+               << std::quoted(SanitizeFabText(fab.ProjectStructuralMessage)) << '\n'
+               << "FabProjectValidation " << fab.ProjectValidation << '\n'
+               << "FabProjectValidationMessage "
+               << std::quoted(SanitizeFabText(fab.ProjectValidationMessage)) << '\n'
+               << "FabPanel " << fab.PanelState << ' ' << yesNo(fab.PanelInitialized) << ' '
+               << yesNo(fab.PanelFailed) << ' ' << yesNo(fab.PanelVisible) << ' '
+               << yesNo(fab.PanelKeyboardOwnedByPage) << ' ' << yesNo(fab.PanelTextureValid) << ' '
+               << yesNo(fab.PanelLoading) << ' ' << fab.PanelFramesReceived << ' '
+               << fab.PanelFrameWidth << ' ' << fab.PanelFrameHeight << ' '
+               << fab.PanelNavigationDenials << ' ' << fab.PanelDownloadsCompleted << '\n'
+               << "FabPanelHost " << std::quoted(SanitizeFabText(fab.PanelHost)) << '\n'
+               << "FabPanelError " << std::quoted(SanitizeFabText(fab.PanelError)) << '\n';
+    }
+
     std::string FormatReceipt(const EditorMaterialControlReceipt& receipt)
     {
         const auto writeSurface = [](std::ostringstream& stream,
@@ -660,6 +810,7 @@ namespace
                << "RollbackVerified " << (receipt.RollbackVerified ? "yes" : "no") << '\n'
                << "EditorCameraSynchronized "
                << (receipt.EditorCameraSynchronized ? "yes" : "no") << '\n';
+        WriteFabBlock(stream, receipt.Fab);
         return stream.str();
     }
 
@@ -670,35 +821,60 @@ namespace
         std::string line;
         if (!std::getline(input, line) || line != kRequestHeader)
         {
-            error = "unsupported_schema_expected_v3";
+            error = "unsupported_schema_expected_v4";
             return false;
         }
 
-        enum Field : unsigned int
+        enum Field : Engine::u64
         {
-            RequestId = 1u << 0,
-            SessionId = 1u << 1,
-            ProjectPath = 1u << 2,
-            Action = 1u << 3,
-            EntityId = 1u << 4,
-            ExpectedEntityName = 1u << 5,
-            MaterialHandle = 1u << 6,
-            ExpectedSurface = 1u << 7,
-            NewSurface = 1u << 8,
-            Scope = 1u << 9,
-            ExpectedTransform = 1u << 10,
-            NewTransform = 1u << 11,
-            ExpectedLight = 1u << 12,
-            NewLight = 1u << 13,
-            ExpectedColorPipeline = 1u << 14,
-            NewColorPipeline = 1u << 15,
-            ExpectedSelectedEntityId = 1u << 16,
-            ExpectedDebugVisualization = 1u << 17,
-            NewDebugVisualization = 1u << 18,
-            ExpectedMeshRendererFlags = 1u << 19,
-            NewMeshRendererFlags = 1u << 20
+            RequestId = 1ull << 0,
+            SessionId = 1ull << 1,
+            ProjectPath = 1ull << 2,
+            Action = 1ull << 3,
+            EntityId = 1ull << 4,
+            ExpectedEntityName = 1ull << 5,
+            MaterialHandle = 1ull << 6,
+            ExpectedSurface = 1ull << 7,
+            NewSurface = 1ull << 8,
+            Scope = 1ull << 9,
+            ExpectedTransform = 1ull << 10,
+            NewTransform = 1ull << 11,
+            ExpectedLight = 1ull << 12,
+            NewLight = 1ull << 13,
+            ExpectedColorPipeline = 1ull << 14,
+            NewColorPipeline = 1ull << 15,
+            ExpectedSelectedEntityId = 1ull << 16,
+            ExpectedDebugVisualization = 1ull << 17,
+            NewDebugVisualization = 1ull << 18,
+            ExpectedMeshRendererFlags = 1ull << 19,
+            NewMeshRendererFlags = 1ull << 20,
+            ExpectedFabJobId = 1ull << 21,
+            InboxName = 1ull << 22,
+            ExpectedSourceKind = 1ull << 23,
+            ExpectedSourceSha256 = 1ull << 24,
+            ProductIdentity = 1ull << 25,
+            ProductName = 1ull << 26,
+            Publisher = 1ull << 27,
+            VersionOrDownloadLabel = 1ull << 28,
+            LicenseFamily = 1ull << 29,
+            LicenseTier = 1ull << 30,
+            AttributionText = 1ull << 31,
+            AttributionLink = 1ull << 32,
+            NoAI = 1ull << 33,
+            GeneratedWithAI = 1ull << 34,
+            RawSourcePolicy = 1ull << 35,
+            ExpectedProvenanceDigest = 1ull << 36,
+            ExpectedGenerationId = 1ull << 37,
+            ExpectedRelation = 1ull << 38,
+            ExpectedMeshAsset = 1ull << 39,
+            ExpectedMaterialAsset = 1ull << 40,
+            NewMeshAsset = 1ull << 41,
+            NewMaterialAsset = 1ull << 42,
+            MeshAsset = 1ull << 43,
+            ExpectedManifestSha256 = 1ull << 44,
+            PanelVisible = 1ull << 45
         };
-        unsigned int seen = 0;
+        Engine::u64 seen = 0;
         const auto claim = [&seen](Field field)
         {
             if ((seen & field) != 0)
@@ -765,6 +941,19 @@ namespace
                 else if (action == "SetViewportMainCameraPose") request.Action = EditorMaterialControlAction::SetViewportMainCameraPose;
                 else if (action == "SetSceneDebugVisualization") request.Action = EditorMaterialControlAction::SetSceneDebugVisualization;
                 else if (action == "SetMeshRendererFlags") request.Action = EditorMaterialControlAction::SetMeshRendererFlags;
+                else if (action == "InspectFabImport") request.Action = EditorMaterialControlAction::InspectFabImport;
+                else if (action == "SelectFabPackage") request.Action = EditorMaterialControlAction::SelectFabPackage;
+                else if (action == "SetFabProvenance") request.Action = EditorMaterialControlAction::SetFabProvenance;
+                else if (action == "ConfirmFabProvenance") request.Action = EditorMaterialControlAction::ConfirmFabProvenance;
+                else if (action == "CommitFabImport") request.Action = EditorMaterialControlAction::CommitFabImport;
+                else if (action == "CancelFabImport") request.Action = EditorMaterialControlAction::CancelFabImport;
+                else if (action == "DismissFabImport") request.Action = EditorMaterialControlAction::DismissFabImport;
+                else if (action == "PlaceMeshAsset") request.Action = EditorMaterialControlAction::PlaceMeshAsset;
+                else if (action == "SetEntityMeshRendererAssets") request.Action = EditorMaterialControlAction::SetEntityMeshRendererAssets;
+                else if (action == "SaveProjectState") request.Action = EditorMaterialControlAction::SaveProjectState;
+                else if (action == "ValidateProject") request.Action = EditorMaterialControlAction::ValidateProject;
+                else if (action == "SetFabPanelVisible") request.Action = EditorMaterialControlAction::SetFabPanelVisible;
+                else if (action == "InspectFabPanel") request.Action = EditorMaterialControlAction::InspectFabPanel;
                 else
                 {
                     error = "unsupported_action";
@@ -922,6 +1111,234 @@ namespace
                 }
                 request.HasNewMeshRendererFlags = true;
             }
+            else if (key == "ExpectedFabJobId")
+            {
+                if (!claim(Field::ExpectedFabJobId)
+                    || !ParseInteger(fieldStream, request.Fab.ExpectedJobId))
+                {
+                    error = "invalid_or_duplicate_expected_fab_job_id";
+                    return false;
+                }
+                request.Fab.HasExpectedJobId = true;
+            }
+            else if (key == "InboxName")
+            {
+                if (!claim(Field::InboxName)
+                    || !ParseQuotedBounded(fieldStream, request.Fab.InboxName, 128))
+                {
+                    error = "invalid_or_duplicate_inbox_name";
+                    return false;
+                }
+            }
+            else if (key == "ExpectedSourceKind")
+            {
+                if (!claim(Field::ExpectedSourceKind)
+                    || !ParseWord(fieldStream, request.Fab.ExpectedSourceKind, 16)
+                    || (request.Fab.ExpectedSourceKind != "zip" && request.Fab.ExpectedSourceKind != "glb"
+                        && request.Fab.ExpectedSourceKind != "gltf" && request.Fab.ExpectedSourceKind != "directory"))
+                {
+                    error = "invalid_or_duplicate_expected_source_kind";
+                    return false;
+                }
+            }
+            else if (key == "ExpectedSourceSha256")
+            {
+                if (!claim(Field::ExpectedSourceSha256)
+                    || !ParseHex64(fieldStream, request.Fab.ExpectedSourceSha256))
+                {
+                    error = "invalid_or_duplicate_expected_source_sha256";
+                    return false;
+                }
+            }
+            else if (key == "ProductIdentity")
+            {
+                if (!claim(Field::ProductIdentity)
+                    || !ParseQuotedBounded(fieldStream, request.Fab.ProductIdentity, 512))
+                {
+                    error = "invalid_or_duplicate_product_identity";
+                    return false;
+                }
+            }
+            else if (key == "ProductName")
+            {
+                if (!claim(Field::ProductName)
+                    || !ParseQuotedBounded(fieldStream, request.Fab.ProductName, 256))
+                {
+                    error = "invalid_or_duplicate_product_name";
+                    return false;
+                }
+            }
+            else if (key == "Publisher")
+            {
+                if (!claim(Field::Publisher)
+                    || !ParseQuotedBounded(fieldStream, request.Fab.Publisher, 256))
+                {
+                    error = "invalid_or_duplicate_publisher";
+                    return false;
+                }
+            }
+            else if (key == "VersionOrDownloadLabel")
+            {
+                if (!claim(Field::VersionOrDownloadLabel)
+                    || !ParseQuotedBounded(fieldStream, request.Fab.VersionOrDownloadLabel, 128))
+                {
+                    error = "invalid_or_duplicate_version_label";
+                    return false;
+                }
+            }
+            else if (key == "LicenseFamily")
+            {
+                std::string text;
+                static constexpr std::array<Engine::FabLicenseFamily, 5> families = {
+                    Engine::FabLicenseFamily::Unknown, Engine::FabLicenseFamily::FabStandard,
+                    Engine::FabLicenseFamily::CreativeCommonsAttribution,
+                    Engine::FabLicenseFamily::LegacyUnrealMarketplace,
+                    Engine::FabLicenseFamily::ReferenceOnly };
+                if (!claim(Field::LicenseFamily) || !ParseWord(fieldStream, text)
+                    || !ParseFabEnum(text, families, request.Fab.LicenseFamily))
+                {
+                    error = "invalid_or_duplicate_license_family";
+                    return false;
+                }
+            }
+            else if (key == "LicenseTier")
+            {
+                std::string text;
+                static constexpr std::array<Engine::FabLicenseTier, 4> tiers = {
+                    Engine::FabLicenseTier::Unknown, Engine::FabLicenseTier::NotApplicable,
+                    Engine::FabLicenseTier::Personal, Engine::FabLicenseTier::Professional };
+                if (!claim(Field::LicenseTier) || !ParseWord(fieldStream, text)
+                    || !ParseFabEnum(text, tiers, request.Fab.LicenseTier))
+                {
+                    error = "invalid_or_duplicate_license_tier";
+                    return false;
+                }
+            }
+            else if (key == "AttributionText")
+            {
+                if (!claim(Field::AttributionText)
+                    || !ParseQuotedBounded(fieldStream, request.Fab.AttributionText,
+                        kEditorFabControlMaximumAttributionBytes))
+                {
+                    error = "invalid_duplicate_or_oversized_attribution_text";
+                    return false;
+                }
+            }
+            else if (key == "AttributionLink")
+            {
+                if (!claim(Field::AttributionLink)
+                    || !ParseQuotedBounded(fieldStream, request.Fab.AttributionLink, 512))
+                {
+                    error = "invalid_or_duplicate_attribution_link";
+                    return false;
+                }
+            }
+            else if (key == "NoAI" || key == "GeneratedWithAI")
+            {
+                const bool noAI = key == "NoAI";
+                std::string text;
+                static constexpr std::array<Engine::FabMetadataFlag, 3> flags = {
+                    Engine::FabMetadataFlag::Unknown, Engine::FabMetadataFlag::No,
+                    Engine::FabMetadataFlag::Yes };
+                Engine::FabMetadataFlag& target = noAI ? request.Fab.NoAI : request.Fab.GeneratedWithAI;
+                if (!claim(noAI ? Field::NoAI : Field::GeneratedWithAI) || !ParseWord(fieldStream, text)
+                    || !ParseFabEnum(text, flags, target))
+                {
+                    error = noAI ? "invalid_or_duplicate_no_ai" : "invalid_or_duplicate_generated_with_ai";
+                    return false;
+                }
+            }
+            else if (key == "RawSourcePolicy")
+            {
+                std::string text;
+                static constexpr std::array<Engine::FabRawSourcePolicy, 3> policies = {
+                    Engine::FabRawSourcePolicy::Unknown, Engine::FabRawSourcePolicy::ExcludedFromProject,
+                    Engine::FabRawSourcePolicy::PrivateProjectOnly };
+                if (!claim(Field::RawSourcePolicy) || !ParseWord(fieldStream, text)
+                    || !ParseFabEnum(text, policies, request.Fab.RawSourcePolicy))
+                {
+                    error = "invalid_or_duplicate_raw_source_policy";
+                    return false;
+                }
+            }
+            else if (key == "ExpectedProvenanceDigest")
+            {
+                if (!claim(Field::ExpectedProvenanceDigest)
+                    || !ParseHex64(fieldStream, request.Fab.ExpectedProvenanceDigest))
+                {
+                    error = "invalid_or_duplicate_expected_provenance_digest";
+                    return false;
+                }
+            }
+            else if (key == "ExpectedGenerationId")
+            {
+                if (!claim(Field::ExpectedGenerationId)
+                    || !ParseHex64(fieldStream, request.Fab.ExpectedGenerationId))
+                {
+                    error = "invalid_or_duplicate_expected_generation_id";
+                    return false;
+                }
+            }
+            else if (key == "ExpectedRelation")
+            {
+                if (!claim(Field::ExpectedRelation)
+                    || !ParseWord(fieldStream, request.Fab.ExpectedRelation, 32))
+                {
+                    error = "invalid_or_duplicate_expected_relation";
+                    return false;
+                }
+            }
+            else if (key == "ExpectedMeshAsset" || key == "ExpectedMaterialAsset"
+                || key == "NewMeshAsset" || key == "NewMaterialAsset" || key == "MeshAsset")
+            {
+                Field field = Field::MeshAsset;
+                Engine::AssetHandle* target = &request.Fab.MeshAsset;
+                if (key == "ExpectedMeshAsset")
+                {
+                    field = Field::ExpectedMeshAsset;
+                    target = &request.Fab.ExpectedMeshAsset;
+                }
+                else if (key == "ExpectedMaterialAsset")
+                {
+                    field = Field::ExpectedMaterialAsset;
+                    target = &request.Fab.ExpectedMaterialAsset;
+                }
+                else if (key == "NewMeshAsset")
+                {
+                    field = Field::NewMeshAsset;
+                    target = &request.Fab.NewMeshAsset;
+                }
+                else if (key == "NewMaterialAsset")
+                {
+                    field = Field::NewMaterialAsset;
+                    target = &request.Fab.NewMaterialAsset;
+                }
+                if (!claim(field) || !ParseInteger(fieldStream, *target))
+                {
+                    error = "invalid_or_duplicate_asset_handle";
+                    return false;
+                }
+            }
+            else if (key == "ExpectedManifestSha256")
+            {
+                if (!claim(Field::ExpectedManifestSha256)
+                    || !ParseHex64(fieldStream, request.Fab.ExpectedManifestSha256))
+                {
+                    error = "invalid_or_duplicate_expected_manifest_sha256";
+                    return false;
+                }
+            }
+            else if (key == "PanelVisible")
+            {
+                std::string text;
+                if (!claim(Field::PanelVisible) || !(fieldStream >> text) || !AtEnd(fieldStream)
+                    || (text != "yes" && text != "no"))
+                {
+                    error = "invalid_or_duplicate_panel_visible";
+                    return false;
+                }
+                request.Fab.PanelVisible = text == "yes";
+            }
             else
             {
                 error = "unknown_field";
@@ -929,7 +1346,7 @@ namespace
             }
         }
 
-        constexpr unsigned int common = Field::RequestId | Field::SessionId
+        constexpr Engine::u64 common = Field::RequestId | Field::SessionId
             | Field::ProjectPath | Field::Action;
         if ((seen & common) != common)
         {
@@ -946,15 +1363,22 @@ namespace
             error = "invalid_identity";
             return false;
         }
-        const bool needsEntity = request.Action
-                != EditorMaterialControlAction::SetProjectColorPipeline
-            && request.Action
-                != EditorMaterialControlAction::SetSceneDebugVisualization;
+        const bool commitAssignment = request.Action == EditorMaterialControlAction::CommitFabImport
+            && (seen & (Field::EntityId | Field::ExpectedEntityName | Field::ExpectedMeshAsset
+                   | Field::ExpectedMaterialAsset)) != 0;
+        const bool needsEntity = (request.Action != EditorMaterialControlAction::SetProjectColorPipeline
+                && request.Action != EditorMaterialControlAction::SetSceneDebugVisualization
+                && !IsFabControlAction(request.Action))
+            || request.Action == EditorMaterialControlAction::SetEntityMeshRendererAssets
+            || commitAssignment;
         if (needsEntity && (request.EntityId == Engine::kInvalidEntityId
             || request.ExpectedEntityName.empty() || request.ExpectedEntityName.size() > 256))
         { error = "invalid_entity_identity"; return false; }
-        const unsigned int entityIdentity = Field::EntityId | Field::ExpectedEntityName;
-        unsigned int exactFields = common;
+        const Engine::u64 entityIdentity = Field::EntityId | Field::ExpectedEntityName;
+        // Required fields must all be present; optional fields may be present.
+        // Every other action uses an empty optional set, so its mask is exact.
+        Engine::u64 exactFields = common;
+        Engine::u64 optionalFields = 0;
         switch (request.Action)
         {
             case EditorMaterialControlAction::InspectMaterialSurface:
@@ -995,11 +1419,63 @@ namespace
                 exactFields |= entityIdentity | Field::ExpectedMeshRendererFlags
                     | Field::NewMeshRendererFlags;
                 break;
+            case EditorMaterialControlAction::InspectFabImport:
+                optionalFields = Field::ExpectedFabJobId;
+                break;
+            case EditorMaterialControlAction::SelectFabPackage:
+                exactFields |= Field::InboxName | Field::ExpectedSourceKind;
+                optionalFields = Field::ExpectedSourceSha256;
+                break;
+            case EditorMaterialControlAction::SetFabProvenance:
+                exactFields |= Field::ExpectedFabJobId | Field::ProductIdentity | Field::ProductName
+                    | Field::Publisher | Field::VersionOrDownloadLabel | Field::LicenseFamily
+                    | Field::LicenseTier | Field::NoAI | Field::GeneratedWithAI | Field::RawSourcePolicy;
+                optionalFields = Field::AttributionText | Field::AttributionLink;
+                break;
+            case EditorMaterialControlAction::ConfirmFabProvenance:
+                exactFields |= Field::ExpectedFabJobId | Field::ExpectedProvenanceDigest;
+                break;
+            case EditorMaterialControlAction::CommitFabImport:
+                exactFields |= Field::ExpectedFabJobId | Field::ExpectedGenerationId
+                    | Field::ExpectedRelation;
+                optionalFields = entityIdentity | Field::ExpectedMeshAsset | Field::ExpectedMaterialAsset;
+                break;
+            case EditorMaterialControlAction::CancelFabImport:
+            case EditorMaterialControlAction::DismissFabImport:
+                exactFields |= Field::ExpectedFabJobId;
+                break;
+            case EditorMaterialControlAction::PlaceMeshAsset:
+                exactFields |= Field::MeshAsset | Field::ExpectedSelectedEntityId;
+                break;
+            case EditorMaterialControlAction::SetEntityMeshRendererAssets:
+                exactFields |= entityIdentity | Field::ExpectedMeshAsset | Field::ExpectedMaterialAsset
+                    | Field::NewMeshAsset | Field::NewMaterialAsset;
+                break;
+            case EditorMaterialControlAction::SaveProjectState:
+                optionalFields = Field::ExpectedManifestSha256;
+                break;
+            case EditorMaterialControlAction::SetFabPanelVisible:
+                exactFields |= Field::PanelVisible;
+                break;
+            case EditorMaterialControlAction::ValidateProject:
+            case EditorMaterialControlAction::InspectFabPanel:
+                break;
         }
-        if (seen != exactFields)
+        if ((seen & exactFields) != exactFields || (seen & ~(exactFields | optionalFields)) != 0)
         {
             error = "missing_or_unexpected_action_field";
             return false;
+        }
+        if (request.Action == EditorMaterialControlAction::CommitFabImport)
+        {
+            const Engine::u64 assignmentFields = Field::EntityId | Field::ExpectedEntityName
+                | Field::ExpectedMeshAsset | Field::ExpectedMaterialAsset;
+            if ((seen & assignmentFields) != 0 && (seen & assignmentFields) != assignmentFields)
+            {
+                error = "incomplete_assignment_fields";
+                return false;
+            }
+            request.Fab.HasAssignment = (seen & assignmentFields) == assignmentFields;
         }
         if ((request.Action == EditorMaterialControlAction::InspectMaterialSurface
                 || request.Action == EditorMaterialControlAction::SelectEntityPatchMaterialSurface)
@@ -1043,6 +1519,7 @@ bool EditorMaterialControlMailbox::Initialize(const std::filesystem::path& root,
     m_Root = root;
     m_Requests = root / "requests";
     m_Responses = root / "responses";
+    m_FabInbox = root / "fab-inbox";
     const auto abandonInitialization = [this, &root]()
     {
         std::error_code ignored;
@@ -1050,6 +1527,7 @@ bool EditorMaterialControlMailbox::Initialize(const std::filesystem::path& root,
         m_Root.clear();
         m_Requests.clear();
         m_Responses.clear();
+        m_FabInbox.clear();
         m_SessionId.clear();
         m_ProjectPath.clear();
         m_ProcessId = 0;
@@ -1057,7 +1535,7 @@ bool EditorMaterialControlMailbox::Initialize(const std::filesystem::path& root,
         m_DurabilityDegradationCount = 0;
         m_ForceParentDirectorySyncFailureOnce = false;
     };
-    for (const std::filesystem::path& directory : { m_Requests, m_Responses })
+    for (const std::filesystem::path& directory : { m_Requests, m_Responses, m_FabInbox })
     {
         if (!CreatePrivateDirectory(directory, error))
         {
@@ -1087,7 +1565,7 @@ bool EditorMaterialControlMailbox::Initialize(const std::filesystem::path& root,
     }
     if (m_DurabilityDegradationCount != 0)
         TransitionToClosed("ready_manifest_parent_sync_failed");
-    Engine::Log::Info("EditorMaterialControlV3 state=ready session=", m_SessionId,
+    Engine::Log::Info("EditorMaterialControlV4 state=ready session=", m_SessionId,
         " path=", m_Root.string(), " maxBytes=", MaximumRequestBytes,
         " maxPerFrame=", MaximumRequestsPerFrame,
         " maxRetained=", MaximumTerminalRequests);
@@ -1122,7 +1600,7 @@ void EditorMaterialControlMailbox::Close()
     if (!IsOpen())
         return;
     TransitionToClosed("editor_detach");
-    Engine::Log::Info("EditorMaterialControlV3 state=closed session=", m_SessionId,
+    Engine::Log::Info("EditorMaterialControlV4 state=closed session=", m_SessionId,
         " terminal=", m_Terminals.size(), " collisions=", m_ResponseCollisionCount);
 }
 
@@ -1151,8 +1629,9 @@ bool EditorMaterialControlMailbox::PublishSessionFile(
              << "State " << state << '\n'
              << "ProcessId " << m_ProcessId << '\n'
              << "ProjectPath " << std::quoted(m_ProjectPath) << '\n'
-             << "RequestSchema 3\nReceiptSchema 3\n"
-             << "Actions InspectMaterialSurface,SelectEntityPatchMaterialSurface,InspectEntity,SelectEntity,SetEntityTransform,SetTypedLight,SetProjectColorPipeline,SetViewportMainCameraPose,SetSceneDebugVisualization,SetMeshRendererFlags\n"
+             << "RequestSchema 4\nReceiptSchema 4\n"
+             << "Actions InspectMaterialSurface,SelectEntityPatchMaterialSurface,InspectEntity,SelectEntity,SetEntityTransform,SetTypedLight,SetProjectColorPipeline,SetViewportMainCameraPose,SetSceneDebugVisualization,SetMeshRendererFlags,InspectFabImport,SelectFabPackage,SetFabProvenance,ConfirmFabProvenance,CommitFabImport,CancelFabImport,DismissFabImport,PlaceMeshAsset,SetEntityMeshRendererAssets,SaveProjectState,ValidateProject,SetFabPanelVisible,InspectFabPanel\n"
+             << "FabInbox " << std::quoted(m_FabInbox.string()) << '\n'
              << "MaximumRequestBytes " << MaximumRequestBytes << '\n'
              << "MaximumRequestsPerFrame " << MaximumRequestsPerFrame << '\n'
              << "MaximumTerminalRequests " << MaximumTerminalRequests << '\n'
@@ -1180,7 +1659,7 @@ void EditorMaterialControlMailbox::TransitionToClosed(std::string_view reason)
         Engine::Log::Error(
             "Editor material-control close is visible but not confirmed crash-durable: ",
             error);
-    Engine::Log::Info("EditorMaterialControlV3 accepting=no reason=", reason,
+    Engine::Log::Info("EditorMaterialControlV4 accepting=no reason=", reason,
         " retained=", m_Terminals.size());
 }
 
@@ -1775,6 +2254,21 @@ bool EditorMaterialControlMailbox::PublishSceneControlTargetForSmoke(
     return WriteOwnerOnlyTemporary(temporary, contents, error)
         && PublishFileNoReplace(temporary, m_Root / "scene-control-target.info",
             "scene-control smoke target", true, error);
+}
+
+bool EditorMaterialControlMailbox::PublishFabControlTargetForSmoke(
+    std::string_view contents, std::string& error)
+{
+    if (!IsOpen() || contents.empty() || contents.size() > MaximumResponseBytes)
+    {
+        error = "invalid_fab_control_smoke_target";
+        return false;
+    }
+    const std::filesystem::path temporary = m_Root
+        / (".fab-control-target." + std::to_string(++m_TemporarySequence) + ".tmp");
+    return WriteOwnerOnlyTemporary(temporary, contents, error)
+        && PublishFileNoReplace(temporary, m_Root / "fab-control-target.info",
+            "fab-control smoke target", true, error);
 }
 
 std::string EditorMaterialControlMailbox::FormatInspectRequest(std::string_view requestId,

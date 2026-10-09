@@ -2,8 +2,10 @@
 
 #include "Engine/Events/KeyEvent.h"
 #include "Engine/Events/MouseEvent.h"
+#include "Engine/Assets/FabProjectState.h"
 #include "Engine/Assets/ProjectManifest.h"
 #include "Engine/Assets/TextureArtifact.h"
+#include "Engine/Core/Sha256.h"
 
 #include <imgui.h>
 #include <imgui_internal.h>
@@ -418,8 +420,11 @@ void EditorLayer::OnAttach()
     {
         throw std::runtime_error("Renderer capability diagnostics smoke requires a native renderer device");
     }
-    if (!std::filesystem::exists(m_ProjectPath) || !LoadProject())
+    RefreshProjectLocation();
+    if (!OpenCommandLineProject(args)
+        && (!std::filesystem::exists(m_ProjectPath) || !LoadProject()))
         EnsureDefaultSceneEntities();
+    InitializeFabIntegration();
     PublishFramePacingPolicy();
     PublishPresentationPolicy();
     PublishColorPipelineSettings();
@@ -454,6 +459,13 @@ void EditorLayer::OnAttach()
         args.HasFlag("--editor-control-live-helper-smoke");
     m_EditorSceneControlV2HelperSmokeRequested =
         args.HasFlag("--editor-control-scene-v3-helper-smoke");
+    m_EditorFabHelperSmokeRequested = args.HasFlag("--editor-control-fab-helper-smoke");
+    m_EditorFabReopenSmokeRequested = args.HasFlag("--editor-control-fab-reopen-smoke");
+    m_FabPanelUiSmokeRequested = args.HasFlag("--fab-panel-ui-smoke");
+    m_FabPanelUiSmokeFixtures = std::string(args.GetOptionValue("--fab-ui-smoke-fixtures"));
+    if (m_FabPanelUiSmokeRequested
+        && (!Engine::Application::Get().GetSpecification().Window.Headless || m_FabPanelUiSmokeFixtures.empty()))
+        throw std::runtime_error("--fab-panel-ui-smoke requires --headless and --fab-ui-smoke-fixtures=<directory>");
     m_EditorMaterialControlCapacitySmokeRequested =
         args.HasFlag("--editor-control-capacity-smoke");
     m_EditorMaterialControlDurabilitySmokeRequested =
@@ -466,6 +478,8 @@ void EditorLayer::OnAttach()
         (m_EditorMaterialControlSmokeRequested ? 1u : 0u)
         + (m_EditorMaterialControlLiveHelperSmokeRequested ? 1u : 0u)
         + (m_EditorSceneControlV2HelperSmokeRequested ? 1u : 0u)
+        + (m_EditorFabHelperSmokeRequested ? 1u : 0u)
+        + (m_EditorFabReopenSmokeRequested ? 1u : 0u)
         + (m_EditorMaterialControlCapacitySmokeRequested ? 1u : 0u)
         + (m_EditorMaterialControlDurabilitySmokeRequested ? 1u : 0u)
         + (m_EditorMaterialControlRollbackFailureSmokeRequested ? 1u : 0u)
@@ -480,8 +494,11 @@ void EditorLayer::OnAttach()
         m_AssetRegistry.RegisterAsset(Engine::AssetType::Mesh, m_AssetWatchSmokePath, "Asset Watch Smoke");
     }
     InitializeEditorMaterialControl();
+    PublishEditorFabControlSmokeTarget();
     m_AssetWatcher.SyncRegistry(m_AssetRegistry);
     Engine::Renderer::PublishArtifactResolvers(m_AssetRegistry, m_MaterialLibrary);
+    if (m_EditorFabHelperSmokeRequested || m_EditorFabReopenSmokeRequested)
+        m_EditorFabSmokeInitialRendererGeneration = Engine::Renderer::GetPublishedArtifactResolverGeneration();
     if (m_EditorMaterialControlSmokeRequested
         || m_EditorMaterialControlLiveHelperSmokeRequested
         || m_EditorSceneControlV2HelperSmokeRequested
@@ -519,6 +536,8 @@ void EditorLayer::OnAttach()
 
 void EditorLayer::OnDetach()
 {
+    // The browser must close before ImGui and the renderer tear down.
+    ShutdownFabIntegration();
     m_EditorMaterialControl.Close();
     if (m_FramePacingNavigationTraceEnabled)
     {
@@ -589,7 +608,9 @@ void EditorLayer::OnUpdate(Engine::Timestep timestep)
     HandleAssetWatchEvents();
     UpdateViewportNavigation(timestep);
 
+    UpdateFabIntegration();
     m_EditorMaterialControl.EnsureProjectIdentity(m_ProjectPath);
+    RunEditorFabControlSmokeBeforeDrain();
     RunEditorMaterialControlSmokeBeforeDrain();
     RunEditorMaterialControlCapacitySmokeBeforeDrain();
     RunEditorMaterialControlDurabilitySmokeBeforeDrain();
@@ -600,6 +621,7 @@ void EditorLayer::OnUpdate(Engine::Timestep timestep)
         {
             return ExecuteEditorMaterialControlRequest(request, frame);
         });
+    RunEditorFabControlSmokeAfterDrain();
     RunEditorMaterialControlSmokeAfterDrain();
     RunEditorMaterialControlLiveHelperSmokeAfterDrain();
     RunEditorSceneControlV2HelperSmokeAfterDrain();
@@ -646,6 +668,8 @@ void EditorLayer::InitializeEditorMaterialControl()
         if (m_EditorMaterialControlSmokeRequested
             || m_EditorMaterialControlLiveHelperSmokeRequested
             || m_EditorSceneControlV2HelperSmokeRequested
+            || m_EditorFabHelperSmokeRequested
+            || m_EditorFabReopenSmokeRequested
             || m_EditorMaterialControlCapacitySmokeRequested
             || m_EditorMaterialControlDurabilitySmokeRequested
             || m_EditorMaterialControlRollbackFailureSmokeRequested
@@ -734,7 +758,7 @@ void EditorLayer::InitializeEditorMaterialControl()
         if (!prototype || !prototype->MeshRenderer || !directional
             || !cameraTransform || !light || !mainCamera)
             throw std::runtime_error(
-                "editor scene-control V3 smoke requires prototype mesh, main camera, and light");
+                "editor scene-control V4 smoke requires prototype mesh, main camera, and light");
 
         m_SelectedEntity = mainCamera;
         ResetFusionNavigationPivotFromSelectionOrScene();
@@ -827,7 +851,7 @@ void EditorLayer::InitializeEditorMaterialControl()
                 m_EditorSceneControlV2ColorAfter))
         {
             throw std::runtime_error(
-                "could not construct valid editor scene-control V3 smoke values");
+                "could not construct valid editor scene-control V4 smoke values");
         }
     }
 
@@ -851,7 +875,7 @@ void EditorLayer::InitializeEditorMaterialControl()
         const Engine::Entity mainCamera = m_ActiveScene.GetMainCameraEntity();
         const Engine::SceneEntity* camera = m_ActiveScene.TryGetEntity(mainCamera);
         if (!prototype || !directional || !camera)
-            throw std::runtime_error("editor scene-control V3 smoke target disappeared");
+            throw std::runtime_error("editor scene-control V4 smoke target disappeared");
         const std::string& session = m_EditorMaterialControl.GetSessionId();
         const std::string wrongProject =
             EditorMaterialControlMailbox::FormatInspectEntityRequest(
@@ -883,7 +907,7 @@ void EditorLayer::InitializeEditorMaterialControl()
                 "v2-schema-stale", staleSchema, error))
         {
             throw std::runtime_error(
-                "could not publish editor scene-control V3 rejection fixtures: " + error);
+                "could not publish editor scene-control V4 rejection fixtures: " + error);
         }
         const auto writeTransform = [](std::ostringstream& stream, std::string_view label,
                                         const Engine::Math::SectorLocalPosition& position,
@@ -962,7 +986,7 @@ void EditorLayer::InitializeEditorMaterialControl()
         if (!m_EditorMaterialControl.PublishSceneControlTargetForSmoke(
                 target.str(), error))
             throw std::runtime_error(
-                "could not publish editor scene-control V3 target: " + error);
+                "could not publish editor scene-control V4 target: " + error);
     }
 }
 
@@ -1108,6 +1132,9 @@ EditorMaterialControlTransaction EditorLayer::ExecuteEditorMaterialControlReques
     receipt.DebugVisualizationGeneration =
         Engine::Renderer::GetSceneDebugVisualization().Generation;
 
+    if (IsFabControlAction(request.Action))
+        return ExecuteFabControlRequest(request, std::move(transaction));
+
     if (request.Action
         == EditorMaterialControlAction::SetSceneDebugVisualization)
     {
@@ -1196,7 +1223,7 @@ EditorMaterialControlTransaction EditorLayer::ExecuteEditorMaterialControlReques
     }
 
     // Project settings intentionally have no entity/material identity. Keep this
-    // branch ahead of the material path so a fixed V3 action cannot fall through
+    // branch ahead of the material path so a fixed V4 action cannot fall through
     // into an unrelated component authority.
     if (request.Action == EditorMaterialControlAction::SetProjectColorPipeline)
     {
@@ -1672,6 +1699,8 @@ EditorMaterialControlTransaction EditorLayer::ExecuteEditorMaterialControlReques
         return transaction;
     }
 
+    if (Engine::IsImmutableMaterialAsset(*metadata))
+        return reject("immutable_material");
     if (!request.HasExpectedSurface || !request.HasNewSurface
         || !request.SharedMaterialScope)
         return reject("patch_contract_is_incomplete");
@@ -2145,8 +2174,8 @@ void EditorLayer::RunEditorMaterialControlSmokeAfterDrain()
             throw std::runtime_error("editor material-control project guard smoke failed");
 
         Engine::Log::Info(
-            "EditorMaterialControlMailboxV3 interface=private-filesystem "
-            "actions=material-and-typed-scene session=exact schema=3 "
+            "EditorMaterialControlMailboxV4 interface=private-filesystem "
+            "actions=material-and-typed-scene session=exact schema=4 "
             "mainThread=before-scene-snapshot invalid=transactional-pass "
             "rollback=readback-and-receipt-pass inspect=pass commit=pass "
             "idempotency=exact-bytes conflicts=A-B-C-consumed "
@@ -2214,7 +2243,7 @@ void EditorLayer::RunEditorMaterialControlLiveHelperSmokeAfterDrain()
         throw std::runtime_error("live external editor material-control helper smoke failed");
 
     Engine::Log::Info(
-        "EditorMaterialControlLiveHelperV3 producer=external-python requests=fresh "
+        "EditorMaterialControlLiveHelperV4 producer=external-python requests=fresh "
         "inspect=semantic-pass set=semantic-pass close=editor-condition "
         "identity=session-pid-project affected=bounded-exact "
         "pollCadenceMs=16 idleSkips=", m_EditorMaterialControl.GetCadenceSkipCount(),
@@ -2294,7 +2323,7 @@ void EditorLayer::RunEditorSceneControlV2HelperSmokeAfterDrain()
     };
     if (std::any_of(receipts.begin(), receipts.end(), [](const auto* value)
         { return value == nullptr; }))
-        throw std::runtime_error("editor scene-control V3 receipt sequence is incomplete");
+        throw std::runtime_error("editor scene-control V4 receipt sequence is incomplete");
 
     const auto sameTransform = [](const Engine::TransformComponent& value,
         const Engine::Math::SectorLocalPosition& position,
@@ -2458,7 +2487,7 @@ void EditorLayer::RunEditorSceneControlV2HelperSmokeAfterDrain()
         && parserRejected(wrongProject, "wrong_project")
         && parserRejected(unexpectedField, "missing_or_unexpected_action_field")
         && parserRejected(duplicateField, "invalid_or_duplicate_entity_id")
-        && parserRejected(staleSchema, "unsupported_schema_expected_v3")
+        && parserRejected(staleSchema, "unsupported_schema_expected_v4")
         && successful(inspect, EditorMaterialControlAction::InspectEntity,
             "ReadOnly", "None")
         && inspect->EntityId == m_PrototypeMeshEntity.Id && historyUnchanged(inspect)
@@ -2659,10 +2688,10 @@ void EditorLayer::RunEditorSceneControlV2HelperSmokeAfterDrain()
         && finalInspect->UndoDepthBefore == baseUndo + 10
         && exactAffected(finalInspect, mainCamera);
     if (!valid)
-        throw std::runtime_error("external editor scene-control V3 helper smoke failed");
+        throw std::runtime_error("external editor scene-control V4 helper smoke failed");
 
     Engine::Log::Info(
-        "EditorSceneControlV3 producer=external-python actions=inspect-select-transform-"
+        "EditorSceneControlV4 producer=external-python actions=inspect-select-transform-"
         "typed-light-project-color-main-camera-debug-mesh cas=complete-values-selection stale=rejected "
         "rollbacks=transform-and-debug-verified history=one-per-document-action "
         "selection=session-only restore=exact "
@@ -2734,7 +2763,7 @@ void EditorLayer::RunEditorMaterialControlCapacitySmokeAfterDrain()
     if (!valid)
         throw std::runtime_error("editor material-control capacity retention smoke failed");
     Engine::Log::Info(
-        "EditorMaterialControlCapacityV3 retained=256 accepting=no "
+        "EditorMaterialControlCapacityV4 retained=256 accepting=no "
         "pendingUnclaimed=1 response=absent session=closed "
         "affectedTotal=42 affectedSample=32 truncated=yes result=pass");
     m_EditorMaterialControlCapacitySmokeCompleted = true;
@@ -2799,7 +2828,7 @@ void EditorLayer::RunEditorMaterialControlDurabilitySmokeAfterDrain()
         throw std::runtime_error(
             "editor material-control visible-publication durability smoke failed");
     Engine::Log::Info(
-        "EditorMaterialControlDurabilityV3 visibility=rename-authoritative "
+        "EditorMaterialControlDurabilityV4 visibility=rename-authoritative "
         "parentSync=injected-failure committed=preserved rollback=no "
         "acceptance=closed crashDurability=degraded result=pass");
     m_EditorMaterialControlDurabilitySmokeCompleted = true;
@@ -2891,7 +2920,7 @@ void EditorLayer::RunEditorMaterialControlRollbackFailureSmokeAfterDrain()
     }
 
     Engine::Log::Info(
-        "EditorMaterialControlRollbackFailureV3 path=",
+        "EditorMaterialControlRollbackFailureV4 path=",
         postCommit ? "postcommit-publication" : "commit",
         " closeReason=",
         postCommit ? "postcommit_rollback_verification_failed"
@@ -2905,11 +2934,17 @@ void EditorLayer::RunEditorMaterialControlRollbackFailureSmokeAfterDrain()
 
 void EditorLayer::OnUiRender()
 {
+    // Pump before any ImGui guard: pages and downloads keep running while the
+    // window is minimized, and completed downloads enter the import controller.
+    m_FabBrowser.Pump();
+    PollFabDownloads();
+    if (m_FabPanelUiSmokeRequested && RunFabPanelUiSmokeFrame())
+        return;
     if (!ImGui::GetCurrentContext())
         return;
 
     const ImGuiIO& io = ImGui::GetIO();
-    if (!io.WantTextInput && io.KeyCtrl)
+    if (!io.WantTextInput && io.KeyCtrl && !m_FabBrowser.WantsKeyboard())
     {
         if (ImGui::IsKeyPressed(ImGuiKey_Z, false))
             Undo();
@@ -2925,6 +2960,7 @@ void EditorLayer::OnUiRender()
     DrawProfilerPanel();
     DrawProjectPanel();
     DrawNewProjectDialog();
+    DrawFabIntegration();
 
     if (m_CaptureViewportRequested && !m_CaptureViewportComplete && m_FrameCounter >= 2)
     {
@@ -2954,6 +2990,21 @@ void EditorLayer::OnUiRender()
 
 void EditorLayer::OnEvent(Engine::Event& event)
 {
+    // A key release always updates the Editor's key state, so a key held across a
+    // focus change into the page cannot stay latched.
+    if (event.GetEventType() == Engine::EventType::KeyReleased)
+    {
+        const int key = static_cast<const Engine::KeyReleasedEvent&>(event).GetKeyCode();
+        if (key >= 0 && key < static_cast<int>(m_KeyDown.size()))
+            m_KeyDown[static_cast<size_t>(key)] = false;
+    }
+    // The page gets first refusal: it consumes events only while it owns keyboard
+    // focus or pointer capture, and then no Editor shortcut or navigation sees them.
+    if (m_FabBrowser.OnEvent(event))
+    {
+        event.Handled = true;
+        return;
+    }
     Engine::EventDispatcher dispatcher(event);
     dispatcher.Dispatch<Engine::FileDropEvent>(GE_BIND_EVENT_FN(EditorLayer::OnFileDrop));
     if (event.Handled)
@@ -2974,7 +3025,8 @@ void EditorLayer::OnEvent(Engine::Event& event)
         const int key = keyEvent.GetKeyCode();
         if (key >= 0 && key < static_cast<int>(m_KeyDown.size()))
             m_KeyDown[static_cast<size_t>(key)] = true;
-        if (!keyEvent.IsRepeat() && key == 'F' && m_ViewportNavigationInputEnabled)
+        if (!keyEvent.IsRepeat() && key == 'F' && m_ViewportNavigationInputEnabled
+            && !m_FabBrowser.WantsKeyboard())
             FocusSelectedEntity();
     }
     else if (event.GetEventType() == Engine::EventType::KeyReleased)
@@ -3220,7 +3272,10 @@ void EditorLayer::DrawMainMenuBar()
         if (ImGui::MenuItem("New Project"))
             m_ShowNewProjectDialog = true;
         if (ImGui::MenuItem("Open Project"))
+        {
+            m_FabImport.AbandonForProjectChange();
             LoadProject();
+        }
         if (ImGui::MenuItem("Save Project"))
             SaveProject();
         if (ImGui::MenuItem("Save Scene"))
@@ -3263,10 +3318,28 @@ void EditorLayer::DrawMainMenuBar()
         ImGui::EndMenu();
     }
 
+    if (ImGui::BeginMenu("Window"))
+    {
+        bool browserVisible = m_FabBrowser.IsVisible();
+        if (ImGui::MenuItem("Fab Browser", nullptr, &browserVisible))
+            m_FabBrowser.SetVisible(browserVisible);
+        bool importVisible = m_FabImport.IsVisible();
+        if (ImGui::MenuItem("Fab Import", nullptr, &importVisible))
+            m_FabImport.SetVisible(importVisible);
+        ImGui::EndMenu();
+    }
+
     if (ImGui::BeginMenu("Tools"))
     {
         if (ImGui::MenuItem("Validate Project"))
-            m_ConsoleLines.emplace_back("Validation queued");
+        {
+            std::string validationError;
+            m_ConsoleLines.emplace_back(m_FabImport.Validator().Start(
+                {m_ProjectRoot, m_ProjectManifestRelativePath}, validationError)
+                    ? std::string("Project validation started (full artifact hashes, on a worker)")
+                    : "Project validation not started: " + validationError);
+            m_FabImport.SetVisible(true);
+        }
         if (ImGui::MenuItem("Compile Shaders"))
             m_ConsoleLines.emplace_back("Shader compiler is not implemented yet");
         if (ImGui::MenuItem("Rescan Asset Sources"))
@@ -3822,6 +3895,19 @@ bool EditorLayer::DrawMaterialAssetControls(Engine::AssetHandle handle)
         return false;
     }
 
+    // Imported (Fab) materials are immutable. The widgets edit a throwaway copy
+    // and are disabled, so nothing reaches the library, the renderer, or disk.
+    const Engine::AssetMetadata* assetMetadata = m_AssetRegistry.GetAsset(handle);
+    const bool immutableMaterial = assetMetadata && Engine::IsImmutableMaterialAsset(*assetMetadata);
+    Engine::MaterialAsset readOnlyCopy;
+    if (immutableMaterial)
+    {
+        readOnlyCopy = *material;
+        material = &readOnlyCopy;
+        ImGui::TextDisabled("Imported (immutable) - duplicate it to edit");
+        ImGui::BeginDisabled();
+    }
+
     ImGui::PushID("MaterialAsset");
     bool materialChanged = false;
     char materialName[128] = {};
@@ -3932,8 +4018,13 @@ bool EditorLayer::DrawMaterialAssetControls(Engine::AssetHandle handle)
     materialChanged |= ImGui::DragFloat("Smooth Terminator", &material->SmoothTerminator, 0.01f, -1.0f, 1.0f);
     material->ClampValues();
 
-    if (ImGui::Button("Save Material"))
+    if (!immutableMaterial && ImGui::Button("Save Material"))
         SaveMaterialAsset(handle);
+    if (immutableMaterial)
+    {
+        ImGui::EndDisabled();
+        materialChanged = false;
+    }
     if (materialChanged)
         Engine::Renderer::PublishArtifactResolvers(m_AssetRegistry, m_MaterialLibrary);
     ImGui::PopID();
@@ -4510,6 +4601,21 @@ void EditorLayer::DrawViewportPanel()
     }
     else
         ImGui::InvisibleButton("ViewportCanvas", size);
+
+    // Drag a Content Browser mesh into the Scene: one entity, one history entry.
+    if (ImGui::BeginDragDropTarget())
+    {
+        if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(AssetDragPayloadType))
+        {
+            if (payload->DataSize == sizeof(AssetDragPayload))
+            {
+                const AssetDragPayload& dropped = *static_cast<const AssetDragPayload*>(payload->Data);
+                if (dropped.Type == Engine::AssetType::Mesh)
+                    OnFabAssetDrop(dropped.Handle);
+            }
+        }
+        ImGui::EndDragDropTarget();
+    }
 
     m_ViewportHovered = ImGui::IsItemHovered();
     if (m_ViewportFocusRequested || ImGui::IsItemClicked(ImGuiMouseButton_Left)
@@ -5258,6 +5364,7 @@ void EditorLayer::DrawNewProjectDialog()
     ImGui::BeginDisabled(!valid || alreadyExists || pathError);
     if (ImGui::Button("Create"))
     {
+        m_FabImport.AbandonForProjectChange();
         if (CreateNewProject(projectName, m_NewProjectParentPath.data()))
             ImGui::CloseCurrentPopup();
     }
@@ -5346,12 +5453,10 @@ void EditorLayer::RunGltfImportSmoke()
 
 bool EditorLayer::OnFileDrop(Engine::FileDropEvent& event)
 {
-    for (const std::string& path : event.GetPaths())
-    {
-        std::snprintf(m_GltfImportPath.data(), m_GltfImportPath.size(), "%s", path.c_str());
-        ImportGltfAsset(path);
-    }
-
+    // Every dropped package goes through the Fab import controller (classify,
+    // snapshot, provenance, atomic project commit). The legacy glTF prototype
+    // importer stays reachable from the Content Browser button only.
+    m_FabImport.SubmitPaths(Fab::FabIntakeOrigin::Drop, event.GetPaths());
     return true;
 }
 
@@ -6418,14 +6523,18 @@ bool EditorLayer::SaveProject()
     if (!SaveActiveScene())
         return false;
 
-    const ProjectManifest manifest {
+    ProjectManifest manifest {
         m_ScenePath,
         m_AssetRegistryPath,
         m_ProjectFramePacingPolicy,
         m_ProjectPresentationPolicy,
         m_ProjectColorPipelineSettings
     };
-    if (!WriteProjectManifest(m_ProjectPath, manifest))
+    // An ordinary save never moves the commit pointer: it keeps the receipts and
+    // revision of the last project commit this Editor adopted or loaded.
+    manifest.FabReceiptsPath = m_FabProject.ReceiptsPath;
+    manifest.ProjectRevision = m_FabProject.Revision;
+    if (!WriteProjectManifest(m_ProjectPath, manifest) || !RefreshManifestDigest())
     {
         Engine::Log::Error("Project save failed: ", m_ProjectPath);
         m_ConsoleLines.emplace_back("Project save failed: " + m_ProjectPath);
@@ -6462,6 +6571,7 @@ bool EditorLayer::CreateNewProject(std::string name, const std::filesystem::path
 
     const HistoryState previousState = CaptureHistoryState();
     const std::string previousProjectPath = m_ProjectPath;
+    const FabEditor::ProjectFabState previousFabProject = m_FabProject;
     const std::string previousScenePath = m_ScenePath;
     const std::string previousAssetRegistryPath = m_AssetRegistryPath;
     const Engine::FramePacingPolicy previousFramePacingPolicy = m_ProjectFramePacingPolicy;
@@ -6471,6 +6581,8 @@ bool EditorLayer::CreateNewProject(std::string name, const std::filesystem::path
     const std::vector<HistoryEntry> previousRedoHistory = m_RedoHistory;
 
     m_ProjectPath = projectPath.string();
+    RefreshProjectLocation();
+    m_FabProject = {};
     m_ScenePath = (projectRoot / "Scenes" / "Main.spiral").string();
     m_AssetRegistryPath = (projectRoot / "Assets" / "assets.spiralassets").string();
     m_ProjectFramePacingPolicy = {};
@@ -6493,6 +6605,8 @@ bool EditorLayer::CreateNewProject(std::string name, const std::filesystem::path
     if (!SaveProject())
     {
         m_ProjectPath = previousProjectPath;
+        RefreshProjectLocation();
+        m_FabProject = previousFabProject;
         m_ScenePath = previousScenePath;
         m_AssetRegistryPath = previousAssetRegistryPath;
         m_ProjectFramePacingPolicy = previousFramePacingPolicy;
@@ -6508,6 +6622,8 @@ bool EditorLayer::CreateNewProject(std::string name, const std::filesystem::path
     if (!Engine::Renderer::SetColorPipelineSettings(m_ProjectColorPipelineSettings))
     {
         m_ProjectPath = previousProjectPath;
+        RefreshProjectLocation();
+        m_FabProject = previousFabProject;
         m_ScenePath = previousScenePath;
         m_AssetRegistryPath = previousAssetRegistryPath;
         m_ProjectFramePacingPolicy = previousFramePacingPolicy;
@@ -6571,24 +6687,29 @@ bool EditorLayer::DeleteSelectedEntity()
 
 bool EditorLayer::LoadProject()
 {
-    ProjectManifest manifest;
-    if (!ReadProjectManifest(m_ProjectPath, manifest))
+    // Every open runs the structural Fab validation (receipts and registry agree,
+    // exact generation file sets, no links, Fab materials load). It also loads the
+    // manifest and registry, so a project that fails it does not open.
+    std::string manifestSha256;
+    std::string manifestDigestError;
+    FabEditor::ReadManifestSha256({ m_ProjectRoot, m_ProjectManifestRelativePath }, manifestSha256, manifestDigestError);
+    Engine::FabProjectState fabState;
+    Engine::FabProjectValidationOptions validationOptions;
+    validationOptions.Level = Engine::FabProjectValidationLevel::Structural;
+    std::string fabError;
+    if (!Engine::LoadFabProjectState(m_ProjectRoot, m_ProjectManifestRelativePath, validationOptions, fabState, fabError))
     {
-        Engine::Log::Error("Could not load project manifest: ", m_ProjectPath);
-        m_ConsoleLines.emplace_back("Project load failed: " + m_ProjectPath);
+        Engine::Log::Error("Could not load project: ", m_ProjectPath, " (", fabError, ")");
+        m_ConsoleLines.emplace_back("Project load failed: " + fabError);
+        m_FabProject.StructuralStatus = "failed";
+        m_FabProject.StructuralMessage = fabError;
         return false;
     }
-
-    Engine::AssetRegistry loadedRegistry;
-    if (!loadedRegistry.LoadFromFile(manifest.AssetRegistryPath))
-    {
-        Engine::Log::Error("Could not load project asset registry: ", manifest.AssetRegistryPath);
-        m_ConsoleLines.emplace_back("Project load failed: asset registry");
-        return false;
-    }
+    ProjectManifest manifest = fabState.Manifest;
+    Engine::AssetRegistry loadedRegistry = std::move(fabState.Registry);
 
     Engine::Scene loadedScene;
-    if (!Engine::Scene::LoadFromFile(manifest.ScenePath, loadedScene))
+    if (!Engine::Scene::LoadFromFile(ResolveProjectPath(manifest.ScenePath, false), loadedScene))
     {
         Engine::Log::Error("Could not load project scene: ", manifest.ScenePath);
         m_ConsoleLines.emplace_back("Project load failed: scene");
@@ -6601,7 +6722,23 @@ bool EditorLayer::LoadProject()
         if (metadata.Type != Engine::AssetType::Material)
             continue;
 
-        const std::filesystem::path materialPath = Engine::AssetFileSystem::ResolvePath(metadata.SourcePath);
+        if (Engine::IsImmutableMaterialAsset(metadata))
+        {
+            // Imported materials live in an immutable generation and are never
+            // opened as, or saved to, a physical project file.
+            Engine::MaterialAsset importedMaterial;
+            std::string importedError;
+            if (!Engine::LoadImmutableMaterialAsset(loadedRegistry, metadata.Handle, importedMaterial, importedError)
+                || !loadedMaterials.Set(metadata.Handle, std::move(importedMaterial)))
+            {
+                Engine::Log::Error("Could not load imported project material: ", metadata.SourcePath, " (", importedError, ")");
+                m_ConsoleLines.emplace_back("Project load failed: imported material " + metadata.SourcePath);
+                return false;
+            }
+            continue;
+        }
+
+        const std::filesystem::path materialPath = ResolveProjectPath(metadata.SourcePath, true);
         if (!loadedMaterials.Load(metadata.Handle, materialPath))
         {
             Engine::Log::Error("Could not load project material: ", metadata.SourcePath);
@@ -6642,14 +6779,13 @@ bool EditorLayer::LoadProject()
     {
         prototypeMaterial->Textures.BaseColor = defaultTextureAsset;
         prototypeMaterial->Samplers.BaseColor = Engine::MaterialTextureSampler::LinearWrap;
-        if (!loadedMaterials.Save(prototypeMaterialAsset,
-            Engine::AssetFileSystem::ResolvePath(prototypeMaterialPath.string())))
+        if (!loadedMaterials.Save(prototypeMaterialAsset, ResolveProjectPath(prototypeMaterialPath.string(), true)))
         {
             Engine::Log::Error("Could not upgrade the prototype material with its default texture");
             return false;
         }
     }
-    if (defaultTextureWasMissing && !loadedRegistry.SaveToFile(manifest.AssetRegistryPath))
+    if (defaultTextureWasMissing && !loadedRegistry.SaveToFile(ResolveProjectPath(manifest.AssetRegistryPath, false)))
     {
         Engine::Log::Error("Could not persist the default scene texture registration");
         return false;
@@ -6657,6 +6793,7 @@ bool EditorLayer::LoadProject()
 
     m_ScenePath = std::move(manifest.ScenePath);
     m_AssetRegistryPath = std::move(manifest.AssetRegistryPath);
+    ResetFabProjectState(fabState, std::move(manifestSha256));
     m_ProjectFramePacingPolicy = manifest.FramePacingPolicy;
     m_ProjectPresentationPolicy = manifest.PresentationPolicy;
     m_ProjectColorPipelineSettings = manifest.ColorPipelineSettings;
@@ -6776,11 +6913,12 @@ bool EditorLayer::SaveActiveScene()
     if (!SaveAssetRegistry())
         return false;
 
-    const bool saved = m_ActiveScene.SaveToFile(m_ScenePath);
+    const std::filesystem::path scenePath = ResolveProjectPath(m_ScenePath, false);
+    const bool saved = m_ActiveScene.SaveToFile(scenePath);
     if (saved)
     {
         Engine::Scene loadedScene;
-        const bool loaded = Engine::Scene::LoadFromFile(m_ScenePath, loadedScene);
+        const bool loaded = Engine::Scene::LoadFromFile(scenePath, loadedScene);
         if (loaded)
             Engine::Log::Info("Scene saved and reload-validated: ", m_ScenePath);
         else
@@ -6798,11 +6936,12 @@ bool EditorLayer::SaveActiveScene()
 
 bool EditorLayer::SaveAssetRegistry()
 {
-    const bool saved = m_AssetRegistry.SaveToFile(m_AssetRegistryPath);
+    const std::filesystem::path registryPath = ResolveProjectPath(m_AssetRegistryPath, false);
+    const bool saved = m_AssetRegistry.SaveToFile(registryPath);
     if (saved)
     {
         Engine::AssetRegistry loadedRegistry;
-        const bool loaded = loadedRegistry.LoadFromFile(m_AssetRegistryPath);
+        const bool loaded = loadedRegistry.LoadFromFile(registryPath);
         if (loaded)
             Engine::Log::Info("Asset registry saved and reload-validated: ", m_AssetRegistryPath);
         else
@@ -6823,8 +6962,14 @@ bool EditorLayer::SaveMaterialAsset(Engine::AssetHandle handle)
     const Engine::AssetMetadata* metadata = m_AssetRegistry.GetAsset(handle);
     if (!metadata || metadata->Type != Engine::AssetType::Material)
         return false;
+    if (Engine::IsImmutableMaterialAsset(*metadata))
+    {
+        // Imported materials are immutable: there is no logical file to write.
+        m_ConsoleLines.emplace_back("Imported materials are read-only: " + metadata->Name);
+        return false;
+    }
 
-    const std::filesystem::path path = Engine::AssetFileSystem::ResolvePath(metadata->SourcePath);
+    const std::filesystem::path path = ResolveProjectPath(metadata->SourcePath, true);
     const bool saved = m_MaterialLibrary.Save(handle, path);
     if (saved)
     {
@@ -6846,9 +6991,10 @@ bool EditorLayer::SaveMaterialAssets()
 {
     for (const Engine::AssetMetadata& metadata : m_AssetRegistry.GetAssets())
     {
-        if (metadata.Type == Engine::AssetType::Material && m_MaterialLibrary.Get(metadata.Handle))
+        if (metadata.Type == Engine::AssetType::Material && m_MaterialLibrary.Get(metadata.Handle)
+            && !Engine::IsImmutableMaterialAsset(metadata))
         {
-            const std::filesystem::path path = Engine::AssetFileSystem::ResolvePath(metadata.SourcePath);
+            const std::filesystem::path path = ResolveProjectPath(metadata.SourcePath, true);
             if (!m_MaterialLibrary.Save(metadata.Handle, path))
             {
                 Engine::Log::Error("Material save failed: ", metadata.SourcePath);
@@ -6880,7 +7026,7 @@ void EditorLayer::EnsureDefaultSceneEntities()
         "Prototype Default");
     if (!m_MaterialLibrary.Get(prototypeMaterialAsset))
     {
-        const std::filesystem::path materialPath = Engine::AssetFileSystem::ResolvePath(prototypeMaterialPath.string());
+        const std::filesystem::path materialPath = ResolveProjectPath(prototypeMaterialPath.string(), true);
         if (!m_MaterialLibrary.Load(prototypeMaterialAsset, materialPath))
         {
             Engine::MaterialAsset prototypeMaterial;

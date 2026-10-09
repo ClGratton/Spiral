@@ -62,6 +62,7 @@
 #include "FabProjectCommitTests.h"
 #include "ProjectManifestTests.h"
 #include "FabBrowserCoreTests.h"
+#include "BrowserPanelTests.h"
 #include "FabImportControllerTests.h"
 #include "UiTextureServiceTests.h"
 #include "InputEventTests.h"
@@ -12641,6 +12642,12 @@ int main(int argc, char** argv)
         FAST_TEST("Browser input router matches an independent model under random sequences", SpiralTests::TestBrowserInputRouterModel),
         INTEGRATION_TEST("Fab intake classifies packages by content without following links", SpiralTests::TestFabIntakeClassification),
         FAST_TEST("Browser surface fake session delivers callbacks on the pump thread", SpiralTests::TestBrowserSurfaceFakeSession),
+        FAST_TEST("Browser panel view-size debounce applies a settled size once and caps it", SpiralTests::TestBrowserPanelViewDebounce),
+        FAST_TEST("Browser panel texture uploader keeps dirty regions across backpressure and replaces textures without blanking", SpiralTests::TestBrowserPanelTextureUploaderScenarios),
+        FAST_TEST("Browser panel texture uploader matches an independent texel oracle under generated frames and backpressure", SpiralTests::TestBrowserPanelTextureUploaderProperty),
+        FAST_TEST("Browser panel lifecycle loads once shuts down in contract order and fails closed on every startup error", SpiralTests::TestBrowserPanelLifecycleAndStartupFailures),
+        FAST_TEST("Browser panel routes events through the input router with DIP conversion and focus rules", SpiralTests::TestBrowserPanelInputRouting),
+        FAST_TEST("Browser panel downloads status and failure containment never leak URLs or escape exceptions", SpiralTests::TestBrowserPanelDownloadsStatusAndContainment),
 #if defined(GE_PLATFORM_LINUX) || defined(GE_PLATFORM_WINDOWS)
         INTEGRATION_TEST("Local package snapshot copies deterministic immutable directory input", TestLocalPackageSnapshotCopiesDeterministically),
         INTEGRATION_TEST("Local package snapshot rejects hostile roots paths and objects", TestLocalPackageSnapshotRejectsHostileInputs),
