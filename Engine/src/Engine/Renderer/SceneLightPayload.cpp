@@ -297,6 +297,9 @@ namespace Engine
         }
         if (grid.GlobalLightIndices != expectedDirectionalIndices)
             return fail("scene light payload global list does not exactly match directional lights");
+        // A stamp per light replaces a hash set per cluster: a light repeats in
+        // a cluster exactly when its last-seen cluster is the current one.
+        std::vector<u32> lastClusterOfLight(grid.Lights.size(), std::numeric_limits<u32>::max());
         for (size_t index = 1; index < grid.ClusterOffsets.size(); ++index)
         {
             const u32 previousOffset = grid.ClusterOffsets[index - 1];
@@ -307,11 +310,16 @@ namespace Engine
                 || currentOffset - previousOffset
                     > grid.MaximumLocalLightsPerCluster)
                 return fail("scene light payload CSR offsets are out of bounds or not monotonic");
-            std::unordered_set<u32> clusterLights;
+            const u32 clusterStamp = static_cast<u32>(index);
             for (u32 cursor = previousOffset; cursor < currentOffset; ++cursor)
             {
-                if (!clusterLights.insert(grid.LocalLightIndices[cursor]).second)
+                // An out-of-range index is rejected by the dedicated check below.
+                const u32 light = grid.LocalLightIndices[cursor];
+                if (light >= lastClusterOfLight.size())
+                    continue;
+                if (lastClusterOfLight[light] == clusterStamp)
                     return fail("scene light payload CSR cluster repeats a local light");
+                lastClusterOfLight[light] = clusterStamp;
             }
         }
         for (u32 index : grid.GlobalLightIndices)
@@ -377,6 +385,14 @@ namespace Engine
         return true;
     }
 
+    u64 SceneLightPayloadPublication::GetSlotCapacityBytes(u64 payloadBytes)
+    {
+        u64 capacity = MinimumSlotCapacityBytes;
+        while (capacity < payloadBytes && capacity < (u64 { 1 } << 62))
+            capacity <<= 1;
+        return capacity;
+    }
+
     bool SceneLightPayloadPublication::Acquire(RHI::Device& device,
         const SceneRenderSnapshot& snapshot, size_t viewIndex, const ClusteredLightGrid& grid,
         const RendererColorPipelineSettings& colorSettings, u64 generation,
@@ -403,14 +419,15 @@ namespace Engine
             outError = "scene light payload byte size is invalid";
             return false;
         }
+        const u64 capacityBytes = GetSlotCapacityBytes(sizeBytes);
         size_t slotIndex = Capacity;
         bool canReuse = false;
         for (size_t index = 0; index < Capacity; ++index)
         {
             const Ref<SceneLightPayloadSlot>& slot = m_Slots[index];
             if (slot && slot.use_count() == 1 && slot->Staging && slot->Gpu
-                && slot->Staging->GetDescription().SizeBytes == sizeBytes
-                && slot->Gpu->GetDescription().SizeBytes == sizeBytes)
+                && slot->Staging->GetDescription().SizeBytes == capacityBytes
+                && slot->Gpu->GetDescription().SizeBytes == capacityBytes)
             {
                 slotIndex = index;
                 canReuse = true;
@@ -450,13 +467,13 @@ namespace Engine
             CreateRef<const SceneLightPayload>(std::move(packed));
         RHI::BufferDescription stagingDescription;
         stagingDescription.DebugName = "Scene Light Payload Staging";
-        stagingDescription.SizeBytes = sizeBytes;
+        stagingDescription.SizeBytes = capacityBytes;
         stagingDescription.Usage = RHI::BufferUsage::CopySource;
         stagingDescription.CpuAccess = RHI::BufferCpuAccess::Write;
         stagingDescription.InitialState = RHI::ResourceState::CopySource;
         RHI::BufferDescription gpuDescription;
         gpuDescription.DebugName = "Scene Light Payload GPU";
-        gpuDescription.SizeBytes = sizeBytes;
+        gpuDescription.SizeBytes = capacityBytes;
         gpuDescription.StrideBytes = RHI::kFixedReadOnlyStructuredBufferStrideBytes;
         gpuDescription.Usage = static_cast<RHI::BufferUsage>(
             static_cast<u32>(RHI::BufferUsage::Structured) | static_cast<u32>(RHI::BufferUsage::CopyDest));

@@ -8,7 +8,10 @@ namespace Engine
 {
     // Writes bytes to an exclusively-created sibling and replaces the target in
     // one namespace operation. Callers retain authority over their schema and
-    // whether the parent directory is trusted/private. On success,
+    // whether the parent directory is trusted/private (a symlinked parent
+    // directory is followed). A new file is created owner-only (0600 on POSIX); an
+    // existing regular target keeps its permission bits (POSIX). Temporary names
+    // stay under NAME_MAX for any accepted target name. On success,
     // outDirectoryDurable (when supplied) reports whether the replacement's
     // directory entry was confirmed durable; false means the new file is visible
     // but a power loss may still resurrect the previous one.

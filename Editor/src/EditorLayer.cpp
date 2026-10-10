@@ -3028,12 +3028,25 @@ void EditorLayer::RunEditorMaterialControlRollbackFailureSmokeAfterDrain()
     Engine::Application::Get().Close();
 }
 
-void EditorLayer::OnUiRender()
+void EditorLayer::PumpBackgroundServices()
 {
-    // Pump before any ImGui guard: pages and downloads keep running while the
-    // window is minimized, and completed downloads enter the import controller.
     m_FabBrowser.Pump();
     PollFabDownloads();
+}
+
+void EditorLayer::OnBackgroundUpdate()
+{
+    // Called instead of OnUiRender while the window is minimized: no ImGui frame
+    // is open, but pages and downloads keep running and completed downloads
+    // still enter the import controller.
+    PumpBackgroundServices();
+}
+
+void EditorLayer::OnUiRender()
+{
+    // Pump before any ImGui guard so a smoke frame or a missing context cannot
+    // starve the browser pump or the download poll.
+    PumpBackgroundServices();
     if (m_FabPanelUiSmokeRequested && RunFabPanelUiSmokeFrame())
         return;
     if (m_PanelUiSmokeRequested && RunPanelUiSmokeFrame())

@@ -1,6 +1,8 @@
 #include "Engine/Assets/GltfImporter.h"
 
 #include "Engine/Assets/AssetFileSystem.h"
+#include "Engine/Assets/GltfBounds.h"
+#include "Engine/Assets/LocalPackageSnapshot.h"
 #include "Engine/Assets/MeshArtifact.h"
 #include "Engine/Assets/AssetRegistry.h"
 
@@ -55,7 +57,14 @@ namespace Engine
         std::string GetMeshName(const cgltf_mesh& mesh, std::size_t meshIndex, const std::filesystem::path& sourcePath)
         {
             if (mesh.name && mesh.name[0] != '\0')
-                return mesh.name;
+            {
+                // cgltf copies the raw JSON string, so escapes such as \n or \" are still
+                // literal; decode them (the registry then replaces any control characters).
+                std::string decoded(mesh.name);
+                decoded.resize(cgltf_decode_string(decoded.data()));
+                if (!decoded.empty())
+                    return decoded;
+            }
 
             const std::string stem = sourcePath.stem().string();
             return stem.empty() ? "Mesh " + std::to_string(meshIndex) : stem + " Mesh " + std::to_string(meshIndex);
@@ -79,6 +88,67 @@ namespace Engine
                 if (extensions[index] && name == extensions[index])
                     return true;
             return false;
+        }
+
+        // The importer only reads mesh geometry, so only extensions that change how geometry is
+        // stored matter: ignoring one yields an all-zero or garbage mesh instead of an error.
+        bool IsGeometryAlteringExtension(std::string_view name)
+        {
+            return name == "KHR_draco_mesh_compression" || name == "EXT_meshopt_compression"
+                || name == "KHR_meshopt_compression" || name == "EXT_mesh_gpu_instancing";
+        }
+
+        bool HasUnsupportedGeometryEncoding(const cgltf_data& document, std::string& error)
+        {
+            for (cgltf_size index = 0; index < document.extensions_required_count; ++index)
+                if (document.extensions_required[index] && IsGeometryAlteringExtension(document.extensions_required[index]))
+                {
+                    error = std::string("glTF requires the unsupported extension ") + document.extensions_required[index];
+                    return true;
+                }
+            for (cgltf_size index = 0; index < document.buffer_views_count; ++index)
+                if (document.buffer_views[index].has_meshopt_compression)
+                {
+                    error = "glTF uses unsupported meshopt-compressed geometry";
+                    return true;
+                }
+            for (cgltf_size mesh = 0; mesh < document.meshes_count; ++mesh)
+                for (cgltf_size primitive = 0; primitive < document.meshes[mesh].primitives_count; ++primitive)
+                    if (document.meshes[mesh].primitives[primitive].has_draco_mesh_compression)
+                    {
+                        error = "glTF uses unsupported Draco-compressed geometry";
+                        return true;
+                    }
+            return false;
+        }
+
+        // External buffers must stay inside the glTF's own directory and under a sane size, with
+        // the same traversal, scheme and percent-encoding rules the Fab intake applies.
+        bool ValidateBufferSources(const cgltf_data& document, const std::filesystem::path& sourcePath, std::string& error)
+        {
+            const LocalPackageSnapshotLimits limits;
+            const std::string rootName = sourcePath.filename().generic_string();
+            u64 total = 0;
+            for (cgltf_size index = 0; index < document.buffers_count; ++index)
+            {
+                const cgltf_buffer& buffer = document.buffers[index];
+                if (buffer.size > limits.MaximumFileBytes || buffer.size > limits.MaximumAggregateBytes - total)
+                {
+                    error = "glTF buffer exceeds the import size limit";
+                    return false;
+                }
+                total += buffer.size;
+                if (!buffer.uri || std::string_view(buffer.uri).starts_with("data:"))
+                    continue;
+                std::string relativePath;
+                std::string resolveError;
+                if (!ResolveGltfDependencyUri(rootName, buffer.uri, limits, relativePath, resolveError))
+                {
+                    error = "glTF buffer URI is not allowed: " + resolveError;
+                    return false;
+                }
+            }
+            return true;
         }
 
         bool AppendPrimitive(
@@ -151,6 +221,13 @@ namespace Engine
                 }
                 artifact.Vertices.push_back(vertex);
             }
+            // cgltf_accessor_read_index returns 0 for a sparse or bufferView-less accessor and has no
+            // way to report the error, which would import every index as vertex 0.
+            if (primitive.indices && (primitive.indices->is_sparse || !primitive.indices->buffer_view))
+            {
+                outError = "glTF index accessor is sparse or has no bufferView";
+                return false;
+            }
             artifact.Indices.reserve(artifact.Indices.size() + sourceIndexCount);
             for (cgltf_size index = 0; index < sourceIndexCount; ++index)
             {
@@ -179,7 +256,8 @@ namespace Engine
         }
     }
 
-    GltfImportResult GltfImporter::Import(const std::filesystem::path& sourcePath, AssetRegistry& registry)
+    GltfImportResult GltfImporter::Import(const std::filesystem::path& sourcePath, AssetRegistry& registry,
+        const AssetPathResolver& resolver)
     {
         GltfImportResult result;
         result.SourcePath = AssetRegistry::NormalizeSourcePath(sourcePath.generic_string());
@@ -195,7 +273,8 @@ namespace Engine
             return result;
         }
 
-        const std::filesystem::path resolvedPath = AssetFileSystem::ResolvePath(result.SourcePath);
+        const std::filesystem::path resolvedPath = resolver ? resolver(result.SourcePath)
+            : AssetFileSystem::ResolvePath(result.SourcePath);
         std::error_code error;
         if (!std::filesystem::is_regular_file(resolvedPath, error) || error)
         {
@@ -220,11 +299,26 @@ namespace Engine
                 cgltf_decode_string(document->buffers[bufferIndex].uri);
         }
 
+        std::string sourceError;
+        if (!ValidateBufferSources(*document, resolvedPath, sourceError)
+            || HasUnsupportedGeometryEncoding(*document, sourceError))
+        {
+            result.Error = sourceError;
+            return result;
+        }
+
         // cgltf resolves external buffers relative to the original glTF file, not its parent directory.
         parseResult = cgltf_load_buffers(&options, document.get(), resolvedPathString.c_str());
         if (parseResult != cgltf_result_success)
         {
             result.Error = "Could not load glTF buffers: " + GetResultName(parseResult);
+            return result;
+        }
+
+        std::string boundsError;
+        if (!ValidateGltfBufferBounds(*document, boundsError))
+        {
+            result.Error = "glTF validation failed: " + boundsError;
             return result;
         }
 

@@ -6,6 +6,7 @@
 #include "Engine/Renderer/FramePacingPolicy.h"
 #include "Engine/Renderer/PresentationPolicy.h"
 #include "Engine/Renderer/OpticalInputCorrelation.h"
+#include "Engine/Renderer/PublishedArtifactRecords.h"
 #include "Engine/RHI/RHICommon.h"
 #include "Engine/Renderer/SceneRasterPreparation.h"
 #include "Engine/Renderer/UiTexture.h"
@@ -491,6 +492,26 @@ namespace Engine
         static bool ResolvePublishedMeshArtifact(
             const ArtifactResolverSnapshot& snapshot, AssetHandle asset,
             MeshArtifact& outArtifact, std::string& outError);
+        // Retained-decode entry points. Each decodes a cooked artifact at most
+        // once per resolver snapshot (a failure is retained too) and returns
+        // the shared immutable result. A newly published snapshot starts with
+        // an empty cache, so a registry/material generation change, a hot
+        // reload, or a Fab generation swap can never serve stale data from an
+        // older snapshot. The by-value overloads above and below always
+        // re-read the cooked file.
+        static bool ResolvePublishedMeshRecord(
+            const ArtifactResolverSnapshot& snapshot, AssetHandle asset,
+            PublishedMeshRecord& outRecord, std::string& outError);
+        // On a cache miss the decoded variant set is moved into
+        // outLoadedVariants (when non-null) so the caller can upload it
+        // without a second disk read.
+        static bool ResolvePublishedTextureSemantics(
+            const ArtifactResolverSnapshot& snapshot, AssetHandle asset,
+            TextureTargetProfile preferredTarget,
+            PublishedTextureSemantics& outSemantics,
+            TextureArtifactVariantSet* outLoadedVariants, std::string& outError);
+        static ArtifactResolverCacheStats GetArtifactResolverSnapshotCacheStats(
+            const ArtifactResolverSnapshot& snapshot);
         static bool ResolvePublishedTextureArtifact(AssetHandle asset, TextureArtifact& outArtifact, std::string& outError);
         static bool ResolvePublishedTextureArtifactVariantSet(AssetHandle asset,
             TextureTargetProfile preferredTarget, TextureArtifactVariantSet& outVariants,

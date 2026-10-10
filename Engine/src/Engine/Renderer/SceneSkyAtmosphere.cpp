@@ -179,14 +179,19 @@ namespace Engine
             return NonnegativeFinite(out);
         }
 
-        bool EvaluateSky(const SceneSkyAtmosphereFrame& frame,
-            const Math::Vec3& direction, Math::Vec3& out)
+        // The Perez normalizers depend only on the sun zenith and the frame's
+        // coefficients, so they are computed once per irradiance integral, not
+        // once per direction sample.
+        struct SkyDenominators
         {
-            const double cosineTheta = std::clamp(
-                static_cast<double>(direction.Y), 0.0, 1.0);
-            const double theta = std::acos(cosineTheta);
-            const double gamma = std::acos(std::clamp(
-                Dot(direction, frame.SurfaceToSunWorld), -1.0, 1.0));
+            double LuminanceY = 0.0;
+            double ChromaticityX = 0.0;
+            double ChromaticityY = 0.0;
+        };
+
+        bool TryComputeSkyDenominators(const SceneSkyAtmosphereFrame& frame,
+            SkyDenominators& out)
+        {
             const double denominatorY = Perez(0.0, frame.SunZenithRadians,
                 frame.LuminancePerez);
             const double denominatorX = Perez(0.0, frame.SunZenithRadians,
@@ -197,12 +202,25 @@ namespace Engine
                 || !std::isfinite(denominatory) || !(denominatorY > 0.0)
                 || !(denominatorX > 0.0) || !(denominatory > 0.0))
                 return false;
+            out = { denominatorY, denominatorX, denominatory };
+            return true;
+        }
+
+        bool EvaluateSky(const SceneSkyAtmosphereFrame& frame,
+            const SkyDenominators& denominators,
+            const Math::Vec3& direction, Math::Vec3& out)
+        {
+            const double cosineTheta = std::clamp(
+                static_cast<double>(direction.Y), 0.0, 1.0);
+            const double theta = std::acos(cosineTheta);
+            const double gamma = std::acos(std::clamp(
+                Dot(direction, frame.SurfaceToSunWorld), -1.0, 1.0));
             const double x = frame.ZenithChromaticityX
-                * Perez(theta, gamma, frame.ChromaticityXPerez) / denominatorX;
+                * Perez(theta, gamma, frame.ChromaticityXPerez) / denominators.ChromaticityX;
             const double y = frame.ZenithChromaticityY
-                * Perez(theta, gamma, frame.ChromaticityYPerez) / denominatory;
+                * Perez(theta, gamma, frame.ChromaticityYPerez) / denominators.ChromaticityY;
             const double Y = frame.ZenithLuminanceCdPerSquareMeter
-                * Perez(theta, gamma, frame.LuminancePerez) / denominatorY;
+                * Perez(theta, gamma, frame.LuminancePerez) / denominators.LuminanceY;
             return TryXyYToLinearRgb(x, y, Y, out);
         }
 
@@ -213,6 +231,9 @@ namespace Engine
             // deterministic without introducing a runtime cubemap prerequisite.
             constexpr double goldenAngle = std::numbers::pi
                 * (3.0 - 2.2360679774997896964);
+            SkyDenominators denominators;
+            if (!TryComputeSkyDenominators(frame, denominators))
+                return false;
             double red = 0.0;
             double green = 0.0;
             double blue = 0.0;
@@ -228,7 +249,7 @@ namespace Engine
                     static_cast<float>(radius * std::sin(azimuth))
                 };
                 Math::Vec3 radiance;
-                if (!EvaluateSky(frame, direction, radiance))
+                if (!EvaluateSky(frame, denominators, direction, radiance))
                     return false;
                 red += static_cast<double>(radiance.X) * y;
                 green += static_cast<double>(radiance.Y) * y;

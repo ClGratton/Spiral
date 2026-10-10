@@ -324,7 +324,11 @@ namespace Engine
 
         // Retained payloads cover resources captured by pass recordings but
         // owned outside RenderGraph (for example, per-frame constant buffers).
-        bool Retain(u64 frameIndex, Scope<RenderGraph> graph,
+        // The graph is adopted only when this returns true. A rejected frame
+        // leaves ownership with the caller, whose accepted GPU submissions may
+        // still be executing: the caller must establish device-idle before it
+        // releases the graph (its command lists, query pools and transients).
+        bool Retain(u64 frameIndex, Scope<RenderGraph>&& graph,
             const RenderGraph::CompileResult& compiled,
             const RenderGraph::ExecuteResult& executed,
             std::vector<Ref<void>> retainedPayloads = {},

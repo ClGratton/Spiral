@@ -380,6 +380,19 @@ namespace Spiral::Tests
                 && collection.Receipts.size() == 2,
             "same-stream changed-source generation publishes only after validation");
 
+        // A -> B -> A: the original source now matches a superseded generation. It used to be called
+        // ExactReuse, after which the cook failed with a misleading registry fault.
+        FabImportReceipt reimportedOriginal = receipt;
+        reimportedOriginal.DiagnosticAcquiredAtUtc = "2026-09-05T12:20:30Z";
+        FabReceiptDecision rollback = ClassifyFabImportReceipt(collection, reimportedOriginal);
+        Check(rollback.Kind == FabReceiptDecisionKind::Conflict
+                && rollback.Diagnostic.find("superseded generation") != std::string::npos,
+            "re-importing a superseded source is a Conflict with a specific diagnostic");
+        Check(ClassifyFabImportReceipt(collection, receipt).Kind == FabReceiptDecisionKind::Conflict,
+            "the exact superseded receipt is not reusable either");
+        Check(ClassifyFabImportReceipt(collection, replacement).Kind == FabReceiptDecisionKind::ExactReuse,
+            "the current generation is still an exact reuse");
+
         FabImportReceipt staleReplacement = replacement;
         staleReplacement.RelatedGenerationId = receipt.GenerationId;
         staleReplacement.SourceSha256 = Digest('3');

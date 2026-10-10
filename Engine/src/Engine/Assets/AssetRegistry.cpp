@@ -66,12 +66,35 @@ namespace Engine
             return false;
         }
 
+        // One metadata field (source path, name or cooked root) never legitimately approaches
+        // this size; the bound keeps a hostile registry line or glTF name from costing more than
+        // a bounded scan.
+        constexpr size_t kMaximumMetadataTextBytes = 4096;
+        constexpr size_t kMaximumRegistryLineBytes = 3 * kMaximumMetadataTextBytes + 256;
+
         bool IsSafeText(std::string_view value)
         {
-            return std::none_of(value.begin(), value.end(), [](unsigned char character)
+            return value.size() <= kMaximumMetadataTextBytes
+                && std::none_of(value.begin(), value.end(), [](unsigned char character)
             {
                 return character < 0x20 || character == 0x7f;
             });
+        }
+
+        // Asset display names can come straight from imported files (a glTF mesh name is raw
+        // JSON text). Control characters would make SaveToFile refuse the whole registry, so they
+        // become spaces, and the length is capped at a UTF-8 boundary.
+        std::string SanitizeAssetName(std::string_view name)
+        {
+            constexpr size_t kMaximumNameBytes = 256;
+            std::string result(name.substr(0, kMaximumNameBytes));
+            if (name.size() > kMaximumNameBytes)
+                while (!result.empty() && (static_cast<unsigned char>(result.back()) & 0xC0) == 0x80)
+                    result.pop_back();
+            for (char& character : result)
+                if (static_cast<unsigned char>(character) < 0x20 || static_cast<unsigned char>(character) == 0x7f)
+                    character = ' ';
+            return result;
         }
 
         bool IsWindowsReservedName(std::string_view segment)
@@ -211,7 +234,8 @@ namespace Engine
             return kInvalidAssetHandle;
 
         const std::string normalizedSourcePath = NormalizeSourcePath(sourcePath);
-        if (normalizedSourcePath.empty())
+        // The persistence layer refuses unsafe text, so the in-memory registry must too.
+        if (normalizedSourcePath.empty() || !IsSafeText(normalizedSourcePath))
             return kInvalidAssetHandle;
 
         if (const AssetMetadata* existing = FindByPath(type, normalizedSourcePath))
@@ -220,7 +244,7 @@ namespace Engine
         AssetMetadata metadata;
         metadata.Type = type;
         metadata.SourcePath = normalizedSourcePath;
-        metadata.Name = name.empty() ? BuildDefaultName(normalizedSourcePath) : std::move(name);
+        metadata.Name = SanitizeAssetName(name.empty() ? BuildDefaultName(normalizedSourcePath) : name);
         metadata.Handle = GenerateStableHandle(type, normalizedSourcePath);
 
         AssetHandle candidate = metadata.Handle;
@@ -297,7 +321,7 @@ namespace Engine
     bool AssetRegistry::SetAssetName(AssetHandle handle, std::string name)
     {
         AssetMetadata* metadata = GetAsset(handle);
-        if (!metadata)
+        if (!metadata || !IsSafeText(name))
             return false;
 
         metadata->Name = std::move(name);
@@ -447,6 +471,8 @@ namespace Engine
         std::string line;
         while (std::getline(input, line))
         {
+            if (line.size() > kMaximumRegistryLineBytes)
+                return false;
             const bool whitespaceOnly = std::all_of(line.begin(), line.end(), [](unsigned char character)
             {
                 return std::isspace(character) != 0;
@@ -524,20 +550,24 @@ namespace Engine
         std::string normalized(sourcePath);
         std::replace(normalized.begin(), normalized.end(), '\\', '/');
 
-        while (!normalized.empty() && std::isspace(static_cast<unsigned char>(normalized.back())))
-            normalized.pop_back();
+        // One forward scan finds the first kept byte, so a long run of "./" or spaces costs O(n)
+        // instead of one memmove per stripped token.
+        size_t end = normalized.size();
+        while (end > 0 && std::isspace(static_cast<unsigned char>(normalized[end - 1])))
+            --end;
 
-        while (!normalized.empty() && std::isspace(static_cast<unsigned char>(normalized.front())))
-            normalized.erase(normalized.begin());
+        size_t begin = 0;
+        while (begin < end && std::isspace(static_cast<unsigned char>(normalized[begin])))
+            ++begin;
 
-        while (normalized.rfind("./", 0) == 0)
-            normalized.erase(0, 2);
+        while (end - begin >= 2 && normalized[begin] == '.' && normalized[begin + 1] == '/')
+            begin += 2;
 
-        const bool isAbsolutePath = std::filesystem::path(normalized).is_absolute();
-        while (!isAbsolutePath && !normalized.empty() && normalized.front() == '/')
-            normalized.erase(normalized.begin());
+        const bool isAbsolutePath = std::filesystem::path(normalized.substr(begin, end - begin)).is_absolute();
+        while (!isAbsolutePath && begin < end && normalized[begin] == '/')
+            ++begin;
 
-        return normalized;
+        return normalized.substr(begin, end - begin);
     }
 
     bool AssetRegistry::IsValidCookedRoot(std::string_view cookedRoot)

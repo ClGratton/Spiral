@@ -1,6 +1,7 @@
 #include "Engine/RenderGraph/RenderGraph.h"
 
 #include <algorithm>
+#include <functional>
 #include <atomic>
 #include <condition_variable>
 #include <mutex>
@@ -60,7 +61,7 @@ namespace Engine
         return result;
     }
 
-    bool SubmittedRenderGraphFrameOwner::Retain(u64 frameIndex, Scope<RenderGraph> graph,
+    bool SubmittedRenderGraphFrameOwner::Retain(u64 frameIndex, Scope<RenderGraph>&& graph,
         const RenderGraph::CompileResult& compiled, const RenderGraph::ExecuteResult& executed,
         std::vector<Ref<void>> retainedPayloads, std::string* error)
     {
@@ -315,6 +316,37 @@ namespace Engine
         for (u32 index = 0; index < compiled.ResourceLifetimes.size(); ++index)
             if (!IsValid(compiled.ResourceLifetimes[index].Resource) || compiled.ResourceLifetimes[index].Resource.Index != index)
             { result.Error = "A compiled resource lifetime has an invalid handle."; return result; }
+        // Execute and CompileResult are public API: validate every index the
+        // execution will dereference before any allocation or submission, so a
+        // stale or hand-edited CompileResult is rejected instead of reading out
+        // of bounds or reaching an unallocated transient.
+        {
+            const auto resourceIsUsable = [&](ResourceHandle resource)
+            {
+                return IsValid(resource)
+                    && (m_Resources[resource.Index].Lifetime == ResourceLifetimeKind::Imported
+                        || compiled.ResourceLifetimes[resource.Index].Used);
+            };
+            std::vector<bool> seenPass(m_Passes.size(), false);
+            for (const CompiledPass& pass : compiled.Passes)
+            {
+                if (!IsValid(pass.Pass) || seenPass[pass.Pass.Index])
+                { result.Error = "A compiled pass is out of range or repeated."; return result; }
+                seenPass[pass.Pass.Index] = true;
+                for (const ResourceUse& use : m_Passes[pass.Pass.Index].Uses)
+                    if (!resourceIsUsable(use.Resource))
+                    { result.Error = "Compiled resource lifetimes do not cover a pass resource; the graph changed after Compile."; return result; }
+            }
+            for (const Dependency& dependency : compiled.Dependencies)
+                if (!IsValid(dependency.Producer) || !IsValid(dependency.Consumer))
+                { result.Error = "A compiled graph dependency references an invalid pass."; return result; }
+            for (const Barrier& barrier : compiled.Barriers)
+                if (!IsValid(barrier.Pass) || !resourceIsUsable(barrier.Resource))
+                { result.Error = "A compiled graph barrier references an invalid pass or an unused resource."; return result; }
+            for (const QueueTransition& transition : compiled.QueueTransitions)
+                if (!IsValid(transition.Producer) || !IsValid(transition.Consumer) || !resourceIsUsable(transition.Resource))
+                { result.Error = "A compiled graph queue transition references an invalid pass or an unused resource."; return result; }
+        }
         const RHI::CapabilityGroupState allocationGroup = BuildTransientResourceCapabilityGroup(device.GetCapabilities());
         result.TransientAllocationMode = allocationGroup.SelectedPath;
         if (allocationGroup.SelectedPath != RHI::CapabilityPath::NonAliasedGpuRetiredPool)
@@ -484,6 +516,27 @@ namespace Engine
         std::vector<RHI::QueueResolution> resolutions(m_Passes.size());
         for (const CompiledPass& pass : compiled.Passes)
             resolutions[pass.Pass.Index] = device.ResolveQueue(pass.Queue);
+        // Imported and pooled resources start owned by Graphics, and Compile
+        // pairs an ownership release/acquire only between two uses. A resource
+        // whose first user runs on an independent Copy or Compute queue would
+        // therefore be submitted without ever acquiring it (rejected by
+        // Vulkan across families, silently wrong elsewhere). Refuse such a
+        // graph before the first submission; start it with a Graphics pass.
+        {
+            std::vector<bool> firstUseSeen(m_Resources.size(), false);
+            for (const CompiledPass& pass : compiled.Passes)
+                for (const ResourceUse& use : m_Passes[pass.Pass.Index].Uses)
+                {
+                    if (firstUseSeen[use.Resource.Index]) continue;
+                    firstUseSeen[use.Resource.Index] = true;
+                    if (resolutions[pass.Pass.Index].Effective != RHI::QueueType::Graphics)
+                    {
+                        result.Error = "Resource '" + m_Resources[use.Resource.Index].DebugName + "' is first used by pass '" + pass.DebugName
+                            + "' on an independent non-Graphics queue; initial queue-ownership acquisition is not supported, so begin its lifetime on a Graphics pass.";
+                        return result;
+                    }
+                }
+        }
         std::vector<Scope<RHI::QueryPool>> timestampPools(m_Passes.size());
         if (options.EnableTimestampScopes)
         {
@@ -606,6 +659,31 @@ namespace Engine
             workerContextIndices[passIndex] = contextIndex;
             workerCommandLists[passIndex] = m_RecordingContexts[contextIndex].CommandList.get();
         }
+        // Any failure after this point must not leave a pre-recorded but
+        // unsubmitted worker list in the reusable pool: it may be mid-recording
+        // (a reused context's stale completion token still looks retired) and
+        // it owns timestamp-query reservations. Destroy every worker context
+        // recorded in this call that did not reach an accepted submission.
+        const auto discardUnsubmittedWorkerContexts = [&]()
+        {
+            for (u32 index = static_cast<u32>(m_RecordingContexts.size()); index-- > 0;)
+            {
+                const RecordingContext& candidate = m_RecordingContexts[index];
+                const u32 candidatePass = candidate.PassIndex;
+                if (candidatePass < workerCommandLists.size() && workerCommandLists[candidatePass]
+                    && workerCommandLists[candidatePass] == candidate.CommandList.get()
+                    && !passTokens[candidatePass].IsValid())
+                    m_RecordingContexts.erase(m_RecordingContexts.begin() + index);
+            }
+        };
+        struct WorkerContextCleanup
+        {
+            ~WorkerContextCleanup() { if (!Succeeded) Discard(); }
+            const std::function<void()>& Discard;
+            const bool& Succeeded;
+        };
+        const std::function<void()> discardFunction = discardUnsubmittedWorkerContexts;
+        const WorkerContextCleanup workerContextCleanup { discardFunction, result.Success };
         if (!workerCandidates.empty())
         {
             std::atomic<u32> active { 0 }, peak { 0 };
@@ -665,19 +743,8 @@ namespace Engine
         }
         for (const CompiledPass& compiledPass : compiled.Passes)
         {
-            const auto discardUnsubmittedWorkerContexts = [&]()
-            {
-                for (u32 index = static_cast<u32>(m_RecordingContexts.size()); index-- > 0;)
-                {
-                    const bool isUnsubmittedWorkerContext = std::any_of(workerCommandLists.begin(), workerCommandLists.end(),
-                        [&](RHI::CommandList* commandList) { return commandList == m_RecordingContexts[index].CommandList.get(); })
-                        && !m_RecordingContexts[index].Completion.IsValid();
-                    if (isUnsubmittedWorkerContext) m_RecordingContexts.erase(m_RecordingContexts.begin() + index);
-                }
-            };
             if (recordedOnWorker[compiledPass.Pass.Index] == 2)
             {
-                discardUnsubmittedWorkerContexts();
                 result.Error = recordingErrors[compiledPass.Pass.Index];
                 return result;
             }

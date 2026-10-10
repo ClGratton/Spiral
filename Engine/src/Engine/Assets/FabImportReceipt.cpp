@@ -1218,8 +1218,21 @@ namespace Engine
         if (!ValidateFabImportReceipt(candidate, error))
             return Decision(FabReceiptDecisionKind::InvalidCandidate, std::move(error));
 
+        // The accepted artifacts, registry roots and receipt tip all describe a stream's current
+        // generation. A source that matches an earlier, superseded generation therefore cannot be
+        // "reused": there is nothing current to adopt, and no rollback decision exists.
+        const auto isSuperseded = [&collection](const FabImportReceipt& receipt)
+        {
+            const FabImportReceipt* tip = FindStreamTip(collection, receipt.StreamId);
+            return tip && tip != &receipt;
+        };
+        constexpr const char* kSupersededMessage
+            = "the source matches a superseded generation of its stream; it is not the current generation and cannot be reused";
+
         if (const FabImportReceipt* exactKey = FindReceipt(collection, candidate.StreamId, candidate.GenerationId))
         {
+            if (isSuperseded(*exactKey))
+                return Decision(FabReceiptDecisionKind::Conflict, kSupersededMessage, exactKey);
             if (SameReimportIdentity(*exactKey, candidate) && ReuseCompatible(*exactKey, candidate))
                 return Decision(FabReceiptDecisionKind::ExactReuse, "the exact receipt already exists", exactKey);
             return Decision(FabReceiptDecisionKind::Conflict,
@@ -1230,6 +1243,8 @@ namespace Engine
         {
             if (!SameReimportIdentity(existing, candidate))
                 continue;
+            if (isSuperseded(existing))
+                return Decision(FabReceiptDecisionKind::Conflict, kSupersededMessage, &existing);
             if (ReuseCompatible(existing, candidate))
                 return Decision(FabReceiptDecisionKind::ExactReuse,
                     "the same source and compatible provenance already have accepted artifacts", &existing);

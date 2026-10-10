@@ -273,6 +273,12 @@ namespace Engine::RHI
         return true;
     }
 
+    bool TimestampQueryTransaction::CanPublish(const CompletionToken& token) const
+    {
+        return m_Prepared && m_Recording && m_Retirements->CanPublish(m_Pool, m_NativeState, token)
+            && m_Pool->CanPublish(*m_Recording, token);
+    }
+
     bool TimestampQueryTransaction::Publish(const CompletionToken& token)
     {
         if (!m_Prepared || !m_Recording || !m_Retirements->CanPublish(m_Pool, m_NativeState, token)

@@ -1062,7 +1062,32 @@ namespace Engine
         const bool closed = transitions && list->End();
         const bool rejectedAfterClose = closed && !list->TransitionBuffer(*buffer, RHI::ResourceState::CopyDest);
         const bool submitted = closed && device.SubmitAndWait(*list);
-        const bool passed = rejectedOutsideRecording && rejectedInvalidState && rejectedAfterClose && submitted;
+        // Copy contract: the destination must declare CopyDest, the source CopySource,
+        // and one buffer is never copied onto itself. Every refusal leaves the list
+        // recording, so the same list then accepts a valid copy and submits.
+        RHI::BufferDescription sourceOnlyDescription = description;
+        sourceOnlyDescription.DebugName = "RHIBufferCopyContractSourceOnlyV1";
+        sourceOnlyDescription.Usage = RHI::BufferUsage::CopySource;
+        RHI::BufferDescription destinationOnlyDescription = description;
+        destinationOnlyDescription.DebugName = "RHIBufferCopyContractDestinationOnlyV1";
+        destinationOnlyDescription.Usage = RHI::BufferUsage::CopyDest;
+        Scope<RHI::Buffer> sourceOnly = device.CreateBuffer(sourceOnlyDescription);
+        Scope<RHI::Buffer> destinationOnly = device.CreateBuffer(destinationOnlyDescription);
+        Scope<RHI::CommandList> copyList = sourceOnly && destinationOnly
+            ? device.CreateCommandList(RHI::QueueType::Graphics, "RHIBufferCopyContractV1") : nullptr;
+        const bool copyRecording = copyList && copyList->Begin();
+        const bool copyRejected = copyRecording
+            && !copyList->CopyBuffer(*sourceOnly, 0, *destinationOnly, 0, sizeof(u32))
+            && !copyList->CopyBuffer(*destinationOnly, 0, *destinationOnly, 0, sizeof(u32))
+            && !copyList->CopyBuffer(*sourceOnly, 0, *sourceOnly, 0, sizeof(u32));
+        const bool copyAccepted = copyRecording && copyList->CopyBuffer(*destinationOnly, 0, *sourceOnly, 0, sizeof(u32))
+            && copyList->End() && device.SubmitAndWait(*copyList);
+        Log::Info("RHIBufferCopyContractSmokeV1 backend=", backendName,
+            ", wrongUsageAndSelfCopy=", copyRejected ? "rejected" : "accepted",
+            ", validCopy=", copyAccepted ? "pass" : "fail", ", result=", (copyRejected && copyAccepted) ? "pass" : "fail");
+
+        const bool passed = rejectedOutsideRecording && rejectedInvalidState && rejectedAfterClose && submitted
+            && copyRejected && copyAccepted;
         Log::Info("RHIBufferTransitionSmokeV1 backend=", backendName,
             ", invalid=", rejectedInvalidState ? "rejected" : "accepted",
             ", lifecycle=", (rejectedOutsideRecording && rejectedAfterClose) ? "pass" : "fail",
@@ -1149,7 +1174,30 @@ namespace Engine
         destructionPool.reset();
         const bool destructionRetired = destructionToken.IsValid() && device.WaitForCompletion(destructionToken, 5000);
 
-        const bool passed = allocated && firstRecorded && pending && readback && reused && destructionRetired;
+        // A pool larger than the recorded range: a submission reads back only the
+        // queries it reset and resolved. Reading the untouched tail without WAIT
+        // reports not-ready forever, so the submission would never complete.
+        RHI::QueryPoolDescription partialDescription = description;
+        partialDescription.DebugName = "RHITimestampQuerySmokeV1 Partial Range";
+        partialDescription.Count = 8;
+        Scope<RHI::QueryPool> partialPool = device.CreateQueryPool(partialDescription);
+        Scope<RHI::CommandList> partialList = partialPool
+            ? device.CreateCommandList(RHI::QueueType::Graphics, "RHITimestampQuerySmokeV1 Partial Range") : nullptr;
+        const bool partialRecorded = partialList && partialList->Begin() && partialList->ResetQueryPool(*partialPool, 2, 2)
+            && partialList->WriteTimestamp(*partialPool, 2) && partialList->WriteTimestamp(*partialPool, 3)
+            && partialList->ResolveQueryPool(*partialPool, 2, 2) && partialList->End();
+        const RHI::CompletionToken partialToken = partialRecorded ? device.Submit(*partialList) : RHI::CompletionToken {};
+        const bool partialRetired = partialToken.IsValid() && device.WaitForCompletion(partialToken, 5000)
+            && device.QueryCompletion(partialToken) == RHI::CompletionStatus::Complete;
+        const RHI::QueryResult partialBegin = partialRetired ? partialPool->ReadResult(2) : RHI::QueryResult {};
+        const RHI::QueryResult partialEnd = partialRetired ? partialPool->ReadResult(3) : RHI::QueryResult {};
+        const bool partialRange = partialRetired && partialBegin.Status == RHI::QueryResultStatus::Ready
+            && partialEnd.Status == RHI::QueryResultStatus::Ready && partialEnd.Value >= partialBegin.Value;
+        Log::Info("RHITimestampPartialRangeSmokeV1 backend=", backendName, ", poolCount=8, recorded=2..3, retired=",
+            partialRetired ? "pass" : "fail", ", readback=", partialRange ? "pass" : "fail",
+            ", result=", partialRange ? "pass" : "fail");
+
+        const bool passed = allocated && firstRecorded && pending && readback && reused && destructionRetired && partialRange;
         Log::Info("RHITimestampQuerySmokeV1 backend=", backendName,
             ", allocation=", allocated ? "pass" : "fail",
             ", periodNanoseconds=", periodNanoseconds,
@@ -1321,10 +1369,14 @@ namespace Engine
             expected[index] = 0x0B1E0000u ^ (index * 2246822519u);
         RHI::BufferDescription validationDescription = description;
         validationDescription.DebugName = "RHIBufferOwnershipSmokeV1 Validation";
-        validationDescription.Usage = RHI::BufferUsage::CopyDest;
+        // The validation target is the destination of one copy and the source of the
+        // readback copy, so it declares both usages (the copy contract requires them).
+        validationDescription.Usage = static_cast<RHI::BufferUsage>(
+            static_cast<u32>(RHI::BufferUsage::CopySource) | static_cast<u32>(RHI::BufferUsage::CopyDest));
         Scope<RHI::Buffer> validation = device.CreateBuffer(validationDescription);
         RHI::BufferDescription readbackDescription = validationDescription;
         readbackDescription.DebugName = "RHIBufferOwnershipSmokeV1 Readback";
+        readbackDescription.Usage = RHI::BufferUsage::CopyDest;
         readbackDescription.CpuAccess = RHI::BufferCpuAccess::Read;
         Scope<RHI::Buffer> readback = device.CreateBuffer(readbackDescription);
         const bool uploaded = transfer && device.UploadBuffer(*transfer, expected.data(), sizeof(expected));

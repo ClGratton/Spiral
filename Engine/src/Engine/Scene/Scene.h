@@ -9,6 +9,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 
 namespace Engine
@@ -35,6 +36,8 @@ namespace Engine
         const Math::WorldGridPolicy& GetWorldGridPolicy() const { return m_WorldGridPolicy; }
         SceneRenderSnapshot ExtractRenderSnapshot(u64 frameIndex, const CameraView& renderView) const;
 
+        // Returns an invalid Entity, consuming no id, when the id space is
+        // exhausted (the counter never wraps, so ids are never reused).
         Entity CreateEntity(std::string name = "Entity");
         bool DestroyEntity(Entity entity);
         // Reinserts a complete entity under the id it carries, at `index` in
@@ -44,7 +47,9 @@ namespace Engine
         // when the id is invalid or already used, the index is past the end, or any
         // component violates the invariants SetEntityTransform, AddCameraComponent
         // and AddLightComponent enforce. The next-id counter moves above the id and
-        // is never lowered. The main-camera designation is never changed: after
+        // is never lowered (the largest id has no successor, so restoring it
+        // leaves the counter alone; the counter reaching the largest id means the
+        // id space is exhausted). The main-camera designation is never changed: after
         // restoring a destroyed main camera the caller reapplies it with
         // SetMainCameraEntity, because DestroyEntity may have promoted another camera.
         bool RestoreEntity(const SceneEntity& entity, size_t index);
@@ -58,6 +63,8 @@ namespace Engine
         bool IsEntityValid(Entity entity) const;
         Entity FindEntityByName(std::string_view name) const;
         const std::vector<SceneEntity>& GetEntities() const { return m_Entities; }
+        // The returned record is for editing components and the name. Its
+        // EntityHandle indexes the Scene's id lookup and must not be modified.
         SceneEntity* TryGetEntity(Entity entity);
         const SceneEntity* TryGetEntity(Entity entity) const;
         TransformComponent* TryGetTransform(Entity entity);
@@ -71,9 +78,14 @@ namespace Engine
         bool SetEntityWorldPositionAxis(Entity entity, u32 axis, double position);
         bool SetEntitySectorLocalPosition(Entity entity, const Math::SectorLocalPosition& position);
         bool TryGetEntityApproximateWorldPosition(Entity entity, Math::DVec3& outPosition) const;
+        // Fails (nullptr, no change) when the entity is unknown or non-unit-scale,
+        // or the camera is not IsValidCameraComponent.
         CameraComponent* AddCameraComponent(Entity entity, const CameraComponent& camera = {});
         CameraComponent* TryGetCameraComponent(Entity entity);
         const CameraComponent* TryGetCameraComponent(Entity entity) const;
+        // Removing the main camera's component leaves the Scene without a main
+        // camera (nothing is promoted, unlike DestroyEntity) and that state is
+        // saved and reloaded as is; the cached GetMainCamera() value is kept.
         bool RemoveCameraComponent(Entity entity);
         LightComponent* AddLightComponent(Entity entity, const LightComponent& light = {});
         LightComponent* TryGetLightComponent(Entity entity);
@@ -92,7 +104,10 @@ namespace Engine
         const TransformComponent& GetMainCameraTransform() const;
         const CameraComponent& GetMainCamera() const { return m_MainCamera; }
         bool SetMainCameraTransform(const TransformComponent& transform);
-        void SetMainCamera(const CameraComponent& camera);
+        // Replaces the cached main camera and the main camera entity's component.
+        // Returns false, changing nothing, when the camera is not
+        // IsValidCameraComponent.
+        bool SetMainCamera(const CameraComponent& camera);
 
         bool SaveToFile(const std::filesystem::path& path) const;
         static bool LoadFromFile(const std::filesystem::path& path, Scene& outScene);
@@ -103,11 +118,16 @@ namespace Engine
         void SyncMainCameraCacheFromEntity();
         Entity CreateEntityWithId(EntityId id, std::string name);
         bool InsertEntity(SceneEntity&& entity, size_t index);
+        // Re-points the id lookup at every entity from `first` on after an
+        // insertion or removal shifted their positions.
+        void RebuildEntityIndexFrom(size_t first);
 
     private:
         std::string m_Name;
         Math::WorldGridPolicy m_WorldGridPolicy;
         std::vector<SceneEntity> m_Entities;
+        // id -> position in m_Entities: every lookup is O(1) instead of a scan.
+        std::unordered_map<EntityId, size_t> m_EntityIndexById;
         EntityId m_NextEntityId = 1;
         Entity m_MainCameraEntity;
         CameraComponent m_MainCamera;

@@ -4,6 +4,10 @@
 #include <ctime>
 #include <thread>
 
+#if defined(GE_PLATFORM_LINUX) || defined(GE_PLATFORM_MACOS)
+    #include <time.h>
+#endif
+
 #if defined(GE_PLATFORM_WINDOWS)
     #ifndef WIN32_LEAN_AND_MEAN
         #define WIN32_LEAN_AND_MEAN
@@ -83,9 +87,29 @@ namespace Engine::Platform
 
             std::chrono::steady_clock::time_point Now() override { return std::chrono::steady_clock::now(); }
 
+            // CPU time consumed by the calling thread, the only thread whose
+            // cost a deadline wait can be charged for. std::clock() is not a
+            // substitute: MSVC reports wall time since CRT start, and POSIX
+            // reports the sum over every thread of the process.
             double ProcessCpuMilliseconds() override
             {
-                return 1000.0 * static_cast<double>(std::clock()) / static_cast<double>(CLOCKS_PER_SEC);
+#if defined(GE_PLATFORM_WINDOWS)
+                FILETIME creation {}, exit {}, kernel {}, user {};
+                if (!GetThreadTimes(GetCurrentThread(), &creation, &exit, &kernel, &user))
+                    return 0.0;
+                ULARGE_INTEGER kernelTicks {}, userTicks {};
+                kernelTicks.LowPart = kernel.dwLowDateTime;
+                kernelTicks.HighPart = kernel.dwHighDateTime;
+                userTicks.LowPart = user.dwLowDateTime;
+                userTicks.HighPart = user.dwHighDateTime;
+                // FILETIME counts 100 ns ticks; Windows charges them per scheduler quantum.
+                return static_cast<double>(kernelTicks.QuadPart + userTicks.QuadPart) / 10000.0;
+#else
+                timespec now {};
+                if (clock_gettime(CLOCK_THREAD_CPUTIME_ID, &now) != 0)
+                    return 0.0;
+                return static_cast<double>(now.tv_sec) * 1000.0 + static_cast<double>(now.tv_nsec) / 1.0e6;
+#endif
             }
 
             void PortableWaitUntil(std::chrono::steady_clock::time_point deadline) override

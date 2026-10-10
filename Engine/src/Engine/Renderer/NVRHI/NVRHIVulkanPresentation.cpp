@@ -261,7 +261,8 @@ namespace Engine
                 std::chrono::duration<double, std::milli>(Clock::now() - acquireStart).count());
             if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR)
             {
-                m_SwapchainInvalid = true;
+                if (result == VK_ERROR_OUT_OF_DATE_KHR || m_SuboptimalGate.ShouldRecreate(width, height))
+                    m_SwapchainInvalid = true;
                 if (result == VK_ERROR_OUT_OF_DATE_KHR)
                     return;
             }
@@ -274,7 +275,7 @@ namespace Engine
             ImGui_ImplVulkanH_Frame& frame = m_WindowData.Frames[m_WindowData.FrameIndex];
             const Clock::time_point fenceWaitStart = Clock::now();
             if (VULKAN_HPP_DEFAULT_DISPATCHER.vkWaitForFences(m_Device, 1, &frame.Fence, VK_TRUE, UINT64_MAX) != VK_SUCCESS)
-                return;
+                return AbandonAcquiredFrame("vkWaitForFences");
             Renderer::RecordFrameWait(Renderer::GetLastFrameTiming().FrameIndex,
                 RendererFrameWaitKind::MandatoryVulkanFence,
                 true,
@@ -291,7 +292,7 @@ namespace Engine
             beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
             beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
             if (VULKAN_HPP_DEFAULT_DISPATCHER.vkBeginCommandBuffer(frame.CommandBuffer, &beginInfo) != VK_SUCCESS)
-                return;
+                return AbandonAcquiredFrame("vkBeginCommandBuffer");
 
             VkRenderPassBeginInfo renderPassInfo {};
             renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
@@ -304,7 +305,7 @@ namespace Engine
             ImGui_ImplVulkan_RenderDrawData(drawData, frame.CommandBuffer);
             VULKAN_HPP_DEFAULT_DISPATCHER.vkCmdEndRenderPass(frame.CommandBuffer);
             if (VULKAN_HPP_DEFAULT_DISPATCHER.vkEndCommandBuffer(frame.CommandBuffer) != VK_SUCCESS)
-                return;
+                return AbandonAcquiredFrame("vkEndCommandBuffer");
 
             const VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
             VkSubmitInfo submitInfo {};
@@ -317,15 +318,19 @@ namespace Engine
             submitInfo.signalSemaphoreCount = 1;
             submitInfo.pSignalSemaphores = &semaphores.RenderCompleteSemaphore;
             const FramePacingWaitResult pacing = Renderer::ApplySmoothFrametimeCandidate(SmoothFrametimeCandidate::SubmissionGate);
-            if (Renderer::GetLastFrameTiming().FramePacingPolicy.EffectiveMode == FramePacingMode::SmoothFrametime
-                && Renderer::GetLastFrameTiming().FramePacingPolicy.Candidate == SmoothFrametimeCandidate::SubmissionGate)
+            const bool submissionGateActive = Renderer::GetLastFrameTiming().FramePacingPolicy.EffectiveMode == FramePacingMode::SmoothFrametime
+                && Renderer::GetLastFrameTiming().FramePacingPolicy.Candidate == SmoothFrametimeCandidate::SubmissionGate;
+            // Nothing runs between the pacer's release and the native submit;
+            // the marker below is written once the submit has returned.
+            const VkResult submitResult = VULKAN_HPP_DEFAULT_DISPATCHER.vkQueueSubmit(m_GraphicsQueue, 1, &submitInfo, frame.Fence);
+            if (submissionGateActive)
             {
                 Log::Info("SmoothFrametimeNativeV1 backend=Vulkan candidate=SubmissionGate control=pre-vkQueueSubmit ",
                     "waitMs=", pacing.WaitMilliseconds, " missed=", pacing.DeadlineMissed ? "yes" : "no",
                     " frame=", Renderer::GetLastFrameTiming().FrameIndex);
             }
-            if (VULKAN_HPP_DEFAULT_DISPATCHER.vkQueueSubmit(m_GraphicsQueue, 1, &submitInfo, frame.Fence) != VK_SUCCESS)
-                return;
+            if (submitResult != VK_SUCCESS)
+                return AbandonAcquiredFrame("vkQueueSubmit");
             const u64 applicationFrameIndex = Renderer::GetLastFrameTiming().FrameIndex;
             m_SubmittedFrameIds[m_WindowData.FrameIndex] = { applicationFrameIndex, m_SwapchainGeneration };
             m_Ledger.Track({ 0, m_WindowData.FrameIndex });
@@ -346,10 +351,15 @@ namespace Engine
             m_Timing.PresentMilliseconds = std::chrono::duration<double, std::milli>(Clock::now() - presentStart).count();
             m_Timing.ApplicationFrameIndex = applicationFrameIndex;
             Renderer::RecordFrameLifecyclePhase(applicationFrameIndex, RendererFrameLifecyclePhase::PresentEnd);
-            if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR)
+            if (result == VK_ERROR_OUT_OF_DATE_KHR)
                 m_SwapchainInvalid = true;
-            else if (result == VK_SUCCESS)
+            else if (result == VK_SUCCESS || result == VK_SUBOPTIMAL_KHR)
             {
+                // SUBOPTIMAL presented the image. It is a success for the
+                // qualification counters and the output handoff; it requests
+                // at most one recreation per extent.
+                if (result == VK_SUBOPTIMAL_KHR && m_SuboptimalGate.ShouldRecreate(width, height))
+                    m_SwapchainInvalid = true;
                 m_Timing.PresentSucceeded = true;
                 m_LastSuccessfulPresentGeneration = m_SwapchainGeneration;
                 m_Timing.LastSuccessfulPresentGeneration = m_LastSuccessfulPresentGeneration;
@@ -1043,6 +1053,19 @@ namespace Engine
             return true;
         }
 
+        // An image was acquired but no submission will signal its fence or
+        // consume its acquire semaphore. Leaving that state would make the
+        // next wait on the image's fence hang forever and violate the
+        // semaphore reuse rule, so the swapchain (fences, semaphores, images)
+        // is rebuilt after a device-idle on the next frame.
+        void AbandonAcquiredFrame(const char* failedCall)
+        {
+            Log::Error("Vulkan presentation frame abandoned after ", failedCall,
+                " failed; the swapchain will be recreated");
+            m_SwapchainInvalid = true;
+            m_SuboptimalGate.Reset();
+        }
+
         bool CreateOrResizeSwapchain(u32 width, u32 height)
         {
             if (width == 0 || height == 0)
@@ -1114,6 +1137,7 @@ namespace Engine
         {
             const PresentationPolicy desired = m_RequestedPolicy;
             const PresentationPolicy prior = m_ActualPolicy;
+            m_SuboptimalGate.Reset();
             if (CreateOrResizeSwapchain(width, height))
                 return true;
             m_RequestedPolicy = prior;
@@ -1188,6 +1212,7 @@ namespace Engine
         // presentation is reachable through this pointer (single renderer, main
         // thread).
         static Impl* s_ViewportImpl;
+        SuboptimalRecreationGate m_SuboptimalGate;
 #endif
         RendererPresentationTiming m_Timing;
         u64 m_SuccessfulPresentCount = 0;

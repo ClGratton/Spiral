@@ -44,11 +44,20 @@ namespace Engine
 
         bool Acquire(RHI::Device& device, const MeshArtifact& artifact,
             Ref<const MeshGpuResourceBundle>& outBundle, std::string& outError);
+        // Preferred for artifacts shared by a resolver snapshot: a repeat of
+        // the same shared artifact is a pointer comparison, not a copy and a
+        // per-vertex compare. The cache retains the reference while the entry
+        // lives, so an address is never reused for different content.
+        bool Acquire(RHI::Device& device, const Ref<const MeshArtifact>& artifact,
+            Ref<const MeshGpuResourceBundle>& outBundle, std::string& outError);
         void Clear();
         size_t GetEntryCount() const;
 
     private:
         struct Entry;
+
+        bool AcquireMiss(RHI::Device& device, const Ref<const MeshArtifact>& source,
+            Ref<const MeshGpuResourceBundle>& outBundle, std::string& outError);
 
         size_t m_Capacity = 0;
         u64 m_NextAccess = 0;

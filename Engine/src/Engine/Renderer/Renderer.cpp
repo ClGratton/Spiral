@@ -1024,10 +1024,16 @@ namespace Engine
             s_InFrameIntentionalPacingMilliseconds += result.WaitMilliseconds;
             AddLifecyclePhase(RendererFrameLifecyclePhase::IntentionalPacingWait);
             RefreshTimingFrameTotal();
-            Log::Info("SmoothFrametimeCandidateV1 candidate=", ToString(candidate),
-                " control=", candidate == SmoothFrametimeCandidate::InterFrame ? "after-prior-present-before-input" : "pre-native-submit",
-                " waitMs=", result.WaitMilliseconds, " missed=", result.DeadlineMissed ? "yes" : "no",
-                " frame=", s_FrameTiming.FrameIndex);
+            // The submission gate must hand the CPU straight to the native
+            // submit: a flushed, mutex-guarded console write here would sit
+            // between the pacer's release and the control point under
+            // measurement. The backend emits SmoothFrametimeNativeV1, with
+            // the same wait/missed/frame values, after it has submitted.
+            if (candidate != SmoothFrametimeCandidate::SubmissionGate)
+                Log::Info("SmoothFrametimeCandidateV1 candidate=", ToString(candidate),
+                    " control=after-prior-present-before-input",
+                    " waitMs=", result.WaitMilliseconds, " missed=", result.DeadlineMissed ? "yes" : "no",
+                    " frame=", s_FrameTiming.FrameIndex);
         }
         return result;
     }

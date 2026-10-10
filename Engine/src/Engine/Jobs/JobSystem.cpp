@@ -176,6 +176,12 @@ namespace Engine
         return static_cast<u32>(m_Workers.size());
     }
 
+    size_t JobSystem::GetPendingJobCount() const
+    {
+        std::scoped_lock lock(m_Mutex);
+        return static_cast<size_t>(m_QueuedJobs) + m_ActiveJobs;
+    }
+
     u32 JobSystem::GetCurrentWorkerIndex() const
     {
         return t_WorkerJobSystem == this ? t_WorkerIndex : kInvalidJobWorkerIndex;
@@ -265,6 +271,12 @@ namespace Engine
             {
                 Log::Error("Job '", job.Name.empty() ? "unnamed" : job.Name, "' failed with an unknown exception");
             }
+
+            // Destroy everything the job owns (the callable and its captures)
+            // before the idle signal: WaitIdle() must only return once no job
+            // state, including capture destructors, can still run.
+            job.Function = nullptr;
+            job.Name = std::string();
 
             {
                 std::scoped_lock lock(m_Mutex);

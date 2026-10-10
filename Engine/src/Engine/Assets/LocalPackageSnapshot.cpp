@@ -890,7 +890,11 @@ namespace Engine
                     error = "package contains an executable, script, or nested archive payload";
                     return false;
                 }
-                FileDescriptor file(openat(directoryDescriptor, name.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW));
+                // O_NONBLOCK keeps a path swapped for a FIFO after the fstatat above from blocking the
+                // worker in open(2); the identity check below then rejects the substituted object.
+                // It has no effect on reads of the regular files that pass that check.
+                FileDescriptor file(openat(directoryDescriptor, name.c_str(),
+                    O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK | O_NOCTTY));
                 struct stat openedStatus {};
                 u64 openedMountId = 0;
                 if (!file || fstat(file.Get(), &openedStatus) != 0
@@ -1033,7 +1037,10 @@ namespace Engine
                 }
                 parent = std::move(child);
             }
-            FileDescriptor file(openat(parent.Get(), segments.back().c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW));
+            // A FIFO swapped in after the inventory must be rejected by the caller's identity and
+            // S_ISREG check instead of blocking this worker in open(2).
+            FileDescriptor file(openat(parent.Get(), segments.back().c_str(),
+                O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK | O_NOCTTY));
             if (!file)
                 error = "package file changed before copying";
             return file;

@@ -398,14 +398,17 @@ namespace Engine
 
             ID3D12CommandList* commandLists[] = { m_CommandList.Get() };
             const FramePacingWaitResult pacing = Renderer::ApplySmoothFrametimeCandidate(SmoothFrametimeCandidate::SubmissionGate);
-            if (Renderer::GetLastFrameTiming().FramePacingPolicy.EffectiveMode == FramePacingMode::SmoothFrametime
-                && Renderer::GetLastFrameTiming().FramePacingPolicy.Candidate == SmoothFrametimeCandidate::SubmissionGate)
+            const bool submissionGateActive = Renderer::GetLastFrameTiming().FramePacingPolicy.EffectiveMode == FramePacingMode::SmoothFrametime
+                && Renderer::GetLastFrameTiming().FramePacingPolicy.Candidate == SmoothFrametimeCandidate::SubmissionGate;
+            // Nothing runs between the pacer's release and the native submit;
+            // the marker below is written once the submit has returned.
+            m_GraphicsQueue->ExecuteCommandLists(1, commandLists);
+            if (submissionGateActive)
             {
                 Log::Info("SmoothFrametimeNativeV1 backend=D3D12 candidate=SubmissionGate control=pre-ExecuteCommandLists ",
                     "waitMs=", pacing.WaitMilliseconds, " missed=", pacing.DeadlineMissed ? "yes" : "no",
                     " frame=", Renderer::GetLastFrameTiming().FrameIndex);
             }
-            m_GraphicsQueue->ExecuteCommandLists(1, commandLists);
             Renderer::RecordFrameLifecyclePhase(Renderer::GetLastFrameTiming().FrameIndex, RendererFrameLifecyclePhase::RenderSubmission);
 
             const u64 applicationFrameIndex = Renderer::GetLastFrameTiming().FrameIndex;
@@ -713,13 +716,21 @@ namespace Engine
 
         bool ApplyPendingPresentationPolicyForCurrentFramebuffer()
         {
-            if (!m_Initialized)
-                return false;
             int width = 0;
             int height = 0;
-            glfwGetFramebufferSize(m_Window, &width, &height);
-            return width > 0 && height > 0
-                && ApplyPendingPresentationPolicy(static_cast<u32>(width), static_cast<u32>(height));
+            if (m_Initialized)
+                glfwGetFramebufferSize(m_Window, &width, &height);
+            switch (DecidePendingPolicyApplication(m_Initialized, m_Transition.IsPending(), width, height))
+            {
+                case PendingPolicyDecision::Failed:
+                    return false;
+                case PendingPolicyDecision::NothingPending:
+                case PendingPolicyDecision::DeferUntilDrawable:
+                    return true;
+                case PendingPolicyDecision::Apply:
+                    break;
+            }
+            return ApplyPendingPresentationPolicy(static_cast<u32>(width), static_cast<u32>(height));
         }
 
     private:

@@ -9,6 +9,7 @@
 #include <GLFW/glfw3.h>
 
 #include <stdexcept>
+#include <string>
 #include <vector>
 
 namespace Engine
@@ -52,9 +53,18 @@ namespace Engine
 
         if (s_GLFWWindowCount == 0)
         {
-            if (!glfwInit())
-                throw std::runtime_error("Could not initialize GLFW");
+            // GLFW documents the error callback as valid before glfwInit, and an
+            // init failure (no display server, missing platform library) reports
+            // its only diagnosis through it.
             glfwSetErrorCallback(GLFWErrorCallback);
+            if (!glfwInit())
+            {
+                const char* description = nullptr;
+                glfwGetError(&description);
+                throw std::runtime_error(description && *description
+                    ? std::string("Could not initialize GLFW: ") + description
+                    : std::string("Could not initialize GLFW"));
+            }
         }
 
         WindowGraphicsAPI graphicsAPI = m_Specification.GraphicsAPI;
@@ -224,6 +234,14 @@ namespace Engine
     void GLFWWindow::PollEvents()
     {
         glfwPollEvents();
+    }
+
+    void GLFWWindow::WaitEvents(double timeoutSeconds)
+    {
+        if (timeoutSeconds > 0.0)
+            glfwWaitEventsTimeout(timeoutSeconds);
+        else
+            glfwPollEvents();
     }
 
     bool GLFWWindow::ShouldClose() const

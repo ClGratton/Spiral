@@ -5,8 +5,14 @@
 #include "Engine/Assets/MeshArtifact.h"
 #include "Engine/Assets/TextureArtifact.h"
 
+#include <algorithm>
 #include <atomic>
+#include <cmath>
+#include <limits>
+#include <map>
 #include <memory>
+#include <mutex>
+#include <unordered_map>
 
 namespace Engine
 {
@@ -25,7 +31,52 @@ namespace Engine
             std::shared_ptr<const MaterialLibrary> Materials;
             MeshArtifactResolver Mesh;
             TextureArtifactResolver Texture;
+
+            // Retained decode results. The catalog is one immutable
+            // registry/material generation, so a result keyed only by asset
+            // is exact for as long as the snapshot lives; the next published
+            // generation owns a new, empty cache. The mutex serializes the
+            // first decode of an asset (a load is rare, a hit is a map
+            // lookup) and keeps frame-task workers and the render thread safe.
+            struct MeshEntry
+            {
+                PublishedMeshRecord Record;
+                std::string Error;
+                bool Ok = false;
+            };
+            struct TextureSemanticsEntry
+            {
+                PublishedTextureSemantics Semantics;
+                std::string Error;
+                bool Ok = false;
+            };
+            mutable std::mutex CacheMutex;
+            mutable std::unordered_map<AssetHandle, MeshEntry> MeshCache;
+            mutable std::map<std::pair<AssetHandle, int>, TextureSemanticsEntry> TextureCache;
+            mutable ArtifactResolverCacheStats Stats;
         };
+
+        bool CalculateMeshBounds(const MeshArtifact& artifact, float (&outMinimum)[3], float (&outMaximum)[3])
+        {
+            if (artifact.Vertices.empty())
+                return false;
+            float minimum[3] = { std::numeric_limits<float>::max(), std::numeric_limits<float>::max(),
+                std::numeric_limits<float>::max() };
+            float maximum[3] = { -std::numeric_limits<float>::max(), -std::numeric_limits<float>::max(),
+                -std::numeric_limits<float>::max() };
+            for (const MeshArtifactVertex& vertex : artifact.Vertices)
+                for (size_t component = 0; component < 3; ++component)
+                {
+                    const float value = vertex.Position[component];
+                    if (!std::isfinite(value))
+                        return false;
+                    minimum[component] = std::min(minimum[component], value);
+                    maximum[component] = std::max(maximum[component], value);
+                }
+            std::copy(std::begin(minimum), std::end(minimum), std::begin(outMinimum));
+            std::copy(std::begin(maximum), std::end(maximum), std::begin(outMaximum));
+            return true;
+        }
     }
 
     class ArtifactResolverSnapshot final
@@ -119,6 +170,105 @@ namespace Engine
             return false;
         }
         return snapshot.Catalog->Mesh.Resolve(asset, outArtifact, outError);
+    }
+
+    bool Renderer::ResolvePublishedMeshRecord(
+        const ArtifactResolverSnapshot& snapshot, AssetHandle asset,
+        PublishedMeshRecord& outRecord, std::string& outError)
+    {
+        if (!snapshot.Catalog)
+        {
+            outError = "renderer has no published mesh artifact resolver";
+            return false;
+        }
+        const ArtifactResolverCatalog& catalog = *snapshot.Catalog;
+        std::lock_guard<std::mutex> lock(catalog.CacheMutex);
+        auto found = catalog.MeshCache.find(asset);
+        if (found == catalog.MeshCache.end())
+        {
+            ArtifactResolverCatalog::MeshEntry entry;
+            ++catalog.Stats.MeshLoads;
+            MeshArtifact decoded;
+            if (!catalog.Mesh.Resolve(asset, decoded, entry.Error))
+                entry.Ok = false;
+            else
+            {
+                PublishedMeshRecord record;
+                if (!CalculateMeshBounds(decoded, record.BoundsMinimum, record.BoundsMaximum))
+                {
+                    entry.Error = "mesh artifact has no finite vertex bounds";
+                    entry.Ok = false;
+                }
+                else
+                {
+                    record.Artifact = std::make_shared<const MeshArtifact>(std::move(decoded));
+                    entry.Record = std::move(record);
+                    entry.Ok = true;
+                }
+            }
+            found = catalog.MeshCache.emplace(asset, std::move(entry)).first;
+        }
+        else
+            ++catalog.Stats.MeshHits;
+        if (!found->second.Ok)
+        {
+            outError = found->second.Error;
+            return false;
+        }
+        outRecord = found->second.Record;
+        outError.clear();
+        return true;
+    }
+
+    bool Renderer::ResolvePublishedTextureSemantics(
+        const ArtifactResolverSnapshot& snapshot, AssetHandle asset,
+        TextureTargetProfile preferredTarget,
+        PublishedTextureSemantics& outSemantics,
+        TextureArtifactVariantSet* outLoadedVariants, std::string& outError)
+    {
+        if (!snapshot.Catalog)
+        {
+            outError = "renderer has no published texture artifact resolver";
+            return false;
+        }
+        const ArtifactResolverCatalog& catalog = *snapshot.Catalog;
+        std::lock_guard<std::mutex> lock(catalog.CacheMutex);
+        const std::pair<AssetHandle, int> key { asset, static_cast<int>(preferredTarget) };
+        auto found = catalog.TextureCache.find(key);
+        if (found == catalog.TextureCache.end())
+        {
+            ArtifactResolverCatalog::TextureSemanticsEntry entry;
+            ++catalog.Stats.TextureSemanticLoads;
+            TextureArtifactVariantSet variants;
+            entry.Ok = catalog.Texture.ResolveVariantSet(asset, preferredTarget, variants, entry.Error);
+            if (entry.Ok)
+            {
+                entry.Semantics.Role = variants.Preferred.Role;
+                entry.Semantics.ColorSpace = variants.Preferred.ColorSpace;
+                if (outLoadedVariants)
+                    *outLoadedVariants = std::move(variants);
+            }
+            found = catalog.TextureCache.emplace(key, std::move(entry)).first;
+        }
+        else
+            ++catalog.Stats.TextureSemanticHits;
+        if (!found->second.Ok)
+        {
+            outError = found->second.Error;
+            return false;
+        }
+        outSemantics = found->second.Semantics;
+        outError.clear();
+        return true;
+    }
+
+    ArtifactResolverCacheStats Renderer::GetArtifactResolverSnapshotCacheStats(
+        const ArtifactResolverSnapshot& snapshot)
+    {
+        if (!snapshot.Catalog)
+            return {};
+        std::lock_guard<std::mutex> lock(snapshot.Catalog->CacheMutex);
+        return snapshot.Catalog->Stats;
     }
 
     bool Renderer::ResolvePublishedTextureArtifact(AssetHandle asset, TextureArtifact& outArtifact, std::string& outError)

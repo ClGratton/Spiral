@@ -6,6 +6,7 @@
 #include <atomic>
 #include <cerrno>
 #include <limits>
+#include <string>
 #include <system_error>
 
 #if defined(_WIN32)
@@ -106,18 +107,27 @@ namespace Engine
 #elif defined(GE_PLATFORM_LINUX) || defined(GE_PLATFORM_MACOS)
         const std::filesystem::path parentPath = path.parent_path().empty()
             ? std::filesystem::path(".") : path.parent_path();
-        const int parent = open(parentPath.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+        // The parent is opened through a symlinked final component on purpose:
+        // create_directories above succeeds through one, and the header leaves
+        // trust of the parent to the caller. The temporary file and the target
+        // are still never followed.
+        const int parent = open(parentPath.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
         if (parent < 0)
         {
-            outError = "could not open the atomic file directory";
+            outError = std::string("could not open the atomic file directory: ") + std::strerror(errno);
             return false;
         }
         const std::string targetName = path.filename().string();
+        // The temporary name only needs to be unique and recognizable. Cap the
+        // target's share so the whole name stays under NAME_MAX (255) for any
+        // target name the filesystem accepted.
+        constexpr size_t maximumTemporaryStem = 120;
+        const std::string temporaryStem = targetName.substr(0, maximumTemporaryStem);
         std::string temporaryName;
         int output = -1;
         for (u32 attempt = 0; attempt < 128; ++attempt)
         {
-            temporaryName = "." + targetName + ".tmp." + std::to_string(static_cast<u64>(getpid()))
+            temporaryName = "." + temporaryStem + ".tmp." + std::to_string(static_cast<u64>(getpid()))
                 + "." + std::to_string(sequence.fetch_add(1, std::memory_order_relaxed));
             output = openat(parent, temporaryName.c_str(),
                 O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0600);
@@ -126,10 +136,20 @@ namespace Engine
         }
         if (output < 0)
         {
+            const int createError = errno;
             close(parent);
-            outError = "could not exclusively create the temporary file";
+            outError = createError == EEXIST
+                ? std::string("could not exclusively create the temporary file")
+                : std::string("could not create the temporary file: ") + std::strerror(createError);
             return false;
         }
+        // Replacing a file must not silently change who can read it. A new file
+        // keeps the private 0600 default; an existing regular file keeps its
+        // permission bits (ownership, ACLs and extended attributes are not
+        // carried over).
+        struct stat existing {};
+        if (fstatat(parent, targetName.c_str(), &existing, AT_SYMLINK_NOFOLLOW) == 0 && S_ISREG(existing.st_mode))
+            (void)fchmod(output, existing.st_mode & 07777);
         size_t offset = 0;
         while (offset < bytes.size())
         {

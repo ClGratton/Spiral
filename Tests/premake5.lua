@@ -74,10 +74,18 @@ project "EngineTests"
         "%{wks.location}/Vendor/miniz"
     }
 
+    -- The Application loop tests drive a headless Application, which links the
+    -- ImGui layer and renderer presentation code the Editor links as well.
     links
     {
-        "Engine"
+        "Engine",
+        "GLFW",
+        "ImGui"
     }
+
+    if has_nvrhi then
+        links { "NVRHI" }
+    end
 
     -- Engine is a static library, so the executable that runs the Slang adapter
     -- tests links and stages the pinned compiler explicitly.
@@ -109,10 +117,11 @@ project "EngineTests"
 
     filter "system:linux"
         defines { "GE_PLATFORM_LINUX" }
-        links { "pthread", "dl" }
+        links { "X11", "pthread", "dl", "m", "GL" }
 
     filter "system:macosx"
         defines { "GE_PLATFORM_MACOS" }
+        links { "Cocoa.framework", "IOKit.framework", "CoreFoundation.framework", "OpenGL.framework" }
 
     filter "toolset:gcc or toolset:clang"
         buildoptions { "-Wall", "-Wextra", "-Wpedantic" }

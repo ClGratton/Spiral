@@ -244,8 +244,12 @@ namespace Engine
                 return false;
             }
             std::string verifyError;
+            const bool hashContents = options.Level == FabProjectValidationLevel::FullHash
+                && (options.FullHashGenerationIds.empty()
+                    || std::find(options.FullHashGenerationIds.begin(), options.FullHashGenerationIds.end(),
+                        receipt.GenerationId) != options.FullHashGenerationIds.end());
             if (!VerifyGenerationDirectory(base / std::filesystem::path(cookedRoot),
-                    GetFabGenerationArtifacts(receipt), options.Level == FabProjectValidationLevel::FullHash,
+                    GetFabGenerationArtifacts(receipt), hashContents,
                     options.IsCancelled, verifyError))
             {
                 outError = "generation " + ShortId(receipt.GenerationId) + " failed validation: " + verifyError;

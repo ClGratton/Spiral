@@ -107,6 +107,16 @@ namespace Engine
         bool Primary = true;
     };
 
+    // The complete camera invariant shared by authoring, load, and save: a valid
+    // projection and a finite background color.
+    inline bool IsValidCameraComponent(const CameraComponent& camera)
+    {
+        return IsValidCameraProjection(camera.Projection)
+            && std::isfinite(camera.BackgroundColor.X)
+            && std::isfinite(camera.BackgroundColor.Y)
+            && std::isfinite(camera.BackgroundColor.Z);
+    }
+
     enum class LightType
     {
         Directional,

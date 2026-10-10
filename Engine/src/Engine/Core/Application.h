@@ -85,7 +85,17 @@ namespace Engine
         static Application* s_Instance;
 
         friend int ::main(int argc, char** argv);
+        // Test-facing seam: lets a deterministic test drive Run() on a headless
+        // Application. Production code never names it.
+        friend struct ApplicationTestAccess;
     };
 
     Application* CreateApplication(ApplicationCommandLineArgs args);
+
+    // Process teardown order owned by main(). Layers raise their job
+    // cancellation in OnDetach (Fab import, project validation), so the
+    // application must be destroyed before the job system joins its workers:
+    // the reverse order blocks shutdown until every uncancelled job has run to
+    // completion and cancels it only after it finished.
+    void DestroyApplicationThenShutdownJobs(Application* application);
 }

@@ -13,6 +13,7 @@ namespace Engine
         ~GLFWWindow() override;
 
         void PollEvents() override;
+        void WaitEvents(double timeoutSeconds) override;
         u32 GetWidth() const override { return m_Data.Width; }
         u32 GetHeight() const override { return m_Data.Height; }
         const std::string& GetTitle() const override { return m_Data.Title; }
