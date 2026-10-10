@@ -8,6 +8,7 @@
 #include "Engine/Renderer/Renderer.h"
 #include "Engine/Renderer/FramePacingBenchmark.h"
 #include "Engine/UI/ImGuiLayer.h"
+#include "Engine/UI/UiViewportSmoke.h"
 
 #include <algorithm>
 #include <array>
@@ -309,6 +310,12 @@ namespace Engine
         {
             if (!m_Specification.WorkingDirectory.empty())
                 std::filesystem::current_path(m_Specification.WorkingDirectory);
+
+            // The detached-window smoke runs a baseline, a measured phase with the
+            // window, its destruction and the texture drain, so it needs more frames
+            // than the other Vulkan smokes grant. It closes the application itself.
+            if (m_Specification.CommandLineArgs.HasFlag("--ui-viewport-smoke") && m_Specification.MaxFrames != 0)
+                m_Specification.MaxFrames = std::max<u32>(m_Specification.MaxFrames, UiViewportSmoke::kFrameBudget);
 
             m_Specification.Window.Title = m_Specification.Name;
             m_Window = Window::Create(m_Specification.Window);
@@ -617,6 +624,7 @@ namespace Engine
                 const bool graphGpuTimingComplete = !requiresGraphGpuTiming
                     || Renderer::GetLastCompletedFrameTiming().GpuStatus == RendererTimingStatus::Ready;
                 if (Renderer::GetActiveBackend() == RendererBackend::NVRHIVulkan
+                    && (!m_ImGuiLayer || !m_ImGuiLayer->IsViewportSmokePending())
                     && (!requiresLifecycleObservation || m_FrameLifecycleTelemetrySmokeComplete)
                     && (!requiresPresentationPolicySmoke || m_FrameIndex >= 5)
                     && graphGpuTimingComplete
@@ -632,6 +640,8 @@ namespace Engine
                 Close();
         }
 
+        if (m_Specification.CommandLineArgs.HasFlag("--ui-viewport-smoke") && (!m_ImGuiLayer || !m_ImGuiLayer->HasViewportSmokeFinished()))
+            throw std::runtime_error("UI viewport smoke did not finish within its frame budget");
         if (m_Specification.CommandLineArgs.HasFlag("--vulkan-render-smoke"))
         {
             const RendererFrameTiming& timing = Renderer::GetLastFrameTiming();

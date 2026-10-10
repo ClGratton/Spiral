@@ -11,6 +11,7 @@
 #include "Engine/Renderer/UiTextureService.h"
 
 #include <string>
+#include <vector>
 
 struct ImDrawData;
 
@@ -30,6 +31,13 @@ namespace Engine
         bool IsNativeImGuiEnabled() const;
         void BeginImGuiFrame();
         void RenderImGuiDrawData(ImDrawData* drawData, const ClearColor& clearColor, u32 width, u32 height);
+        // Detachable OS-window panels (Vulkan only today; see UiViewportPolicy.h).
+        UiViewportRendererKind GetUiViewportRendererKind() const;
+        const std::vector<int>& GetUiViewportSurfacePresentModes() const;
+        bool EnableUiViewports();
+        void RenderUiPlatformWindows();
+        UiViewportDiagnostics GetUiViewportDiagnostics() const;
+        bool CaptureUiDrawDataOffscreen(ImDrawData* drawData, u32 width, u32 height, std::vector<u8>& outRgba);
         bool PrepareViewportTexture(u32 width, u32 height);
         u64 GetViewportTextureId() const;
         void MarkViewportTextureQueued(u64 textureId);

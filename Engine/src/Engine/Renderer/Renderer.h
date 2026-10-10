@@ -9,6 +9,7 @@
 #include "Engine/RHI/RHICommon.h"
 #include "Engine/Renderer/SceneRasterPreparation.h"
 #include "Engine/Renderer/UiTexture.h"
+#include "Engine/Renderer/UiViewportPolicy.h"
 #include "Engine/Scene/SceneRenderSnapshot.h"
 
 #include <algorithm>
@@ -417,6 +418,25 @@ namespace Engine
         static bool GetUiTextureExtent(UiTextureHandle handle, u32& outWidth, u32& outHeight);
         static UiTextureCounters GetUiTextureCounters();
         static UiTextureError GetLastUiTextureError();
+
+        // Detachable OS-window panels (Dear ImGui multi-viewport), off by default.
+        // ImGuiLayer asks for the renderer's side of the capability inputs, decides
+        // with DecideUiViewports(), publishes the decision and, if enabled, calls
+        // ActivateUiViewports(). Main thread only.
+        static UiViewportRendererKind GetUiViewportRendererKind();
+        static const std::vector<int>& GetUiViewportSurfacePresentModes();
+        static void PublishUiViewportDecision(bool requested, const UiViewportDecision& decision,
+            UiViewportRendererKind renderer, UiViewportPlatformKind platform);
+        static bool ActivateUiViewports();
+        // After RenderImGuiDrawData: renders and presents every detached window
+        // (main window presents first). A separately labelled pass timing is added
+        // so pacing evidence for the main swapchain stays attributable; pacing and
+        // latency claims hold only while no detached viewport exists.
+        static void RenderUiPlatformWindows();
+        static UiViewportDiagnostics GetUiViewportDiagnostics();
+        // Diagnostic only (waits for device idle): renders `drawData` into a private
+        // target and returns RGBA8 pixels. Vulkan only.
+        static bool CaptureUiDrawDataOffscreen(ImDrawData* drawData, u32 width, u32 height, std::vector<u8>& outRgba);
         static RendererBackend GetActiveBackend();
         static const char* GetActiveBackendName();
         static const std::vector<RendererBackendOption>& GetBackendOptions();

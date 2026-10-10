@@ -4,6 +4,7 @@
 #include "Engine/RHI/NVRHI/NVRHIVulkanContext.h"
 #include "Engine/RHI/NVRHI/NVRHIVulkanDevice.h"
 #include "Engine/Renderer/Renderer.h"
+#include "Engine/Renderer/UiViewportPolicy.h"
 
 #include <vector>
 
@@ -48,6 +49,28 @@ namespace Engine
         // Waits for device idle first, so it is a smoke/verification facility,
         // never part of a steady-state frame.
         bool CaptureDrawDataOffscreen(ImDrawData* drawData, u32 width, u32 height, std::vector<u8>& outRgba);
+
+        // Detachable OS-window panels (Dear ImGui multi-viewport). Off until
+        // EnableUiViewports(); everything below is main-thread only and asserted.
+        //
+        // Present modes the main surface reported at initialization, as raw
+        // VkPresentModeKHR values (empty when the query failed).
+        const std::vector<int>& GetSurfacePresentModes() const;
+        // Wraps the Dear ImGui Vulkan backend's secondary-window handlers (present
+        // mode guard, per-window fence bookkeeping, timing). The caller has set
+        // ImGuiConfigFlags_ViewportsEnable. False when the handlers cannot be made
+        // safe; nothing is installed in that case.
+        bool EnableUiViewports();
+        bool AreUiViewportsActive() const;
+        // Call after RenderImGuiDrawData (main window present first): updates the
+        // OS windows, renders and presents every secondary viewport, and enters
+        // their fences into the presentation serial so UI-texture retirement
+        // waits for them. Create/resize/destroy of a secondary swapchain runs
+        // vkDeviceWaitIdle inside the backend; the cost is published in the
+        // diagnostics and is unbounded by GPU load.
+        void RenderUiPlatformWindows();
+        // Live renderer-side portion of the diagnostics (counters and windows).
+        UiViewportDiagnostics GetUiViewportDiagnostics() const;
 
     private:
         struct Impl;

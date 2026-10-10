@@ -79,7 +79,6 @@
 #include "BrowserSigninPolicyTests.h"
 #include "FabImportControllerTests.h"
 #include "UiTextureServiceTests.h"
-#include "UiViewportTests.h"
 #include "InputEventTests.h"
 #include "RhiTextureWriteTests.h"
 #include "FabImportReceiptTests.h"
@@ -12848,10 +12847,6 @@ int main(int argc, char** argv)
         FAST_TEST("UI texture service retires textures only after their write tokens and presentation serials complete", SpiralTests::TestUiTextureServiceDeferredRetirementWaitsForWriteTokensAndPresentation),
         FAST_TEST("UI texture service failures are atomic and never leave a partially registered texture", SpiralTests::TestUiTextureServiceFailuresAreAtomicAndNeverRegisterPartialTextures),
         FAST_TEST("UI texture service shutdown drains enforces the main-thread rule and never waits for the GPU", SpiralTests::TestUiTextureServiceShutdownDrainThreadRulesAndNoStall),
-        FAST_TEST("UI viewport secondary present-mode table never selects a blocking mode and matches a set-membership oracle", SpiralTests::TestUiViewportPresentModeSelection),
-        FAST_TEST("UI viewport capability decision reports the first failing reason and enables only Vulkan on X11 or Win32", SpiralTests::TestUiViewportCapabilityDecision),
-        FAST_TEST("Presentation serial ledger shares one serial per frame and lets a detached fence hold it", SpiralTests::TestPresentationSerialLedgerHandCases),
-        FAST_TEST("Presentation serial ledger matches a brute-force reference model and covers texture release bounds under generated frames", SpiralTests::TestPresentationSerialLedgerMatchesReferenceModel),
         FAST_TEST("RHI texture write validator matches an independent oracle and rejects overflow", SpiralTests::TestRhiTextureWriteValidationMatchesIndependentOracle),
         FAST_TEST("RHI texture write fake-device contract covers state regions retention no-stall and atomicity", SpiralTests::TestRhiTextureWriteFakeDeviceContract),
         FAST_TEST("RHI texture write defaults reject without backend support", SpiralTests::TestRhiTextureWriteDefaultsRejectWithoutBackendSupport),

@@ -1,21 +1,113 @@
 #include "Engine/UI/ImGuiLayer.h"
 
 #include "Engine/Core/Application.h"
+#include "Engine/Core/Log.h"
 #include "Engine/Core/Window.h"
 #include "Engine/Renderer/Renderer.h"
+#include "Engine/Renderer/UiViewportPolicy.h"
+#include "Engine/UI/UiViewportSmoke.h"
 
 #include <GLFW/glfw3.h>
 #include <imgui.h>
 #include <backends/imgui_impl_glfw.h>
 #include <backends/imgui_impl_opengl2.h>
 
+#include <atomic>
 #include <stdexcept>
+#include <string>
 
 namespace Engine
 {
+    namespace
+    {
+        std::atomic<bool> s_ViewportsRequested { false };
+
+        UiViewportPlatformKind ToPlatformKind(int glfwPlatform)
+        {
+            switch (glfwPlatform)
+            {
+                case GLFW_PLATFORM_WIN32: return UiViewportPlatformKind::Win32;
+                case GLFW_PLATFORM_X11: return UiViewportPlatformKind::X11;
+                case GLFW_PLATFORM_WAYLAND: return UiViewportPlatformKind::Wayland;
+                case GLFW_PLATFORM_COCOA: return UiViewportPlatformKind::Cocoa;
+                case GLFW_PLATFORM_NULL: return UiViewportPlatformKind::Null;
+                default: return UiViewportPlatformKind::Unknown;
+            }
+        }
+
+        std::string JoinModes(const std::vector<int>& modes)
+        {
+            std::string text;
+            for (int mode : modes)
+                text += (text.empty() ? "" : ",") + std::to_string(mode);
+            return text.empty() ? "none" : text;
+        }
+    }
+
     ImGuiLayer::ImGuiLayer()
         : Layer("ImGuiLayer")
     {
+    }
+
+    ImGuiLayer::~ImGuiLayer() = default;
+
+    void ImGuiLayer::SetViewportsRequested(bool requested)
+    {
+        s_ViewportsRequested.store(requested, std::memory_order_relaxed);
+    }
+
+    bool ImGuiLayer::GetViewportsRequested()
+    {
+        return s_ViewportsRequested.load(std::memory_order_relaxed);
+    }
+
+    bool ImGuiLayer::IsViewportSmokePending() const
+    {
+        return m_ViewportSmoke && m_ViewportSmoke->IsPending();
+    }
+
+    bool ImGuiLayer::HasViewportSmokeFinished() const
+    {
+        return m_ViewportSmoke && m_ViewportSmoke->IsFinished();
+    }
+
+    // Decides, after both ImGui backends exist, whether detachable OS windows can
+    // be enabled safely, publishes that decision (with its reason) to the renderer
+    // and only then sets ImGuiConfigFlags_ViewportsEnable. The flag is never set
+    // without a positive decision, so an unrequested or unsupported run behaves
+    // exactly as before.
+    void ImGuiLayer::ConfigureViewports()
+    {
+        ImGuiIO& io = ImGui::GetIO();
+        const ApplicationCommandLineArgs& args = Application::Get().GetSpecification().CommandLineArgs;
+
+        UiViewportCapabilityInput input;
+        input.Requested = GetViewportsRequested() || args.HasFlag("--ui-viewports");
+        input.Renderer = m_UseNativeRenderer ? Renderer::GetUiViewportRendererKind() : UiViewportRendererKind::None;
+        input.Platform = ToPlatformKind(glfwGetPlatform());
+        input.PlatformBackendHasViewports = (io.BackendFlags & ImGuiBackendFlags_PlatformHasViewports) != 0;
+        input.RendererBackendHasViewports = (io.BackendFlags & ImGuiBackendFlags_RendererHasViewports) != 0;
+        input.SurfacePresentModes = Renderer::GetUiViewportSurfacePresentModes();
+        input.SurfaceModesKnown = !input.SurfacePresentModes.empty();
+
+        UiViewportDecision decision = DecideUiViewports(input);
+        Renderer::PublishUiViewportDecision(input.Requested, decision, input.Renderer, input.Platform);
+        if (decision.Enabled)
+        {
+            if (Renderer::ActivateUiViewports())
+            {
+                io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;
+                m_ViewportsActive = true;
+            }
+            else
+            {
+                decision = { false, UiViewportReason::RendererHandlersUnavailable };
+                Renderer::PublishUiViewportDecision(input.Requested, decision, input.Renderer, input.Platform);
+            }
+        }
+        Log::Info("UiViewportsDecisionV1 requested=", input.Requested ? "yes" : "no", " enabled=", decision.Enabled ? "yes" : "no",
+            " reason=", ToString(decision.Reason), " renderer=", ToString(input.Renderer), " platform=", ToString(input.Platform),
+            " surfacePresentModes=", JoinModes(input.SurfacePresentModes));
     }
 
     void ImGuiLayer::OnAttach()
@@ -50,10 +142,17 @@ namespace Engine
             ImGui_ImplGlfw_InitForOpenGL(nativeWindow, true);
             ImGui_ImplOpenGL2_Init();
         }
+
+        ConfigureViewports();
+        if (Application::Get().GetSpecification().CommandLineArgs.HasFlag("--ui-viewport-smoke"))
+            m_ViewportSmoke = CreateScope<UiViewportSmoke>();
     }
 
     void ImGuiLayer::OnDetach()
     {
+        // The smoke's watchdog must be gone before the renderer and windows are.
+        m_ViewportSmoke.reset();
+        m_ViewportsActive = false;
         if (m_UseNativeRenderer)
             Renderer::ShutdownImGui();
         else
@@ -73,6 +172,9 @@ namespace Engine
 
         ImGui_ImplGlfw_NewFrame();
         ImGui::NewFrame();
+
+        if (m_ViewportSmoke)
+            m_ViewportSmoke->OnFrameBegin();
     }
 
     void ImGuiLayer::End()
@@ -85,12 +187,19 @@ namespace Engine
         if (m_UseNativeRenderer)
         {
             Renderer::RenderImGuiDrawData(ImGui::GetDrawData());
+            // The main window has presented; detached windows follow. This is a
+            // no-op unless ConfigureViewports enabled the feature.
+            if (m_ViewportsActive)
+                Renderer::RenderUiPlatformWindows();
         }
         else
         {
             ImGui_ImplOpenGL2_RenderDrawData(ImGui::GetDrawData());
             window.SwapBuffers();
         }
+
+        if (m_ViewportSmoke)
+            m_ViewportSmoke->OnFrameEnd();
     }
 
     void ImGuiLayer::SetDarkThemeColors()

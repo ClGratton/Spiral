@@ -1,18 +1,23 @@
 #include "Engine/Renderer/NVRHI/NVRHIVulkanPresentation.h"
 
+#include "Engine/Core/Assert.h"
 #include "Engine/Core/Log.h"
 #include "Engine/RHI/NVRHI/VulkanDispatch.h"
+#include "Engine/Renderer/PresentationSerialLedger.h"
 
 #if defined(GE_HAS_NVRHI_VULKAN)
     #include <GLFW/glfw3.h>
     #include <backends/imgui_impl_vulkan.h>
+    #include <imgui.h>
 
     #include <algorithm>
+    #include <atomic>
     #include <chrono>
     #include <cstring>
     #include <functional>
     #include <iterator>
     #include <stdexcept>
+    #include <thread>
     #include <unordered_map>
 #endif
 
@@ -23,11 +28,24 @@ namespace Engine
     {
         using Clock = std::chrono::steady_clock;
 
+        // Negative VkResult values reported through the backend's check hook.
+        // Published as UiViewportDiagnostics::BackendErrors so a smoke can prove a
+        // run was error-free (no validation layer is required for this counter).
+        std::atomic<u64> s_BackendErrorCount { 0 };
+
         void CheckVulkanResult(VkResult result)
         {
             if (result < 0)
+            {
+                s_BackendErrorCount.fetch_add(1, std::memory_order_relaxed);
                 Log::Error("ImGui Vulkan backend reported VkResult ", static_cast<int>(result));
+            }
         }
+
+        static_assert(UiViewportPresentModeValue::Immediate == static_cast<int>(VK_PRESENT_MODE_IMMEDIATE_KHR));
+        static_assert(UiViewportPresentModeValue::Mailbox == static_cast<int>(VK_PRESENT_MODE_MAILBOX_KHR));
+        static_assert(UiViewportPresentModeValue::Fifo == static_cast<int>(VK_PRESENT_MODE_FIFO_KHR));
+        static_assert(UiViewportPresentModeValue::FifoRelaxed == static_cast<int>(VK_PRESENT_MODE_FIFO_RELAXED_KHR));
 
         PFN_vkVoidFunction LoadImGuiVulkanFunction(const char* name, void* userData)
         {
@@ -44,6 +62,7 @@ namespace Engine
 #if defined(GE_HAS_NVRHI_VULKAN)
             m_Context = context;
             m_Window = static_cast<GLFWwindow*>(nativeWindow);
+            m_OwnerThread = std::this_thread::get_id();
             if (!m_Context || !m_Context->IsInitialized())
                 return false;
 
@@ -103,7 +122,16 @@ namespace Engine
             initInfo.PipelineInfoMain.RenderPass = m_WindowData.RenderPass;
             initInfo.PipelineInfoMain.Subpass = 0;
             initInfo.PipelineInfoMain.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
+            // Secondary (detached-window) pipeline: same sample count and subpass
+            // as the main one. The backend fills in the render pass from the first
+            // secondary swapchain and shares one pipeline between all of them, so
+            // every secondary must use the same surface format (checked when a
+            // window is created). No extra swapchain usage is requested.
+            initInfo.PipelineInfoForViewports.Subpass = 0;
+            initInfo.PipelineInfoForViewports.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
+            initInfo.PipelineInfoForViewports.SwapChainImageUsage = 0;
             initInfo.CheckVkResultFn = CheckVulkanResult;
+            m_InitImageCount = initInfo.ImageCount;
             if (!ImGui_ImplVulkan_Init(&initInfo))
             {
                 Log::Error("Could not initialize the Dear ImGui Vulkan renderer");
@@ -129,10 +157,19 @@ namespace Engine
             if (m_Device)
                 VULKAN_HPP_DEFAULT_DISPATCHER.vkDeviceWaitIdle(m_Device);
             m_SubmittedFrameIds.clear();
-            m_InFlightSerialByImage.clear();
+            m_Ledger.Clear();
             ReleaseViewportOutput();
+            // Shutdown order for detached windows: the device is idle, then
+            // ImGui_ImplVulkan_Shutdown destroys every secondary swapchain and
+            // surface (ImGui::DestroyPlatformWindows -> our DestroyWindow wrapper
+            // -> the backend's, then the GLFW window) while the instance and
+            // device are alive. The wrappers are uninstalled only afterwards.
             if (m_ImGuiInitialized)
                 ImGui_ImplVulkan_Shutdown();
+            m_UiViewportsActive = false;
+            if (s_ViewportImpl == this)
+                s_ViewportImpl = nullptr;
+            m_Secondaries.clear();
             if (m_Instance && m_Device && m_WindowData.Swapchain)
                 ImGui_ImplVulkanH_DestroyWindow(m_Instance, m_Device, &m_WindowData, nullptr);
             if (m_Device && m_DescriptorPool)
@@ -154,6 +191,8 @@ namespace Engine
         void BeginImGuiFrame()
         {
 #if defined(GE_HAS_NVRHI_VULKAN)
+            // The next submission, main or detached, opens this frame's serial.
+            m_Ledger.BeginFrame();
             if (m_ImGuiInitialized)
                 ImGui_ImplVulkan_NewFrame();
 #endif
@@ -176,6 +215,10 @@ namespace Engine
             m_Timing.LastSuccessfulPresentGeneration = m_LastSuccessfulPresentGeneration;
             if (!m_Initialized || !drawData)
                 return;
+            // Only enforced once detached windows exist, so a run without the
+            // feature keeps exactly its previous behaviour.
+            if (m_UiViewportsActive)
+                AssertOwnerThread();
 
             int framebufferWidth = static_cast<int>(width);
             int framebufferHeight = static_cast<int>(height);
@@ -237,7 +280,7 @@ namespace Engine
                 true,
                 std::chrono::duration<double, std::milli>(Clock::now() - fenceWaitStart).count());
             // The wait proved this image's previous presentation submission finished.
-            m_InFlightSerialByImage.erase(m_WindowData.FrameIndex);
+            m_Ledger.Forget({ 0, m_WindowData.FrameIndex });
             if (const auto completed = m_SubmittedFrameIds.find(m_WindowData.FrameIndex); completed != m_SubmittedFrameIds.end()
                 && completed->second.SwapchainGeneration == m_SwapchainGeneration)
                 Renderer::RecordGpuCompletionObservation(completed->second.ApplicationFrameIndex);
@@ -285,7 +328,7 @@ namespace Engine
                 return;
             const u64 applicationFrameIndex = Renderer::GetLastFrameTiming().FrameIndex;
             m_SubmittedFrameIds[m_WindowData.FrameIndex] = { applicationFrameIndex, m_SwapchainGeneration };
-            m_InFlightSerialByImage[m_WindowData.FrameIndex] = ++m_SubmittedSerial;
+            m_Ledger.Track({ 0, m_WindowData.FrameIndex });
             Renderer::RecordFrameLifecyclePhase(applicationFrameIndex, RendererFrameLifecyclePhase::RenderSubmission);
 
             VkPresentInfoKHR presentInfo {};
@@ -433,29 +476,337 @@ namespace Engine
                 ImGui_ImplVulkan_RemoveTexture(reinterpret_cast<VkDescriptorSet>(imGuiId));
         }
 
+        // Fence state behind a ledger key: owner 0 is the main swapchain, any other
+        // owner is a detached viewport found by its ImGui id. A swapchain that was
+        // rebuilt or destroyed waited for the device first, so a vanished fence is
+        // complete.
+        PresentationSerialLedger::FenceState ProbeFence(const PresentationSerialLedger::Key& key) const
+        {
+            using State = PresentationSerialLedger::FenceState;
+            VkFence fence = VK_NULL_HANDLE;
+            if (key.Owner == 0)
+            {
+                if (key.Slot < m_WindowData.ImageCount && key.Slot < static_cast<u32>(m_WindowData.Frames.Size))
+                    fence = m_WindowData.Frames[key.Slot].Fence;
+            }
+            else if (ImGuiViewport* viewport = ImGui::FindViewportByID(key.Owner))
+            {
+                const ImGui_ImplVulkanH_Window* window = ImGui_ImplVulkanH_GetWindowDataFromViewport(viewport);
+                if (window && window->Swapchain != VK_NULL_HANDLE && key.Slot < window->ImageCount
+                    && key.Slot < static_cast<u32>(window->Frames.Size))
+                    fence = window->Frames[key.Slot].Fence;
+            }
+            if (fence == VK_NULL_HANDLE)
+                return State::Complete;
+            // Anything but not-ready is terminal (signalled or device lost).
+            return VULKAN_HPP_DEFAULT_DISPATCHER.vkGetFenceStatus(m_Device, fence) == VK_NOT_READY ? State::Pending : State::Complete;
+        }
+
         u64 PollCompletedPresentationSerial()
         {
             if (!m_Device)
-                return m_SubmittedSerial;
-            u64 oldestInFlight = 0;
-            for (auto it = m_InFlightSerialByImage.begin(); it != m_InFlightSerialByImage.end();)
+                return m_Ledger.Submitted();
+            const auto probe = [this](const PresentationSerialLedger::Key& key) { return ProbeFence(key); };
+            const u64 completed = m_Ledger.PollCompleted(probe);
+            if (m_UiViewportsActive && completed < m_Ledger.PeekCompletedForOwnerOnly(0, probe))
+                ++m_SerialPollsHeldBySecondary;
+            return completed;
+        }
+
+        // ---- Detachable OS-window panels (Dear ImGui multi-viewport) ----------
+        //
+        // Threading and queue contract: ImGui records secondary windows into its own
+        // per-image command pools and submits/presents them with raw vkQueueSubmit /
+        // vkQueuePresentKHR on the NVRHI graphics queue, exactly like the main
+        // window path above. NVRHI's own queue submit takes an internal mutex that
+        // these raw calls do not, and RHI::Device::Submit mutates unsynchronised
+        // completion bookkeeping, so the only safe arrangement is one submitting
+        // thread. Every entry point here asserts it is the thread that initialised
+        // the presentation (the application's main thread).
+        void AssertOwnerThread() const
+        {
+            GE_ASSERT(std::this_thread::get_id() == m_OwnerThread,
+                "Vulkan presentation and detached-window submission must stay on the thread that initialised them");
+        }
+
+        struct SecondaryRecord
+        {
+            int PresentMode = static_cast<int>(VK_PRESENT_MODE_FIFO_KHR);
+            u32 Width = 0;
+            u32 Height = 0;
+            u32 ImageCount = 0;
+            u64 FramesRendered = 0;
+            bool Skipped = false;
+            std::string SkipReason;
+            // The backend sizes each window's vertex/index ring from the main
+            // swapchain's image count. A secondary swapchain with more images could
+            // reuse a ring slot the GPU still reads; such a window is rendered only
+            // after all of its own frames finished.
+            bool RingHazard = false;
+            bool RenderedThisFrame = false;
+        };
+
+        static double ElapsedMilliseconds(Clock::time_point start)
+        {
+            return std::chrono::duration<double, std::milli>(Clock::now() - start).count();
+        }
+
+        // create/resize/destroy each hide a vkDeviceWaitIdle in the backend; keep the
+        // slow ones visible.
+        void NoteWaitIdleCost(const char* operation, u32 viewportId, double milliseconds)
+        {
+            if (milliseconds <= kUiViewportSlowOperationMilliseconds)
+                return;
+            ++m_ViewportDiagnostics.SlowOperations;
+            Log::Warn("UiViewportsV1 backend=Vulkan viewport=", viewportId, " slowOperation=", operation, " ms=", milliseconds,
+                " reason=backend-vkDeviceWaitIdle-drains-the-queue");
+        }
+
+        std::vector<int> QuerySurfaceModes(VkSurfaceKHR surface) const
+        {
+            std::vector<int> result;
+            u32 count = 0;
+            auto& vk = VULKAN_HPP_DEFAULT_DISPATCHER;
+            if (vk.vkGetPhysicalDeviceSurfacePresentModesKHR(m_PhysicalDevice, surface, &count, nullptr) != VK_SUCCESS || count == 0)
+                return result;
+            std::vector<VkPresentModeKHR> modes(count);
+            if (vk.vkGetPhysicalDeviceSurfacePresentModesKHR(m_PhysicalDevice, surface, &count, modes.data()) != VK_SUCCESS)
+                return result;
+            for (VkPresentModeKHR mode : modes)
+                result.push_back(static_cast<int>(mode));
+            return result;
+        }
+
+        bool EnableUiViewports()
+        {
+            if (m_UiViewportsActive)
+                return true;
+            if (!m_Initialized || !m_ImGuiInitialized)
+                return false;
+            AssertOwnerThread();
+            ImGuiPlatformIO& platformIo = ImGui::GetPlatformIO();
+            if (!platformIo.Platform_CreateVkSurface || !platformIo.Renderer_CreateWindow || !platformIo.Renderer_DestroyWindow
+                || !platformIo.Renderer_SetWindowSize || !platformIo.Renderer_RenderWindow || !platformIo.Renderer_SwapBuffers)
+                return false;
+            m_OriginalCreateWindow = platformIo.Renderer_CreateWindow;
+            m_OriginalDestroyWindow = platformIo.Renderer_DestroyWindow;
+            m_OriginalSetWindowSize = platformIo.Renderer_SetWindowSize;
+            m_OriginalRenderWindow = platformIo.Renderer_RenderWindow;
+            m_OriginalSwapBuffers = platformIo.Renderer_SwapBuffers;
+            s_ViewportImpl = this;
+            platformIo.Renderer_CreateWindow = [](ImGuiViewport* viewport) { s_ViewportImpl->OnCreateWindow(viewport); };
+            platformIo.Renderer_DestroyWindow = [](ImGuiViewport* viewport) { s_ViewportImpl->OnDestroyWindow(viewport); };
+            platformIo.Renderer_SetWindowSize = [](ImGuiViewport* viewport, ImVec2 size) { s_ViewportImpl->OnSetWindowSize(viewport, size); };
+            platformIo.Renderer_RenderWindow = [](ImGuiViewport* viewport, void* argument) { s_ViewportImpl->OnRenderWindow(viewport, argument); };
+            platformIo.Renderer_SwapBuffers = [](ImGuiViewport* viewport, void* argument) { s_ViewportImpl->OnSwapBuffers(viewport, argument); };
+            m_UiViewportsActive = true;
+            Log::Info("UiViewportsV1 backend=Vulkan wrappers=installed secondaryPresent=MAILBOX-or-IMMEDIATE-never-FIFO ",
+                "order=main-present-then-secondaries threading=main-thread-only");
+            return true;
+        }
+
+        void OnCreateWindow(ImGuiViewport* viewport)
+        {
+            AssertOwnerThread();
+            const Clock::time_point start = Clock::now();
+            m_OriginalCreateWindow(viewport);
+            const double milliseconds = ElapsedMilliseconds(start);
+            m_ViewportDiagnostics.LastCreateMilliseconds = milliseconds;
+            m_ViewportDiagnostics.MaxCreateMilliseconds = std::max(m_ViewportDiagnostics.MaxCreateMilliseconds, milliseconds);
+            NoteWaitIdleCost("create", viewport->ID, milliseconds);
+
+            ImGui_ImplVulkanH_Window* window = ImGui_ImplVulkanH_GetWindowDataFromViewport(viewport);
+            if (!window || window->Swapchain == VK_NULL_HANDLE)
             {
-                bool finished = it->first >= m_WindowData.ImageCount;
-                if (!finished)
-                {
-                    // Anything but not-ready is terminal (signalled or device lost).
-                    finished = VULKAN_HPP_DEFAULT_DISPATCHER.vkGetFenceStatus(
-                        m_Device, m_WindowData.Frames[it->first].Fence) != VK_NOT_READY;
-                }
-                if (finished)
-                {
-                    it = m_InFlightSerialByImage.erase(it);
-                    continue;
-                }
-                oldestInFlight = oldestInFlight == 0 ? it->second : std::min(oldestInFlight, it->second);
-                ++it;
+                // The backend leaves no renderer data behind on failure and its
+                // render/swap handlers ignore such a viewport.
+                ++m_ViewportDiagnostics.SecondaryCreateFailures;
+                Log::Error("UiViewportsV1 backend=Vulkan viewport=", viewport->ID, " create=failed");
+                return;
             }
-            return oldestInFlight == 0 ? m_SubmittedSerial : oldestInFlight - 1;
+            ++m_ViewportDiagnostics.SecondaryCreates;
+
+            SecondaryRecord record;
+            const UiViewportSecondaryResolution resolution =
+                ResolveUiViewportSecondaryMode(static_cast<int>(window->PresentMode), QuerySurfaceModes(window->Surface));
+            if (resolution.Action == UiViewportSecondaryAction::Override)
+            {
+                // The backend picked a blocking mode although MAILBOX/IMMEDIATE is
+                // available on this surface. Rebuild with the allowed one (one more
+                // device wait, counted).
+                window->PresentMode = static_cast<VkPresentModeKHR>(resolution.Mode);
+                ImGui_ImplVulkanH_CreateOrResizeWindow(m_Instance, m_PhysicalDevice, m_Device, window, m_QueueFamily, nullptr,
+                    window->Width, window->Height, kMinimumImageCount, 0);
+                ++m_ViewportDiagnostics.PresentModeOverrides;
+            }
+            else if (resolution.Action == UiViewportSecondaryAction::Skip)
+            {
+                record.Skipped = true;
+                record.SkipReason = "no-non-blocking-present-mode";
+            }
+            if (!record.Skipped && window->SurfaceFormat.format != m_WindowData.SurfaceFormat.format)
+            {
+                // All secondaries share one pipeline built for the first window's
+                // render pass; a different format would be incompatible.
+                record.Skipped = true;
+                record.SkipReason = "surface-format-differs-from-main";
+            }
+            record.PresentMode = static_cast<int>(window->PresentMode);
+            record.Width = static_cast<u32>(window->Width);
+            record.Height = static_cast<u32>(window->Height);
+            record.ImageCount = window->ImageCount;
+            record.RingHazard = window->ImageCount > m_InitImageCount;
+            if (record.Skipped)
+            {
+                ++m_ViewportDiagnostics.SkippedWindows;
+                Log::Warn("UiViewportsV1 backend=Vulkan viewport=", viewport->ID, " skipped=", record.SkipReason,
+                    " presentMode=", record.PresentMode);
+            }
+            Log::Info("UiViewportsV1 backend=Vulkan viewport=", viewport->ID, " created presentMode=", record.PresentMode,
+                " images=", record.ImageCount, " size=", record.Width, "x", record.Height, " createMs=", milliseconds,
+                " override=", resolution.Action == UiViewportSecondaryAction::Override ? "yes" : "no",
+                " ringHazard=", record.RingHazard ? "yes" : "no");
+            m_Secondaries[viewport->ID] = std::move(record);
+            m_ViewportDiagnostics.PeakSecondaryCount = std::max<u32>(m_ViewportDiagnostics.PeakSecondaryCount, static_cast<u32>(m_Secondaries.size()));
+        }
+
+        void OnDestroyWindow(ImGuiViewport* viewport)
+        {
+            AssertOwnerThread();
+            const Clock::time_point start = Clock::now();
+            const bool tracked = m_Secondaries.erase(viewport->ID) != 0;
+            // The backend waits for the device before freeing the swapchain, so
+            // every fence it owned is complete when this returns.
+            m_OriginalDestroyWindow(viewport);
+            m_Ledger.ForgetOwner(viewport->ID);
+            if (!tracked)
+                return;
+            const double milliseconds = ElapsedMilliseconds(start);
+            ++m_ViewportDiagnostics.SecondaryDestroys;
+            m_ViewportDiagnostics.LastDestroyMilliseconds = milliseconds;
+            m_ViewportDiagnostics.MaxDestroyMilliseconds = std::max(m_ViewportDiagnostics.MaxDestroyMilliseconds, milliseconds);
+            NoteWaitIdleCost("destroy", viewport->ID, milliseconds);
+            Log::Info("UiViewportsV1 backend=Vulkan viewport=", viewport->ID, " destroyed destroyMs=", milliseconds);
+        }
+
+        void OnSetWindowSize(ImGuiViewport* viewport, ImVec2 size)
+        {
+            AssertOwnerThread();
+            const Clock::time_point start = Clock::now();
+            m_OriginalSetWindowSize(viewport, size);
+            const double milliseconds = ElapsedMilliseconds(start);
+            auto found = m_Secondaries.find(viewport->ID);
+            if (found == m_Secondaries.end())
+                return;
+            ++m_ViewportDiagnostics.SecondaryResizes;
+            m_ViewportDiagnostics.LastResizeMilliseconds = milliseconds;
+            m_ViewportDiagnostics.MaxResizeMilliseconds = std::max(m_ViewportDiagnostics.MaxResizeMilliseconds, milliseconds);
+            NoteWaitIdleCost("resize", viewport->ID, milliseconds);
+            if (const ImGui_ImplVulkanH_Window* window = ImGui_ImplVulkanH_GetWindowDataFromViewport(viewport))
+            {
+                found->second.Width = static_cast<u32>(window->Width);
+                found->second.Height = static_cast<u32>(window->Height);
+                found->second.ImageCount = window->ImageCount;
+                found->second.RingHazard = window->ImageCount > m_InitImageCount;
+            }
+        }
+
+        // Waits (bounded) until every frame of a detached window has finished.
+        bool WaitForSecondaryFrames(const ImGui_ImplVulkanH_Window* window)
+        {
+            constexpr u64 kTimeoutNanoseconds = 1000ull * 1000ull * 1000ull;
+            for (int index = 0; index < window->Frames.Size; ++index)
+                if (VULKAN_HPP_DEFAULT_DISPATCHER.vkWaitForFences(m_Device, 1, &window->Frames[index].Fence, VK_TRUE, kTimeoutNanoseconds) != VK_SUCCESS)
+                    return false;
+            return true;
+        }
+
+        void OnRenderWindow(ImGuiViewport* viewport, void* argument)
+        {
+            AssertOwnerThread();
+            auto found = m_Secondaries.find(viewport->ID);
+            if (found == m_Secondaries.end())
+                return;
+            SecondaryRecord& record = found->second;
+            record.RenderedThisFrame = false;
+            ImGui_ImplVulkanH_Window* window = ImGui_ImplVulkanH_GetWindowDataFromViewport(viewport);
+            if (record.Skipped || !window || window->Swapchain == VK_NULL_HANDLE)
+            {
+                ++m_ViewportDiagnostics.SkippedRenders;
+                return;
+            }
+            if (record.RingHazard && !WaitForSecondaryFrames(window))
+            {
+                ++m_ViewportDiagnostics.SkippedRenders;
+                return;
+            }
+            const Clock::time_point start = Clock::now();
+            m_OriginalRenderWindow(viewport, argument);
+            m_FrameRenderMilliseconds += ElapsedMilliseconds(start);
+            record.RenderedThisFrame = true;
+            ++record.FramesRendered;
+            ++m_ViewportDiagnostics.SecondaryFramesRendered;
+
+            // The submission, if it happened, signals this image's fence. A fence
+            // that is already signalled finished before we looked; one that is
+            // not-ready belongs to this frame's serial.
+            if (window->FrameIndex < window->ImageCount && window->FrameIndex < static_cast<u32>(window->Frames.Size)
+                && VULKAN_HPP_DEFAULT_DISPATCHER.vkGetFenceStatus(m_Device, window->Frames[window->FrameIndex].Fence) == VK_NOT_READY)
+            {
+                m_Ledger.Track({ viewport->ID, window->FrameIndex });
+                ++m_ViewportDiagnostics.SecondarySubmissionsTracked;
+            }
+        }
+
+        void OnSwapBuffers(ImGuiViewport* viewport, void* argument)
+        {
+            AssertOwnerThread();
+            auto found = m_Secondaries.find(viewport->ID);
+            if (found == m_Secondaries.end() || !found->second.RenderedThisFrame)
+                return;
+            found->second.RenderedThisFrame = false;
+            const Clock::time_point start = Clock::now();
+            m_OriginalSwapBuffers(viewport, argument);
+            m_FrameSwapMilliseconds += ElapsedMilliseconds(start);
+        }
+
+        void RenderUiPlatformWindows()
+        {
+            if (!m_UiViewportsActive || !m_Initialized)
+                return;
+            AssertOwnerThread();
+            m_FrameRenderMilliseconds = 0.0;
+            m_FrameSwapMilliseconds = 0.0;
+            const Clock::time_point updateStart = Clock::now();
+            ImGui::UpdatePlatformWindows();
+            m_ViewportDiagnostics.LastUpdateMilliseconds = ElapsedMilliseconds(updateStart);
+            ImGui::RenderPlatformWindowsDefault();
+            m_ViewportDiagnostics.LastRenderMilliseconds = m_FrameRenderMilliseconds;
+            m_ViewportDiagnostics.LastSwapMilliseconds = m_FrameSwapMilliseconds;
+        }
+
+        UiViewportDiagnostics GetUiViewportDiagnostics() const
+        {
+            UiViewportDiagnostics result = m_ViewportDiagnostics;
+            result.SerialPollsHeldBySecondary = m_SerialPollsHeldBySecondary;
+            result.BackendErrors = s_BackendErrorCount.load(std::memory_order_relaxed);
+            result.SecondaryCount = static_cast<u32>(m_Secondaries.size());
+            for (const auto& [id, record] : m_Secondaries)
+            {
+                UiViewportSecondaryInfo info;
+                info.ViewportId = id;
+                info.PresentMode = record.PresentMode;
+                info.Width = record.Width;
+                info.Height = record.Height;
+                info.ImageCount = record.ImageCount;
+                info.FramesRendered = record.FramesRendered;
+                info.Skipped = record.Skipped;
+                info.SkipReason = record.SkipReason;
+                result.Secondaries.push_back(std::move(info));
+            }
+            std::sort(result.Secondaries.begin(), result.Secondaries.end(),
+                [](const UiViewportSecondaryInfo& left, const UiViewportSecondaryInfo& right) { return left.ViewportId < right.ViewportId; });
+            return result;
         }
 
         bool CaptureDrawDataOffscreen(ImDrawData* drawData, u32 width, u32 height, std::vector<u8>& outRgba)
@@ -700,7 +1051,7 @@ namespace Engine
                 return false;
             VULKAN_HPP_DEFAULT_DISPATCHER.vkDeviceWaitIdle(m_Device);
             m_SubmittedFrameIds.clear();
-            m_InFlightSerialByImage.clear();
+            m_Ledger.ForgetOwner(0);
             ImGui_ImplVulkanH_CreateOrResizeWindow(
                 m_Instance,
                 m_PhysicalDevice,
@@ -749,6 +1100,7 @@ namespace Engine
             std::vector<int> values;
             values.reserve(modes.size());
             for (VkPresentModeKHR mode : modes) values.push_back(static_cast<int>(mode));
+            m_SurfacePresentModes = values;
             const VulkanPresentationResolution resolution = ResolveVulkanPresentationPolicy(m_RequestedPolicy, values,
                 static_cast<int>(VK_PRESENT_MODE_FIFO_KHR), static_cast<int>(VK_PRESENT_MODE_IMMEDIATE_KHR));
             m_WindowData.PresentMode = resolution.Actual == PresentationActualMode::VulkanImmediate
@@ -815,9 +1167,27 @@ namespace Engine
         bool m_ViewportTextureQueued = false;
         struct SubmittedFrameAssociation { u64 ApplicationFrameIndex = 0; u64 SwapchainGeneration = 0; };
         std::unordered_map<u32, SubmittedFrameAssociation> m_SubmittedFrameIds;
-        u64 m_SubmittedSerial = 0;
-        // Presentation serial still in flight per swapchain image.
-        std::unordered_map<u32, u64> m_InFlightSerialByImage;
+        // Presentation serials (one per ImGui frame) and the fences that still
+        // hold them: the main swapchain images and every detached viewport.
+        PresentationSerialLedger m_Ledger;
+        std::vector<int> m_SurfacePresentModes;
+        std::thread::id m_OwnerThread;
+        u32 m_InitImageCount = 0;
+        bool m_UiViewportsActive = false;
+        std::unordered_map<u32, SecondaryRecord> m_Secondaries;
+        UiViewportDiagnostics m_ViewportDiagnostics;
+        u64 m_SerialPollsHeldBySecondary = 0;
+        double m_FrameRenderMilliseconds = 0.0;
+        double m_FrameSwapMilliseconds = 0.0;
+        void (*m_OriginalCreateWindow)(ImGuiViewport*) = nullptr;
+        void (*m_OriginalDestroyWindow)(ImGuiViewport*) = nullptr;
+        void (*m_OriginalSetWindowSize)(ImGuiViewport*, ImVec2) = nullptr;
+        void (*m_OriginalRenderWindow)(ImGuiViewport*, void*) = nullptr;
+        void (*m_OriginalSwapBuffers)(ImGuiViewport*, void*) = nullptr;
+        // Dear ImGui handler pointers carry no user data, so the one active
+        // presentation is reachable through this pointer (single renderer, main
+        // thread).
+        static Impl* s_ViewportImpl;
 #endif
         RendererPresentationTiming m_Timing;
         u64 m_SuccessfulPresentCount = 0;
@@ -830,6 +1200,10 @@ namespace Engine
         RendererPresentationPolicyDiagnostics m_PolicyDiagnostics;
         bool m_SuppressPolicyMarker = false;
     };
+
+#if defined(GE_HAS_NVRHI_VULKAN)
+    NVRHIVulkanPresentation::Impl* NVRHIVulkanPresentation::Impl::s_ViewportImpl = nullptr;
+#endif
 
     NVRHIVulkanPresentation::NVRHIVulkanPresentation()
         : m_Impl(CreateScope<Impl>())
@@ -906,7 +1280,7 @@ namespace Engine
     u64 NVRHIVulkanPresentation::GetSubmittedPresentationSerial() const
     {
 #if defined(GE_HAS_NVRHI_VULKAN)
-        return m_Impl->m_SubmittedSerial;
+        return m_Impl->m_Ledger.Submitted();
 #else
         return 0;
 #endif
@@ -918,6 +1292,50 @@ namespace Engine
         return m_Impl->PollCompletedPresentationSerial();
 #else
         return 0;
+#endif
+    }
+
+    const std::vector<int>& NVRHIVulkanPresentation::GetSurfacePresentModes() const
+    {
+#if defined(GE_HAS_NVRHI_VULKAN)
+        return m_Impl->m_SurfacePresentModes;
+#else
+        static const std::vector<int> empty;
+        return empty;
+#endif
+    }
+
+    bool NVRHIVulkanPresentation::EnableUiViewports()
+    {
+#if defined(GE_HAS_NVRHI_VULKAN)
+        return m_Impl->EnableUiViewports();
+#else
+        return false;
+#endif
+    }
+
+    bool NVRHIVulkanPresentation::AreUiViewportsActive() const
+    {
+#if defined(GE_HAS_NVRHI_VULKAN)
+        return m_Impl->m_UiViewportsActive;
+#else
+        return false;
+#endif
+    }
+
+    void NVRHIVulkanPresentation::RenderUiPlatformWindows()
+    {
+#if defined(GE_HAS_NVRHI_VULKAN)
+        m_Impl->RenderUiPlatformWindows();
+#endif
+    }
+
+    UiViewportDiagnostics NVRHIVulkanPresentation::GetUiViewportDiagnostics() const
+    {
+#if defined(GE_HAS_NVRHI_VULKAN)
+        return m_Impl->GetUiViewportDiagnostics();
+#else
+        return {};
 #endif
     }
 

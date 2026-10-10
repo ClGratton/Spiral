@@ -31,9 +31,6 @@ project "EngineTests"
         "../Editor/src/EditorHistoryState.cpp",
         -- Pure Editor-private viewport picking and framing math (Engine::Math only).
         "../Editor/src/Viewport/PickingMath.cpp",
-        -- Pure Editor-private gizmo session (tool/space/snap state, commands, pointer
-        -- ownership, status text) over the Gizmo state machine; no ImGui or GLFW.
-        "../Editor/src/Viewport/GizmoSession.cpp",
         -- Pure Editor-private panel visibility codec (standard C++ only).
         "../Editor/src/Layout/PanelVisibility.cpp",
         "../Editor/src/Commands/CommandRegistry.cpp",
