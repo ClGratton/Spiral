@@ -9,6 +9,7 @@ make -C "$ROOT" config=debug EngineTests EngineFuzzTests
 
 export ASAN_SYMBOLIZER_PATH="${ASAN_SYMBOLIZER_PATH:-$(command -v llvm-symbolizer || true)}"
 export ASAN_OPTIONS="${ASAN_OPTIONS:-symbolize=1:detect_leaks=1:halt_on_error=1}"
+export LSAN_OPTIONS="${LSAN_OPTIONS:-suppressions=$ROOT/Scripts/lsan-suppressions.txt}"
 export UBSAN_OPTIONS="${UBSAN_OPTIONS:-print_stacktrace=1:halt_on_error=1}"
 mkdir -p "$ROOT/output/test-results" "$ROOT/output/fuzz-failures"
 FUZZ_CORPUS="$(mktemp -d "$ROOT/output/fuzz-corpus-run.XXXXXX")"

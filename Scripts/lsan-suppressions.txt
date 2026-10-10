@@ -1,0 +1,4 @@
+# Leaks allocated by the proprietary NVIDIA GL driver's own constructors when libGL is
+# loaded into a test process (EngineTests links GLFW through the headless Application test).
+# They are outside project code; project-owned leaks still fail the lane.
+leak:libnvidia-glcore.so
