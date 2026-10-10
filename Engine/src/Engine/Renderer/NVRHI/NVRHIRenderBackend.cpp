@@ -453,6 +453,43 @@ namespace Engine
             CollectUiTextureRetirements();
     }
 
+    UiViewportRendererKind NVRHIRenderBackend::GetUiViewportRendererKind() const
+    {
+        if (m_D3D12Presentation && m_D3D12Presentation->IsInitialized())
+            return UiViewportRendererKind::D3D12;
+        if (m_VulkanPresentation && m_VulkanPresentation->IsInitialized())
+            return UiViewportRendererKind::Vulkan;
+        return UiViewportRendererKind::None;
+    }
+
+    const std::vector<int>& NVRHIRenderBackend::GetUiViewportSurfacePresentModes() const
+    {
+        static const std::vector<int> empty;
+        return m_VulkanPresentation ? m_VulkanPresentation->GetSurfacePresentModes() : empty;
+    }
+
+    bool NVRHIRenderBackend::EnableUiViewports()
+    {
+        return m_VulkanPresentation && m_VulkanPresentation->EnableUiViewports();
+    }
+
+    void NVRHIRenderBackend::RenderUiPlatformWindows()
+    {
+        if (m_VulkanPresentation)
+            m_VulkanPresentation->RenderUiPlatformWindows();
+    }
+
+    UiViewportDiagnostics NVRHIRenderBackend::GetUiViewportDiagnostics() const
+    {
+        return m_VulkanPresentation ? m_VulkanPresentation->GetUiViewportDiagnostics() : UiViewportDiagnostics {};
+    }
+
+    bool NVRHIRenderBackend::CaptureUiDrawDataOffscreen(ImDrawData* drawData, u32 width, u32 height, std::vector<u8>& outRgba)
+    {
+        outRgba.clear();
+        return m_VulkanPresentation && m_VulkanPresentation->CaptureDrawDataOffscreen(drawData, width, height, outRgba);
+    }
+
     bool NVRHIRenderBackend::PrepareViewportTexture(u32 width, u32 height)
     {
         if (m_D3D12Presentation)

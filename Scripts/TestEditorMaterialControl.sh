@@ -186,7 +186,8 @@ assert patch["recovery"] == "UndoRedo" and patch["selectionCommitted"]
 assert patch["pivotRetargeted"] and patch["rendererReadbackVerified"]
 assert entity_id in patch["affectedEntityIds"]
 assert patch["affectedEntityCount"] == 2 and not patch["affectedEntityIdsTruncated"]
-assert patch["undoDepthAfter"] == min(patch["undoDepthBefore"] + 1, 128)
+assert patch["undoDepthAfter"] == min(patch["undoDepthBefore"] + 1, patch["history"]["maximumEntries"])
+assert patch["history"]["maximumEntries"] == 512
 assert patch["redoDepthAfter"] == 0
 assert patch["rendererGeneration"] == inspect["rendererGeneration"] + 1
 assert inspect["editorProcessId"] == patch["editorProcessId"] > 0

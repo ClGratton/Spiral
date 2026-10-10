@@ -388,6 +388,7 @@ void EditorLayer::OnAttach()
     m_ConsoleLines.emplace_back("GLFW window backend active");
     m_ConsoleLines.emplace_back(std::string("Renderer backend: ") + Engine::Renderer::GetActiveBackendName());
     const Engine::ApplicationCommandLineArgs& args = Engine::Application::Get().GetSpecification().CommandLineArgs;
+    ApplyHistoryCommandLine(args);
     m_EventTraceEnabled = args.HasFlag("--editor-event-trace");
     const std::string_view presentationOverride = args.GetOptionValue("--presentation-policy");
     if (presentationOverride == "synchronized")
@@ -464,6 +465,8 @@ void EditorLayer::OnAttach()
         args.HasFlag("--editor-control-scene-v3-helper-smoke");
     m_EditorViewportPickingHelperSmokeRequested =
         args.HasFlag("--editor-control-viewport-picking-helper-smoke");
+    m_EditorHistorySmokeRequested = args.HasFlag("--editor-history-smoke");
+    m_EditorHistoryBenchmarkRequested = args.HasFlag("--editor-history-benchmark");
     m_PanelUiSmokeRequested = args.HasFlag("--editor-panel-ui-smoke");
     if (m_PanelUiSmokeRequested && !Engine::Application::Get().GetSpecification().Window.Headless)
         throw std::runtime_error("--editor-panel-ui-smoke requires --headless");
@@ -521,8 +524,8 @@ void EditorLayer::OnAttach()
     {
         m_EditorMaterialControlSmokeInitialRendererGeneration =
             Engine::Renderer::GetPublishedArtifactResolverGeneration();
-        m_EditorMaterialControlSmokeInitialUndoDepth = m_UndoHistory.size();
-        m_EditorMaterialControlSmokeInitialRedoDepth = m_RedoHistory.size();
+        m_EditorMaterialControlSmokeInitialUndoDepth = History().UndoDepth();
+        m_EditorMaterialControlSmokeInitialRedoDepth = History().RedoDepth();
     }
     m_ConsoleLines.emplace_back("File watching active: " + std::to_string(m_AssetWatcher.GetTrackedCount()) + " asset source(s)");
     if (m_CaptureViewportRequested)
@@ -1031,7 +1034,7 @@ void EditorLayer::InitializeEditorMaterialControl()
     }
 }
 
-EditorMaterialControlTransaction EditorLayer::ExecuteEditorMaterialControlRequest(
+EditorMaterialControlTransaction EditorLayer::ExecuteEditorMaterialControlRequestCore(
     const EditorMaterialControlRequest& request, Engine::u64 frame)
 {
     EditorMaterialControlTransaction transaction;
@@ -1040,10 +1043,11 @@ EditorMaterialControlTransaction EditorLayer::ExecuteEditorMaterialControlReques
     receipt.ActionKnown = true;
     receipt.Frame = frame;
     receipt.RendererGeneration = Engine::Renderer::GetPublishedArtifactResolverGeneration();
-    receipt.UndoDepthBefore = m_UndoHistory.size();
-    receipt.UndoDepthAfter = m_UndoHistory.size();
-    receipt.RedoDepthBefore = m_RedoHistory.size();
-    receipt.RedoDepthAfter = m_RedoHistory.size();
+    receipt.UndoDepthBefore = History().UndoDepth();
+    receipt.UndoDepthAfter = History().UndoDepth();
+    receipt.RedoDepthBefore = History().RedoDepth();
+    receipt.RedoDepthAfter = History().RedoDepth();
+    FillHistoryReceiptBlock(receipt.History, false);
 
     const auto reject = [&transaction, &receipt](std::string reason)
     {
@@ -1075,9 +1079,12 @@ EditorMaterialControlTransaction EditorLayer::ExecuteEditorMaterialControlReques
     };
     struct ControlRollbackState
     {
-        HistoryState State;
-        std::vector<HistoryEntry> UndoHistory;
-        std::vector<HistoryEntry> RedoHistory;
+        HistorySnapshot State;
+        HistoryStoreType::Mark HistoryMark;
+        std::size_t UndoDepth = 0;
+        std::size_t RedoDepth = 0;
+        Engine::u64 HeadRevision = 0;
+        Engine::u64 CameraEpoch = 0;
         bool FusionPivotValid = false;
         Engine::Math::DVec3 FusionPivot;
         bool ViewportDiscontinuousRelocationPending = false;
@@ -1086,9 +1093,12 @@ EditorMaterialControlTransaction EditorLayer::ExecuteEditorMaterialControlReques
     const auto captureRollbackState = [this]()
     {
         auto state = std::make_shared<ControlRollbackState>();
-        state->State = CaptureHistoryState();
-        state->UndoHistory = m_UndoHistory;
-        state->RedoHistory = m_RedoHistory;
+        state->State = CaptureHistorySnapshot();
+        state->HistoryMark = History().SaveMark();
+        state->UndoDepth = History().UndoDepth();
+        state->RedoDepth = History().RedoDepth();
+        state->HeadRevision = History().HeadRevision();
+        state->CameraEpoch = m_CameraEpoch;
         state->FusionPivotValid = m_FusionNavigationPivotValid;
         state->FusionPivot = m_FusionNavigationPivot;
         state->ViewportDiscontinuousRelocationPending =
@@ -1098,23 +1108,26 @@ EditorMaterialControlTransaction EditorLayer::ExecuteEditorMaterialControlReques
     const auto restoreRollbackState = [this](const std::shared_ptr<ControlRollbackState>& state,
         EditorMaterialControlReceipt& rolledBack)
     {
-        const bool restored = !state->MutationStarted || RestoreHistoryState(state->State);
-        m_UndoHistory = state->UndoHistory;
-        m_RedoHistory = state->RedoHistory;
+        const bool restored = !state->MutationStarted || RestoreHistoryStateExact(*state->State);
+        const bool historyRestored = History().LoadMark(state->HistoryMark);
+        m_CameraEpoch = state->CameraEpoch;
         m_FusionNavigationPivotValid = state->FusionPivotValid;
         m_FusionNavigationPivot = state->FusionPivot;
         m_ViewportDiscontinuousRelocationPending =
             state->ViewportDiscontinuousRelocationPending;
-        rolledBack.UndoDepthAfter = m_UndoHistory.size();
-        rolledBack.RedoDepthAfter = m_RedoHistory.size();
+        rolledBack.UndoDepthAfter = History().UndoDepth();
+        rolledBack.RedoDepthAfter = History().RedoDepth();
         rolledBack.SelectedEntityIdAfter = m_SelectedEntity.Id;
-        const bool verified = restored
-            && m_UndoHistory.size() == state->UndoHistory.size()
-            && m_RedoHistory.size() == state->RedoHistory.size()
-            && m_SelectedEntity == state->State.SelectedEntity
-            && m_ProjectColorPipelineSettings == state->State.ProjectColorPipelineSettings
+        FillHistoryReceiptBlock(rolledBack.History, false);
+        rolledBack.History.RevisionAfter = rolledBack.History.RevisionBefore;
+        const bool verified = restored && historyRestored
+            && History().UndoDepth() == state->UndoDepth
+            && History().RedoDepth() == state->RedoDepth
+            && History().HeadRevision() == state->HeadRevision
+            && m_SelectedEntity == state->State->SelectedEntity
+            && m_ProjectColorPipelineSettings == state->State->ProjectColorPipelineSettings
             && Engine::Renderer::GetColorPipelineSettings()
-                == state->State.ProjectColorPipelineSettings
+                == state->State->ProjectColorPipelineSettings
             && m_FusionNavigationPivotValid == state->FusionPivotValid
             && (!state->FusionPivotValid
                 || (m_FusionNavigationPivot.X == state->FusionPivot.X
@@ -1173,6 +1186,13 @@ EditorMaterialControlTransaction EditorLayer::ExecuteEditorMaterialControlReques
     receipt.DebugVisualizationGeneration =
         Engine::Renderer::GetSceneDebugVisualization().Generation;
 
+    // Every action that snapshots the history for rollback or records an entry needs
+    // the store idle; a user is mid-drag in the Inspector otherwise.
+    if (History().GestureOpen() && ActionNeedsIdleHistory(request.Action))
+        return reject("history_gesture_open");
+
+    if (IsHistoryControlAction(request.Action))
+        return ExecuteHistoryControlRequest(request, std::move(transaction));
     if (IsViewportControlAction(request.Action))
         return ExecuteViewportControlRequest(request, std::move(transaction));
     if (IsFabControlAction(request.Action))
@@ -1282,8 +1302,7 @@ EditorMaterialControlTransaction EditorLayer::ExecuteEditorMaterialControlReques
         receipt.Effect = "ProjectColorPipelineSet";
         receipt.Recovery = "UndoRedo";
         receipt.AfterColorPipeline = request.NewColorPipeline;
-        receipt.UndoDepthAfter = std::min<std::size_t>(
-            rollback->UndoHistory.size() + 1, 128);
+        receipt.UndoDepthAfter = PredictedUndoDepthAfterRecord(rollback->UndoDepth);
         receipt.RedoDepthAfter = 0;
         receipt.RendererReadbackVerified = true;
         receipt.PostconditionVerified = true;
@@ -1301,10 +1320,10 @@ EditorMaterialControlTransaction EditorLayer::ExecuteEditorMaterialControlReques
             if (!PublishProjectColorPipelineSettings(request.NewColorPipeline)
                 || injectCommitFailure(error))
                 return false;
-            RecordHistory("Agent set project color pipeline", rollback->State);
-            if (m_UndoHistory.size()
-                    != std::min<std::size_t>(rollback->UndoHistory.size() + 1, 128)
-                || !m_RedoHistory.empty()
+            const EditorHistory::HistoryResult recorded = RecordHistory(
+                DescribeColorPipelineEdit(request.ExpectedColorPipeline, request.NewColorPipeline,
+                    EditorHistory::HistorySource::Agent), rollback->State);
+            if (recorded.Status != EditorHistory::HistoryStatus::Recorded || History().RedoDepth() != 0
                 || m_ProjectColorPipelineSettings != request.NewColorPipeline
                 || Engine::Renderer::GetColorPipelineSettings() != request.NewColorPipeline)
             {
@@ -1408,8 +1427,8 @@ EditorMaterialControlTransaction EditorLayer::ExecuteEditorMaterialControlReques
                             && (m_FusionNavigationPivot.X != rollback->FusionPivot.X
                                 || m_FusionNavigationPivot.Y != rollback->FusionPivot.Y
                                 || m_FusionNavigationPivot.Z != rollback->FusionPivot.Z))))
-                || m_UndoHistory.size() != rollback->UndoHistory.size()
-                || m_RedoHistory.size() != rollback->RedoHistory.size())
+                || History().UndoDepth() != rollback->UndoDepth
+                || History().RedoDepth() != rollback->RedoDepth)
             {
                 if (error.empty())
                     error = "selection_postcondition_mismatch";
@@ -1448,8 +1467,7 @@ EditorMaterialControlTransaction EditorLayer::ExecuteEditorMaterialControlReques
         receipt.Reason = "ok";
         receipt.Effect = "MeshRendererFlagsSet";
         receipt.Recovery = "UndoRedo";
-        receipt.UndoDepthAfter = std::min<std::size_t>(
-            rollback->UndoHistory.size() + 1, 128);
+        receipt.UndoDepthAfter = PredictedUndoDepthAfterRecord(rollback->UndoDepth);
         receipt.RedoDepthAfter = 0;
         receipt.PostconditionVerified = true;
         transaction.Mutating = true;
@@ -1475,14 +1493,17 @@ EditorMaterialControlTransaction EditorLayer::ExecuteEditorMaterialControlReques
                 request.NewMeshCastsShadows;
             if (injectCommitFailure(error))
                 return false;
-            RecordHistory("Agent set mesh renderer flags", rollback->State);
+            const EditorHistory::HistoryResult recorded = RecordHistory(
+                DescribeMeshRendererFlagsEdit(currentEntity->Name, request.ExpectedMeshVisible,
+                    request.ExpectedMeshCastsShadows, request.NewMeshVisible, request.NewMeshCastsShadows,
+                    EditorHistory::HistorySource::Agent),
+                rollback->State);
             const Engine::MeshRendererComponent* current =
                 m_ActiveScene.TryGetMeshRendererComponent(entityHandle);
             if (!current || current->Visible != request.NewMeshVisible
                 || current->CastsShadows != request.NewMeshCastsShadows
-                || m_UndoHistory.size()
-                    != std::min<std::size_t>(rollback->UndoHistory.size() + 1, 128)
-                || !m_RedoHistory.empty())
+                || recorded.Status != EditorHistory::HistoryStatus::Recorded
+                || History().RedoDepth() != 0)
             {
                 error = "mesh_renderer_or_history_postcondition_mismatch";
                 return false;
@@ -1521,8 +1542,7 @@ EditorMaterialControlTransaction EditorLayer::ExecuteEditorMaterialControlReques
         receipt.Reason = "ok";
         receipt.Effect = "TypedLightSet";
         receipt.Recovery = "UndoRedo";
-        receipt.UndoDepthAfter = std::min<std::size_t>(
-            rollback->UndoHistory.size() + 1, 128);
+        receipt.UndoDepthAfter = PredictedUndoDepthAfterRecord(rollback->UndoDepth);
         receipt.RedoDepthAfter = 0;
         receipt.PostconditionVerified = true;
         transaction.Mutating = true;
@@ -1541,12 +1561,13 @@ EditorMaterialControlTransaction EditorLayer::ExecuteEditorMaterialControlReques
             if (!m_ActiveScene.SetLightComponent(entityHandle, request.NewLight)
                 || injectCommitFailure(error))
                 return false;
-            RecordHistory("Agent set typed light", rollback->State);
+            const EditorHistory::HistoryResult recorded = RecordHistory(
+                DescribeLightEdit(currentEntity->Name, request.ExpectedLight, request.NewLight,
+                    EditorHistory::HistorySource::Agent), rollback->State);
             light = m_ActiveScene.TryGetLightComponent(entityHandle);
             if (!light || !sameLight(*light, request.NewLight)
-                || m_UndoHistory.size()
-                    != std::min<std::size_t>(rollback->UndoHistory.size() + 1, 128)
-                || !m_RedoHistory.empty())
+                || recorded.Status != EditorHistory::HistoryStatus::Recorded
+                || History().RedoDepth() != 0)
             {
                 error = "light_or_history_postcondition_mismatch";
                 return false;
@@ -1605,8 +1626,7 @@ EditorMaterialControlTransaction EditorLayer::ExecuteEditorMaterialControlReques
         receipt.Reason = "ok";
         receipt.Effect = mainCameraAction ? "ViewportMainCameraPoseSet" : "EntityTransformSet";
         receipt.Recovery = "UndoRedo";
-        receipt.UndoDepthAfter = std::min<std::size_t>(
-            rollback->UndoHistory.size() + 1, 128);
+        receipt.UndoDepthAfter = PredictedUndoDepthAfterRecord(rollback->UndoDepth);
         receipt.RedoDepthAfter = 0;
         receipt.PivotRetargeted = retargetsPivot;
         receipt.EditorCameraSynchronized = synchronizesEditorCamera;
@@ -1638,8 +1658,10 @@ EditorMaterialControlTransaction EditorLayer::ExecuteEditorMaterialControlReques
                 SyncEditorCameraStateFromMainCamera(true);
             if (injectCommitFailure(error))
                 return false;
-            RecordHistory(mainCameraAction ? "Agent set viewport main camera pose"
-                                           : "Agent set entity transform", rollback->State);
+            const EditorHistory::HistoryResult recorded = RecordHistory(
+                DescribeTransformEdit(currentEntity->Name, request.ExpectedTransformPosition,
+                    request.ExpectedTransform, request.NewTransformPosition, request.NewTransform,
+                    EditorHistory::HistorySource::Agent), rollback->State);
             current = m_ActiveScene.TryGetTransform(entityHandle);
             const bool pivotValid = !retargetsPivot
                 || (m_FusionNavigationPivotValid
@@ -1665,9 +1687,8 @@ EditorMaterialControlTransaction EditorLayer::ExecuteEditorMaterialControlReques
             if (!current || !sameTransform(*current, request.NewTransformPosition,
                     request.NewTransform.RotationDegrees, request.NewTransform.Scale)
                 || !pivotValid || !cameraValid
-                || m_UndoHistory.size()
-                    != std::min<std::size_t>(rollback->UndoHistory.size() + 1, 128)
-                || !m_RedoHistory.empty())
+                || recorded.Status != EditorHistory::HistoryStatus::Recorded
+                || History().RedoDepth() != 0)
             {
                 error = "transform_or_history_postcondition_mismatch";
                 return false;
@@ -1766,8 +1787,7 @@ EditorMaterialControlTransaction EditorLayer::ExecuteEditorMaterialControlReques
     receipt.Recovery = "UndoRedo";
     receipt.After = request.NewSurface;
     receipt.RendererGeneration = generationBeforePublication + 1;
-    receipt.UndoDepthAfter = std::min<std::size_t>(
-        receipt.UndoDepthBefore + 1, 128);
+    receipt.UndoDepthAfter = PredictedUndoDepthAfterRecord(receipt.UndoDepthBefore);
     receipt.RedoDepthAfter = 0;
     receipt.SelectionCommitted = true;
     receipt.PivotRetargeted = true;
@@ -1777,17 +1797,21 @@ EditorMaterialControlTransaction EditorLayer::ExecuteEditorMaterialControlReques
 
     struct RollbackState
     {
-        HistoryState State;
-        std::vector<HistoryEntry> UndoHistory;
-        std::vector<HistoryEntry> RedoHistory;
+        HistorySnapshot State;
+        HistoryStoreType::Mark HistoryMark;
+        std::size_t UndoDepth = 0;
+        std::size_t RedoDepth = 0;
+        Engine::u64 CameraEpoch = 0;
         bool FusionPivotValid = false;
         Engine::Math::DVec3 FusionPivot;
         bool MutationStarted = false;
     };
     auto rollback = std::make_shared<RollbackState>();
-    rollback->State = CaptureHistoryState();
-    rollback->UndoHistory = m_UndoHistory;
-    rollback->RedoHistory = m_RedoHistory;
+    rollback->State = CaptureHistorySnapshot();
+    rollback->HistoryMark = History().SaveMark();
+    rollback->UndoDepth = History().UndoDepth();
+    rollback->RedoDepth = History().RedoDepth();
+    rollback->CameraEpoch = m_CameraEpoch;
     rollback->FusionPivotValid = m_FusionNavigationPivotValid;
     rollback->FusionPivot = m_FusionNavigationPivot;
 
@@ -1839,10 +1863,12 @@ EditorMaterialControlTransaction EditorLayer::ExecuteEditorMaterialControlReques
             return false;
         }
 
-        RecordHistory("Agent patch shared material surface", rollback->State);
-        if (m_UndoHistory.size()
-                != std::min<std::size_t>(rollback->UndoHistory.size() + 1, 128)
-            || !m_RedoHistory.empty())
+        const EditorHistory::HistoryResult recorded = RecordHistory(
+            EditorHistory::MakeHistoryLabel("Edit Material.Surface of",
+                m_AssetRegistry.GetAsset(request.MaterialHandle)
+                    ? m_AssetRegistry.GetAsset(request.MaterialHandle)->Name : std::string("Material"),
+                EditorHistory::HistorySource::Agent), rollback->State);
+        if (recorded.Status != EditorHistory::HistoryStatus::Recorded || History().RedoDepth() != 0)
         {
             error = "history_commit_mismatch";
             return false;
@@ -1867,15 +1893,17 @@ EditorMaterialControlTransaction EditorLayer::ExecuteEditorMaterialControlReques
     };
     transaction.Rollback = [this, rollback, request](EditorMaterialControlReceipt& rolledBack)
     {
-        const bool stateRestored = !rollback->MutationStarted || RestoreHistoryState(rollback->State);
-        m_UndoHistory = rollback->UndoHistory;
-        m_RedoHistory = rollback->RedoHistory;
+        const bool stateRestored = !rollback->MutationStarted || RestoreHistoryStateExact(*rollback->State);
+        const bool historyRestored = History().LoadMark(rollback->HistoryMark);
+        m_CameraEpoch = rollback->CameraEpoch;
         m_FusionNavigationPivot = rollback->FusionPivot;
         m_FusionNavigationPivotValid = rollback->FusionPivotValid;
         rolledBack.RendererGeneration =
             Engine::Renderer::GetPublishedArtifactResolverGeneration();
-        rolledBack.UndoDepthAfter = m_UndoHistory.size();
-        rolledBack.RedoDepthAfter = m_RedoHistory.size();
+        rolledBack.UndoDepthAfter = History().UndoDepth();
+        rolledBack.RedoDepthAfter = History().RedoDepth();
+        FillHistoryReceiptBlock(rolledBack.History, false);
+        rolledBack.History.RevisionAfter = rolledBack.History.RevisionBefore;
         rolledBack.SelectionCommitted = false;
         rolledBack.PivotRetargeted = false;
         Engine::MaterialAsset publishedMaterial;
@@ -1886,9 +1914,9 @@ EditorMaterialControlTransaction EditorLayer::ExecuteEditorMaterialControlReques
                 publishedMaterial, publishedGeneration, readbackError)
             && publishedGeneration == rolledBack.RendererGeneration
             && Engine::GetMaterialSurface(publishedMaterial) == rolledBack.Before;
-        const bool verified = stateRestored
-            && m_UndoHistory.size() == rollback->UndoHistory.size()
-            && m_RedoHistory.size() == rollback->RedoHistory.size()
+        const bool verified = stateRestored && historyRestored
+            && History().UndoDepth() == rollback->UndoDepth
+            && History().RedoDepth() == rollback->RedoDepth
             && m_FusionNavigationPivotValid == rollback->FusionPivotValid
             && (!m_FusionNavigationPivotValid || (m_FusionNavigationPivot.X == rollback->FusionPivot.X
                 && m_FusionNavigationPivot.Y == rollback->FusionPivot.Y
@@ -1998,8 +2026,8 @@ void EditorLayer::RunEditorMaterialControlSmokeAfterDrain()
                 == m_EditorMaterialControlSmokeBefore
             && Engine::Renderer::GetPublishedArtifactResolverGeneration()
                 == m_EditorMaterialControlSmokeInitialRendererGeneration + 2
-            && m_UndoHistory.size() == m_EditorMaterialControlSmokeInitialUndoDepth
-            && m_RedoHistory.size() == m_EditorMaterialControlSmokeInitialRedoDepth
+            && History().UndoDepth() == m_EditorMaterialControlSmokeInitialUndoDepth
+            && History().RedoDepth() == m_EditorMaterialControlSmokeInitialRedoDepth
             && m_SelectedEntity == m_ActiveScene.GetMainCameraEntity()
             && m_FusionNavigationPivotValid
             && m_FusionNavigationPivot.X == 0.0
@@ -2125,7 +2153,7 @@ void EditorLayer::RunEditorMaterialControlSmokeAfterDrain()
                 == m_EditorMaterialControlSmokeAfter
             && Engine::Renderer::GetPublishedArtifactResolverGeneration()
                 == m_EditorMaterialControlSmokeInitialRendererGeneration + 3
-            && m_UndoHistory.size()
+            && History().UndoDepth()
                 == m_EditorMaterialControlSmokeInitialUndoDepth + 1
             && m_EditorMaterialControl.GetResponseCollisionCount() == 3
             && std::filesystem::is_regular_file(m_EditorMaterialControl.GetRoot()
@@ -2159,7 +2187,7 @@ void EditorLayer::RunEditorMaterialControlSmokeAfterDrain()
                 == m_EditorMaterialControlSmokeAfter
             && Engine::Renderer::GetPublishedArtifactResolverGeneration()
                 == m_EditorMaterialControlSmokeInitialRendererGeneration + 3
-            && m_UndoHistory.size()
+            && History().UndoDepth()
                 == m_EditorMaterialControlSmokeInitialUndoDepth + 1
             && !std::filesystem::exists(m_EditorMaterialControl.GetRoot()
                 / "requests" / "smoke-07-patch.request")
@@ -2189,7 +2217,7 @@ void EditorLayer::RunEditorMaterialControlSmokeAfterDrain()
                 == m_EditorMaterialControlSmokeAfter
             && Engine::Renderer::GetPublishedArtifactResolverGeneration()
                 == m_EditorMaterialControlSmokeInitialRendererGeneration + 3
-            && m_UndoHistory.size()
+            && History().UndoDepth()
                 == m_EditorMaterialControlSmokeInitialUndoDepth + 1
             && !std::filesystem::exists(m_EditorMaterialControl.GetRoot()
                 / "requests" / "smoke-07-patch.request");
@@ -2277,7 +2305,7 @@ void EditorLayer::RunEditorMaterialControlLiveHelperSmokeAfterDrain()
         && patch->RendererReadbackVerified && affected
         && material && Engine::GetMaterialSurface(*material)
             == m_EditorMaterialControlSmokeAfter
-        && m_UndoHistory.size() == m_EditorMaterialControlSmokeInitialUndoDepth + 1
+        && History().UndoDepth() == m_EditorMaterialControlSmokeInitialUndoDepth + 1
         && Engine::Renderer::GetPublishedArtifactResolverGeneration()
             == m_EditorMaterialControlSmokeInitialRendererGeneration + 1
         && m_EditorMaterialControl.GetDirectoryPollCount() >= 2
@@ -2409,10 +2437,9 @@ void EditorLayer::RunEditorSceneControlV2HelperSmokeAfterDrain()
         return value->UndoDepthAfter == value->UndoDepthBefore
             && value->RedoDepthAfter == value->RedoDepthBefore;
     };
-    const auto oneHistoryEntry = [](const EditorMaterialControlReceipt* value)
+    const auto oneHistoryEntry = [this](const EditorMaterialControlReceipt* value)
     {
-        return value->UndoDepthAfter
-                == std::min<std::size_t>(value->UndoDepthBefore + 1, 128)
+        return value->UndoDepthAfter == PredictedUndoDepthAfterRecord(value->UndoDepthBefore)
             && value->RedoDepthAfter == 0;
     };
     const auto exactAffected = [](const EditorMaterialControlReceipt* value,
@@ -2514,19 +2541,26 @@ void EditorLayer::RunEditorSceneControlV2HelperSmokeAfterDrain()
             && documentMutations[index]->UndoDepthAfter == baseUndo + index + 1
             && oneHistoryEntry(documentMutations[index]);
     }
+    // Written by hand from the fixture values above: every field of each value changes,
+    // so each entry is named for the component, never for a single property.
     const std::array<std::string_view, 10> historyLabels = {
-        "Agent set typed light", "Agent set typed light",
-        "Agent set entity transform", "Agent set entity transform",
-        "Agent set project color pipeline", "Agent set project color pipeline",
-        "Agent set viewport main camera pose", "Agent set viewport main camera pose",
-        "Agent set mesh renderer flags", "Agent set mesh renderer flags"
+        "Edit Light of Directional Light", "Edit Light of Directional Light",
+        "Edit Transform of Prototype Mesh", "Edit Transform of Prototype Mesh",
+        "Edit Color Pipeline of Project", "Edit Color Pipeline of Project",
+        "Edit Transform of Main Camera", "Edit Transform of Main Camera",
+        "Edit Mesh Renderer of Prototype Mesh", "Edit Mesh Renderer of Prototype Mesh"
     };
-    bool labelsValid = m_UndoHistory.size() == baseUndo + historyLabels.size();
+    bool labelsValid = History().UndoDepth() == baseUndo + historyLabels.size();
+    const std::vector<EditorHistory::HistoryRow> historyRows = History().Rows();
     for (std::size_t index = 0; labelsValid && index < historyLabels.size(); ++index)
-        labelsValid = m_UndoHistory[baseUndo + index].Label == historyLabels[index];
+    {
+        labelsValid = baseUndo + index + 1 < historyRows.size()
+            && historyRows[baseUndo + index + 1].Display == historyLabels[index]
+            && historyRows[baseUndo + index + 1].Label.Source == EditorHistory::HistorySource::Agent;
+    }
 
     const bool valid = finalState && historyReceipts && labelsValid
-        && m_RedoHistory.empty()
+        && History().RedoDepth() == 0
         && parserRejected(wrongProject, "wrong_project")
         && parserRejected(unexpectedField, "missing_or_unexpected_action_field")
         && parserRejected(duplicateField, "invalid_or_duplicate_entity_id")
@@ -2792,7 +2826,7 @@ void EditorLayer::RunEditorMaterialControlCapacitySmokeAfterDrain()
             m_EditorMaterialControl.GetRoot() / "session.closed")
         && Engine::Renderer::GetPublishedArtifactResolverGeneration()
             == m_EditorMaterialControlSmokeInitialRendererGeneration
-        && m_UndoHistory.size() == m_EditorMaterialControlSmokeInitialUndoDepth
+        && History().UndoDepth() == m_EditorMaterialControlSmokeInitialUndoDepth
         && bounded && bounded->Succeeded
         && bounded->AffectedEntityCount == 42
         && bounded->AffectedEntityIds.size()
@@ -2857,7 +2891,7 @@ void EditorLayer::RunEditorMaterialControlDurabilitySmokeAfterDrain()
             == m_EditorMaterialControlSmokeAfter
         && Engine::Renderer::GetPublishedArtifactResolverGeneration()
             == m_EditorMaterialControlSmokeInitialRendererGeneration + 1
-        && m_UndoHistory.size() == m_EditorMaterialControlSmokeInitialUndoDepth + 1
+        && History().UndoDepth() == m_EditorMaterialControlSmokeInitialUndoDepth + 1
         && m_EditorMaterialControl.GetTerminalCount() == 1
         && m_EditorMaterialControl.GetDurabilityDegradationCount() == 1
         && !m_EditorMaterialControl.IsAcceptingRequests()
@@ -2947,8 +2981,8 @@ void EditorLayer::RunEditorMaterialControlRollbackFailureSmokeAfterDrain()
         m_MaterialLibrary.Get(m_EditorMaterialControlSmokeMaterial);
     const bool stateActuallyRestored = material
         && Engine::GetMaterialSurface(*material) == m_EditorMaterialControlSmokeBefore
-        && m_UndoHistory.size() == m_EditorMaterialControlSmokeInitialUndoDepth
-        && m_RedoHistory.size() == m_EditorMaterialControlSmokeInitialRedoDepth
+        && History().UndoDepth() == m_EditorMaterialControlSmokeInitialUndoDepth
+        && History().RedoDepth() == m_EditorMaterialControlSmokeInitialRedoDepth
         && m_SelectedEntity == m_ActiveScene.GetMainCameraEntity()
         && Engine::Renderer::GetPublishedArtifactResolverGeneration()
             == m_EditorMaterialControlSmokeInitialRendererGeneration + 2;
@@ -2998,17 +3032,14 @@ void EditorLayer::OnUiRender()
         return;
     if (m_PanelUiSmokeRequested && RunPanelUiSmokeFrame())
         return;
+    if (m_EditorHistorySmokeRequested && RunEditorHistorySmoke())
+        return;
+    if (m_EditorHistoryBenchmarkRequested && RunEditorHistoryBenchmark())
+        return;
     if (!ImGui::GetCurrentContext())
         return;
 
-    const ImGuiIO& io = ImGui::GetIO();
-    if (!io.WantTextInput && io.KeyCtrl && !m_FabBrowser.WantsKeyboard())
-    {
-        if (ImGui::IsKeyPressed(ImGuiKey_Z, false))
-            Undo();
-        else if (ImGui::IsKeyPressed(ImGuiKey_Y, false))
-            Redo();
-    }
+    PollHistoryShortcuts();
 
     // DrawViewportPanel marks the image rectangle valid again when the panel is drawn.
     m_ViewportImageValid = false;
@@ -3018,9 +3049,12 @@ void EditorLayer::OnUiRender()
     DrawViewportPanel();
     DrawConsolePanel();
     DrawProfilerPanel();
+    DrawHistoryPanel();
     DrawProjectPanel();
     DrawNewProjectDialog();
+    DrawClearHistoryPopup();
     DrawFabIntegration();
+    EndOfFrameEditGestureFlush();
     PersistPanelVisibilityIfChanged();
 
     if (m_CaptureViewportRequested && !m_CaptureViewportComplete && m_FrameCounter >= 2)
@@ -3180,9 +3214,8 @@ void EditorLayer::ConfigureSceneOriginRasterSmoke()
         throw std::runtime_error("Scene origin raster smoke requires the published default scene mesh artifact");
 
     Engine::AssetHandle defaultMaterialAsset = Engine::kInvalidAssetHandle;
-    const Engine::Entity prototypeMeshEntity = m_ActiveScene.FindEntityByName("Prototype Mesh");
     if (const Engine::MeshRendererComponent* prototypeMesh =
-            m_ActiveScene.TryGetMeshRendererComponent(prototypeMeshEntity))
+            m_ActiveScene.TryGetMeshRendererComponent(m_PrototypeMeshEntity))
     {
         defaultMaterialAsset = prototypeMesh->MaterialAsset;
     }
@@ -3367,15 +3400,12 @@ void EditorLayer::DrawMainMenuBar()
         if (ImGui::MenuItem("Save Asset Registry"))
             SaveAssetRegistry();
         ImGui::Separator();
-        if (ImGui::MenuItem("Undo", "Ctrl+Z", false, !m_UndoHistory.empty()))
-            Undo();
-        if (ImGui::MenuItem("Redo", "Ctrl+Y", false, !m_RedoHistory.empty()))
-            Redo();
-        ImGui::Separator();
         if (ImGui::MenuItem("Exit"))
             Engine::Application::Get().Close();
         ImGui::EndMenu();
     }
+
+    DrawEditMenu();
 
     if (ImGui::BeginMenu("View"))
     {
@@ -3425,6 +3455,7 @@ void EditorLayer::DrawMainMenuBar()
         ImGui::MenuItem("Content Browser", nullptr, &m_PanelVisible[PanelContentBrowser]);
         ImGui::MenuItem("Console", nullptr, &m_PanelVisible[PanelConsole]);
         ImGui::MenuItem("Profiler", nullptr, &m_PanelVisible[PanelProfiler]);
+        ImGui::MenuItem("History", nullptr, &m_PanelVisible[PanelHistory]);
         ImGui::Separator();
         bool browserVisible = m_FabBrowser.IsVisible();
         if (ImGui::MenuItem("Fab Browser", nullptr, &browserVisible))
@@ -3527,7 +3558,7 @@ void EditorLayer::DrawMainMenuBar()
                     {
                         Engine::RendererColorPipelineSettings edited = m_ProjectColorPipelineSettings;
                         edited.ExposureMode = mode;
-                        ApplyProjectColorPipelineSettings(edited);
+                        ApplyProjectColorPipelineSettings(edited, EditorHistory::EditProperty::ColorExposureMode);
                     }
                     if (selected)
                         ImGui::SetItemDefaultFocus();
@@ -3541,7 +3572,8 @@ void EditorLayer::DrawMainMenuBar()
             Engine::RendererColorPipelineSettings editedManualExposure =
                 m_ProjectColorPipelineSettings;
             editedManualExposure.ManualExposureEV100 = manualExposureEV100;
-            HandleProjectColorPipelineInput(editedManualExposure, manualExposureEdited);
+            HandleProjectColorPipelineInput(editedManualExposure, manualExposureEdited,
+                EditorHistory::EditProperty::ColorManualExposure);
             const Engine::RendererColorPipelineSettings previewColorPipelineSettings { manualExposureEV100 };
             if (!Engine::IsValidRendererColorPipelineSettings(previewColorPipelineSettings))
                 ImGui::TextDisabled("Manual EV100 must be finite and between %.0f and %.0f; current saved value remains unchanged.",
@@ -3552,7 +3584,8 @@ void EditorLayer::DrawMainMenuBar()
                 "Aperture f-number", &apertureFNumber, 0.1, 1.0, "%.2f");
             Engine::RendererColorPipelineSettings editedAperture = m_ProjectColorPipelineSettings;
             editedAperture.CameraApertureFNumber = apertureFNumber;
-            HandleProjectColorPipelineInput(editedAperture, apertureEdited);
+            HandleProjectColorPipelineInput(editedAperture, apertureEdited,
+                EditorHistory::EditProperty::ColorAperture);
             Engine::RendererColorPipelineSettings previewApertureSettings = m_ProjectColorPipelineSettings;
             previewApertureSettings.CameraApertureFNumber = apertureFNumber;
             if (!Engine::IsValidRendererColorPipelineSettings(previewApertureSettings))
@@ -3564,7 +3597,8 @@ void EditorLayer::DrawMainMenuBar()
                 "Shutter seconds", &shutterSeconds, 0.001, 0.01, "%.5f");
             Engine::RendererColorPipelineSettings editedShutter = m_ProjectColorPipelineSettings;
             editedShutter.CameraShutterSeconds = shutterSeconds;
-            HandleProjectColorPipelineInput(editedShutter, shutterEdited);
+            HandleProjectColorPipelineInput(editedShutter, shutterEdited,
+                EditorHistory::EditProperty::ColorShutter);
             Engine::RendererColorPipelineSettings previewShutterSettings = m_ProjectColorPipelineSettings;
             previewShutterSettings.CameraShutterSeconds = shutterSeconds;
             if (!Engine::IsValidRendererColorPipelineSettings(previewShutterSettings))
@@ -3576,7 +3610,8 @@ void EditorLayer::DrawMainMenuBar()
                 "ISO", &cameraISO, 10.0, 100.0, "%.0f");
             Engine::RendererColorPipelineSettings editedCameraISO = m_ProjectColorPipelineSettings;
             editedCameraISO.CameraISO = cameraISO;
-            HandleProjectColorPipelineInput(editedCameraISO, cameraISOEdited);
+            HandleProjectColorPipelineInput(editedCameraISO, cameraISOEdited,
+                EditorHistory::EditProperty::ColorIso);
             Engine::RendererColorPipelineSettings previewISOSettings = m_ProjectColorPipelineSettings;
             previewISOSettings.CameraISO = cameraISO;
             if (!Engine::IsValidRendererColorPipelineSettings(previewISOSettings))
@@ -3588,7 +3623,8 @@ void EditorLayer::DrawMainMenuBar()
                 "Post-tone-map saturation", &postToneMapSaturation, 0.05, 0.25, "%.2f");
             Engine::RendererColorPipelineSettings editedSaturation = m_ProjectColorPipelineSettings;
             editedSaturation.PostToneMapSaturation = postToneMapSaturation;
-            HandleProjectColorPipelineInput(editedSaturation, saturationEdited);
+            HandleProjectColorPipelineInput(editedSaturation, saturationEdited,
+                EditorHistory::EditProperty::ColorSaturation);
             Engine::RendererColorPipelineSettings previewSaturationSettings = m_ProjectColorPipelineSettings;
             previewSaturationSettings.PostToneMapSaturation = postToneMapSaturation;
             if (!Engine::IsValidRendererColorPipelineSettings(previewSaturationSettings))
@@ -3600,7 +3636,8 @@ void EditorLayer::DrawMainMenuBar()
                 "Post-tone-map contrast", &postToneMapContrast, 0.05, 0.25, "%.2f");
             Engine::RendererColorPipelineSettings editedContrast = m_ProjectColorPipelineSettings;
             editedContrast.PostToneMapContrast = postToneMapContrast;
-            HandleProjectColorPipelineInput(editedContrast, contrastEdited);
+            HandleProjectColorPipelineInput(editedContrast, contrastEdited,
+                EditorHistory::EditProperty::ColorContrast);
             Engine::RendererColorPipelineSettings previewContrastSettings = m_ProjectColorPipelineSettings;
             previewContrastSettings.PostToneMapContrast = postToneMapContrast;
             if (!Engine::IsValidRendererColorPipelineSettings(previewContrastSettings))
@@ -3659,20 +3696,7 @@ void EditorLayer::DrawMainMenuBar()
         ImGui::EndMenu();
     }
 
-    if (m_ProjectColorPipelineInteractionBefore && !ImGui::IsAnyItemActive())
-    {
-        if (m_ProjectColorPipelineInteractionChanged
-            && m_ProjectColorPipelineInteractionBefore->ProjectColorPipelineSettings
-                != m_ProjectColorPipelineSettings)
-        {
-            RecordHistory(std::move(m_ProjectColorPipelineInteractionLabel),
-                std::move(*m_ProjectColorPipelineInteractionBefore));
-        }
-        m_ProjectColorPipelineInteractionBefore.reset();
-        m_ProjectColorPipelineInteractionItemId = 0;
-        m_ProjectColorPipelineInteractionChanged = false;
-        m_ProjectColorPipelineInteractionLabel.clear();
-    }
+    DrawHistoryStatus();
 
     ImGui::EndMenuBar();
 }
@@ -3700,6 +3724,7 @@ void EditorLayer::BuildDefaultDockLayout(unsigned int dockspaceId, const ImVec2&
     ImGui::DockBuilderDockWindow("Content Browser", leftBottomDock);
     ImGui::DockBuilderDockWindow("Profiler", bottomDock);
     ImGui::DockBuilderDockWindow("Console", bottomDock);
+    ImGui::DockBuilderDockWindow("History", bottomDock);
     ImGui::DockBuilderDockWindow("Inspector", rightDock);
     ImGui::DockBuilderFinish(dockspaceId);
 }
@@ -3836,42 +3861,75 @@ void EditorLayer::DrawInspectorPanel()
         return;
     }
 
-    const HistoryState inspectorState = CaptureHistoryState();
-    bool historyStateChanged = false;
-    char entityName[128] = {};
-    std::snprintf(entityName, sizeof(entityName), "%s", selectedEntity->Name.c_str());
-    if (ImGui::InputText("Name", entityName, sizeof(entityName)))
+    // Every widget below edits a local copy and writes it to the Scene only inside
+    // TrackedEdit / DiscreteEdit, after the history captured its Before state. Nothing
+    // here copies the project per frame: a drag costs two snapshots in total.
+    using EditorHistory::EditProperty;
+    const Engine::Entity entityHandle = selectedEntity->EntityHandle;
+    const Engine::u64 entityKey = entityHandle.Id;
+    const std::string entityName = selectedEntity->Name;
+    const auto trackedEdit = [&](EditProperty property, bool edited, const std::function<bool()>& apply)
     {
-        selectedEntity->Name = entityName;
-        historyStateChanged = true;
-    }
+        return TrackedEdit(entityKey, property, edited,
+            [&entityName, property]() { return EditorHistory::MakeEditLabel(property, entityName); }, apply);
+    };
+    const auto discreteEdit = [&](EditProperty property, bool edited, const std::function<bool()>& apply)
+    {
+        ProbeWidget(property);
+        return edited && DiscreteEdit(EditorHistory::MakeEditLabel(property, entityName), apply);
+    };
+
+    char nameBuffer[128] = {};
+    std::snprintf(nameBuffer, sizeof(nameBuffer), "%s", selectedEntity->Name.c_str());
+    const bool nameEdited = ImGui::InputText("Name", nameBuffer, sizeof(nameBuffer));
+    trackedEdit(EditProperty::EntityName, nameEdited, [&]()
+    {
+        selectedEntity->Name = nameBuffer;
+        return true;
+    });
     ImGui::Separator();
     ImGui::PushID("TransformComponent");
     ImGui::TextUnformatted("Transform");
 
-    bool transformChanged = false;
+    bool transformApplied = false;
     Engine::Math::DVec3 worldPosition;
-    if (m_ActiveScene.TryGetEntityApproximateWorldPosition(selectedEntity->EntityHandle, worldPosition))
+    if (m_ActiveScene.TryGetEntityApproximateWorldPosition(entityHandle, worldPosition))
     {
         const Engine::Math::DVec3 displayedPosition = worldPosition;
-        if (DrawDVec3Control("Position", worldPosition, 0.1f))
+        const bool positionEdited = DrawDVec3Control("Position", worldPosition, 0.1f);
+        transformApplied |= trackedEdit(EditProperty::TransformPosition, positionEdited, [&]()
         {
+            bool changed = false;
             if (worldPosition.X != displayedPosition.X)
-                transformChanged |= m_ActiveScene.SetEntityWorldPositionAxis(selectedEntity->EntityHandle, 0, worldPosition.X);
+                changed |= m_ActiveScene.SetEntityWorldPositionAxis(entityHandle, 0, worldPosition.X);
             if (worldPosition.Y != displayedPosition.Y)
-                transformChanged |= m_ActiveScene.SetEntityWorldPositionAxis(selectedEntity->EntityHandle, 1, worldPosition.Y);
+                changed |= m_ActiveScene.SetEntityWorldPositionAxis(entityHandle, 1, worldPosition.Y);
             if (worldPosition.Z != displayedPosition.Z)
-                transformChanged |= m_ActiveScene.SetEntityWorldPositionAxis(selectedEntity->EntityHandle, 2, worldPosition.Z);
-        }
+                changed |= m_ActiveScene.SetEntityWorldPositionAxis(entityHandle, 2, worldPosition.Z);
+            return changed;
+        });
     }
-    transformChanged |= DrawVec3Control("Rotation", selectedEntity->Transform.RotationDegrees, 0.5f);
+    Engine::Math::Vec3 rotation = selectedEntity->Transform.RotationDegrees;
+    const bool rotationEdited = DrawVec3Control("Rotation", rotation, 0.5f);
+    transformApplied |= trackedEdit(EditProperty::TransformRotation, rotationEdited, [&]()
+    {
+        selectedEntity->Transform.RotationDegrees = rotation;
+        return true;
+    });
     if (!selectedEntity->Camera)
-        transformChanged |= DrawVec3Control("Scale", selectedEntity->Transform.Scale, 0.05f, 0.01f, 100.0f);
-    if (transformChanged && selectedEntity->EntityHandle == m_ActiveScene.GetMainCameraEntity())
+    {
+        Engine::Math::Vec3 scale = selectedEntity->Transform.Scale;
+        const bool scaleEdited = DrawVec3Control("Scale", scale, 0.05f, 0.01f, 100.0f);
+        transformApplied |= trackedEdit(EditProperty::TransformScale, scaleEdited, [&]()
+        {
+            selectedEntity->Transform.Scale = scale;
+            return true;
+        });
+    }
+    if (transformApplied && entityHandle == m_ActiveScene.GetMainCameraEntity())
         SyncEditorCameraStateFromMainCamera(true);
-    else if (transformChanged)
+    else if (transformApplied)
         RetargetFusionNavigationPivotToSelectedEntity();
-    historyStateChanged |= transformChanged;
     ImGui::PopID();
 
     if (selectedEntity->Camera)
@@ -3879,23 +3937,30 @@ void EditorLayer::DrawInspectorPanel()
         ImGui::Separator();
         ImGui::PushID("CameraComponent");
         ImGui::TextUnformatted("Camera Component");
-        Engine::CameraComponent& camera = *selectedEntity->Camera;
-        bool cameraChanged = false;
-        cameraChanged |= ImGui::Checkbox("Primary", &camera.Primary);
-        cameraChanged |= ImGui::DragFloat("Vertical FOV", &camera.Projection.VerticalFovDegrees, 0.25f, 20.0f, 110.0f);
-        cameraChanged |= ImGui::DragFloat("Near Clip", &camera.Projection.NearClip, 0.01f, 0.01f, 10.0f);
-        cameraChanged |= ImGui::DragFloat("Far Clip", &camera.Projection.FarClip, 1.0f, 1.0f, 10000.0f);
-        cameraChanged |= ImGui::ColorEdit3("Background Color", &camera.BackgroundColor.X);
-        if (camera.Projection.FarClip <= camera.Projection.NearClip)
-            camera.Projection.FarClip = camera.Projection.NearClip + 1.0f;
-        if (camera.Primary)
-            m_ActiveScene.SetMainCameraEntity(selectedEntity->EntityHandle);
-        if (cameraChanged && selectedEntity->EntityHandle == m_ActiveScene.GetMainCameraEntity())
+        Engine::CameraComponent camera = *selectedEntity->Camera;
+        const auto applyCamera = [&]()
         {
-            m_ActiveScene.SetMainCamera(camera);
-            SyncEditorCameraStateFromMainCamera();
-        }
-        historyStateChanged |= cameraChanged;
+            if (camera.Projection.FarClip <= camera.Projection.NearClip)
+                camera.Projection.FarClip = camera.Projection.NearClip + 1.0f;
+            *selectedEntity->Camera = camera;
+            if (camera.Primary)
+                m_ActiveScene.SetMainCameraEntity(entityHandle);
+            if (entityHandle == m_ActiveScene.GetMainCameraEntity())
+            {
+                m_ActiveScene.SetMainCamera(camera);
+                SyncEditorCameraStateFromMainCamera();
+            }
+            return true;
+        };
+        discreteEdit(EditProperty::CameraPrimary, ImGui::Checkbox("Primary", &camera.Primary), applyCamera);
+        trackedEdit(EditProperty::CameraVerticalFov,
+            ImGui::DragFloat("Vertical FOV", &camera.Projection.VerticalFovDegrees, 0.25f, 20.0f, 110.0f), applyCamera);
+        trackedEdit(EditProperty::CameraNearClip,
+            ImGui::DragFloat("Near Clip", &camera.Projection.NearClip, 0.01f, 0.01f, 10.0f), applyCamera);
+        trackedEdit(EditProperty::CameraFarClip,
+            ImGui::DragFloat("Far Clip", &camera.Projection.FarClip, 1.0f, 1.0f, 10000.0f), applyCamera);
+        trackedEdit(EditProperty::CameraBackgroundColor,
+            ImGui::ColorEdit3("Background Color", &camera.BackgroundColor.X), applyCamera);
         ImGui::PopID();
     }
 
@@ -3906,7 +3971,20 @@ void EditorLayer::DrawInspectorPanel()
         ImGui::TextUnformatted("Light Component");
         const Engine::LightComponent originalLight = *selectedEntity->Light;
         Engine::LightComponent editedLight = originalLight;
-        bool lightChanged = false;
+        bool lightRejected = false;
+        const auto applyLight = [&]()
+        {
+            if (editedLight.OuterConeDegrees < editedLight.InnerConeDegrees)
+                editedLight.OuterConeDegrees = editedLight.InnerConeDegrees;
+            if (!Engine::IsValidLightComponent(editedLight)
+                || !m_ActiveScene.AddLightComponent(entityHandle, editedLight))
+            {
+                lightRejected = true;
+                return false;
+            }
+            return true;
+        };
+        bool lightTypeChanged = false;
         const char* lightTypeName = Engine::ToString(editedLight.Type);
         if (ImGui::BeginCombo("Type", lightTypeName))
         {
@@ -3922,34 +4000,28 @@ void EditorLayer::DrawInspectorPanel()
                 {
                     editedLight.Type = candidate;
                     editedLight.PhotometricUnit = Engine::GetLightPhotometricUnit(candidate);
-                    lightChanged = true;
+                    lightTypeChanged = true;
                 }
                 if (selected)
                     ImGui::SetItemDefaultFocus();
             }
             ImGui::EndCombo();
         }
-        lightChanged |= ImGui::ColorEdit3("Color", &editedLight.Color.X);
+        discreteEdit(EditProperty::LightType, lightTypeChanged, applyLight);
+        trackedEdit(EditProperty::LightColor, ImGui::ColorEdit3("Color", &editedLight.Color.X), applyLight);
         const double photometricStep = editedLight.Type == Engine::LightType::Directional ? 100.0 : 10.0;
-        if (ImGui::InputDouble(Engine::GetLightPhotometricControlLabel(editedLight.Type),
-            &editedLight.PhotometricValue, photometricStep, photometricStep * 10.0, "%.2f"))
-        {
-            lightChanged = true;
-        }
-        lightChanged |= ImGui::DragFloat("Range", &editedLight.Range, 0.1f, 0.0f, 10000.0f);
-        lightChanged |= ImGui::DragFloat("Inner Cone", &editedLight.InnerConeDegrees, 0.5f, 0.0f, 180.0f);
-        lightChanged |= ImGui::DragFloat("Outer Cone", &editedLight.OuterConeDegrees, 0.5f, 0.0f, 180.0f);
-        if (editedLight.OuterConeDegrees < editedLight.InnerConeDegrees)
-            editedLight.OuterConeDegrees = editedLight.InnerConeDegrees;
-        lightChanged |= ImGui::Checkbox("Casts Shadows", &editedLight.CastsShadows);
+        trackedEdit(EditProperty::LightPhotometricValue,
+            ImGui::InputDouble(Engine::GetLightPhotometricControlLabel(editedLight.Type),
+                &editedLight.PhotometricValue, photometricStep, photometricStep * 10.0, "%.2f"),
+            applyLight);
+        trackedEdit(EditProperty::LightRange, ImGui::DragFloat("Range", &editedLight.Range, 0.1f, 0.0f, 10000.0f), applyLight);
+        trackedEdit(EditProperty::LightInnerCone,
+            ImGui::DragFloat("Inner Cone", &editedLight.InnerConeDegrees, 0.5f, 0.0f, 180.0f), applyLight);
+        trackedEdit(EditProperty::LightOuterCone,
+            ImGui::DragFloat("Outer Cone", &editedLight.OuterConeDegrees, 0.5f, 0.0f, 180.0f), applyLight);
+        discreteEdit(EditProperty::LightCastsShadows, ImGui::Checkbox("Casts Shadows", &editedLight.CastsShadows), applyLight);
 
-        bool lightEditAccepted = true;
-        if (lightChanged)
-        {
-            lightEditAccepted = Engine::IsValidLightComponent(editedLight)
-                && m_ActiveScene.AddLightComponent(selectedEntity->EntityHandle, editedLight);
-            historyStateChanged |= lightEditAccepted;
-        }
+        const bool lightEditAccepted = !lightRejected;
         const Engine::LightComponent& readoutLight = lightEditAccepted ? editedLight : originalLight;
         Engine::PhotometricLightReadout photometricReadout;
         if (Engine::TryBuildPhotometricLightReadout(
@@ -3973,27 +4045,36 @@ void EditorLayer::DrawInspectorPanel()
         ImGui::Separator();
         ImGui::PushID("MeshRendererComponent");
         ImGui::TextUnformatted("Mesh Renderer Component");
-        Engine::MeshRendererComponent& meshRenderer = *selectedEntity->MeshRenderer;
-        if (const Engine::AssetMetadata* meshAsset = m_AssetRegistry.GetAsset(meshRenderer.MeshAsset))
-            meshRenderer.MeshName = meshAsset->Name;
+        if (const Engine::AssetMetadata* meshAsset = m_AssetRegistry.GetAsset(selectedEntity->MeshRenderer->MeshAsset))
+            selectedEntity->MeshRenderer->MeshName = meshAsset->Name;
+        Engine::MeshRendererComponent meshRenderer = *selectedEntity->MeshRenderer;
+        const auto applyMeshRenderer = [&]()
+        {
+            *selectedEntity->MeshRenderer = meshRenderer;
+            return true;
+        };
 
         char meshName[128] = {};
         const std::string meshDisplayName = GetMeshDisplayName(meshRenderer, m_AssetRegistry);
         std::snprintf(meshName, sizeof(meshName), "%s", meshDisplayName.c_str());
-        bool meshChanged = false;
-        if (ImGui::InputText("Mesh Name", meshName, sizeof(meshName)))
+        const bool meshNameEdited = ImGui::InputText("Mesh Name", meshName, sizeof(meshName));
+        trackedEdit(EditProperty::MeshRendererMeshName, meshNameEdited, [&]()
         {
             meshRenderer.MeshName = meshName;
             m_AssetRegistry.SetAssetName(meshRenderer.MeshAsset, meshName);
-            meshChanged = true;
-        }
-        meshChanged |= DrawAssetHandleControl("Mesh Asset", meshRenderer.MeshAsset, m_AssetRegistry, Engine::AssetType::Mesh);
-        meshChanged |= DrawAssetHandleControl("Material Asset", meshRenderer.MaterialAsset, m_AssetRegistry, Engine::AssetType::Material);
+            return applyMeshRenderer();
+        });
+        trackedEdit(EditProperty::MeshRendererMeshAsset,
+            DrawAssetHandleControl("Mesh Asset", meshRenderer.MeshAsset, m_AssetRegistry, Engine::AssetType::Mesh),
+            applyMeshRenderer);
+        trackedEdit(EditProperty::MeshRendererMaterialAsset,
+            DrawAssetHandleControl("Material Asset", meshRenderer.MaterialAsset, m_AssetRegistry, Engine::AssetType::Material),
+            applyMeshRenderer);
         if (ImGui::CollapsingHeader("Material Properties"))
-            meshChanged |= DrawMaterialAssetControls(meshRenderer.MaterialAsset);
-        meshChanged |= ImGui::Checkbox("Visible", &meshRenderer.Visible);
-        meshChanged |= ImGui::Checkbox("Casts Shadows", &meshRenderer.CastsShadows);
-        historyStateChanged |= meshChanged;
+            DrawMaterialAssetControls(selectedEntity->MeshRenderer->MaterialAsset);
+        discreteEdit(EditProperty::MeshRendererVisible, ImGui::Checkbox("Visible", &meshRenderer.Visible), applyMeshRenderer);
+        discreteEdit(EditProperty::MeshRendererCastsShadows,
+            ImGui::Checkbox("Casts Shadows", &meshRenderer.CastsShadows), applyMeshRenderer);
         ImGui::PopID();
     }
 
@@ -4004,67 +4085,98 @@ void EditorLayer::DrawInspectorPanel()
     {
         if (!selectedEntity->Camera && ImGui::MenuItem("Camera"))
         {
-            Engine::CameraComponent camera;
-            camera.Primary = false;
-            if (m_ActiveScene.AddCameraComponent(selectedEntity->EntityHandle, camera))
-                historyStateChanged = true;
-            else
+            const bool added = DiscreteEdit(EditorHistory::MakeAddComponentLabel("Camera", entityName), [&]()
+            {
+                Engine::CameraComponent camera;
+                camera.Primary = false;
+                return m_ActiveScene.AddCameraComponent(entityHandle, camera) != nullptr;
+            });
+            if (!added)
                 m_ConsoleLines.emplace_back("Camera component requires unit transform scale");
         }
         if (!selectedEntity->Light && ImGui::MenuItem("Light"))
         {
-            m_ActiveScene.AddLightComponent(selectedEntity->EntityHandle);
-            historyStateChanged = true;
+            DiscreteEdit(EditorHistory::MakeAddComponentLabel("Light", entityName), [&]()
+            {
+                return m_ActiveScene.AddLightComponent(entityHandle) != nullptr;
+            });
         }
         if (!selectedEntity->MeshRenderer && ImGui::MenuItem("Mesh Renderer"))
         {
-            m_ActiveScene.AddMeshRendererComponent(selectedEntity->EntityHandle);
-            historyStateChanged = true;
+            DiscreteEdit(EditorHistory::MakeAddComponentLabel("Mesh Renderer", entityName), [&]()
+            {
+                return m_ActiveScene.AddMeshRendererComponent(entityHandle) != nullptr;
+            });
         }
         if (selectedEntity->Camera && selectedEntity->Light && selectedEntity->MeshRenderer)
             ImGui::TextDisabled("All available components are attached");
         ImGui::EndPopup();
     }
 
-    if (historyStateChanged)
-        RecordHistory("Inspector edit", inspectorState);
     ImGui::End();
 }
 
 bool EditorLayer::DrawMaterialAssetControls(Engine::AssetHandle handle)
 {
-    Engine::MaterialAsset* material = m_MaterialLibrary.Get(handle);
-    if (!material)
+    Engine::MaterialAsset* liveMaterial = m_MaterialLibrary.Get(handle);
+    if (!liveMaterial)
     {
         ImGui::TextDisabled("No loaded material asset for this handle");
         return false;
     }
 
-    // Imported (Fab) materials are immutable. The widgets edit a throwaway copy
-    // and are disabled, so nothing reaches the library, the renderer, or disk.
+    // The widgets edit a local copy; it reaches the library, the renderer and the
+    // history only through TrackedEdit / DiscreteEdit. An imported (Fab) material is
+    // immutable: its widgets are disabled, so nothing is ever applied.
     const Engine::AssetMetadata* assetMetadata = m_AssetRegistry.GetAsset(handle);
     const bool immutableMaterial = assetMetadata && Engine::IsImmutableMaterialAsset(*assetMetadata);
-    Engine::MaterialAsset readOnlyCopy;
+    Engine::MaterialAsset material = *liveMaterial;
+    const Engine::MaterialAsset original = material;
     if (immutableMaterial)
     {
-        readOnlyCopy = *material;
-        material = &readOnlyCopy;
         ImGui::TextDisabled("Imported (immutable) - duplicate it to edit");
         ImGui::BeginDisabled();
     }
 
-    ImGui::PushID("MaterialAsset");
-    bool materialChanged = false;
-    char materialName[128] = {};
-    std::snprintf(materialName, sizeof(materialName), "%s", material->Name.c_str());
-    if (ImGui::InputText("Material Name", materialName, sizeof(materialName)))
+    using EditorHistory::EditProperty;
+    // Materials are keyed by asset handle; the high bit keeps them apart from entity ids.
+    const Engine::u64 materialKey = (1ull << 63) | handle;
+    const std::string materialName = original.Name;
+    bool applied = false;
+    const auto applyMaterial = [&]()
     {
-        material->Name = materialName;
-        m_AssetRegistry.SetAssetName(handle, materialName);
-        materialChanged = true;
-    }
+        Engine::MaterialAsset* target = m_MaterialLibrary.Get(handle);
+        if (!target)
+            return false;
+        material.ClampValues();
+        *target = material;
+        if (material.Name != original.Name)
+            m_AssetRegistry.SetAssetName(handle, material.Name);
+        Engine::Renderer::PublishArtifactResolvers(m_AssetRegistry, m_MaterialLibrary);
+        applied = true;
+        return true;
+    };
+    const auto trackedEdit = [&](EditProperty property, bool edited)
+    {
+        return TrackedEdit(materialKey, property, edited,
+            [&materialName, property]() { return EditorHistory::MakeEditLabel(property, materialName); }, applyMaterial);
+    };
+    const auto discreteEdit = [&](EditProperty property, bool edited)
+    {
+        ProbeWidget(property);
+        return edited && DiscreteEdit(EditorHistory::MakeEditLabel(property, materialName), applyMaterial);
+    };
 
-    if (ImGui::BeginCombo("Shading Model", Engine::ToString(material->ShadingModel)))
+    ImGui::PushID("MaterialAsset");
+    char materialNameBuffer[128] = {};
+    std::snprintf(materialNameBuffer, sizeof(materialNameBuffer), "%s", material.Name.c_str());
+    const bool nameEdited = ImGui::InputText("Material Name", materialNameBuffer, sizeof(materialNameBuffer));
+    if (nameEdited)
+        material.Name = materialNameBuffer;
+    trackedEdit(EditProperty::MaterialName, nameEdited);
+
+    bool shadingChanged = false;
+    if (ImGui::BeginCombo("Shading Model", Engine::ToString(material.ShadingModel)))
     {
         const Engine::MaterialShadingModel models[] = {
             Engine::MaterialShadingModel::Standard,
@@ -4072,19 +4184,21 @@ bool EditorLayer::DrawMaterialAssetControls(Engine::AssetHandle handle)
         };
         for (Engine::MaterialShadingModel candidate : models)
         {
-            const bool selected = material->ShadingModel == candidate;
+            const bool selected = material.ShadingModel == candidate;
             if (ImGui::Selectable(Engine::ToString(candidate), selected))
             {
-                material->ShadingModel = candidate;
-                materialChanged = true;
+                material.ShadingModel = candidate;
+                shadingChanged = true;
             }
             if (selected)
                 ImGui::SetItemDefaultFocus();
         }
         ImGui::EndCombo();
     }
+    discreteEdit(EditProperty::MaterialShadingModel, shadingChanged);
 
-    if (ImGui::BeginCombo("Alpha Mode", Engine::ToString(material->AlphaMode)))
+    bool alphaModeChanged = false;
+    if (ImGui::BeginCombo("Alpha Mode", Engine::ToString(material.AlphaMode)))
     {
         const Engine::MaterialAlphaMode modes[] = {
             Engine::MaterialAlphaMode::Opaque,
@@ -4093,28 +4207,31 @@ bool EditorLayer::DrawMaterialAssetControls(Engine::AssetHandle handle)
         };
         for (Engine::MaterialAlphaMode candidate : modes)
         {
-            const bool selected = material->AlphaMode == candidate;
+            const bool selected = material.AlphaMode == candidate;
             if (ImGui::Selectable(Engine::ToString(candidate), selected))
             {
-                material->AlphaMode = candidate;
-                materialChanged = true;
+                material.AlphaMode = candidate;
+                alphaModeChanged = true;
             }
             if (selected)
                 ImGui::SetItemDefaultFocus();
         }
         ImGui::EndCombo();
     }
+    discreteEdit(EditProperty::MaterialAlphaMode, alphaModeChanged);
 
-    materialChanged |= ImGui::Checkbox("Two Sided", &material->TwoSided);
-    materialChanged |= ImGui::ColorEdit3("Base Color", &material->BaseColor.X);
-    materialChanged |= ImGui::DragFloat("Metallic", &material->Metallic, 0.01f, 0.0f, 1.0f);
-    materialChanged |= ImGui::DragFloat("Roughness", &material->Roughness, 0.01f, 0.0f, 1.0f);
-    materialChanged |= ImGui::DragFloat("Normal Scale", &material->NormalScale, 0.01f, 0.0f, 4.0f);
-    materialChanged |= ImGui::DragFloat("Occlusion Strength", &material->OcclusionStrength, 0.01f, 0.0f, 1.0f);
-    materialChanged |= ImGui::ColorEdit3("Emissive Color", &material->EmissiveColor.X);
-    materialChanged |= ImGui::DragFloat("Emissive Strength", &material->EmissiveStrength, 0.01f, 0.0f, 10000.0f);
-    if (material->AlphaMode == Engine::MaterialAlphaMode::Mask)
-        materialChanged |= ImGui::DragFloat("Alpha Cutoff", &material->AlphaCutoff, 0.01f, 0.0f, 1.0f);
+    discreteEdit(EditProperty::MaterialTwoSided, ImGui::Checkbox("Two Sided", &material.TwoSided));
+    trackedEdit(EditProperty::MaterialBaseColor, ImGui::ColorEdit3("Base Color", &material.BaseColor.X));
+    trackedEdit(EditProperty::MaterialMetallic, ImGui::DragFloat("Metallic", &material.Metallic, 0.01f, 0.0f, 1.0f));
+    trackedEdit(EditProperty::MaterialRoughness, ImGui::DragFloat("Roughness", &material.Roughness, 0.01f, 0.0f, 1.0f));
+    trackedEdit(EditProperty::MaterialNormalScale, ImGui::DragFloat("Normal Scale", &material.NormalScale, 0.01f, 0.0f, 4.0f));
+    trackedEdit(EditProperty::MaterialOcclusionStrength,
+        ImGui::DragFloat("Occlusion Strength", &material.OcclusionStrength, 0.01f, 0.0f, 1.0f));
+    trackedEdit(EditProperty::MaterialEmissiveColor, ImGui::ColorEdit3("Emissive Color", &material.EmissiveColor.X));
+    trackedEdit(EditProperty::MaterialEmissiveStrength,
+        ImGui::DragFloat("Emissive Strength", &material.EmissiveStrength, 0.01f, 0.0f, 10000.0f));
+    if (material.AlphaMode == Engine::MaterialAlphaMode::Mask)
+        trackedEdit(EditProperty::MaterialAlphaCutoff, ImGui::DragFloat("Alpha Cutoff", &material.AlphaCutoff, 0.01f, 0.0f, 1.0f));
 
     ImGui::Separator();
     ImGui::TextUnformatted("Texture Handles");
@@ -4126,10 +4243,11 @@ bool EditorLayer::DrawMaterialAssetControls(Engine::AssetHandle handle)
         Engine::MaterialTextureSlot::Opacity,
         Engine::MaterialTextureSlot::CallistoControl
     };
-    for (Engine::MaterialTextureSlot slot : textureSlots)
+    for (size_t slotIndex = 0; slotIndex < std::size(textureSlots); ++slotIndex)
     {
-        materialChanged |= DrawAssetHandleControl(
-            Engine::ToString(slot), material->GetTexture(slot), m_AssetRegistry, Engine::AssetType::Texture);
+        const Engine::MaterialTextureSlot slot = textureSlots[slotIndex];
+        trackedEdit(static_cast<EditProperty>(static_cast<Engine::u32>(EditProperty::MaterialTextureBaseColor) + slotIndex),
+            DrawAssetHandleControl(Engine::ToString(slot), material.GetTexture(slot), m_AssetRegistry, Engine::AssetType::Texture));
         const Engine::MaterialTextureSampler samplers[] = {
             Engine::MaterialTextureSampler::LinearWrap,
             Engine::MaterialTextureSampler::LinearClamp,
@@ -4137,43 +4255,45 @@ bool EditorLayer::DrawMaterialAssetControls(Engine::AssetHandle handle)
             Engine::MaterialTextureSampler::PointClamp
         };
         const std::string samplerLabel = std::string(Engine::ToString(slot)) + " Sampling";
-        if (ImGui::BeginCombo(samplerLabel.c_str(), Engine::ToString(material->GetSampler(slot))))
+        bool samplerChanged = false;
+        if (ImGui::BeginCombo(samplerLabel.c_str(), Engine::ToString(material.GetSampler(slot))))
         {
             for (Engine::MaterialTextureSampler candidate : samplers)
             {
-                const bool selected = material->GetSampler(slot) == candidate;
+                const bool selected = material.GetSampler(slot) == candidate;
                 if (ImGui::Selectable(Engine::ToString(candidate), selected))
                 {
-                    material->GetSampler(slot) = candidate;
-                    materialChanged = true;
+                    material.GetSampler(slot) = candidate;
+                    samplerChanged = true;
                 }
                 if (selected)
                     ImGui::SetItemDefaultFocus();
             }
             ImGui::EndCombo();
         }
+        discreteEdit(static_cast<EditProperty>(static_cast<Engine::u32>(EditProperty::MaterialSamplerBaseColor) + slotIndex),
+            samplerChanged);
     }
 
     ImGui::Separator();
     ImGui::TextUnformatted("Callisto Controls");
-    materialChanged |= ImGui::DragFloat("Diffuse Fresnel", &material->DiffuseFresnelIntensity, 0.01f, 0.0f, 256.0f);
-    materialChanged |= ImGui::DragFloat("Retroreflection", &material->RetroreflectionIntensity, 0.01f, 0.0f, 256.0f);
-    materialChanged |= ImGui::DragFloat("Diffuse Falloff", &material->DiffuseFresnelFalloff, 0.01f, 0.0f, 1.0f);
-    materialChanged |= ImGui::DragFloat("Retroreflection Falloff", &material->RetroreflectionFalloff, 0.01f, 0.0f, 1.0f);
-    materialChanged |= ImGui::DragFloat("Smooth Terminator", &material->SmoothTerminator, 0.01f, -1.0f, 1.0f);
-    material->ClampValues();
+    trackedEdit(EditProperty::MaterialDiffuseFresnel,
+        ImGui::DragFloat("Diffuse Fresnel", &material.DiffuseFresnelIntensity, 0.01f, 0.0f, 256.0f));
+    trackedEdit(EditProperty::MaterialRetroreflection,
+        ImGui::DragFloat("Retroreflection", &material.RetroreflectionIntensity, 0.01f, 0.0f, 256.0f));
+    trackedEdit(EditProperty::MaterialDiffuseFalloff,
+        ImGui::DragFloat("Diffuse Falloff", &material.DiffuseFresnelFalloff, 0.01f, 0.0f, 1.0f));
+    trackedEdit(EditProperty::MaterialRetroreflectionFalloff,
+        ImGui::DragFloat("Retroreflection Falloff", &material.RetroreflectionFalloff, 0.01f, 0.0f, 1.0f));
+    trackedEdit(EditProperty::MaterialSmoothTerminator,
+        ImGui::DragFloat("Smooth Terminator", &material.SmoothTerminator, 0.01f, -1.0f, 1.0f));
 
     if (!immutableMaterial && ImGui::Button("Save Material"))
         SaveMaterialAsset(handle);
     if (immutableMaterial)
-    {
         ImGui::EndDisabled();
-        materialChanged = false;
-    }
-    if (materialChanged)
-        Engine::Renderer::PublishArtifactResolvers(m_AssetRegistry, m_MaterialLibrary);
     ImGui::PopID();
-    return materialChanged;
+    return applied && !immutableMaterial;
 }
 
 void EditorLayer::ApplyEditorCameraStateToScene()
@@ -5362,60 +5482,20 @@ bool EditorLayer::PublishProjectColorPipelineSettings(
 }
 
 bool EditorLayer::ApplyProjectColorPipelineSettings(
-    const Engine::RendererColorPipelineSettings& settings, std::string label)
+    const Engine::RendererColorPipelineSettings& settings, EditorHistory::EditProperty property)
 {
-    const HistoryState before = CaptureHistoryState();
-    if (!PublishProjectColorPipelineSettings(settings))
-        return false;
-    RecordHistory(std::move(label), before);
-    return true;
+    return DiscreteEdit(EditorHistory::MakeEditLabel(property, "Project"),
+        [this, &settings]() { return PublishProjectColorPipelineSettings(settings); });
 }
 
 void EditorLayer::HandleProjectColorPipelineInput(
-    const Engine::RendererColorPipelineSettings& settings, bool edited, std::string label)
+    const Engine::RendererColorPipelineSettings& settings, bool edited, EditorHistory::EditProperty property)
 {
-    const unsigned int itemId = ImGui::GetItemID();
-    const auto finalizePendingInteraction = [this]()
-    {
-        if (m_ProjectColorPipelineInteractionBefore
-            && m_ProjectColorPipelineInteractionChanged
-            && m_ProjectColorPipelineInteractionBefore->ProjectColorPipelineSettings
-                != m_ProjectColorPipelineSettings)
-        {
-            RecordHistory(std::move(m_ProjectColorPipelineInteractionLabel),
-                std::move(*m_ProjectColorPipelineInteractionBefore));
-        }
-        m_ProjectColorPipelineInteractionBefore.reset();
-        m_ProjectColorPipelineInteractionItemId = 0;
-        m_ProjectColorPipelineInteractionChanged = false;
-        m_ProjectColorPipelineInteractionLabel.clear();
-    };
-
-    if (ImGui::IsItemActivated())
-    {
-        if (m_ProjectColorPipelineInteractionBefore)
-            finalizePendingInteraction();
-        m_ProjectColorPipelineInteractionBefore = CaptureHistoryState();
-        m_ProjectColorPipelineInteractionItemId = itemId;
-        m_ProjectColorPipelineInteractionChanged = false;
-        m_ProjectColorPipelineInteractionLabel = label;
-    }
-
-    if (edited)
-    {
-        if (!m_ProjectColorPipelineInteractionBefore)
-        {
-            m_ProjectColorPipelineInteractionBefore = CaptureHistoryState();
-            m_ProjectColorPipelineInteractionItemId = itemId;
-            m_ProjectColorPipelineInteractionLabel = label;
-        }
-        m_ProjectColorPipelineInteractionChanged |=
-            PublishProjectColorPipelineSettings(settings);
-    }
-
-    if (ImGui::IsItemDeactivatedAfterEdit()
-        && m_ProjectColorPipelineInteractionItemId == itemId)
-        finalizePendingInteraction();
+    // The project settings widget edits a local copy (`settings`); nothing reaches the
+    // project until the gesture has captured its Before state.
+    TrackedEdit(0, property, edited,
+        [property]() { return EditorHistory::MakeEditLabel(property, "Project"); },
+        [this, &settings]() { return PublishProjectColorPipelineSettings(settings); });
 }
 
 void EditorLayer::RunPresentationPolicySmoke()
@@ -5664,19 +5744,24 @@ void EditorLayer::RunUndoRedoSmoke()
     if (!m_ActiveScene.TryGetEntityApproximateWorldPosition(m_PrototypeMeshEntity, originalPosition))
         throw std::runtime_error("Undo/redo smoke could not compose the prototype position");
     const double originalX = originalPosition.X;
-    const HistoryState before = CaptureHistoryState();
+    const HistorySnapshot before = CaptureBeforeSnapshot();
     originalPosition.X += 2.0;
     m_ActiveScene.SetEntityWorldPositionAxis(m_PrototypeMeshEntity, 0, originalPosition.X);
-    RecordHistory("Undo/redo smoke", before);
+    const EditorHistory::HistoryResult recorded = RecordHistory(
+        EditorHistory::MakeEditLabel(EditorHistory::EditProperty::TransformPosition,
+            m_ActiveScene.TryGetEntity(m_PrototypeMeshEntity)->Name), before);
+    if (recorded.Status != EditorHistory::HistoryStatus::Recorded || !History().TopUndo()
+        || History().TopUndo()->Label.Display() != "Move Prototype Mesh")
+        throw std::runtime_error("Undo/redo smoke did not record a named Move entry");
 
-    const bool undone = Undo();
+    const bool undone = Undo() && m_LastHistoryAnnouncement == "Undo: Move Prototype Mesh";
     const Engine::TransformComponent* restoredTransform = m_ActiveScene.TryGetTransform(m_PrototypeMeshEntity);
     Engine::Math::DVec3 restoredPosition;
     const bool restored = restoredTransform
         && m_ActiveScene.TryGetEntityApproximateWorldPosition(m_PrototypeMeshEntity, restoredPosition)
         && std::abs(restoredPosition.X - originalX) < 0.0001;
 
-    const bool redone = Redo();
+    const bool redone = Redo() && m_LastHistoryAnnouncement == "Redo: Move Prototype Mesh";
     const Engine::TransformComponent* reappliedTransform = m_ActiveScene.TryGetTransform(m_PrototypeMeshEntity);
     Engine::Math::DVec3 reappliedPosition;
     const bool reapplied = reappliedTransform
@@ -5703,9 +5788,9 @@ void EditorLayer::RunSceneAuthoringSmoke()
     if (!authoredEntity || !prototypeRenderer)
         throw std::runtime_error("Scene authoring smoke could not create its entity or find the prototype renderer");
 
-    const HistoryState beforeAssignment = CaptureHistoryState();
+    const HistorySnapshot beforeAssignment = CaptureBeforeSnapshot();
     m_ActiveScene.AddMeshRendererComponent(authoredEntity, *prototypeRenderer);
-    RecordHistory("Assign prototype mesh", beforeAssignment);
+    RecordHistory(EditorHistory::MakeAddComponentLabel("Mesh Renderer", "Authored Entity"), beforeAssignment);
     m_SelectedEntity = authoredEntity;
 
     if (!DeleteSelectedEntity() || m_ActiveScene.IsEntityValid(authoredEntity))
@@ -5812,6 +5897,9 @@ bool EditorLayer::ImportGltfAsset(const std::filesystem::path& sourcePath)
 
     m_AssetWatcher.SyncRegistry(m_AssetRegistry);
     Engine::Renderer::PublishArtifactResolvers(m_AssetRegistry, m_MaterialLibrary);
+    // The import registered assets and wrote cooked files; an undo snapshot taken before it
+    // would restore a registry without them while the files stay on disk.
+    InstallHistoryBarrier("Import glTF", "glTF import changed the project");
     m_ConsoleLines.emplace_back(
         "glTF imported: " + m_LastGltfImport.SourcePath + " ("
         + std::to_string(m_LastGltfImport.Meshes.size()) + " mesh(es))");
@@ -6063,7 +6151,7 @@ void EditorLayer::RunColorPipelineSettingsSmoke()
         && invalidReadPreserved(invalidCameraExposureTarget);
 
     const Engine::RendererColorPipelineSettings previousSettings = m_ProjectColorPipelineSettings;
-    const HistoryState historyBeforeSettingsChange = CaptureHistoryState();
+    const HistorySnapshot historyBeforeSettingsChange = CaptureHistorySnapshot();
     m_ProjectColorPipelineSettings = { 2.0, 0.5, 1.25 };
     m_ProjectColorPipelineSettings.ExposureMode = Engine::RendererExposureMode::CameraCalibration;
     m_ProjectColorPipelineSettings.CameraApertureFNumber = 2.0;
@@ -6093,33 +6181,34 @@ void EditorLayer::RunColorPipelineSettingsSmoke()
         && Engine::Renderer::GetColorPipelineSettings().CameraApertureFNumber == 2.0
         && Engine::Renderer::GetColorPipelineSettings().CameraShutterSeconds == 0.25
         && Engine::Renderer::GetColorPipelineSettings().CameraISO == 200.0;
-    const HistoryState historyAfterSettingsChange = CaptureHistoryState();
-    const std::vector<HistoryEntry> priorUndoHistory = m_UndoHistory;
-    const std::vector<HistoryEntry> priorRedoHistory = m_RedoHistory;
-    const bool historyRestoredBefore = RestoreHistoryState(historyBeforeSettingsChange)
+    const HistorySnapshot historyAfterSettingsChange = CaptureHistorySnapshot();
+    const HistoryStoreType::Mark priorHistory = History().SaveMark();
+    const bool historyRestoredBefore = RestoreHistoryStateExact(*historyBeforeSettingsChange)
         && m_ProjectColorPipelineSettings == previousSettings
         && Engine::Renderer::GetColorPipelineSettings() == previousSettings;
-    m_UndoHistory.clear();
-    m_RedoHistory.clear();
+    ResetHistoryForProject(EditorHistory::MakeHistoryLabel(
+        "Color pipeline settings smoke", "", EditorHistory::HistorySource::System));
     const bool historyApplied = historyRestoredBefore
         && ApplyProjectColorPipelineSettings(
-            historyAfterSettingsChange.ProjectColorPipelineSettings,
-            "Color pipeline settings smoke")
-        && m_UndoHistory.size() == 1 && m_RedoHistory.empty()
+            historyAfterSettingsChange->ProjectColorPipelineSettings,
+            EditorHistory::EditProperty::ColorManualExposure)
+        && History().UndoDepth() == 1 && History().RedoDepth() == 0
+        && History().TopUndo()
+        && History().TopUndo()->Label.Display() == "Edit Color Pipeline.Manual EV100 of Project"
         && m_ProjectColorPipelineSettings
-            == historyAfterSettingsChange.ProjectColorPipelineSettings
+            == historyAfterSettingsChange->ProjectColorPipelineSettings
         && Engine::Renderer::GetColorPipelineSettings()
-            == historyAfterSettingsChange.ProjectColorPipelineSettings;
+            == historyAfterSettingsChange->ProjectColorPipelineSettings;
     const bool historyUndone = historyApplied && Undo()
-        && m_UndoHistory.empty() && m_RedoHistory.size() == 1
+        && History().UndoDepth() == 0 && History().RedoDepth() == 1
         && m_ProjectColorPipelineSettings == previousSettings
         && Engine::Renderer::GetColorPipelineSettings() == previousSettings;
     const bool historyRedone = historyUndone && Redo()
-        && m_UndoHistory.size() == 1 && m_RedoHistory.empty()
+        && History().UndoDepth() == 1 && History().RedoDepth() == 0
         && m_ProjectColorPipelineSettings
-            == historyAfterSettingsChange.ProjectColorPipelineSettings
+            == historyAfterSettingsChange->ProjectColorPipelineSettings
         && Engine::Renderer::GetColorPipelineSettings()
-            == historyAfterSettingsChange.ProjectColorPipelineSettings;
+            == historyAfterSettingsChange->ProjectColorPipelineSettings;
 
     const auto transformsEqual = [](const Engine::TransformComponent& left,
                                      const Engine::TransformComponent& right)
@@ -6137,10 +6226,10 @@ void EditorLayer::RunColorPipelineSettingsSmoke()
             && left.Scale.Y == right.Scale.Y
             && left.Scale.Z == right.Scale.Z;
     };
-    const HistoryState liveBeforeInvalidUndo = CaptureHistoryState();
+    const HistorySnapshot liveBeforeInvalidUndo = CaptureHistorySnapshot();
     const Engine::TransformComponent liveMainCameraTransform =
         m_ActiveScene.GetMainCameraTransform();
-    HistoryState invalidHistoryState = liveBeforeInvalidUndo;
+    HistoryState invalidHistoryState = *liveBeforeInvalidUndo;
     Engine::Math::DVec3 invalidCameraPosition;
     const Engine::Entity invalidMainCamera = invalidHistoryState.Scene.GetMainCameraEntity();
     const bool invalidSceneMadeDistinct = invalidHistoryState.Scene
@@ -6159,41 +6248,43 @@ void EditorLayer::RunColorPipelineSettingsSmoke()
         && invalidHistoryState.MaterialLibrary.Set(invalidOnlyAsset, invalidOnlyMaterial);
     invalidHistoryState.ProjectColorPipelineSettings.ManualExposureEV100 =
         std::numeric_limits<double>::quiet_NaN();
-    m_UndoHistory.push_back({ "Invalid color history smoke",
-        invalidHistoryState, liveBeforeInvalidUndo });
-    const std::size_t invalidUndoDepth = m_UndoHistory.size();
-    const std::size_t invalidRedoDepth = m_RedoHistory.size();
+    // The entry's Before is the invalid snapshot, so undoing it must be refused.
+    History().Record(EditorHistory::MakeHistoryLabel("Invalid color history smoke", "",
+                         EditorHistory::HistorySource::System),
+        std::make_shared<const HistoryState>(invalidHistoryState), liveBeforeInvalidUndo);
+    const std::size_t invalidUndoDepth = History().UndoDepth();
+    const std::size_t invalidRedoDepth = History().RedoDepth();
     const bool invalidUndoRejected = !Undo();
-    const bool invalidStacksPreserved = m_UndoHistory.size() == invalidUndoDepth
-        && m_RedoHistory.size() == invalidRedoDepth
-        && !m_UndoHistory.empty()
-        && m_UndoHistory.back().Label == "Invalid color history smoke";
+    const bool invalidStacksPreserved = History().UndoDepth() == invalidUndoDepth
+        && History().RedoDepth() == invalidRedoDepth
+        && History().UndoDepth() != 0
+        && History().TopUndo()
+        && History().TopUndo()->Label.Display() == "Invalid color history smoke";
     const bool invalidLiveStatePreserved =
-        m_ActiveScene.GetName() == liveBeforeInvalidUndo.Scene.GetName()
+        m_ActiveScene.GetName() == liveBeforeInvalidUndo->Scene.GetName()
         && m_ActiveScene.GetEntities().size()
-            == liveBeforeInvalidUndo.Scene.GetEntities().size()
+            == liveBeforeInvalidUndo->Scene.GetEntities().size()
         && transformsEqual(m_ActiveScene.GetMainCameraTransform(), liveMainCameraTransform)
-        && m_SelectedEntity == liveBeforeInvalidUndo.SelectedEntity
-        && m_CameraPosition == liveBeforeInvalidUndo.CameraPosition
-        && m_CameraRotation == liveBeforeInvalidUndo.CameraRotation
-        && m_CameraFovDegrees == liveBeforeInvalidUndo.CameraFovDegrees
-        && m_CameraNearClip == liveBeforeInvalidUndo.CameraNearClip
-        && m_CameraFarClip == liveBeforeInvalidUndo.CameraFarClip
+        && m_SelectedEntity == liveBeforeInvalidUndo->SelectedEntity
+        && m_CameraPosition == liveBeforeInvalidUndo->CameraPosition
+        && m_CameraRotation == liveBeforeInvalidUndo->CameraRotation
+        && m_CameraFovDegrees == liveBeforeInvalidUndo->CameraFovDegrees
+        && m_CameraNearClip == liveBeforeInvalidUndo->CameraNearClip
+        && m_CameraFarClip == liveBeforeInvalidUndo->CameraFarClip
         && m_ProjectColorPipelineSettings
-            == liveBeforeInvalidUndo.ProjectColorPipelineSettings
+            == liveBeforeInvalidUndo->ProjectColorPipelineSettings
         && Engine::Renderer::GetColorPipelineSettings()
-            == liveBeforeInvalidUndo.ProjectColorPipelineSettings
+            == liveBeforeInvalidUndo->ProjectColorPipelineSettings
         && !m_AssetRegistry.GetAsset(invalidOnlyAsset)
         && !m_MaterialLibrary.Get(invalidOnlyAsset);
     const bool invalidHistoryRejected = invalidSceneMadeDistinct
         && invalidAssetsMadeDistinct && invalidUndoRejected
         && invalidStacksPreserved && invalidLiveStatePreserved;
 
-    const bool historyRestoredAfter = RestoreHistoryState(historyBeforeSettingsChange)
+    const bool historyRestoredAfter = RestoreHistoryStateExact(*historyBeforeSettingsChange)
         && m_ProjectColorPipelineSettings == previousSettings
-        && Engine::Renderer::GetColorPipelineSettings() == previousSettings;
-    m_UndoHistory = priorUndoHistory;
-    m_RedoHistory = priorRedoHistory;
+        && Engine::Renderer::GetColorPipelineSettings() == previousSettings
+        && History().LoadMark(priorHistory);
     const bool restoredAndSaved = historyRestoredAfter && SaveProject();
 
     m_ColorPipelineSettingsSmokeCompleted = true;
@@ -6711,7 +6802,9 @@ bool EditorLayer::CreateNewProject(std::string name, const std::filesystem::path
         return false;
     }
 
-    const HistoryState previousState = CaptureHistoryState();
+    const HistorySnapshot previousState = CaptureBeforeSnapshot();
+    const HistoryStoreType::Mark previousHistory = History().SaveMark();
+    const Engine::u64 previousCameraEpoch = m_CameraEpoch;
     const std::string previousProjectPath = m_ProjectPath;
     const FabEditor::ProjectFabState previousFabProject = m_FabProject;
     const std::string previousScenePath = m_ScenePath;
@@ -6719,8 +6812,6 @@ bool EditorLayer::CreateNewProject(std::string name, const std::filesystem::path
     const Engine::FramePacingPolicy previousFramePacingPolicy = m_ProjectFramePacingPolicy;
     const Engine::RendererColorPipelineSettings previousPublishedColorPipelineSettings =
         Engine::Renderer::GetColorPipelineSettings();
-    const std::vector<HistoryEntry> previousUndoHistory = m_UndoHistory;
-    const std::vector<HistoryEntry> previousRedoHistory = m_RedoHistory;
 
     m_ProjectPath = projectPath.string();
     RefreshProjectLocation();
@@ -6737,8 +6828,8 @@ bool EditorLayer::CreateNewProject(std::string name, const std::filesystem::path
     m_PlayerStartEntity = {};
     m_SelectedEntity = {};
     m_SelectedAssetHandle = Engine::kInvalidAssetHandle;
-    m_UndoHistory.clear();
-    m_RedoHistory.clear();
+    ResetHistoryForProject(EditorHistory::MakeHistoryLabel(
+        "New Project", m_ActiveScene.GetName(), EditorHistory::HistorySource::System));
 
     EnsureDefaultSceneEntities();
     SyncEditorCameraStateFromMainCamera(true);
@@ -6752,12 +6843,13 @@ bool EditorLayer::CreateNewProject(std::string name, const std::filesystem::path
         m_ScenePath = previousScenePath;
         m_AssetRegistryPath = previousAssetRegistryPath;
         m_ProjectFramePacingPolicy = previousFramePacingPolicy;
-        if (!RestoreHistoryState(previousState))
+        if (!RestoreHistoryStateExact(*previousState))
             Engine::Log::Error("Project-creation rollback could not restore history state");
         if (!Engine::Renderer::SetColorPipelineSettings(previousPublishedColorPipelineSettings))
             Engine::Log::Error("Project-creation rollback could not restore renderer color settings");
-        m_UndoHistory = previousUndoHistory;
-        m_RedoHistory = previousRedoHistory;
+        if (!History().LoadMark(previousHistory))
+            Engine::Log::Error("Project-creation rollback could not restore the undo history");
+        m_CameraEpoch = previousCameraEpoch;
         return false;
     }
 
@@ -6769,12 +6861,13 @@ bool EditorLayer::CreateNewProject(std::string name, const std::filesystem::path
         m_ScenePath = previousScenePath;
         m_AssetRegistryPath = previousAssetRegistryPath;
         m_ProjectFramePacingPolicy = previousFramePacingPolicy;
-        if (!RestoreHistoryState(previousState))
+        if (!RestoreHistoryStateExact(*previousState))
             Engine::Log::Error("Project-creation rollback could not restore history state");
         if (!Engine::Renderer::SetColorPipelineSettings(previousPublishedColorPipelineSettings))
             Engine::Log::Error("Project-creation rollback could not restore renderer color settings");
-        m_UndoHistory = previousUndoHistory;
-        m_RedoHistory = previousRedoHistory;
+        if (!History().LoadMark(previousHistory))
+            Engine::Log::Error("Project-creation rollback could not restore the undo history");
+        m_CameraEpoch = previousCameraEpoch;
         return false;
     }
 
@@ -6786,7 +6879,7 @@ bool EditorLayer::CreateNewProject(std::string name, const std::filesystem::path
 
 Engine::Entity EditorLayer::CreateSceneEntity(std::string name)
 {
-    const HistoryState before = CaptureHistoryState();
+    const HistorySnapshot before = CaptureBeforeSnapshot();
     if (name == "Entity")
     {
         unsigned int suffix = 1;
@@ -6794,12 +6887,13 @@ Engine::Entity EditorLayer::CreateSceneEntity(std::string name)
             name = "Entity " + std::to_string(++suffix);
     }
 
+    const std::string createdName = name;
     const Engine::Entity entity = m_ActiveScene.CreateEntity(std::move(name));
     if (!entity)
         return {};
 
     m_SelectedEntity = entity;
-    RecordHistory("Create entity", before);
+    RecordHistory(EditorHistory::MakeCreateLabel(createdName), before);
     return entity;
 }
 
@@ -6809,7 +6903,7 @@ bool EditorLayer::DeleteSelectedEntity()
         || m_SelectedEntity == m_ActiveScene.GetMainCameraEntity())
         return false;
 
-    const HistoryState before = CaptureHistoryState();
+    const HistorySnapshot before = CaptureBeforeSnapshot();
     const Engine::Entity deletedEntity = m_SelectedEntity;
     const Engine::SceneEntity* sceneEntity = m_ActiveScene.TryGetEntity(deletedEntity);
     const std::string name = sceneEntity ? sceneEntity->Name : "entity";
@@ -6823,12 +6917,14 @@ bool EditorLayer::DeleteSelectedEntity()
     if (deletedEntity == m_PlayerStartEntity)
         m_PlayerStartEntity = {};
     m_SelectedEntity = m_ActiveScene.GetMainCameraEntity();
-    RecordHistory("Delete " + name, before);
+    RecordHistory(EditorHistory::MakeDeleteLabel(name), before);
     return true;
 }
 
 bool EditorLayer::LoadProject()
 {
+    // A project switch must not leave an Inspector edit half-recorded against the old project.
+    FlushEditGesture();
     // Every open runs the structural Fab validation (receipts and registry agree,
     // exact generation file sets, no links, Fab materials load). It also loads the
     // manifest and registry, so a project that fails it does not open.
@@ -6946,9 +7042,9 @@ bool EditorLayer::LoadProject()
     m_MaterialLibrary = std::move(loadedMaterials);
     Engine::Renderer::PublishArtifactResolvers(m_AssetRegistry, m_MaterialLibrary);
     m_ActiveScene = std::move(loadedScene);
-    m_PrototypeMeshEntity = m_ActiveScene.FindEntityByName("Prototype Mesh");
-    m_DirectionalLightEntity = m_ActiveScene.FindEntityByName("Directional Light");
-    m_PlayerStartEntity = m_ActiveScene.FindEntityByName("Player Start");
+    AdoptDefaultEntitiesFromLoadedScene();
+    ResetHistoryForProject(EditorHistory::MakeHistoryLabel("Open Project",
+        std::filesystem::path(m_ProjectPath).stem().string(), EditorHistory::HistorySource::System));
     m_SelectedEntity = m_PrototypeMeshEntity ? m_PrototypeMeshEntity : m_ActiveScene.GetMainCameraEntity();
     m_AssetWatcher.SyncRegistry(m_AssetRegistry);
     SyncEditorCameraStateFromMainCamera(true);
@@ -6959,93 +7055,6 @@ bool EditorLayer::LoadProject()
         Engine::DescribeFramePacingPolicy(m_GameFramePacingSettings.Resolve(m_ProjectFramePacingPolicy)));
     m_ConsoleLines.emplace_back("Project loaded: " + m_ProjectPath);
     m_EditorMaterialControl.EnsureProjectIdentity(m_ProjectPath);
-    return true;
-}
-
-EditorLayer::HistoryState EditorLayer::CaptureHistoryState() const
-{
-    HistoryState state;
-    state.Scene = m_ActiveScene;
-    state.AssetRegistry = m_AssetRegistry;
-    state.MaterialLibrary = m_MaterialLibrary;
-    state.SelectedEntity = m_SelectedEntity;
-    state.CameraPosition = m_CameraPosition;
-    state.CameraRotation = m_CameraRotation;
-    state.CameraFovDegrees = m_CameraFovDegrees;
-    state.CameraNearClip = m_CameraNearClip;
-    state.CameraFarClip = m_CameraFarClip;
-    state.ProjectColorPipelineSettings = m_ProjectColorPipelineSettings;
-    return state;
-}
-
-bool EditorLayer::RestoreHistoryState(const HistoryState& state)
-{
-    if (!Engine::IsValidRendererColorPipelineSettings(state.ProjectColorPipelineSettings)
-        || !Engine::Renderer::SetColorPipelineSettings(state.ProjectColorPipelineSettings))
-    {
-        Engine::Log::Error("History restore rejected invalid project color pipeline settings");
-        return false;
-    }
-
-    m_ActiveScene = state.Scene;
-    m_AssetRegistry = state.AssetRegistry;
-    m_MaterialLibrary = state.MaterialLibrary;
-    Engine::Renderer::PublishArtifactResolvers(m_AssetRegistry, m_MaterialLibrary);
-    m_SelectedEntity = state.SelectedEntity;
-    m_CameraPosition = state.CameraPosition;
-    m_CameraRotation = state.CameraRotation;
-    m_CameraFovDegrees = state.CameraFovDegrees;
-    m_CameraNearClip = state.CameraNearClip;
-    m_CameraFarClip = state.CameraFarClip;
-    m_ProjectColorPipelineSettings = state.ProjectColorPipelineSettings;
-    m_PrototypeMeshEntity = m_ActiveScene.FindEntityByName("Prototype Mesh");
-    m_DirectionalLightEntity = m_ActiveScene.FindEntityByName("Directional Light");
-    m_PlayerStartEntity = m_ActiveScene.FindEntityByName("Player Start");
-    // An empty recorded selection (cleared by a viewport click or Esc) stays empty; only
-    // a selection that no longer exists falls back.
-    if (m_SelectedEntity && !m_ActiveScene.IsEntityValid(m_SelectedEntity))
-        m_SelectedEntity = m_PrototypeMeshEntity ? m_PrototypeMeshEntity : m_ActiveScene.GetMainCameraEntity();
-
-    SyncEditorCameraStateFromMainCamera(true);
-    ResetFusionNavigationPivotFromSelectionOrScene();
-    m_AssetWatcher.SyncRegistry(m_AssetRegistry);
-    return true;
-}
-
-void EditorLayer::RecordHistory(std::string label, HistoryState before)
-{
-    m_RedoHistory.clear();
-    m_UndoHistory.push_back({ std::move(label), std::move(before), CaptureHistoryState() });
-    constexpr std::size_t maxHistoryEntries = 128;
-    if (m_UndoHistory.size() > maxHistoryEntries)
-        m_UndoHistory.erase(m_UndoHistory.begin());
-}
-
-bool EditorLayer::Undo()
-{
-    if (m_UndoHistory.empty())
-        return false;
-
-    HistoryEntry entry = m_UndoHistory.back();
-    if (!RestoreHistoryState(entry.Before))
-        return false;
-    m_UndoHistory.pop_back();
-    m_ConsoleLines.emplace_back("Undid: " + entry.Label);
-    m_RedoHistory.push_back(std::move(entry));
-    return true;
-}
-
-bool EditorLayer::Redo()
-{
-    if (m_RedoHistory.empty())
-        return false;
-
-    HistoryEntry entry = m_RedoHistory.back();
-    if (!RestoreHistoryState(entry.After))
-        return false;
-    m_RedoHistory.pop_back();
-    m_ConsoleLines.emplace_back("Redid: " + entry.Label);
-    m_UndoHistory.push_back(std::move(entry));
     return true;
 }
 
@@ -7190,7 +7199,10 @@ void EditorLayer::EnsureDefaultSceneEntities()
             throw std::runtime_error("could not save the default scene material texture binding");
     }
 
-    m_PrototypeMeshEntity = m_ActiveScene.FindEntityByName("Prototype Mesh");
+    // Tracked by id: a scene that already has the entity (restored, renamed, duplicated
+    // by the user) keeps it, and nothing here looks an entity up by its editable name.
+    if (!m_ActiveScene.IsEntityValid(m_PrototypeMeshEntity))
+        m_PrototypeMeshEntity = {};
     const bool createdPrototypeMesh = !m_PrototypeMeshEntity;
     if (!m_PrototypeMeshEntity)
         m_PrototypeMeshEntity = m_ActiveScene.CreateEntity("Prototype Mesh");
@@ -7216,8 +7228,7 @@ void EditorLayer::EnsureDefaultSceneEntities()
         m_ActiveScene.AddMeshRendererComponent(m_PrototypeMeshEntity, defaultMeshRenderer);
     }
 
-    m_DirectionalLightEntity = m_ActiveScene.FindEntityByName("Directional Light");
-    if (!m_DirectionalLightEntity)
+    if (!m_ActiveScene.IsEntityValid(m_DirectionalLightEntity))
         m_DirectionalLightEntity = m_ActiveScene.CreateEntity("Directional Light");
     if (!m_ActiveScene.TryGetLightComponent(m_DirectionalLightEntity))
     {
@@ -7230,8 +7241,7 @@ void EditorLayer::EnsureDefaultSceneEntities()
             transform->RotationDegrees = { 45.0f, -35.0f, 0.0f };
     }
 
-    m_PlayerStartEntity = m_ActiveScene.FindEntityByName("Player Start");
-    if (!m_PlayerStartEntity)
+    if (!m_ActiveScene.IsEntityValid(m_PlayerStartEntity))
         m_PlayerStartEntity = m_ActiveScene.CreateEntity("Player Start");
 
     if (!m_SelectedEntity)

@@ -92,6 +92,12 @@ namespace Engine
         double s_InFrameIntentionalPacingMilliseconds = 0.0;
         RendererBackend s_ActiveBackend = RendererBackend::Headless;
         bool s_Initialized = false;
+        // Published once by ImGuiLayer after both ImGui backends exist.
+        bool s_UiViewportsRequested = false;
+        UiViewportDecision s_UiViewportDecision;
+        UiViewportRendererKind s_UiViewportRenderer = UiViewportRendererKind::None;
+        UiViewportPlatformKind s_UiViewportPlatform = UiViewportPlatformKind::Unknown;
+        bool s_UiViewportsActive = false;
         bool s_HasDeviceCapabilities = false;
         bool s_RendererFrameTimingActive = false;
         bool s_FramePacingBenchmarkQpcActive = false;
@@ -571,6 +577,7 @@ namespace Engine
 
     void Renderer::ShutdownImGui()
     {
+        s_UiViewportsActive = false;
         if (NVRHIRenderBackend* backend = GetNVRHIBackend())
             backend->ShutdownImGui();
     }
@@ -693,6 +700,69 @@ namespace Engine
     {
         const NVRHIRenderBackend* backend = dynamic_cast<const NVRHIRenderBackend*>(s_Backend.get());
         return backend ? backend->GetUiTextureCounters() : UiTextureCounters {};
+    }
+
+    UiViewportRendererKind Renderer::GetUiViewportRendererKind()
+    {
+        const NVRHIRenderBackend* backend = dynamic_cast<const NVRHIRenderBackend*>(s_Backend.get());
+        return backend ? backend->GetUiViewportRendererKind() : UiViewportRendererKind::None;
+    }
+
+    const std::vector<int>& Renderer::GetUiViewportSurfacePresentModes()
+    {
+        static const std::vector<int> empty;
+        const NVRHIRenderBackend* backend = dynamic_cast<const NVRHIRenderBackend*>(s_Backend.get());
+        return backend ? backend->GetUiViewportSurfacePresentModes() : empty;
+    }
+
+    void Renderer::PublishUiViewportDecision(bool requested, const UiViewportDecision& decision,
+        UiViewportRendererKind renderer, UiViewportPlatformKind platform)
+    {
+        s_UiViewportsRequested = requested;
+        s_UiViewportDecision = decision;
+        s_UiViewportRenderer = renderer;
+        s_UiViewportPlatform = platform;
+        s_UiViewportsActive = false;
+    }
+
+    bool Renderer::ActivateUiViewports()
+    {
+        NVRHIRenderBackend* backend = GetNVRHIBackend();
+        s_UiViewportsActive = s_UiViewportDecision.Enabled && backend && backend->EnableUiViewports();
+        return s_UiViewportsActive;
+    }
+
+    void Renderer::RenderUiPlatformWindows()
+    {
+        if (!s_UiViewportsActive)
+            return;
+        NVRHIRenderBackend* backend = GetNVRHIBackend();
+        if (!backend)
+            return;
+        const Clock::time_point passStart = Clock::now();
+        backend->RenderUiPlatformWindows();
+        AddPassTiming("UI detached windows (secondary viewports)", Clock::now() - passStart);
+    }
+
+    UiViewportDiagnostics Renderer::GetUiViewportDiagnostics()
+    {
+        UiViewportDiagnostics diagnostics;
+        if (const NVRHIRenderBackend* backend = dynamic_cast<const NVRHIRenderBackend*>(s_Backend.get()))
+            if (s_UiViewportsActive)
+                diagnostics = backend->GetUiViewportDiagnostics();
+        diagnostics.Requested = s_UiViewportsRequested;
+        diagnostics.Enabled = s_UiViewportsActive;
+        diagnostics.Reason = s_UiViewportDecision.Reason;
+        diagnostics.Renderer = ToString(s_UiViewportRenderer);
+        diagnostics.Platform = ToString(s_UiViewportPlatform);
+        return diagnostics;
+    }
+
+    bool Renderer::CaptureUiDrawDataOffscreen(ImDrawData* drawData, u32 width, u32 height, std::vector<u8>& outRgba)
+    {
+        outRgba.clear();
+        NVRHIRenderBackend* backend = GetNVRHIBackend();
+        return backend && backend->CaptureUiDrawDataOffscreen(drawData, width, height, outRgba);
     }
 
     UiTextureError Renderer::GetLastUiTextureError()

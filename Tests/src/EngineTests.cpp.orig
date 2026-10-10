@@ -58,11 +58,6 @@
 #include "FabImmutableAssetTests.h"
 #include "FabArchiveTests.h"
 #include "CommonImageTests.h"
-#include "AssetReviewFixTests.h"
-#include "RendererReviewFixTests.h"
-#include "Engine/Core/Window.h"
-#include "CoreReviewFixTests.h"
-#include "SceneReviewFixTests.h"
 #include "FabGltfCookTests.h"
 #include "FabProjectCommitTests.h"
 #include "ProjectManifestTests.h"
@@ -84,7 +79,6 @@
 #include "BrowserSigninPolicyTests.h"
 #include "FabImportControllerTests.h"
 #include "UiTextureServiceTests.h"
-#include "UiViewportTests.h"
 #include "InputEventTests.h"
 #include "RhiTextureWriteTests.h"
 #include "FabImportReceiptTests.h"
@@ -97,7 +91,6 @@
 #include <bit>
 #include <charconv>
 #include <chrono>
-#include <exception>
 #include <cerrno>
 #include <cstring>
 #include <cmath>
@@ -567,20 +560,6 @@ namespace
 #if defined(GE_PLATFORM_LINUX)
     constexpr std::string_view kLinuxFatalSignalProbeArgument = "--internal-linux-fatal-signal-probe";
 
-    // Unbounded recursion that cannot be turned into a loop: each frame keeps a
-    // live buffer. The SIGSEGV it ends in has no stack left to run a handler on.
-    volatile int g_StackProbeDepthLimit = 0; // never set: keeps the recursion from being diagnosed as infinite
-
-    __attribute__((noinline)) int ProbeOverflowStack(int depth)
-    {
-        if (g_StackProbeDepthLimit != 0 && depth > g_StackProbeDepthLimit)
-            return depth;
-        volatile char frame[4096];
-        frame[0] = static_cast<char>(depth);
-        const int below = ProbeOverflowStack(depth + 1);
-        return below + frame[0];
-    }
-
     int RunLinuxFatalSignalProbe(int argc, char** argv)
     {
         if (argc != 4 || std::string_view(argv[1]) != kLinuxFatalSignalProbeArgument)
@@ -615,51 +594,9 @@ namespace
             return 0;
         }
 
-        if (mode == "glfw")
-        {
-            // No display server is reachable from here, so glfwInit fails. Exit codes:
-            // 0 = the thrown message names GLFW's own cause, 40 = bare message,
-            // 41/42 = this host initialized GLFW anyway (nothing to assert).
-            ::unsetenv("DISPLAY");
-            ::unsetenv("WAYLAND_DISPLAY");
-            ::unsetenv("WAYLAND_SOCKET");
-            Engine::WindowSpecification windowSpecification;
-            try
-            {
-                const Engine::Scope<Engine::Window> window = Engine::Window::Create(windowSpecification);
-                return 41;
-            }
-            catch (const std::exception& exception)
-            {
-                const std::string_view message = exception.what();
-                constexpr std::string_view prefix = "Could not initialize GLFW: ";
-                if (message.rfind(prefix, 0) == 0 && message.size() > prefix.size())
-                    return 0;
-                return message == "Could not initialize GLFW" ? 40 : 42;
-            }
-        }
-        if (mode == "terminate")
-            std::terminate();
-        if (mode == "stack")
-            return ProbeOverflowStack(0);
-        if (mode == "cwd")
-        {
-            // The Application constructor may change the working directory after
-            // Install. Reports and the receipt must stay in the tree Install chose.
-            std::error_code directoryError;
-            std::filesystem::create_directories("moved", directoryError);
-            if (directoryError || ::chdir("moved") != 0)
-                return 127;
-            Engine::CrashHandler::WriteReport("probe report after chdir", "details");
-            Engine::CrashHandler::Shutdown();
-            Engine::Log::Shutdown();
-            return 0;
-        }
-
         int signal = 0;
         if (mode == "abrt") signal = SIGABRT;
         else if (mode == "segv") signal = SIGSEGV;
-        else if (mode == "bus") signal = SIGBUS;
         else if (mode == "term") signal = SIGTERM;
         else return 123;
 
@@ -767,16 +704,14 @@ namespace
     }
 
     bool ValidateLinuxFatalSignalReceipt(const LinuxFatalSignalProbeResult& result, int expectedSignal,
-        std::string_view expectedReceipt, std::string_view label, size_t expectedRichReports = 0)
+        std::string_view expectedReceipt, std::string_view label)
     {
         if (!Expect(result.Waited && !result.TimedOut, std::string(label) + " child terminates before its deadline")
             || !Expect(WIFSIGNALED(result.Status) && WTERMSIG(result.Status) == expectedSignal,
                 std::string(label) + " child terminates through its original signal")
             || !Expect(result.ProcessGroupCleaned, std::string(label) + " owned process group is fully cleaned")
             || !Expect(result.ReceiptFiles.size() == 1, std::string(label) + " creates exactly one receipt slot")
-            || !Expect(result.RichReportFiles.size() == expectedRichReports,
-                std::string(label) + (expectedRichReports == 0
-                    ? " creates no legacy rich signal report" : " writes its rich report before terminating")))
+            || !Expect(result.RichReportFiles.empty(), std::string(label) + " creates no legacy rich signal report"))
             return false;
 
         struct stat metadata = {};
@@ -787,21 +722,6 @@ namespace
         return Expect((metadata.st_mode & 0777) == 0600, std::string(label) + " receipt permissions are exactly 0600")
             && Expect(!contents.empty() && contents == expectedReceipt,
                 std::string(label) + " receipt is nonempty exact schema-1 data");
-    }
-
-    // GLFW documents its error callback as valid before glfwInit, and an init
-    // failure reports its only diagnosis through it. The child runs without a
-    // display server; a host that initializes GLFW anyway asserts nothing.
-    bool TestGlfwInitFailureReportsItsCause()
-    {
-        const LinuxFatalSignalProbeResult result = RunLinuxFatalSignalChild("glfw");
-        std::error_code filesystemError;
-        std::filesystem::remove_all(result.Directory, filesystemError);
-        return Expect(result.Waited && !result.TimedOut && WIFEXITED(result.Status), "the GLFW init probe exits normally")
-            && Expect(WEXITSTATUS(result.Status) != 40,
-                "a GLFW init failure names GLFW's own error instead of the bare 'Could not initialize GLFW'")
-            && Expect(WEXITSTATUS(result.Status) != 120 && WEXITSTATUS(result.Status) != 123,
-                "the GLFW init probe ran its mode");
     }
 
     bool TestLinuxFatalSignalSafety()
@@ -815,29 +735,9 @@ namespace
         LinuxFatalSignalProbeResult segmentationResult = RunLinuxFatalSignalChild("segv");
         LinuxFatalSignalProbeResult terminationResult = RunLinuxFatalSignalChild("term");
         LinuxFatalSignalProbeResult normalResult = RunLinuxFatalSignalChild("normal");
-        constexpr std::string_view busReceipt =
-            "SpiralFatalSignalReceiptV1 signal=SIGBUS disposition=reset-reraise enrichment=none\n";
-        LinuxFatalSignalProbeResult terminateResult = RunLinuxFatalSignalChild("terminate");
-        LinuxFatalSignalProbeResult stackResult = RunLinuxFatalSignalChild("stack");
-        LinuxFatalSignalProbeResult busResult = RunLinuxFatalSignalChild("bus");
-        LinuxFatalSignalProbeResult cwdResult = RunLinuxFatalSignalChild("cwd");
 
         bool passed = ValidateLinuxFatalSignalReceipt(abortResult, SIGABRT, abortReceipt, "SIGABRT")
             && ValidateLinuxFatalSignalReceipt(segmentationResult, SIGSEGV, segmentationReceipt, "SIGSEGV")
-            // std::terminate must end in SIGABRT (core policy and signal status
-            // preserved, receipt published) after writing its rich report; the old
-            // handler ended in _Exit(1), bypassing both.
-            && ValidateLinuxFatalSignalReceipt(terminateResult, SIGABRT, abortReceipt, "std::terminate", 1)
-            // A stack overflow needs the alternate signal stack to reach the handler.
-            && ValidateLinuxFatalSignalReceipt(stackResult, SIGSEGV, segmentationReceipt, "stack overflow")
-            && ValidateLinuxFatalSignalReceipt(busResult, SIGBUS, busReceipt, "SIGBUS")
-            && Expect(cwdResult.Waited && !cwdResult.TimedOut && WIFEXITED(cwdResult.Status) && WEXITSTATUS(cwdResult.Status) == 0,
-                "the working-directory probe exits normally")
-            && Expect(cwdResult.ReceiptFiles.empty(),
-                "a clean shutdown after a working-directory change removes the armed receipt it created")
-            && Expect(cwdResult.RichReportFiles.size() == 1
-                    && !std::filesystem::exists(cwdResult.Directory / "moved" / "output"),
-                "reports written after a working-directory change land in the tree Install chose")
             && Expect(terminationResult.Waited && !terminationResult.TimedOut
                     && WIFSIGNALED(terminationResult.Status) && WTERMSIG(terminationResult.Status) == SIGTERM,
                 "SIGTERM retains default non-crash signal termination")
@@ -853,8 +753,7 @@ namespace
             && Expect(normalResult.ReceiptFiles.empty() && normalResult.RichReportFiles.empty(),
                 "normal shutdown removes its unused receipt slot");
 
-        for (const LinuxFatalSignalProbeResult* result : { &abortResult, &segmentationResult, &terminationResult, &normalResult,
-                 &terminateResult, &stackResult, &busResult, &cwdResult })
+        for (const LinuxFatalSignalProbeResult* result : { &abortResult, &segmentationResult, &terminationResult, &normalResult })
         {
             std::error_code filesystemError;
             std::filesystem::remove_all(result->Directory, filesystemError);
@@ -1552,70 +1451,6 @@ namespace
                     && publicStagingRejected && sentinelPreserved,
                 "snapshot rejects links, special objects, portable collisions, unsafe payloads, and non-private staging without touching outside data");
     }
-
-#if defined(GE_PLATFORM_LINUX)
-    // A regular file swapped for a FIFO after the inventory used to block openat(2) forever
-    // (no writer ever arrives), wedging the import worker where Cancel cannot reach. The
-    // snapshot must now reject the substituted object in bounded time. A watchdog opens the
-    // FIFO read-write when the worker is still stuck, so a regression fails instead of hanging.
-    bool TestLocalPackageSnapshotRejectsFifoSwapWithoutBlocking()
-    {
-        using namespace Engine;
-        ScopedPackageTestRoot fixture;
-        const std::filesystem::path source = fixture.Root / "source";
-        const std::filesystem::path staging = fixture.Root / "private-staging";
-        std::error_code filesystemError;
-        std::filesystem::create_directories(source, filesystemError);
-        std::filesystem::create_directories(staging, filesystemError);
-        std::filesystem::permissions(staging, std::filesystem::perms::owner_all,
-            std::filesystem::perm_options::replace, filesystemError);
-        WritePackageText(source / "root.gltf", MinimalGltf("d.bin", 3));
-        WritePackageText(source / "d.bin", "abc");
-
-        std::atomic<bool> swapped { false };
-        std::atomic<bool> finished { false };
-        std::atomic<bool> created { true };
-        std::string error;
-        LocalPackageSnapshotOptions options;
-        options.TestHook = [&](LocalPackageSnapshotHookPoint point, std::string_view)
-        {
-            // The inventory is complete and the copy phase has not opened a file yet.
-            if (point == LocalPackageSnapshotHookPoint::InventoryComplete && !swapped.exchange(true))
-            {
-                std::error_code removeError;
-                std::filesystem::remove(source / "d.bin", removeError);
-                if (removeError || ::mkfifo((source / "d.bin").c_str(), 0600) != 0)
-                    swapped = false;
-            }
-        };
-        LocalPackageSnapshot snapshot;
-        std::thread worker([&]
-        {
-            created = LocalPackageSnapshot::Create(source, staging, options, snapshot, error);
-            finished = true;
-        });
-        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
-        while (!finished && std::chrono::steady_clock::now() < deadline)
-            std::this_thread::sleep_for(std::chrono::milliseconds(5));
-        const bool blocked = !finished;
-        if (blocked)
-        {
-            // Release a worker stuck in open(2) so the join below cannot hang the suite.
-            const int release = ::open((source / "d.bin").c_str(), O_RDWR | O_NONBLOCK | O_CLOEXEC);
-            if (release >= 0)
-            {
-                std::this_thread::sleep_for(std::chrono::milliseconds(200));
-                ::close(release);
-            }
-        }
-        worker.join();
-        return Expect(swapped, "FIFO swap fixture ran")
-            && Expect(!blocked, "snapshot does not block on a FIFO swapped in after the inventory")
-            && Expect(!created && !snapshot.IsValid() && !error.empty(),
-                "snapshot rejects the FIFO that replaced a regular file")
-            && Expect(DirectoryEntryCount(staging) == 0, "rejected snapshot leaves no staging residue");
-    }
-#endif
 
     bool TestLocalPackageSnapshotLimitsRacesAndCancellation()
     {
@@ -3562,328 +3397,6 @@ namespace
             && Expect(failureAtomic, "mesh GPU cache leaves accepted entries unchanged after upload failure")
             && Expect(clearReleasesOnlyCacheOwnership,
                 "mesh GPU cache clear releases cache ownership while a retained bundle remains valid for GPU retirement");
-    }
-
-    Engine::MeshArtifact MakeRetainedGridMeshArtifact(Engine::AssetHandle asset, std::string sourcePath, Engine::u32 n, float scale)
-    {
-        Engine::MeshArtifact mesh;
-        mesh.Asset = asset;
-        mesh.SourcePath = std::move(sourcePath);
-        for (Engine::u32 y = 0; y < n; ++y)
-            for (Engine::u32 x = 0; x < n; ++x)
-            {
-                Engine::MeshArtifactVertex vertex;
-                vertex.Position[0] = static_cast<float>(x) * scale;
-                vertex.Position[1] = static_cast<float>(y) * scale;
-                vertex.Normal[2] = 1.0f;
-                vertex.UV[0] = static_cast<float>(x) / static_cast<float>(n);
-                vertex.UV[1] = static_cast<float>(y) / static_cast<float>(n);
-                mesh.Vertices.push_back(vertex);
-            }
-        for (Engine::u32 y = 0; y + 1 < n; ++y)
-            for (Engine::u32 x = 0; x + 1 < n; ++x)
-            {
-                const Engine::u32 i = y * n + x;
-                mesh.Indices.insert(mesh.Indices.end(), { i, i + 1, i + n, i + 1, i + n + 1, i + n });
-            }
-        Engine::MeshArtifactPrimitive primitive;
-        primitive.VertexByteSize = mesh.Vertices.size() * sizeof(Engine::MeshArtifactVertex);
-        primitive.IndexByteSize = mesh.Indices.size() * sizeof(Engine::u32);
-        mesh.Primitives.push_back(primitive);
-        return mesh;
-    }
-
-    // Behavior: handing the cache one shared decoded artifact reuses its
-    // upload by pointer identity; an independently decoded equal artifact
-    // still reuses it; any content change uploads a new generation.
-    bool TestMeshGpuResourceCacheSharedArtifactReuse()
-    {
-        using namespace Engine;
-        MeshGpuResourceCache cache(4);
-        MeshGpuCacheTestDevice device;
-        const Ref<const MeshArtifact> shared = CreateRef<const MeshArtifact>(MakeRetainedGridMeshArtifact(501, "Assets/Shared.gltf", 8, 1.0f));
-        Ref<const MeshGpuResourceBundle> first, again, equalContent, changed, rejected;
-        std::string error;
-        const bool created = cache.Acquire(device, shared, first, error) && first && device.UploadCount == 2;
-        const bool pointerHit = cache.Acquire(device, shared, again, error) && again == first && device.UploadCount == 2;
-        const Ref<const MeshArtifact> twin = CreateRef<const MeshArtifact>(*shared);
-        const bool contentHit = cache.Acquire(device, twin, equalContent, error) && equalContent == first && device.UploadCount == 2;
-        MeshArtifact edited = *shared;
-        edited.Vertices[3].Position[2] = 0.25f;
-        const bool contentChange = cache.Acquire(device, CreateRef<const MeshArtifact>(edited), changed, error)
-            && changed != first && changed->Generation > first->Generation && device.UploadCount == 4;
-        MeshArtifact invalid = *shared;
-        invalid.Indices.pop_back();
-        const bool invalidRejected = !cache.Acquire(device, CreateRef<const MeshArtifact>(invalid), rejected, error)
-            && !error.empty() && cache.GetEntryCount() == 2;
-        MeshGpuResourceCache zero(0);
-        const bool boundaries = !zero.Acquire(device, shared, rejected, error)
-            && !cache.Acquire(device, Ref<const MeshArtifact> {}, rejected, error);
-        // The by-value overload shares the same entries without a copy on a hit.
-        Ref<const MeshGpuResourceBundle> byValue;
-        const bool byValueHit = cache.Acquire(device, *shared, byValue, error) && byValue == first && device.UploadCount == 4;
-        return Expect(created && pointerHit && contentHit, "mesh GPU cache reuses a shared artifact by pointer and an equal decode by content")
-            && Expect(contentChange && invalidRejected, "mesh GPU cache uploads a new generation for changed content and rejects invalid artifacts")
-            && Expect(boundaries && byValueHit, "mesh GPU cache rejects zero capacity or null artifacts and keeps the by-value overload coherent");
-    }
-
-    std::filesystem::path MakeRetainedCacheFixtureRoot()
-    {
-        static std::atomic<Engine::u64> sequence { 0 };
-        std::error_code error;
-        const std::filesystem::path root = std::filesystem::temp_directory_path(error)
-            / ("RetainedResolverCache-" + std::to_string(static_cast<Engine::u64>(
-                std::chrono::steady_clock::now().time_since_epoch().count()))
-                + "-" + std::to_string(sequence.fetch_add(1)));
-        std::filesystem::create_directories(root, error);
-        return root;
-    }
-
-    // Behavior: the per-frame mesh path (200 instances sharing 20 meshes)
-    // costs a map lookup per instance, not a disk parse, validation and deep
-    // compare. Oracle: the previous frame loop, which still exists as the
-    // by-value public API, run on the same fixture and device.
-    bool TestRendererFrameMeshPathCostWithSharedMeshes()
-    {
-        using namespace Engine;
-        const std::filesystem::path root = MakeRetainedCacheFixtureRoot();
-        constexpr u32 kMeshCount = 20;
-        constexpr u32 kInstanceCount = 200;
-        constexpr u32 kGrid = 48;
-        AssetRegistry registry;
-        registry.SetCookedArtifactBasePath(root);
-        std::vector<AssetHandle> meshes;
-        std::string error;
-        bool stored = true;
-        for (u32 index = 0; index < kMeshCount; ++index)
-        {
-            AssetMetadata metadata;
-            metadata.Type = AssetType::Mesh;
-            metadata.SourcePath = "Tests/FrameCost/Mesh" + std::to_string(index) + ".gltf";
-            metadata.Name = "Mesh";
-            metadata.CookedRoot = "gen";
-            metadata.Handle = AssetRegistry::GenerateStableHandle(AssetType::Mesh, metadata.SourcePath);
-            stored = stored && registry.RegisterAsset(metadata)
-                && StoreMeshArtifact(GetCookedMeshArtifactPath(metadata.Handle, metadata.CookedRoot, root),
-                    MakeRetainedGridMeshArtifact(metadata.Handle, metadata.SourcePath, kGrid + index, 1.0f), error);
-            meshes.push_back(metadata.Handle);
-        }
-        Renderer::PublishArtifactResolvers(registry, MaterialLibrary {});
-        const Ref<const ArtifactResolverSnapshot> snapshot = Renderer::GetPublishedArtifactResolverSnapshot();
-
-        // The pre-fix frame loop: per instance, decode the cooked file, scan
-        // its bounds and let the GPU cache copy and compare the whole artifact.
-        const auto previousFrame = [&](MeshGpuResourceCache& cache, MeshGpuCacheTestDevice& device)
-        {
-            double maxX = 0.0;
-            for (u32 instance = 0; instance < kInstanceCount; ++instance)
-            {
-                MeshArtifact artifact;
-                if (!Renderer::ResolvePublishedMeshArtifact(*snapshot, meshes[instance % kMeshCount], artifact, error))
-                    return -1.0;
-                for (const MeshArtifactVertex& vertex : artifact.Vertices)
-                    maxX = std::max(maxX, static_cast<double>(vertex.Position[0]));
-                Ref<const MeshGpuResourceBundle> bundle;
-                if (!cache.Acquire(device, artifact, bundle, error))
-                    return -1.0;
-            }
-            return maxX;
-        };
-        const auto currentFrame = [&](MeshGpuResourceCache& cache, MeshGpuCacheTestDevice& device)
-        {
-            double maxX = 0.0;
-            for (u32 instance = 0; instance < kInstanceCount; ++instance)
-            {
-                PublishedMeshRecord mesh;
-                if (!Renderer::ResolvePublishedMeshRecord(*snapshot, meshes[instance % kMeshCount], mesh, error))
-                    return -1.0;
-                maxX = std::max(maxX, static_cast<double>(mesh.BoundsMaximum[0]));
-                Ref<const MeshGpuResourceBundle> bundle;
-                if (!cache.Acquire(device, mesh.Artifact, bundle, error))
-                    return -1.0;
-            }
-            return maxX;
-        };
-        const auto millisecondsFor = [](auto&& body)
-        {
-            const auto start = std::chrono::steady_clock::now();
-            body();
-            return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
-        };
-
-        MeshGpuResourceCache previousCache(32), currentCache(32);
-        MeshGpuCacheTestDevice previousDevice, currentDevice;
-        double previousResult = 0.0, currentResult = 0.0;
-        // Frame 1 warms both caches (first decode and upload); frame 2 is the steady state.
-        previousResult = previousFrame(previousCache, previousDevice);
-        currentResult = currentFrame(currentCache, currentDevice);
-        const double previousSteadyMs = millisecondsFor([&] { previousResult = previousFrame(previousCache, previousDevice); });
-        constexpr int kCurrentFrames = 50;
-        const double currentSteadyMs = millisecondsFor([&] { for (int frame = 0; frame < kCurrentFrames; ++frame) currentResult = currentFrame(currentCache, currentDevice); })
-            / kCurrentFrames;
-        const ArtifactResolverCacheStats stats = Renderer::GetArtifactResolverSnapshotCacheStats(*snapshot);
-        std::cout << "RendererFrameMeshPathCost instances=" << kInstanceCount << " meshes=" << kMeshCount
-            << " verticesPerMesh~" << kGrid * kGrid << " previousSteadyFrameMs=" << previousSteadyMs
-            << " retainedSteadyFrameMs=" << currentSteadyMs << " meshDecodes=" << stats.MeshLoads << '\n';
-
-        const bool correct = stored && previousResult > 0.0 && currentResult == previousResult
-            && previousDevice.UploadCount == currentDevice.UploadCount
-            && currentDevice.UploadCount == static_cast<int>(2 * kMeshCount);
-        const bool decodedOnce = stats.MeshLoads == kMeshCount;
-        // Both loops include the same synthetic instance count; the retained
-        // path must be at least an order of magnitude cheaper in steady state.
-        const bool faster = currentSteadyMs * 10.0 < previousSteadyMs;
-
-        Renderer::ClearArtifactResolvers();
-        std::error_code cleanup;
-        std::filesystem::remove_all(root, cleanup);
-        return Expect(correct && decodedOnce, "the retained frame path yields the previous bounds and uploads with one decode per mesh per snapshot")
-            && Expect(faster, "the retained frame path is at least ten times cheaper per steady-state frame for 200 instances over 20 meshes");
-    }
-
-    Engine::TextureArtifact MakeRetainedTextureArtifact(Engine::AssetHandle asset, std::string sourcePath,
-        Engine::TextureRole role, Engine::TextureColorSpace space, Engine::u32 size)
-    {
-        Engine::TextureArtifact artifact;
-        artifact.Asset = asset;
-        artifact.SourcePath = std::move(sourcePath);
-        artifact.Role = role;
-        artifact.ColorSpace = space;
-        artifact.TargetProfile = Engine::TextureTargetProfile::RGBAFallback;
-        artifact.CookedFormat = space == Engine::TextureColorSpace::Srgb
-            ? Engine::TextureCookedFormat::R8G8B8A8Srgb : Engine::TextureCookedFormat::R8G8B8A8Unorm;
-        Engine::u64 offset = 0;
-        for (Engine::u32 width = size; ; width /= 2)
-        {
-            const Engine::u64 bytes = static_cast<Engine::u64>(width) * width * 4;
-            artifact.Mips.push_back({ width, width, offset, bytes });
-            offset += bytes;
-            if (width == 1)
-                break;
-        }
-        artifact.Payload.assign(static_cast<size_t>(offset), 0x7f);
-        return artifact;
-    }
-
-    // Behavior: after a material's textures were validated for a snapshot,
-    // later instances and frames resolving the same material against that
-    // snapshot read no cooked texture. Oracle: the cooked files are deleted
-    // after the first resolve; the previous implementation re-read them per
-    // slot per instance and would report every slot as an error.
-    bool TestMaterialTextureResolutionDoesNotRereadCookedTexturesPerInstance()
-    {
-        using namespace Engine;
-        const std::filesystem::path root = MakeRetainedCacheFixtureRoot();
-        AssetRegistry registry;
-        registry.SetCookedArtifactBasePath(root);
-        std::string error;
-        bool stored = true;
-        const auto addTexture = [&](std::string source, TextureRole role, TextureColorSpace space)
-        {
-            AssetMetadata metadata;
-            metadata.Type = AssetType::Texture;
-            metadata.SourcePath = std::move(source);
-            metadata.Name = "Texture";
-            metadata.CookedRoot = "gen";
-            metadata.Handle = AssetRegistry::GenerateStableHandle(AssetType::Texture, metadata.SourcePath);
-            stored = stored && registry.RegisterAsset(metadata)
-                && StoreTextureArtifact(GetCookedTextureArtifactPath(metadata.Handle,
-                        TextureTargetProfile::RGBAFallback, metadata.CookedRoot, root),
-                    MakeRetainedTextureArtifact(metadata.Handle, metadata.SourcePath, role, space, 256), error);
-            return metadata.Handle;
-        };
-        const AssetHandle baseColor = addTexture("Tests/MaterialCost/Base.png", TextureRole::BaseColor, TextureColorSpace::Srgb);
-        const AssetHandle normal = addTexture("Tests/MaterialCost/Normal.png", TextureRole::Normal, TextureColorSpace::Linear);
-        const AssetHandle orm = addTexture("Tests/MaterialCost/Orm.png", TextureRole::Orm, TextureColorSpace::Linear);
-        MaterialAsset material;
-        material.Name = "Retained Material";
-        material.Textures.BaseColor = baseColor;
-        material.Textures.Normal = normal;
-        material.Textures.Orm = orm;
-        const AssetHandle materialHandle = registry.RegisterAsset(AssetType::Material,
-            "Tests/MaterialCost/Retained.spiralmat", material.Name);
-        MaterialLibrary materials;
-        stored = stored && materials.Set(materialHandle, material);
-        Renderer::PublishArtifactResolvers(registry, materials);
-        const Ref<const ArtifactResolverSnapshot> snapshot = Renderer::GetPublishedArtifactResolverSnapshot();
-
-        MeshGpuCacheTestDevice device(903);
-        device.SetFormatCapabilities({
-            { RHI::Format::R8G8B8A8Unorm, RHI::FormatUsage::Sampled | RHI::FormatUsage::CopyDestination, 1 },
-            { RHI::Format::R8G8B8A8UnormSrgb, RHI::FormatUsage::Sampled | RHI::FormatUsage::CopyDestination, 1 }
-        });
-        Scope<TextureRuntimePublication> runtime = stored
-            ? TextureRuntimePublication::Create(device, TextureTargetProfile::RGBAFallback, 8, 10) : nullptr;
-        MaterialTextureBindingSet first;
-        const auto start = std::chrono::steady_clock::now();
-        const bool firstResolved = runtime && runtime->ResolveMaterialTextures(*snapshot, materialHandle, first, error)
-            && first.DeclaredMask == 0x7u && first.ErrorMask == 0u;
-        const double firstMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
-        const int uploadsAfterFirst = device.TextureUploadCount;
-        const ArtifactResolverCacheStats afterFirst = firstResolved
-            ? Renderer::GetArtifactResolverSnapshotCacheStats(*snapshot) : ArtifactResolverCacheStats {};
-        const bool decodedOncePerTexture = afterFirst.TextureSemanticLoads == 3 && afterFirst.TextureSemanticHits == 0;
-
-        constexpr u32 kInstances = 200;
-        // The previous per-instance cost: one full variant-set decode per
-        // declared slot, measured on the same fixture.
-        const auto previousStart = std::chrono::steady_clock::now();
-        bool previousLoadsSucceeded = true;
-        for (u32 instance = 0; instance < kInstances; ++instance)
-            for (const AssetHandle texture : { baseColor, normal, orm })
-            {
-                TextureArtifactVariantSet variants;
-                u64 generation = 0;
-                previousLoadsSucceeded = previousLoadsSucceeded && Renderer::ResolvePublishedTextureArtifactVariantSet(
-                    *snapshot, texture, TextureTargetProfile::RGBAFallback, variants, generation, error);
-            }
-        const double previousMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - previousStart).count();
-
-        std::error_code filesystemError;
-        std::filesystem::remove_all(root / "gen", filesystemError);
-        // The oracle bites: a resolver that touches the disk now fails.
-        TextureArtifactVariantSet probe;
-        u64 probeGeneration = 0;
-        const bool oracleBites = !Renderer::ResolvePublishedTextureArtifactVariantSet(
-            *snapshot, baseColor, TextureTargetProfile::RGBAFallback, probe, probeGeneration, error);
-
-        bool everyInstanceResolved = firstResolved;
-        const auto steadyStart = std::chrono::steady_clock::now();
-        for (u32 instance = 0; instance < kInstances && everyInstanceResolved; ++instance)
-        {
-            MaterialTextureBindingSet bindings;
-            everyInstanceResolved = runtime->ResolveMaterialTextures(*snapshot, materialHandle, bindings, error)
-                && bindings.ErrorMask == 0u && bindings.DeclaredMask == 0x7u && error.empty()
-                && bindings.Handles[0].Index == first.Handles[0].Index
-                && bindings.Handles[1].Index == first.Handles[1].Index
-                && bindings.Handles[2].Index == first.Handles[2].Index;
-        }
-        const double steadyMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - steadyStart).count();
-        const ArtifactResolverCacheStats afterSteady = Renderer::GetArtifactResolverSnapshotCacheStats(*snapshot);
-        const bool noRereads = afterSteady.TextureSemanticLoads == 3
-            && afterSteady.TextureSemanticHits == 3ull * kInstances
-            && device.TextureUploadCount == uploadsAfterFirst;
-        std::cout << "MaterialTextureResolveCost textures=3 size=256 firstResolveMs=" << firstMs
-            << " previousPerSlotDecode" << kInstances << "InstancesMs=" << previousMs
-            << " retainedSteady" << kInstances << "InstancesMs=" << steadyMs
-            << " semanticDecodes=" << afterSteady.TextureSemanticLoads << '\n';
-
-        // A republished generation must not inherit the retained verdicts:
-        // the files are gone, so every declared slot now resolves to the error texture.
-        Renderer::PublishArtifactResolvers(registry, materials);
-        MaterialTextureBindingSet republished;
-        const bool newGenerationObservesDisk = runtime && runtime->ResolveMaterialTextures(materialHandle, republished, error)
-            && republished.DeclaredMask == 0x7u && republished.ErrorMask == 0x7u
-            && republished.CatalogGeneration > first.CatalogGeneration;
-
-        device.WaitIdle();
-        if (runtime) runtime->ReleaseAfterDeviceIdle();
-        Renderer::ClearArtifactResolvers();
-        std::filesystem::remove_all(root, filesystemError);
-        return Expect(firstResolved && decodedOncePerTexture && previousLoadsSucceeded && oracleBites,
-                "the first material resolve decodes each declared texture once and the deleted-file oracle detects any later disk read")
-            && Expect(everyInstanceResolved && noRereads, "200 further instances resolve the material without reading the deleted cooked textures")
-            && Expect(newGenerationObservesDisk, "a republished generation drops the retained texture verdicts and observes the files again");
     }
 
     Engine::TextureArtifact MakeTextureGpuCacheArtifact(Engine::AssetHandle asset = 81)
@@ -8028,20 +7541,16 @@ namespace
         const u64 expectedSize = retained.Words.size() * sizeof(SceneLightPayloadWord);
         const u32 expectedGpuUsage = static_cast<u32>(RHI::BufferUsage::Structured)
             | static_cast<u32>(RHI::BufferUsage::CopyDest);
-        const u64 expectedCapacity = SceneLightPayloadPublication::GetSlotCapacityBytes(expectedSize);
-        // Slot buffers are capacity-bucketed: a power of two at least as large as the
-        // payload, with the payload in the leading bytes.
         const bool uploadedExactly = firstStaging
-            && expectedCapacity >= expectedSize && (expectedCapacity & (expectedCapacity - 1)) == 0
-            && firstStaging->Bytes.size() == expectedCapacity
+            && firstStaging->Bytes.size() == expectedSize
             && std::memcmp(firstStaging->Bytes.data(), retained.Words.data(),
                 static_cast<size_t>(expectedSize)) == 0;
         const bool descriptionsValid = stagingDescription && gpuDescription
-            && stagingDescription->SizeBytes == expectedCapacity
+            && stagingDescription->SizeBytes == expectedSize
             && stagingDescription->Usage == RHI::BufferUsage::CopySource
             && stagingDescription->CpuAccess == RHI::BufferCpuAccess::Write
             && stagingDescription->InitialState == RHI::ResourceState::CopySource
-            && gpuDescription->SizeBytes == expectedCapacity
+            && gpuDescription->SizeBytes == expectedSize
             && gpuDescription->StrideBytes
                 == RHI::kFixedReadOnlyStructuredBufferStrideBytes
             && static_cast<u32>(gpuDescription->Usage) == expectedGpuUsage
@@ -8132,21 +7641,12 @@ namespace
             && failureStagingAfterMap->Bytes == failureBytesBefore;
 
         ClusteredLightGrid differentSizeGrid;
-        // Large enough that its payload falls in a different capacity bucket, so
-        // acquiring it must allocate (and is therefore subject to the injected failure).
         const bool differentSizeGridBuilt = BuildClusteredLightGrid(
-            snapshot, 0, 2048, 2048, config, differentSizeGrid, error);
-        SceneLightPayload differentSizePayload;
-        const bool differentBucket = differentSizeGridBuilt
-            && BuildSceneLightPayload(snapshot, 0, differentSizeGrid,
-                colorSettings, 6, differentSizePayload, error)
-            && SceneLightPayloadPublication::GetSlotCapacityBytes(
-                differentSizePayload.Words.size() * sizeof(SceneLightPayloadWord))
-                != expectedCapacity;
+            snapshot, 0, 64, 64, config, differentSizeGrid, error);
         publicationDevice.FailCreate = true;
         Ref<SceneLightPayloadSlot> allocationFailureSlot;
         const bool allocationFailureTransactional = failureSlotAddress
-            && differentSizeGridBuilt && differentBucket
+            && differentSizeGridBuilt
             && !publication.Acquire(publicationDevice, snapshot, 0,
                 differentSizeGrid, changedColorSettings, 6,
                 allocationFailureSlot, error)
@@ -10840,223 +10340,6 @@ float4 main(VertexInput input) : SV_Position
             "submitted RenderGraph frames retain graphs, payloads, labels, and exact tokens without a CPU wait");
     }
 
-    // Behavior: a rejected Retain leaves the graph (and its in-flight command
-    // lists) with the caller, who can establish device-idle before releasing it.
-    // Failure hypothesis: Retain took the graph by value and destroyed it on a
-    // validation failure, before the caller's WaitIdle.
-    bool TestSubmittedRenderGraphFrameOwnerRejectionKeepsGraphOwnership()
-    {
-        using namespace Engine;
-        using namespace Engine::RHI;
-
-        RenderGraphTestDevice device(9201);
-        TextureDescription description;
-        description.DebugName = "retain-rejection";
-        description.Extent = { 4, 4 };
-        description.TextureFormat = Format::R8G8B8A8Unorm;
-        description.Usage = TextureUsage::ShaderResource;
-        description.InitialState = ResourceState::Common;
-        RenderGraphTestTexture texture(9201, description, ResourceState::Common);
-        struct Submission
-        {
-            Scope<RenderGraph> Graph;
-            RenderGraph::CompileResult Compiled;
-            RenderGraph::ExecuteResult Executed;
-        };
-        const auto submit = [&](const std::string& label)
-        {
-            Submission submission;
-            submission.Graph = CreateScope<RenderGraph>();
-            const auto resource = submission.Graph->AddTexture(description, RenderGraph::ResourceLifetimeKind::Imported);
-            const auto pass = submission.Graph->AddPass(label);
-            submission.Graph->AddRead(pass, resource, ResourceState::Common, ShaderStage::Pixel);
-            submission.Graph->SetPassCallback(pass, [](RenderGraph::ExecutionContext&) { return true; });
-            submission.Compiled = submission.Graph->Compile();
-            if (submission.Graph->BindTexture(resource, texture))
-                submission.Executed = submission.Graph->Execute(device, submission.Compiled);
-            return submission;
-        };
-
-        SubmittedRenderGraphFrameOwner owner;
-        std::string error;
-        bool filled = true;
-        std::vector<Submission> accepted;
-        for (size_t index = 0; index < SubmittedRenderGraphFrameOwner::Capacity; ++index)
-        {
-            accepted.push_back(submit("accepted" + std::to_string(index)));
-            filled = filled && accepted.back().Executed.Success
-                && owner.Retain(300 + index, std::move(accepted.back().Graph), accepted.back().Compiled, accepted.back().Executed, {}, &error);
-        }
-        Submission overflow = submit("overflow");
-        const bool overflowRejected = filled && overflow.Executed.Success
-            && !owner.Retain(400, std::move(overflow.Graph), overflow.Compiled, overflow.Executed, {}, &error)
-            && !error.empty();
-        // The caller still owns the graph that was refused; nothing was destroyed.
-        const bool callerStillOwnsGraph = overflow.Graph != nullptr;
-        // A duplicate frame ID is refused the same way once capacity exists again.
-        for (const Submission& submission : accepted)
-            for (const CompletionToken& token : submission.Executed.Completions)
-                device.SetCompletion(token, CompletionStatus::Complete);
-        const auto retired = owner.Poll(device);
-        Submission duplicate = submit("duplicate");
-        Submission original = submit("original");
-        const bool seeded = retired.Success && owner.Retain(500, std::move(original.Graph), original.Compiled, original.Executed, {}, &error);
-        const bool duplicateRejected = seeded && duplicate.Executed.Success
-            && !owner.Retain(500, std::move(duplicate.Graph), duplicate.Compiled, duplicate.Executed, {}, &error)
-            && duplicate.Graph != nullptr;
-        device.WaitIdle();
-        owner.ReleaseAfterDeviceIdle();
-        return Expect(overflowRejected && callerStillOwnsGraph && duplicateRejected,
-            "a rejected submitted-frame Retain leaves the in-flight graph owned by the caller until it establishes device-idle");
-    }
-
-    // Behavior: a worker recording that fails on a reused retired context is
-    // destroyed, not returned to the pool half-recorded. Oracle: the third
-    // Execute of the unchanged graph must succeed; the previous pool handed the
-    // still-recording list back and its Begin() failed.
-    bool TestRenderGraphDiscardsFailedWorkerRecordingOnReusedContext()
-    {
-        using namespace Engine;
-        using namespace Engine::RHI;
-
-        TextureDescription description;
-        description.DebugName = "discard-worker";
-        description.Extent = { 4, 4 };
-        description.TextureFormat = Format::R8G8B8A8Unorm;
-        description.Usage = TextureUsage::ShaderResource;
-        description.InitialState = ResourceState::Common;
-        RenderGraph graph;
-        const auto resource = graph.AddTexture(description, RenderGraph::ResourceLifetimeKind::Imported);
-        const auto pass = graph.AddPass("Flaky worker");
-        graph.AddRead(pass, resource, ResourceState::Common, ShaderStage::Pixel);
-        graph.SetPassWorkerRecordingEligible(pass);
-        bool failCallback = false;
-        graph.SetPassCallback(pass, [&](RenderGraph::ExecutionContext&) { return !failCallback; });
-        RenderGraphTestDevice device(9202);
-        RenderGraphTestTexture texture(9202, description, ResourceState::Common);
-        RenderGraph::ExecuteOptions options;
-        options.RecordingMode = FrameTaskExecutionMode::DeterministicSingleThread;
-        const RenderGraph::CompileResult compiled = graph.Compile();
-        const bool bound = graph.BindTexture(resource, texture);
-
-        const RenderGraph::ExecuteResult first = bound ? graph.Execute(device, compiled, options) : RenderGraph::ExecuteResult {};
-        for (const CompletionToken& token : first.Completions)
-            device.SetCompletion(token, CompletionStatus::Complete);
-        failCallback = true;
-        const RenderGraph::ExecuteResult failed = graph.Execute(device, compiled, options);
-        failCallback = false;
-        const RenderGraph::ExecuteResult third = graph.Execute(device, compiled, options);
-        return Expect(first.Success && !failed.Success && failed.AcceptedPassCount == 0,
-                "the reused worker context fails its callback without submitting")
-            && Expect(third.Success && third.AcceptedPassCount == 1 && !third.ReusedRetiredContext
-                    && device.CreatedCommandListCount == 2,
-                "a failed worker recording is destroyed instead of being reused half-recorded");
-    }
-
-    // Behavior: Execute rejects a CompileResult that does not describe the
-    // graph, before any allocation or submission. Failure hypothesis: indices in
-    // Dependencies or Passes, or lifetimes that predate a later AddResourceUse,
-    // were dereferenced unchecked (out-of-bounds or null reads).
-    bool TestRenderGraphExecuteRejectsForgedOrStaleCompileResults()
-    {
-        using namespace Engine;
-        using namespace Engine::RHI;
-
-        TextureDescription description;
-        description.DebugName = "forged-compile";
-        description.Extent = { 4, 4 };
-        description.TextureFormat = Format::R8G8B8A8Unorm;
-        description.Usage = TextureUsage::ShaderResource;
-        description.InitialState = ResourceState::Common;
-        const auto build = [&](RenderGraph& graph, RenderGraph::ResourceHandle& imported, RenderGraph::ResourceHandle& transient, RenderGraph::PassHandle& pass)
-        {
-            imported = graph.AddTexture(description, RenderGraph::ResourceLifetimeKind::Imported);
-            TextureDescription transientDescription = description;
-            transientDescription.DebugName = "forged-transient";
-            transient = graph.AddTexture(transientDescription, RenderGraph::ResourceLifetimeKind::Transient);
-            pass = graph.AddPass("Forged subject");
-            graph.AddRead(pass, imported, ResourceState::Common, ShaderStage::Pixel);
-            graph.SetPassCallback(pass, [](RenderGraph::ExecutionContext&) { return true; });
-        };
-        const auto rejected = [&](const char* label, auto&& mutate)
-        {
-            RenderGraph graph;
-            RenderGraph::ResourceHandle imported, transient;
-            RenderGraph::PassHandle pass;
-            build(graph, imported, transient, pass);
-            RenderGraph::CompileResult compiled = graph.Compile();
-            RenderGraphTestDevice device(9203);
-            RenderGraphTestTexture texture(9203, description, ResourceState::Common);
-            if (!compiled.Success || !graph.BindTexture(imported, texture))
-                return Expect(false, label);
-            mutate(graph, compiled, transient, pass);
-            const RenderGraph::ExecuteResult result = graph.Execute(device, compiled);
-            return Expect(!result.Success && result.AcceptedPassCount == 0 && device.SubmitCount == 0 && !result.Error.empty(), label);
-        };
-        bool passed = true;
-        passed &= rejected("an out-of-range dependency producer is rejected before submission",
-            [](RenderGraph&, RenderGraph::CompileResult& compiled, RenderGraph::ResourceHandle, RenderGraph::PassHandle)
-            { compiled.Dependencies.push_back({ { 99 }, { 0 }, {} }); });
-        passed &= rejected("an out-of-range compiled pass index is rejected before any allocation",
-            [](RenderGraph&, RenderGraph::CompileResult& compiled, RenderGraph::ResourceHandle, RenderGraph::PassHandle)
-            { compiled.Passes[0].Pass = { 42 }; });
-        passed &= rejected("a repeated compiled pass is rejected",
-            [](RenderGraph&, RenderGraph::CompileResult& compiled, RenderGraph::ResourceHandle, RenderGraph::PassHandle)
-            { compiled.Passes.push_back(compiled.Passes[0]); });
-        passed &= rejected("a barrier naming an unused transient resource is rejected before it can reach a null binding",
-            [](RenderGraph&, RenderGraph::CompileResult& compiled, RenderGraph::ResourceHandle transient, RenderGraph::PassHandle)
-            {
-                compiled.Barriers.push_back({ { 0 }, transient, ResourceState::Common, ResourceState::ShaderResource });
-                compiled.Passes[0].BarrierCount = static_cast<u32>(compiled.Barriers.size());
-            });
-        passed &= rejected("a CompileResult taken before a later AddResourceUse is stale and is rejected",
-            [](RenderGraph& graph, RenderGraph::CompileResult&, RenderGraph::ResourceHandle transient, RenderGraph::PassHandle pass)
-            { graph.AddWrite(pass, transient, ResourceState::RenderTarget); });
-        return passed;
-    }
-
-    // Behavior: a graph whose first user of a resource runs on an independent
-    // Copy/Compute queue is refused before any submission, because Compile only
-    // pairs ownership between two uses and initial ownership is Graphics.
-    bool TestRenderGraphRejectsIndependentQueueFirstUseBeforeSubmission()
-    {
-        using namespace Engine;
-        using namespace Engine::RHI;
-
-        TextureDescription description;
-        description.DebugName = "copy-first";
-        description.Extent = { 4, 4 };
-        description.TextureFormat = Format::R8G8B8A8Unorm;
-        description.Usage = TextureUsage::ShaderResource;
-        description.InitialState = ResourceState::Common;
-        RenderGraph graph;
-        const auto resource = graph.AddTexture(description, RenderGraph::ResourceLifetimeKind::Imported);
-        const auto upload = graph.AddPass("Async upload", QueueType::Copy);
-        const auto consume = graph.AddPass("Graphics consume", QueueType::Graphics);
-        graph.AddWrite(upload, resource, ResourceState::CopyDest);
-        graph.AddRead(consume, resource, ResourceState::ShaderResource, ShaderStage::Pixel);
-        graph.SetPassCallback(upload, [](RenderGraph::ExecutionContext&) { return true; });
-        graph.SetPassCallback(consume, [](RenderGraph::ExecutionContext&) { return true; });
-        RenderGraphTestDevice independentDevice(9204, false, true);
-        RenderGraphTestTexture texture(9204, description, ResourceState::Common);
-        const RenderGraph::CompileResult compiled = graph.Compile();
-        const RenderGraph::ExecuteResult refused = compiled.Success && graph.BindTexture(resource, texture)
-            ? graph.Execute(independentDevice, compiled) : RenderGraph::ExecuteResult {};
-        const bool refusedBeforeSubmission = !refused.Success && refused.AcceptedPassCount == 0
-            && independentDevice.SubmitCount == 0 && independentDevice.CreatedCommandListCount == 0
-            && refused.Error.find("first used") != std::string::npos;
-
-        // With no independent copy queue the Copy pass resolves to Graphics, which is legal.
-        RenderGraphTestDevice sharedDevice(9205);
-        RenderGraphTestTexture sharedTexture(9205, description, ResourceState::Common);
-        const RenderGraph::ExecuteResult fallback = graph.BindTexture(resource, sharedTexture)
-            ? graph.Execute(sharedDevice, compiled) : RenderGraph::ExecuteResult {};
-        return Expect(refusedBeforeSubmission,
-                "a graph whose first resource user runs on an independent queue is refused before any submission")
-            && Expect(fallback.Success && fallback.AcceptedPassCount == 2,
-                "the same graph executes when the Copy pass resolves to the Graphics queue");
-    }
-
     bool TestRenderGraphTimestampScopesRetireWithExactFrameIdentity()
     {
         using namespace Engine;
@@ -13537,13 +12820,6 @@ int main(int argc, char** argv)
         INTEGRATION_TEST("Fab immutable asset generations retain exact rooted resolvers", SpiralTests::TestFabImmutableAssetGenerations),
         INTEGRATION_TEST("Fab hostile ZIP admission streams bounded canonical members and rejects unsafe archives atomically", SpiralTests::TestFabZipAdmission),
         INTEGRATION_TEST("Common PNG and JPEG decoders admit bounded images and reject hostile inputs atomically", SpiralTests::TestCommonImageAdmission),
-        INTEGRATION_TEST("Asset registry refuses unsaveable metadata and normalizes source paths in linear time", SpiralTests::TestAssetRegistryRejectsUnsaveableMetadataAndNormalizesLinearly),
-        INTEGRATION_TEST("Asset watcher resolves against an explicit project root and reports every transition", SpiralTests::TestAssetWatcherUsesExplicitProjectRootAndReportsEveryTransition),
-        INTEGRATION_TEST("Asset watcher poll cost scales linearly with the asset count", SpiralTests::TestAssetWatcherScalesLinearlyWithAssetCount),
-        INTEGRATION_TEST("glTF importer rejects unsupported geometry encodings escaping buffers and overflowing accessors", SpiralTests::TestGltfImporterRejectsUnsupportedEncodingsAndEscapingBuffers),
-        INTEGRATION_TEST("Mesh and texture artifact loaders reject declared counts the file cannot supply", SpiralTests::TestMeshAndTextureArtifactsRejectDeclaredCountsTheFileCannotSupply),
-        INTEGRATION_TEST("Mesh and texture artifact stores publish atomically across processes", SpiralTests::TestMeshAndTextureArtifactStoresPublishAtomicallyAcrossProcesses),
-        INTEGRATION_TEST("Material asset saves non-finite and precise values that reload exactly", SpiralTests::TestMaterialAssetSavesNonFiniteAndPreciseValuesRoundTripExactly),
         INTEGRATION_TEST("Fab glTF prepare bakes node transforms and derives normals against independent oracles", SpiralTests::TestFabGltfPrepareBakesGeometryAgainstIndependentOracles),
         INTEGRATION_TEST("Fab glTF prepare maps materials textures roles and colour spaces exactly", SpiralTests::TestFabGltfPrepareMapsMaterialsTexturesRolesAndColorSpaces),
         INTEGRATION_TEST("Fab glTF prepare rejects unsupported and hostile packages without output", SpiralTests::TestFabGltfPrepareRejectsUnsupportedAndHostilePackagesWithoutOutput),
@@ -13571,10 +12847,6 @@ int main(int argc, char** argv)
         FAST_TEST("UI texture service retires textures only after their write tokens and presentation serials complete", SpiralTests::TestUiTextureServiceDeferredRetirementWaitsForWriteTokensAndPresentation),
         FAST_TEST("UI texture service failures are atomic and never leave a partially registered texture", SpiralTests::TestUiTextureServiceFailuresAreAtomicAndNeverRegisterPartialTextures),
         FAST_TEST("UI texture service shutdown drains enforces the main-thread rule and never waits for the GPU", SpiralTests::TestUiTextureServiceShutdownDrainThreadRulesAndNoStall),
-        FAST_TEST("UI viewport secondary present-mode table never selects a blocking mode and matches a set-membership oracle", SpiralTests::TestUiViewportPresentModeSelection),
-        FAST_TEST("UI viewport capability decision reports the first failing reason and enables only Vulkan on X11 or Win32", SpiralTests::TestUiViewportCapabilityDecision),
-        FAST_TEST("Presentation serial ledger shares one serial per frame and lets a detached fence hold it", SpiralTests::TestPresentationSerialLedgerHandCases),
-        FAST_TEST("Presentation serial ledger matches a brute-force reference model and covers texture release bounds under generated frames", SpiralTests::TestPresentationSerialLedgerMatchesReferenceModel),
         FAST_TEST("RHI texture write validator matches an independent oracle and rejects overflow", SpiralTests::TestRhiTextureWriteValidationMatchesIndependentOracle),
         FAST_TEST("RHI texture write fake-device contract covers state regions retention no-stall and atomicity", SpiralTests::TestRhiTextureWriteFakeDeviceContract),
         FAST_TEST("RHI texture write defaults reject without backend support", SpiralTests::TestRhiTextureWriteDefaultsRejectWithoutBackendSupport),
@@ -13701,16 +12973,12 @@ int main(int argc, char** argv)
         INTEGRATION_TEST("Local package snapshot copies deterministic immutable directory input", TestLocalPackageSnapshotCopiesDeterministically),
         INTEGRATION_TEST("Local package snapshot rejects hostile roots paths and objects", TestLocalPackageSnapshotRejectsHostileInputs),
         INTEGRATION_TEST("Local package snapshot enforces limits races cancellation and cleanup", TestLocalPackageSnapshotLimitsRacesAndCancellation),
-#if defined(GE_PLATFORM_LINUX)
-        INTEGRATION_TEST("Local package snapshot rejects a FIFO swapped in after the inventory without blocking", TestLocalPackageSnapshotRejectsFifoSwapWithoutBlocking),
-#endif
 #endif
         FAST_TEST("Generated test support replays and minimizes counterexamples", TestGeneratedTestSupportReplaysAndMinimizes),
         INTEGRATION_TEST("Generated counterexample artifacts preserve replay data", TestGeneratedCounterexampleArtifactPreservesReplayData),
         INTEGRATION_TEST("Structured Scene and shader fuzz corpus replays deterministically", TestStructuredFuzzCorpusReplay),
 #if defined(GE_PLATFORM_LINUX)
         INTEGRATION_TEST("Linux fatal signals publish minimal receipts and preserve default termination", TestLinuxFatalSignalSafety),
-        INTEGRATION_TEST("GLFW init failure reports GLFW's own cause", TestGlfwInitFailureReportsItsCause),
 #endif
         FAST_TEST("Frame pacing policy resolves overrides and validates targets", TestFramePacingPolicyResolutionAndValidation),
         FAST_TEST("Renderer color pipeline settings validate manual calibrated exposure and post-tone-map grading", TestRendererColorPipelineSettingsValidateExposureAndPostToneMapGrade),
@@ -13742,10 +13010,6 @@ int main(int argc, char** argv)
         FAST_TEST("Render graph executor preserves accepted prefix on missing producer token", TestRenderGraphExecutorRejectsMissingProducerTokenBeforeConsumer),
         FAST_TEST("Render graph worker recording preserves eligibility ordering and retirement", TestRenderGraphWorkerRecordingContract),
         FAST_TEST("Submitted render graph frames retire exact tokens without waiting", TestSubmittedRenderGraphFrameOwnerRetiresWithoutWaiting),
-        FAST_TEST("Submitted RenderGraph frame owner leaves a rejected graph with its caller", TestSubmittedRenderGraphFrameOwnerRejectionKeepsGraphOwnership),
-        FAST_TEST("RenderGraph destroys a failed worker recording on a reused context", TestRenderGraphDiscardsFailedWorkerRecordingOnReusedContext),
-        FAST_TEST("RenderGraph Execute rejects forged or stale CompileResults before submission", TestRenderGraphExecuteRejectsForgedOrStaleCompileResults),
-        FAST_TEST("RenderGraph refuses an independent-queue first use before any submission", TestRenderGraphRejectsIndependentQueueFirstUseBeforeSubmission),
         FAST_TEST("Render graph timestamp scopes retire exact frame and pass identity", TestRenderGraphTimestampScopesRetireWithExactFrameIdentity),
         FAST_TEST("RHI buffer transition contract rejects incompatible states", TestRhiBufferTransitionContract),
         FAST_TEST("RHI completion token contract rejects unissued identities", TestRhiCompletionTokenContract),
@@ -13792,33 +13056,6 @@ int main(int argc, char** argv)
         FAST_TEST("Texture mip completion preserves authority and role filters", TestTextureMipCompletionPolicy),
         FAST_TEST("Texture artifacts select exact-device immutable mip upload plans", TestTextureArtifactUploadPlan),
         FAST_TEST("Mesh GPU resource cache preserves exact immutable generations", TestMeshGpuResourceCache),
-        FAST_TEST("Mesh GPU resource cache reuses shared decoded artifacts by identity and equal decodes by content", TestMeshGpuResourceCacheSharedArtifactReuse),
-        INTEGRATION_TEST("Renderer frame mesh path with 200 instances over 20 meshes is an order of magnitude cheaper than per-instance decoding", TestRendererFrameMeshPathCostWithSharedMeshes),
-        INTEGRATION_TEST("Material texture resolution never rereads cooked textures per instance and drops verdicts on republication", TestMaterialTextureResolutionDoesNotRereadCookedTexturesPerInstance),
-        INTEGRATION_TEST("Retained resolver snapshot decodes each artifact once and invalidates exactly on publication", SpiralTests::TestRetainedResolverCacheDecodesOncePerSnapshotAndInvalidatesOnPublication),
-        INTEGRATION_TEST("Clustered local-light screen bounds cover every pixel inside the light sphere", SpiralTests::TestClusteredLightGridLocalLightBoundsCoverEveryPixelInsideTheSphere),
-        FAST_TEST("Shadow texel lattice is fixed in the world under camera translation", SpiralTests::TestShadowTexelLatticeIsFixedInTheWorldUnderCameraTranslation),
-        FAST_TEST("Scene light payload slots use power-of-two capacity buckets", SpiralTests::TestSceneLightPayloadSlotCapacityBuckets),
-        FAST_TEST("Pending presentation policy defers on a minimized window instead of failing", SpiralTests::TestPendingPresentationPolicyDecisionDefersInsteadOfFailing),
-        FAST_TEST("Presentation transition commit is idempotent and counts once per request", SpiralTests::TestPresentationTransitionCommitIsIdempotentAndOncePerRequest),
-        FAST_TEST("Suboptimal swapchain results request one recreation per extent", SpiralTests::TestSuboptimalRecreationGateRequestsOncePerExtent),
-        FAST_TEST("Layer stack rolls back a layer whose attach throws without detaching it", SpiralTests::TestLayerStackRollsBackALayerWhoseAttachThrows),
-        FAST_TEST("Profile scopes can share a block and take a temporary name", SpiralTests::TestProfileScopesCanShareABlock),
-        INTEGRATION_TEST("JobSystem WaitIdle outlasts the destruction of a job's captured state", SpiralTests::TestJobSystemWaitIdleOutlastsJobCaptureDestruction),
-        INTEGRATION_TEST("Atomic file replacement keeps the mode, follows a symlinked directory and bounds temporary names", SpiralTests::TestAtomicFilePreservesModeFollowsSymlinkedParentAndBoundsTemporaryNames),
-        INTEGRATION_TEST("Frame task graph runs worker tasks on the caller when every worker is busy", SpiralTests::TestFrameTaskGraphRunsWorkerTasksWhenEveryWorkerIsBusy),
-        INTEGRATION_TEST("Minimized application loop runs no UI phase, latches one decision and waits instead of spinning", SpiralTests::TestApplicationMinimizeLatchesOneUiDecisionAndBacksOff),
-        INTEGRATION_TEST("Application teardown cancels layer jobs before the job system joins its workers", SpiralTests::TestApplicationShutdownCancelsLayerJobsBeforeJoiningWorkers),
-        INTEGRATION_TEST("Scene load rejects unrenderable transforms, invalid cameras and wrapped ids atomically", SpiralTests::TestSceneLoadRejectsUnrenderableTransformsCamerasAndWrappedIds),
-        INTEGRATION_TEST("Scene save refuses everything the loader rejects and keeps the last good file", SpiralTests::TestSceneSaveRefusesEverythingTheLoaderRejectsAndKeepsTheLastGoodFile),
-        FAST_TEST("Camera projection validation reaches every producer", SpiralTests::TestCameraProjectionValidationReachesEveryProducer),
-        INTEGRATION_TEST("Scene main camera absence survives save and reload", SpiralTests::TestSceneMainCameraAbsenceSurvivesSaveAndReload),
-        INTEGRATION_TEST("Scene entity id counter saturates instead of wrapping", SpiralTests::TestSceneEntityIdCounterSaturatesInsteadOfWrapping),
-        INTEGRATION_TEST("Scene load and entity creation scale linearly", SpiralTests::TestSceneLoadAndLookupScaleLinearly),
-        INTEGRATION_TEST("Generated scene populations save only what loads back identically", SpiralTests::TestSceneGeneratedPopulationsSaveOnlyWhatLoadsBack),
-        INTEGRATION_TEST("Deadline waiter charges only the waiting thread's CPU time", SpiralTests::TestDeadlineWaiterChargesOnlyTheWaitingThreadsCpu),
-        INTEGRATION_TEST("Frame pacing capture retain and amend cost is independent of capture size", SpiralTests::TestFramePacingCaptureAmendAndRecordCostIsIndependentOfCaptureSize),
-        INTEGRATION_TEST("Sky atmosphere preparation cost is reported and stays finite", SpiralTests::TestSceneSkyAtmospherePreparationCostIsReported),
         FAST_TEST("Texture GPU resource cache publishes exact immutable generations", TestTextureGpuResourceCache),
         INTEGRATION_TEST("Scene version 5 canonical persistence", TestSceneVersionFiveCanonicalPersistence),
         INTEGRATION_TEST("Scene loads legacy absolute transforms", TestSceneLoadsLegacyAbsoluteTransforms),

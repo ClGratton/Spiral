@@ -81,6 +81,7 @@ fi
 
 REQUIRED_MARKERS=(
     "NVRHI Vulkan device created on adapter:"
+    "UiViewportsDecisionV1 requested=no enabled=no reason=not-requested renderer=Vulkan"
     "Selected Vulkan adapter:"
     "Vulkan capability profile: Phase 3 Vulkan Bootstrap Presentation V1, qualification=Bootstrap"
     "Vulkan capability state: Timeline Synchronization advertised=yes, enabled=yes, implemented=yes"
@@ -450,6 +451,51 @@ for ((ATTEMPT = 1; ATTEMPT <= ITERATIONS; ++ATTEMPT)); do
     fi
     if ! grep -Fq 'SceneLightPayloadV3 backend=Vulkan layout=versioned-uint4 records=directional-point-spot-prepared tables=global-csr-local preExposure=header-scale cpuGpu=exact-pass copy=graph staging=cpu-write gpu=structured-copydest slots=4 allocations=2 reuses=1 retention=exact-graph-token productionPSMain=separate lightingEvaluation=not-exercised result=pass' "$PAYLOAD_LOG"; then
         echo "Dedicated Vulkan light-payload smoke did not prove exact payload readback and graph-token slot reuse." >&2
+        exit 1
+    fi
+
+    UI_VIEWPORT_LOG="$LOG_BASE-ui-viewport-attempt-$ATTEMPT.log"
+    set +e
+    (cd "$ROOT" && perl -e '
+        my $timeout = shift;
+        my $child = fork();
+        die "fork failed: $!\n" unless defined $child;
+        if ($child == 0) {
+            setpgrp(0, 0) or die "setpgrp failed: $!\n";
+            exec @ARGV or die "exec failed: $!\n";
+        }
+        $SIG{ALRM} = sub {
+            warn "Vulkan detached-window child timed out after ${timeout}s; terminating process group\n";
+            kill "TERM", -$child;
+            sleep 1;
+            kill "KILL", -$child;
+            waitpid($child, 0);
+            exit 124;
+        };
+        alarm $timeout;
+        waitpid($child, 0);
+        alarm 0;
+        my $status = $?;
+        exit(128 + ($status & 127)) if $status & 127;
+        exit($status >> 8);
+    ' "$CHILD_TIMEOUT_SECONDS" "$EDITOR" --vulkan-render-smoke --ui-viewports --ui-viewport-smoke) 2>&1 | tee "$UI_VIEWPORT_LOG"
+    UI_VIEWPORT_STATUS=${PIPESTATUS[0]}
+    set -e
+    if [[ $UI_VIEWPORT_STATUS -ne 0 ]]; then
+        echo "Dedicated Vulkan detached-window smoke failed with exit code $UI_VIEWPORT_STATUS on attempt $ATTEMPT/$ITERATIONS." >&2
+        exit "$UI_VIEWPORT_STATUS"
+    fi
+    # The opt-in feature needs a window system that can create secondary OS
+    # windows, so a host that cannot (no X11/XWayland, native Wayland, OpenGL2
+    # fallback, D3D12) prints a skip marker with its reason. A skip never hides a
+    # failure; set VULKAN_UI_VIEWPORT_REQUIRE_PASS=1 on a host that must support it.
+    if grep -Eq 'UiViewportV1 backend=Vulkan platform=[A-Za-z0-9]+ secondaryPresent=(MAILBOX|IMMEDIATE) order=main-present-then-detached .* detachedFramesRendered=([6-9][0-9]|[1-9][0-9]{2,}) .* detachedPixels=(exact|not-executed[(][a-z-]+[)])[^ ]* .* viewportsCreated=1 viewportsDestroyed=1 backendErrors=0 .* balanced=yes leaked=0 deadlock=none[(]watchdog=[0-9]+s[)] result=pass' "$UI_VIEWPORT_LOG"; then
+        :
+    elif grep -Eq 'UiViewportV1 backend=[A-Za-z0-9]+ platform=[A-Za-z0-9]+ result=skip reason=[a-z0-9-]+' "$UI_VIEWPORT_LOG" \
+        && [[ "${VULKAN_UI_VIEWPORT_REQUIRE_PASS:-0}" != "1" ]]; then
+        echo "Dedicated Vulkan detached-window smoke skipped: $(grep -Eo 'result=skip reason=[a-z0-9-]+' "$UI_VIEWPORT_LOG" | head -1)"
+    else
+        echo "Dedicated Vulkan detached-window smoke did not print a passing (or permitted skip) UiViewportV1 marker on attempt $ATTEMPT/$ITERATIONS." >&2
         exit 1
     fi
 
