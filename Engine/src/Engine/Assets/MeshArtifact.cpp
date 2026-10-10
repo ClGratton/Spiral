@@ -1,24 +1,19 @@
 #include "Engine/Assets/MeshArtifact.h"
 
 #include "Engine/Assets/AssetRegistry.h"
+#include "Engine/Core/AtomicFile.h"
 
 #include <algorithm>
 #include <array>
-#include <atomic>
 #include <cmath>
-#include <cstdio>
 #include <fstream>
 #include <iomanip>
 #include <limits>
+#include <locale>
 #include <sstream>
 #include <system_error>
 #include <utility>
 #include <string_view>
-
-#if defined(_WIN32)
-    #define WIN32_LEAN_AND_MEAN
-    #include <Windows.h>
-#endif
 
 namespace Engine
 {
@@ -59,25 +54,6 @@ namespace Engine
         {
             std::string value;
             return static_cast<bool>(input >> value) && value == expected;
-        }
-
-        bool PublishAtomically(const std::filesystem::path& temporary, const std::filesystem::path& final, std::string& outError)
-        {
-#if defined(_WIN32)
-            if (::ReplaceFileW(final.c_str(), temporary.c_str(), nullptr, REPLACEFILE_WRITE_THROUGH, nullptr, nullptr))
-                return true;
-            const DWORD replaceError = ::GetLastError();
-            if (replaceError == ERROR_FILE_NOT_FOUND
-                && ::MoveFileExW(temporary.c_str(), final.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
-                return true;
-            outError = "could not atomically publish cooked mesh artifact (Windows error "
-                + std::to_string(replaceError == ERROR_FILE_NOT_FOUND ? ::GetLastError() : replaceError) + ")";
-#else
-            if (std::rename(temporary.c_str(), final.c_str()) == 0)
-                return true;
-            outError = "could not atomically publish cooked mesh artifact";
-#endif
-            return false;
         }
 
         float RoundDownToFloat(double value)
@@ -488,16 +464,11 @@ namespace Engine
             }
         }
 
-        static std::atomic<u64> temporarySequence { 0 };
-        const std::filesystem::path temporary = path.string() + ".tmp."
-            + std::to_string(temporarySequence.fetch_add(1, std::memory_order_relaxed));
-        std::ofstream output(temporary, std::ios::out | std::ios::trunc);
-        if (!output)
-        {
-            outError = "could not open temporary cooked mesh artifact";
-            return false;
-        }
-
+        // Serialized in memory and published through the shared exclusive-create, fsync and
+        // rename path, so concurrent writers cannot interleave and a crash cannot publish a
+        // truncated artifact.
+        std::ostringstream output;
+        output.imbue(std::locale::classic());
         output << std::setprecision(std::numeric_limits<float>::max_digits10);
         output << "SpiralMeshArtifact " << kMeshArtifactVersion << '\n';
         output << "Source " << std::quoted(artifact.SourcePath) << '\n';
@@ -525,18 +496,16 @@ namespace Engine
         for (u32 index : artifact.Indices)
             output << index << '\n';
         output << "End\n";
-        output.close();
         if (!output)
         {
-            std::filesystem::remove(temporary, error);
-            outError = "could not write cooked mesh artifact";
+            outError = "could not serialize cooked mesh artifact";
             return false;
         }
 
-        if (!PublishAtomically(temporary, path, outError))
+        std::string writeError;
+        if (!WriteFileAtomically(path, output.str(), writeError))
         {
-            std::error_code cleanupError;
-            std::filesystem::remove(temporary, cleanupError);
+            outError = "could not write cooked mesh artifact: " + writeError;
             return false;
         }
 
@@ -574,6 +543,19 @@ namespace Engine
             || !ReadExpected(input, "PrimitiveCount") || !(input >> primitiveCount) || primitiveCount == 0 || primitiveCount > indexCount / 3)
         {
             outError = "cooked mesh artifact header is malformed or unsupported";
+            return false;
+        }
+
+        // The header alone must not decide how much memory is committed: every declared record
+        // needs at least its minimal text line ("0 0 0 0 0 0 0 0 0 0 0\n" is 22 bytes for a
+        // version-2 vertex, 16 for version 1; "0\n" for an index; "Primitive 0 0 0 0 0 0\n"), so
+        // counts the file cannot supply are rejected before any buffer is sized.
+        std::error_code sizeError;
+        const std::uintmax_t fileBytes = std::filesystem::file_size(path, sizeError);
+        const u64 minimumBytes = vertexCount * (version == 1 ? 16u : 22u) + indexCount * 2u + primitiveCount * 22u;
+        if (sizeError || minimumBytes > fileBytes)
+        {
+            outError = "cooked mesh artifact is shorter than its declared counts";
             return false;
         }
 

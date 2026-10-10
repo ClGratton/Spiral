@@ -9,53 +9,40 @@ namespace Engine
 {
     namespace
     {
-        struct ArtifactIdentity
+        // Content identity of two decoded artifacts. Floats compare by bit
+        // pattern so NaN payloads and signed zeros are distinguished exactly.
+        bool SameArtifactContent(const MeshArtifact& left, const MeshArtifact& right)
         {
-            AssetHandle Asset = kInvalidAssetHandle;
-            std::string NormalizedSourcePath;
-            std::vector<MeshArtifactPrimitive> Primitives;
-            std::vector<MeshArtifactVertex> Vertices;
-            std::vector<u32> Indices;
-
-            bool operator==(const ArtifactIdentity& other) const
-            {
-                if (Asset != other.Asset || NormalizedSourcePath != other.NormalizedSourcePath
-                    || Primitives.size() != other.Primitives.size() || Vertices.size() != other.Vertices.size()
-                    || Indices != other.Indices)
-                    return false;
-                for (size_t index = 0; index < Primitives.size(); ++index)
-                {
-                    const MeshArtifactPrimitive& left = Primitives[index];
-                    const MeshArtifactPrimitive& right = other.Primitives[index];
-                    if (left.SourceMeshIndex != right.SourceMeshIndex || left.SourcePrimitiveIndex != right.SourcePrimitiveIndex
-                        || left.VertexByteOffset != right.VertexByteOffset || left.VertexByteSize != right.VertexByteSize
-                        || left.IndexByteOffset != right.IndexByteOffset || left.IndexByteSize != right.IndexByteSize)
-                        return false;
-                }
-                for (size_t index = 0; index < Vertices.size(); ++index)
-                {
-                    const MeshArtifactVertex& left = Vertices[index];
-                    const MeshArtifactVertex& right = other.Vertices[index];
-                    for (size_t component = 0; component < 3; ++component)
-                        if (std::bit_cast<u32>(left.Position[component]) != std::bit_cast<u32>(right.Position[component])
-                            || std::bit_cast<u32>(left.Normal[component]) != std::bit_cast<u32>(right.Normal[component])
-                            || std::bit_cast<u32>(left.Color[component]) != std::bit_cast<u32>(right.Color[component])) return false;
-                    for (size_t component = 0; component < 2; ++component)
-                        if (std::bit_cast<u32>(left.UV[component]) != std::bit_cast<u32>(right.UV[component])) return false;
-                }
+            if (&left == &right)
                 return true;
+            if (left.Asset != right.Asset
+                || left.Primitives.size() != right.Primitives.size()
+                || left.Vertices.size() != right.Vertices.size()
+                || left.Indices != right.Indices
+                || std::filesystem::path(left.SourcePath).lexically_normal().generic_string()
+                    != std::filesystem::path(right.SourcePath).lexically_normal().generic_string())
+                return false;
+            for (size_t index = 0; index < left.Primitives.size(); ++index)
+            {
+                const MeshArtifactPrimitive& l = left.Primitives[index];
+                const MeshArtifactPrimitive& r = right.Primitives[index];
+                if (l.SourceMeshIndex != r.SourceMeshIndex || l.SourcePrimitiveIndex != r.SourcePrimitiveIndex
+                    || l.VertexByteOffset != r.VertexByteOffset || l.VertexByteSize != r.VertexByteSize
+                    || l.IndexByteOffset != r.IndexByteOffset || l.IndexByteSize != r.IndexByteSize)
+                    return false;
             }
-        };
-
-        ArtifactIdentity MakeIdentity(const MeshArtifact& artifact)
-        {
-            ArtifactIdentity identity;
-            identity.Asset = artifact.Asset;
-            identity.NormalizedSourcePath = std::filesystem::path(artifact.SourcePath).lexically_normal().generic_string();
-            identity.Primitives = artifact.Primitives;
-            identity.Vertices = artifact.Vertices;
-            identity.Indices = artifact.Indices;
-            return identity;
+            for (size_t index = 0; index < left.Vertices.size(); ++index)
+            {
+                const MeshArtifactVertex& l = left.Vertices[index];
+                const MeshArtifactVertex& r = right.Vertices[index];
+                for (size_t component = 0; component < 3; ++component)
+                    if (std::bit_cast<u32>(l.Position[component]) != std::bit_cast<u32>(r.Position[component])
+                        || std::bit_cast<u32>(l.Normal[component]) != std::bit_cast<u32>(r.Normal[component])
+                        || std::bit_cast<u32>(l.Color[component]) != std::bit_cast<u32>(r.Color[component])) return false;
+                for (size_t component = 0; component < 2; ++component)
+                    if (std::bit_cast<u32>(l.UV[component]) != std::bit_cast<u32>(r.UV[component])) return false;
+            }
+            return true;
         }
 
         bool ToU32(u64 value, u32& outValue)
@@ -100,7 +87,10 @@ namespace Engine
     struct MeshGpuResourceCache::Entry
     {
         const RHI::Device* Device = nullptr;
-        ArtifactIdentity Identity;
+        // The entry retains the exact decoded artifact it was uploaded from.
+        // Holding the reference keeps its address unique, so a pointer match
+        // is an exact content match and needs no per-vertex comparison.
+        Ref<const MeshArtifact> Source;
         Ref<const MeshGpuResourceBundle> Bundle;
         u64 LastAccess = 0;
     };
@@ -115,22 +105,63 @@ namespace Engine
     bool MeshGpuResourceCache::Acquire(RHI::Device& device, const MeshArtifact& artifact,
         Ref<const MeshGpuResourceBundle>& outBundle, std::string& outError)
     {
-        std::string validationError;
-        if (m_Capacity == 0 || !ValidateMeshArtifact(artifact, validationError))
+        if (m_Capacity == 0)
         {
-            outError = m_Capacity == 0 ? "mesh GPU resource cache has zero capacity" : validationError;
+            outError = "mesh GPU resource cache has zero capacity";
             return false;
         }
-
-        ArtifactIdentity identity = MakeIdentity(artifact);
+        // A content hit needs no copy and no revalidation: an equal artifact
+        // was validated when its entry was created.
         for (Entry& entry : m_Entries)
         {
-            if (entry.Device == &device && entry.Identity == identity)
+            if (entry.Device == &device && SameArtifactContent(*entry.Source, artifact))
             {
                 entry.LastAccess = ++m_NextAccess;
                 outBundle = entry.Bundle;
                 return true;
             }
+        }
+        return AcquireMiss(device, CreateRef<const MeshArtifact>(artifact), outBundle, outError);
+    }
+
+    bool MeshGpuResourceCache::Acquire(RHI::Device& device, const Ref<const MeshArtifact>& artifact,
+        Ref<const MeshGpuResourceBundle>& outBundle, std::string& outError)
+    {
+        if (m_Capacity == 0 || !artifact)
+        {
+            outError = m_Capacity == 0 ? "mesh GPU resource cache has zero capacity"
+                : "mesh GPU resource cache requires a decoded artifact";
+            return false;
+        }
+        for (Entry& entry : m_Entries)
+        {
+            // Pointer identity is the steady-state fast path for artifacts
+            // shared by a resolver snapshot; content equality still lets an
+            // independently decoded equal artifact reuse the upload.
+            if (entry.Device == &device
+                && (entry.Source == artifact || SameArtifactContent(*entry.Source, *artifact)))
+            {
+                // Adopt the newest equal reference (for example the next
+                // snapshot generation's decode of unchanged content) so later
+                // frames hit the pointer fast path instead of comparing again.
+                entry.Source = artifact;
+                entry.LastAccess = ++m_NextAccess;
+                outBundle = entry.Bundle;
+                return true;
+            }
+        }
+        return AcquireMiss(device, artifact, outBundle, outError);
+    }
+
+    bool MeshGpuResourceCache::AcquireMiss(RHI::Device& device, const Ref<const MeshArtifact>& source,
+        Ref<const MeshGpuResourceBundle>& outBundle, std::string& outError)
+    {
+        const MeshArtifact& artifact = *source;
+        std::string validationError;
+        if (!ValidateMeshArtifact(artifact, validationError))
+        {
+            outError = validationError;
+            return false;
         }
 
         std::vector<MeshGpuPrimitiveRange> primitiveRanges;
@@ -190,7 +221,7 @@ namespace Engine
             m_Entries.erase(eviction);
         }
 
-        m_Entries.push_back({ &device, std::move(identity), bundle, ++m_NextAccess });
+        m_Entries.push_back({ &device, source, bundle, ++m_NextAccess });
         outBundle = std::move(bundle);
         return true;
     }

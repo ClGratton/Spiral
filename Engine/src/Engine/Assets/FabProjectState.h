@@ -58,6 +58,12 @@ namespace Engine
     {
         FabProjectValidationLevel Level = FabProjectValidationLevel::Structural;
         std::function<bool()> IsCancelled;
+        // FullHash hashes every stream tip when this is empty. Otherwise only the named
+        // generations are hashed and every other tip is validated structurally. A commit that
+        // published one new generation names just that one: the other tips were already hashed
+        // when they were committed or opened, and re-hashing all imported content after every
+        // import grows the post-commit pause with the whole project instead of with the change.
+        std::vector<std::string> FullHashGenerationIds;
     };
 
     // Invariants (current generation of each stream means the stream tip):

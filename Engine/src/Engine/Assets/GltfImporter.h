@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Engine/Assets/AssetFileSystem.h"
 #include "Engine/Assets/AssetHandle.h"
 
 #include <cstddef>
@@ -34,6 +35,10 @@ namespace Engine
     class GltfImporter
     {
     public:
-        static GltfImportResult Import(const std::filesystem::path& sourcePath, AssetRegistry& registry);
+        // `resolver` maps the (normalized, possibly project-relative) source path to the file to
+        // read. Unset, the legacy working-directory/executable-ancestor search is used; a project
+        // rooted elsewhere must pass its own root-relative resolver.
+        static GltfImportResult Import(const std::filesystem::path& sourcePath, AssetRegistry& registry,
+            const AssetPathResolver& resolver = {});
     };
 }

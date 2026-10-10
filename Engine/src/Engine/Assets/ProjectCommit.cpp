@@ -233,6 +233,13 @@ namespace Engine
                     if (mkdirat(current.Get(), name, 0755) == 0)
                     {
                         next = openat(current.Get(), name, flags);
+                        // The new directory's own entry lives in its parent: syncing both orders the
+                        // whole created chain before the manifest rename that makes it reachable.
+                        // A filesystem that journals directories independently (btrfs, f2fs) could
+                        // otherwise lose "fab/" while keeping a manifest that names it.
+                        if (next >= 0)
+                            (void)fsync(next);
+                        (void)fsync(current.Get());
                         struct stat made {};
                         if (next >= 0 && created && fstat(next, &made) == 0)
                         {

@@ -45,6 +45,9 @@ namespace Engine
         virtual ~Window() = default;
 
         virtual void PollEvents() = 0;
+        // Dispatches pending events like PollEvents, but first blocks for at most
+        // timeoutSeconds when none are queued, so an idle loop sleeps.
+        virtual void WaitEvents(double timeoutSeconds) = 0;
         virtual u32 GetWidth() const = 0;
         virtual u32 GetHeight() const = 0;
         virtual const std::string& GetTitle() const = 0;

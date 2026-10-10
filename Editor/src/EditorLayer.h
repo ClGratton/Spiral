@@ -33,6 +33,7 @@ public:
     void OnDetach() override;
     void OnUpdate(Engine::Timestep timestep) override;
     void OnUiRender() override;
+    void OnBackgroundUpdate() override;
     void OnEvent(Engine::Event& event) override;
 
 private:
@@ -185,6 +186,7 @@ private:
     void UpdateFabIntegration();
     void DrawFabIntegration();
     void PollFabDownloads();
+    void PumpBackgroundServices();
     bool BuildFabImportProjectContext(std::optional<Fab::FabAssignmentTarget> assignment,
         Fab::FabImportProjectContext& out, std::string& error);
     bool AdoptFabImportCommit(std::string& error);

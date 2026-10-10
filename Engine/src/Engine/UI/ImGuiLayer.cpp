@@ -30,25 +30,35 @@ namespace Engine
         io.Fonts->AddFontDefault();
         SetDarkThemeColors();
 
-        Window& window = Application::Get().GetWindow();
-        GLFWwindow* nativeWindow = static_cast<GLFWwindow*>(window.GetNativeWindow());
-        if (!nativeWindow)
-            throw std::runtime_error("ImGuiLayer requires a native GLFW window");
+        try
+        {
+            Window& window = Application::Get().GetWindow();
+            GLFWwindow* nativeWindow = static_cast<GLFWwindow*>(window.GetNativeWindow());
+            if (!nativeWindow)
+                throw std::runtime_error("ImGuiLayer requires a native GLFW window");
 
-        m_UseNativeRenderer = Renderer::InitializeImGui(nativeWindow);
-        if (m_UseNativeRenderer)
-        {
-            if (Renderer::GetActiveBackend() == RendererBackend::NVRHIVulkan)
-                ImGui_ImplGlfw_InitForVulkan(nativeWindow, true);
+            m_UseNativeRenderer = Renderer::InitializeImGui(nativeWindow);
+            if (m_UseNativeRenderer)
+            {
+                if (Renderer::GetActiveBackend() == RendererBackend::NVRHIVulkan)
+                    ImGui_ImplGlfw_InitForVulkan(nativeWindow, true);
+                else
+                    ImGui_ImplGlfw_InitForOther(nativeWindow, true);
+            }
             else
-                ImGui_ImplGlfw_InitForOther(nativeWindow, true);
+            {
+                if (glfwGetWindowAttrib(nativeWindow, GLFW_CLIENT_API) == GLFW_NO_API)
+                    throw std::runtime_error("Native renderer initialization failed for a GLFW_NO_API window");
+                ImGui_ImplGlfw_InitForOpenGL(nativeWindow, true);
+                ImGui_ImplOpenGL2_Init();
+            }
         }
-        else
+        catch (...)
         {
-            if (glfwGetWindowAttrib(nativeWindow, GLFW_CLIENT_API) == GLFW_NO_API)
-                throw std::runtime_error("Native renderer initialization failed for a GLFW_NO_API window");
-            ImGui_ImplGlfw_InitForOpenGL(nativeWindow, true);
-            ImGui_ImplOpenGL2_Init();
+            // The layer stack discards a layer whose OnAttach threw without calling
+            // OnDetach, so a failed attach releases its own context here.
+            ImGui::DestroyContext();
+            throw;
         }
     }
 

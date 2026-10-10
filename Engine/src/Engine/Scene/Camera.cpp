@@ -40,9 +40,7 @@ namespace Engine
                 || !IsFinite(translationOrigin)
                 || !IsFloatRepresentable(cameraRelativePosition)
                 || !std::isfinite(aspectRatio)
-                || !std::isfinite(projection.VerticalFovDegrees)
-                || !std::isfinite(projection.NearClip)
-                || !std::isfinite(projection.FarClip))
+                || !IsValidCameraProjection(projection))
             {
                 return view;
             }
@@ -69,6 +67,28 @@ namespace Engine
             view.Valid = true;
             return view;
         }
+    }
+
+    bool IsValidCameraProjection(const CameraProjection& projection)
+    {
+        if (!std::isfinite(projection.VerticalFovDegrees)
+            || !std::isfinite(projection.NearClip)
+            || !std::isfinite(projection.FarClip)
+            || !(projection.VerticalFovDegrees > 0.0f)
+            || !(projection.VerticalFovDegrees < 180.0f)
+            || !(projection.NearClip > 0.0f)
+            || !(projection.FarClip > projection.NearClip))
+        {
+            return false;
+        }
+
+        const float halfAngleTangent = std::tan(Math::DegreesToRadians(projection.VerticalFovDegrees) * 0.5f);
+        if (!(halfAngleTangent > 0.0f) || !std::isfinite(1.0f / halfAngleTangent))
+            return false;
+
+        const float depthRange = projection.FarClip - projection.NearClip;
+        const float zScale = projection.FarClip / depthRange;
+        return depthRange > 0.0f && std::isfinite(zScale) && std::isfinite(projection.NearClip * zScale);
     }
 
     CameraView BuildCameraView(

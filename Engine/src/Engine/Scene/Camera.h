@@ -15,6 +15,14 @@ namespace Engine
         float FarClip = 100.0f;
     };
 
+    // A projection the renderer can turn into finite, orientation-preserving
+    // matrices: 0 < fov < 180 degrees (tan of the half angle positive and its
+    // reciprocal finite in float), 0 < near < far, every value finite and the
+    // depth terms finite. PerspectiveLH silently repairs bad near/far values
+    // and nothing repairs the field of view, so every producer of a camera
+    // projection (authoring, load, view building) rejects what fails here.
+    bool IsValidCameraProjection(const CameraProjection& projection);
+
     struct CameraView
     {
         Math::Mat4 View;

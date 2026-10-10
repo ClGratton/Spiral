@@ -840,6 +840,43 @@ namespace
         return passed;
     }
 
+    // One 3-vertex mesh hung under 65,536 chained nodes, each translating +X by one. Composing
+    // the ancestor chain per primitive instance is quadratic (about 47 s at -O0 measured on the
+    // review export); a per-node world cache is linear. The oracle is analytic: instance k is
+    // translated by k + 1.
+    bool GeometryDeepNodeChainIsLinear(ScopedFixtureRoot& fixture)
+    {
+        constexpr size_t kChain = 65536;
+        Package package;
+        const std::vector<float> triangle { 0, 0, 0, 1, 0, 0, 0, 1, 0 };
+        package.Doc.Meshes.push_back("{\"primitives\":["
+            + AddPrimitive(package.Doc, triangle, nullptr, nullptr, {}) + "]}");
+        for (size_t node = 0; node < kChain; ++node)
+            package.Doc.Nodes.push_back("{\"mesh\":0,\"translation\":[1,0,0]"
+                + (node + 1 < kChain ? ",\"children\":[" + std::to_string(node + 1) + "]}" : std::string("}")));
+        const auto start = std::chrono::steady_clock::now();
+        Prepared prepared;
+        PrepareFixture(fixture, package, prepared);
+        const double milliseconds = std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - start).count();
+        std::cout << "note: 65536-node chain snapshot+prepare took " << milliseconds << " ms\n";
+        if (!Expect(prepared, "deep node chain"))
+            return false;
+        const MeshArtifact& mesh = prepared.Package.Mesh;
+        bool passed = Check(mesh.Vertices.size() == kChain * 3 && prepared.Package.PrimitiveInstanceCount == kChain,
+            "every chained node contributes one primitive instance");
+        if (mesh.Vertices.size() == kChain * 3)
+        {
+            passed &= Check(Near(mesh.Vertices[0].Position[0], 1.0) && Near(mesh.Vertices[1].Position[0], 2.0),
+                "the first instance is translated by one");
+            passed &= Check(Near(mesh.Vertices[(kChain - 1) * 3 + 1].Position[0], static_cast<double>(kChain) + 1.0)
+                && Near(mesh.Vertices[(kChain - 1) * 3 + 2].Position[1], 1.0),
+                "the deepest instance is translated by the chain length");
+        }
+        passed &= Check(milliseconds < 30000.0, "a 65536-node chain prepares in bounded time");
+        return passed;
+    }
+
     bool GeometryDefaultMaterialAndIgnoredSceneContent(ScopedFixtureRoot& fixture)
     {
         bool passed = true;
@@ -1421,6 +1458,134 @@ namespace
             const Bytes png = PngOf(2, 2, std::vector<Pixel>(4, Pixel { 1, 2, 3, 255 }));
             passed &= ExpectReject(fixture, "R-MIME", TexturedQuad(kBaseColorMaterial, {}, true, &png, "image/jpeg"),
                 "MIME type disagrees with its content");
+        }
+        return passed;
+    }
+
+    // A bufferView with an explicit byteStride; Gltf::AddView cannot express one.
+    int AddStridedView(Gltf& doc, const Bytes& data, const std::string& byteStride)
+    {
+        while (doc.Bin.size() % 4 != 0)
+            doc.Bin.push_back(0);
+        doc.BufferViews.push_back("{\"buffer\":0,\"byteOffset\":" + std::to_string(doc.Bin.size())
+            + ",\"byteLength\":" + std::to_string(data.size()) + ",\"byteStride\":" + byteStride + "}");
+        doc.Bin.insert(doc.Bin.end(), data.begin(), data.end());
+        return static_cast<int>(doc.BufferViews.size()) - 1;
+    }
+
+    // cgltf 1.15 validates offset + stride * (count - 1) + elementSize in unchecked 64-bit
+    // arithmetic. These byte-exact hostile documents wrap that sum (or step a sparse array by
+    // the wrong stride) so cgltf_validate or the unpack calls read outside the loaded buffer.
+    // Without the cook's own overflow-checked bounds they crash or read foreign heap bytes.
+    bool RejectOversizedAccessorFixtures(ScopedFixtureRoot& fixture)
+    {
+        bool passed = true;
+        const auto triangleMesh = [](Gltf& doc, const std::string& attributes, const std::string& indices)
+        {
+            doc.Meshes.push_back("{\"primitives\":[{\"attributes\":{" + attributes + "}"
+                + (indices.empty() ? std::string() : ",\"indices\":" + indices) + "}]}");
+            doc.Nodes.push_back("{\"mesh\":0}");
+        };
+        {
+            // 4 * (2^62 + 1 - 1) wraps to 0, so cgltf accepts the index accessor and then loops
+            // 2^62 times in cgltf_calc_index_bound.
+            Package package;
+            Gltf& doc = package.Doc;
+            const int position = doc.AddFloats({ 0, 0, 0, 1, 0, 0, 0, 1, 0 }, "VEC3", 3);
+            const int indices = doc.AddAccessor(doc.AddView(Bytes(12, 0)), 5125, 4611686018427387905ull, "SCALAR");
+            triangleMesh(doc, "\"POSITION\":" + std::to_string(position), std::to_string(indices));
+            passed &= ExpectReject(fixture, "R-OOB-INDEXCOUNT-WRAP", package, "glTF structure is invalid");
+        }
+        {
+            // byteStride 2^61 times (9 - 1) wraps to 0.
+            Package package;
+            Gltf& doc = package.Doc;
+            const int view = AddStridedView(doc, Bytes(9 * 12, 0), "2305843009213693952");
+            const int position = doc.AddAccessor(view, 5126, 9, "VEC3");
+            triangleMesh(doc, "\"POSITION\":" + std::to_string(position), {});
+            passed &= ExpectReject(fixture, "R-OOB-STRIDE-WRAP", package, "glTF structure is invalid");
+        }
+        {
+            // Position count wraps the same way (12 * 2^62 = 3 * 2^64) and would otherwise rely on
+            // the vertex limit to be stopped.
+            Package package;
+            Gltf& doc = package.Doc;
+            const int position = doc.AddAccessor(doc.AddView(Bytes(12, 0)), 5126, 4611686018427387905ull, "VEC3");
+            triangleMesh(doc, "\"POSITION\":" + std::to_string(position), {});
+            passed &= ExpectReject(fixture, "R-OOB-COUNT-WRAP", package, "glTF structure is invalid");
+        }
+        for (const char* stride : { "253", "3", "4", "256" })
+        {
+            // Outside the 4..252 range, or smaller than a FLOAT VEC3 element.
+            Package package;
+            Gltf& doc = package.Doc;
+            const int view = AddStridedView(doc, Bytes(9 * 256, 0), stride);
+            const int position = doc.AddAccessor(view, 5126, 9, "VEC3");
+            triangleMesh(doc, "\"POSITION\":" + std::to_string(position), {});
+            passed &= ExpectReject(fixture, std::string("R-OOB-STRIDE-") + stride, package, "glTF structure is invalid");
+        }
+        {
+            // A byteStride-32 base with a sparse overlay: cgltf advances the sparse values by 32
+            // bytes, so four 12-byte values in a 48-byte view are read at +0/+32/+64/+96.
+            Package package;
+            Gltf& doc = package.Doc;
+            const int triangleIndices = doc.AddAccessor(doc.AddView(Bytes { 0, 0, 1, 0, 2, 0 }), 5123, 3, "SCALAR");
+            const int base = AddStridedView(doc, Bytes(3 * 32 + 12, 0), "32");
+            const int indexView = doc.AddView(Bytes { 0, 1, 2, 3 });
+            // Last in the buffer, so the strided reads leave the allocation.
+            const int valueView = doc.AddView(Bytes(48, 0x41));
+            const int position = doc.AddAccessor(base, 5126, 4, "VEC3",
+                ",\"sparse\":{\"count\":4,\"indices\":{\"bufferView\":" + std::to_string(indexView)
+                + ",\"componentType\":5121},\"values\":{\"bufferView\":" + std::to_string(valueView) + "}}");
+            triangleMesh(doc, "\"POSITION\":" + std::to_string(position), std::to_string(triangleIndices));
+            passed &= ExpectReject(fixture, "R-OOB-SPARSE-STRIDE", package, "tightly packed base");
+        }
+        {
+            // A sparse overlay whose values view is shorter than count * elementSize.
+            Package package;
+            Gltf& doc = package.Doc;
+            const int base = doc.AddView(Bytes(36, 0));
+            const int indexView = doc.AddView(Bytes { 0, 1, 2, 0 });
+            const int valueView = doc.AddView(Bytes(24, 0));
+            const int position = doc.AddAccessor(base, 5126, 3, "VEC3",
+                ",\"sparse\":{\"count\":3,\"indices\":{\"bufferView\":" + std::to_string(indexView)
+                + ",\"componentType\":5121},\"values\":{\"bufferView\":" + std::to_string(valueView) + "}}");
+            triangleMesh(doc, "\"POSITION\":" + std::to_string(position), {});
+            // The snapshot's own bufferless cgltf_validate already rejects this one; either stage is a rejection.
+            LocalPackageSnapshot snapshot;
+            std::string snapshotError;
+            if (CreateSnapshot(fixture, package, snapshot, snapshotError))
+                passed &= ExpectReject(fixture, "R-OOB-SPARSE-SHORT", package, "glTF structure is invalid");
+            else
+                passed &= CheckWith(Contains(snapshotError, "glTF structure is invalid"),
+                    "R-OOB-SPARSE-SHORT is rejected by the snapshot", snapshotError);
+        }
+        {
+            // Positive control: a legitimately interleaved position+normal view still cooks, so
+            // the new strict stride rules do not reject real exporter output.
+            Package package;
+            Gltf& doc = package.Doc;
+            std::vector<float> interleaved;
+            for (size_t vertex = 0; vertex < 4; ++vertex)
+            {
+                interleaved.insert(interleaved.end(), { kQuadPositions[vertex * 3], kQuadPositions[vertex * 3 + 1],
+                    kQuadPositions[vertex * 3 + 2], 0.0f, 0.0f, 1.0f });
+            }
+            Bytes bytes(interleaved.size() * 4);
+            std::memcpy(bytes.data(), interleaved.data(), bytes.size());
+            const int view = AddStridedView(doc, bytes, "24");
+            const int position = doc.AddAccessor(view, 5126, 4, "VEC3");
+            const int normal = doc.AddAccessor(view, 5126, 4, "VEC3", ",\"byteOffset\":12");
+            triangleMesh(doc, "\"POSITION\":" + std::to_string(position) + ",\"NORMAL\":" + std::to_string(normal),
+                std::to_string(doc.AddIndices(kQuadIndices)));
+            Prepared prepared;
+            PrepareFixture(fixture, package, prepared);
+            if (Expect(prepared, "interleaved position and normal view"))
+                passed &= Check(prepared.Package.Mesh.Vertices.size() == 4
+                    && NearVertex(prepared.Package.Mesh.Vertices[2], { 1, 1, 0 }, { 0, 0, 1 }, { 0, 0 }),
+                    "interleaved view bakes the per-vertex positions and normals");
+            else
+                passed = false;
         }
         return passed;
     }
@@ -2252,6 +2417,7 @@ namespace SpiralTests
         passed &= GeometryInstancedMeshAndSharedMaterial(fixture);
         passed &= GeometrySparseNormalizedAndOptionalAttributes(fixture);
         passed &= GeometryDefaultMaterialAndIgnoredSceneContent(fixture);
+        passed &= GeometryDeepNodeChainIsLinear(fixture);
         return passed;
     }
 
@@ -2276,6 +2442,7 @@ namespace SpiralTests
         passed &= RejectFeatureFixtures(fixture);
         passed &= RejectMaterialAndSceneFixtures(fixture);
         passed &= RejectGeometryAndLimitFixtures(fixture);
+        passed &= RejectOversizedAccessorFixtures(fixture);
         passed &= RejectDeclarationFixtures(fixture);
         passed &= RejectDependencyUris(fixture);
         passed &= PrepareCancelSweep(fixture);

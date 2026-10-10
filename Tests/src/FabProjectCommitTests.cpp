@@ -587,6 +587,29 @@ namespace SpiralTests
                 && updated.Registry.GetAsset(alpha.MeshHandle) && updated.Registry.GetAsset(alphaV2.MeshHandle)
                 && updated.Receipts.Receipts.size() == 4,
             "both product versions remain registered; four receipts (alpha, beta, alpha replacement, alpha v2)");
+
+        // ----- post-commit validation can hash just the generation the commit published -----
+        const fs::path betaMesh = workspace.Project() / fs::path(beta.RelativeRoot)
+            / fs::path(beta.Receipt.Assets[0].GenerationRelativeCookedPath);
+        check(FlipByte(betaMesh, 10), "a byte of an older current-tip generation is flipped");
+        const auto loadHashing = [&](std::vector<std::string> generations, std::string& message)
+        {
+            FabProjectState state;
+            FabProjectValidationOptions options;
+            options.Level = FabProjectValidationLevel::FullHash;
+            options.FullHashGenerationIds = std::move(generations);
+            return LoadFabProjectState(workspace.Project(), kManifestName, options, state, message);
+        };
+        check(!ProjectLoads(workspace, FabProjectValidationLevel::FullHash, error),
+            "full validation of every tip catches the tampered older generation");
+        check(loadHashing({ alphaV2.Receipt.GenerationId }, error),
+            "hashing only the newly published generation does not re-hash the other tips: " + error);
+        check(!loadHashing({ beta.Receipt.GenerationId }, error),
+            "naming the tampered generation hashes it and catches the change");
+        check(!loadHashing({ alphaV2.Receipt.GenerationId, beta.Receipt.GenerationId }, error),
+            "any named generation that fails stops validation");
+        check(ProjectLoads(workspace, FabProjectValidationLevel::Structural, error),
+            "the structural level is unchanged by the hashing selection: " + error);
         return check.Passed;
     }
 

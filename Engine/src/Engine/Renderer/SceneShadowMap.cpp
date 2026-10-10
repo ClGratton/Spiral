@@ -236,8 +236,23 @@ namespace Engine
         const float worldUnitsPerTexel = (2.0f * halfExtent) / static_cast<float>(resolution);
         float centerX = (minimum.X + maximum.X) * 0.5f;
         float centerY = (minimum.Y + maximum.Y) * 0.5f;
-        centerX = std::round(centerX / worldUnitsPerTexel) * worldUnitsPerTexel;
-        centerY = std::round(centerY / worldUnitsPerTexel) * worldUnitsPerTexel;
+        // The receiver bounds above are camera-relative, so a lattice snapped
+        // there slides with the camera and the map's texel grid swims in the
+        // world. Snap in a world-fixed light frame instead: add the light-space
+        // position of the translation origin (in double precision), round to
+        // the texel lattice, and subtract it again. The basis depends only on
+        // the light direction, so the lattice is invariant under camera motion.
+        const double originLightX = static_cast<double>(right.X) * frame.TranslationOrigin.X
+            + static_cast<double>(right.Y) * frame.TranslationOrigin.Y
+            + static_cast<double>(right.Z) * frame.TranslationOrigin.Z;
+        const double originLightY = static_cast<double>(up.X) * frame.TranslationOrigin.X
+            + static_cast<double>(up.Y) * frame.TranslationOrigin.Y
+            + static_cast<double>(up.Z) * frame.TranslationOrigin.Z;
+        const double texel = static_cast<double>(worldUnitsPerTexel);
+        if (!std::isfinite(originLightX) || !std::isfinite(originLightY) || !(texel > 0.0))
+            return fail("shadow preparation could not place the translation origin in light space");
+        centerX = static_cast<float>(std::round((static_cast<double>(centerX) + originLightX) / texel) * texel - originLightX);
+        centerY = static_cast<float>(std::round((static_cast<double>(centerY) + originLightY) / texel) * texel - originLightY);
         const float depthPadding = std::max((maximum.Z - minimum.Z) * 0.05f, 1.0f);
         const float nearPlane = minimum.Z - depthPadding;
         const float farPlane = maximum.Z + depthPadding;

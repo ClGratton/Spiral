@@ -1,5 +1,6 @@
 #include "Engine/Assets/FabGltfCook.h"
 
+#include "Engine/Assets/GltfBounds.h"
 #include "Engine/Core/Sha256.h"
 
 #include "cgltf.h"
@@ -384,6 +385,11 @@ namespace Engine
                     else
                         buffer.data = m_BufferStorage[cached->second].data();
                 }
+                // The overflow-checked bounds authority runs first: cgltf_validate itself scans
+                // index data through unchecked arithmetic.
+                std::string boundsError;
+                if (!ValidateGltfBufferBounds(*m_Data, boundsError))
+                    return Fail(std::move(boundsError));
                 if (cgltf_validate(m_Data.get()) != cgltf_result_success)
                     return Fail("glTF structure is invalid");
                 return true;
@@ -431,12 +437,15 @@ namespace Engine
                     scene = &data.scenes[0];
                 }
                 std::vector<u8> visited(data.nodes_count, 0);
-                std::vector<const cgltf_node*> stack;
+                m_NodeWorld.assign(data.nodes_count, std::array<double, 16> {});
+                // Each entry carries the parent it was reached through; that, not node->parent, is
+                // the ancestor whose world matrix is composed.
+                std::vector<std::pair<const cgltf_node*, const cgltf_node*>> stack;
                 for (cgltf_size index = scene->nodes_count; index > 0; --index)
-                    stack.push_back(scene->nodes[index - 1]);
+                    stack.emplace_back(scene->nodes[index - 1], nullptr);
                 while (!stack.empty())
                 {
-                    const cgltf_node* node = stack.back();
+                    const auto [node, reachedFrom] = stack.back();
                     stack.pop_back();
                     const size_t nodeIndex = static_cast<size_t>(node - data.nodes);
                     if (visited[nodeIndex])
@@ -444,6 +453,29 @@ namespace Engine
                     visited[nodeIndex] = 1;
                     if (Poll())
                         return false;
+                    // World = parentWorld * local, computed once per node so a deep chain costs O(n)
+                    // instead of walking every ancestor for every primitive instance. A parent is
+                    // always visited before its children.
+                    {
+                        cgltf_float local[16];
+                        cgltf_node_transform_local(node, local);
+                        std::array<double, 16>& world = m_NodeWorld[nodeIndex];
+                        if (reachedFrom)
+                        {
+                            const std::array<double, 16>& parent = m_NodeWorld[static_cast<size_t>(reachedFrom - data.nodes)];
+                            for (size_t column = 0; column < 4; ++column)
+                                for (size_t row = 0; row < 4; ++row)
+                                {
+                                    double sum = 0.0;
+                                    for (size_t inner = 0; inner < 4; ++inner)
+                                        sum += parent[inner * 4 + row] * static_cast<double>(local[column * 4 + inner]);
+                                    world[column * 4 + row] = sum;
+                                }
+                        }
+                        else
+                            for (size_t index = 0; index < 16; ++index)
+                                world[index] = local[index];
+                    }
                     if (node->skin || node->weights_count > 0)
                         return Fail(node->skin ? "skins are not supported" : "morph targets are not supported");
                     if (node->has_mesh_gpu_instancing)
@@ -463,7 +495,7 @@ namespace Engine
                         }
                     }
                     for (cgltf_size child = node->children_count; child > 0; --child)
-                        stack.push_back(node->children[child - 1]);
+                        stack.emplace_back(node->children[child - 1], node);
                 }
                 if (m_Instances.empty())
                     return Fail("selected glTF scene contains no renderable mesh");
@@ -664,11 +696,10 @@ namespace Engine
                 return true;
             }
 
-            // Column-major world matrix as doubles.
-            static void WorldMatrix(const cgltf_node* node, double (&matrix)[16])
+            // Column-major world matrix as doubles, precomputed by CollectInstances.
+            void WorldMatrix(const cgltf_node* node, double (&matrix)[16]) const
             {
-                cgltf_float world[16];
-                cgltf_node_transform_world(node, world);
+                const std::array<double, 16>& world = m_NodeWorld[static_cast<size_t>(node - m_Data->nodes)];
                 for (size_t index = 0; index < 16; ++index)
                     matrix[index] = world[index];
             }
@@ -1080,6 +1111,7 @@ namespace Engine
             std::vector<std::vector<u8>> m_BufferStorage;
             std::unique_ptr<cgltf_data, decltype(&cgltf_free)> m_Data;
             std::vector<PrimitiveInstance> m_Instances;
+            std::vector<std::array<double, 16>> m_NodeWorld;
             const cgltf_material* m_GltfMaterial = nullptr;
             ViewInfo m_BaseColorView, m_EmissiveView, m_NormalView, m_MetallicRoughnessView, m_OcclusionView;
             bool m_Textured = false;

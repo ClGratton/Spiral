@@ -305,27 +305,47 @@ namespace Engine
             }
             else
             {
-                const float inverseDepth = 1.0f / light.ViewPosition.Z;
-                const float centerX = light.ViewPosition.X * view.Projection.Values[0] * inverseDepth;
-                const float centerY = light.ViewPosition.Y * view.Projection.Values[5] * inverseDepth;
-                const float radiusX = source.Range * std::abs(view.Projection.Values[0])
-                    / std::max(candidate.NearClip, light.ViewPosition.Z - source.Range);
-                const float radiusY = source.Range * std::abs(view.Projection.Values[5])
-                    / std::max(candidate.NearClip, light.ViewPosition.Z - source.Range);
-                if (!std::isfinite(inverseDepth)
-                    || !std::isfinite(centerX) || !std::isfinite(centerY)
-                    || !std::isfinite(radiusX) || !std::isfinite(radiusY))
+                // Conservative NDC extent of the light sphere along one axis. The
+                // sphere's silhouette along an axis is bounded by the two planes
+                // through the eye that contain the other axis and touch the
+                // sphere; in the (axis, depth) plane they sit at the angles
+                // theta +/- asin(R / d), with d the in-plane distance to the
+                // center. A radius divided by depth is NOT conservative for an
+                // off-axis light: the true half-width grows with 1 / cos(theta).
+                // The sphere is wholly beyond the near plane here (Z - R > near > 0).
+                const auto tryAxisExtent = [&source](double axisCenter, double depth, double scale,
+                    double& outMinimum, double& outMaximum)
+                {
+                    constexpr double kHalfPi = 1.5707963267948966;
+                    constexpr double kUnbounded = 1.0e4;
+                    const double inPlaneDistance = std::sqrt(axisCenter * axisCenter + depth * depth);
+                    if (!std::isfinite(inPlaneDistance) || inPlaneDistance <= 0.0)
+                        return false;
+                    const double halfAngle = std::asin(std::min(1.0, static_cast<double>(source.Range) / inPlaneDistance));
+                    const double centerAngle = std::atan2(axisCenter, depth);
+                    const double lowAngle = centerAngle - halfAngle;
+                    const double highAngle = centerAngle + halfAngle;
+                    // A tangent at or past +/- 90 degrees reaches the frustum edge.
+                    const double low = lowAngle <= -kHalfPi ? -kUnbounded : std::max(-kUnbounded, scale * std::tan(lowAngle));
+                    const double high = highAngle >= kHalfPi ? kUnbounded : std::min(kUnbounded, scale * std::tan(highAngle));
+                    outMinimum = low;
+                    outMaximum = high;
+                    return std::isfinite(low) && std::isfinite(high);
+                };
+                double ndcMinimumX = 0.0, ndcMaximumX = 0.0, ndcMinimumY = 0.0, ndcMaximumY = 0.0;
+                if (!tryAxisExtent(light.ViewPosition.X, light.ViewPosition.Z, view.Projection.Values[0], ndcMinimumX, ndcMaximumX)
+                    || !tryAxisExtent(light.ViewPosition.Y, light.ViewPosition.Z, view.Projection.Values[5], ndcMinimumY, ndcMaximumY))
                 {
                     outError = "clustered light grid local-light projection is nonfinite";
                     return false;
                 }
-                const float minimumPixelX = (centerX - radiusX + 1.0f) * 0.5f * viewportWidth;
-                const float maximumPixelX = (centerX + radiusX + 1.0f) * 0.5f * viewportWidth;
+                const float minimumPixelX = static_cast<float>((ndcMinimumX + 1.0) * 0.5 * viewportWidth);
+                const float maximumPixelX = static_cast<float>((ndcMaximumX + 1.0) * 0.5 * viewportWidth);
                 // SV_Position and the NVRHI DX-coordinate Vulkan viewport both
                 // number tiles from the top. Flip projected NDC Y here so the
                 // CPU-built CSR addresses the same screen row as the shader.
-                const float minimumPixelY = (1.0f - centerY - radiusY) * 0.5f * viewportHeight;
-                const float maximumPixelY = (1.0f - centerY + radiusY) * 0.5f * viewportHeight;
+                const float minimumPixelY = static_cast<float>((1.0 - ndcMaximumY) * 0.5 * viewportHeight);
+                const float maximumPixelY = static_cast<float>((1.0 - ndcMinimumY) * 0.5 * viewportHeight);
                 if (!std::isfinite(minimumPixelX) || !std::isfinite(maximumPixelX)
                     || !std::isfinite(minimumPixelY) || !std::isfinite(maximumPixelY))
                 {

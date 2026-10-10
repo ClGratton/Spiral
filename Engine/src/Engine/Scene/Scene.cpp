@@ -10,12 +10,16 @@
 #include <sstream>
 #include <stdexcept>
 #include <string_view>
+#include <utility>
 
 namespace Engine
 {
     namespace
     {
         constexpr int kSceneFormatVersion = 5;
+        // No legitimate record approaches this (the longest carry a name); it only
+        // bounds the memory a hostile single-line file can make the loader hold.
+        constexpr size_t kMaximumSceneLineBytes = 1024 * 1024;
 
         void WriteVec3(std::ostream& stream, std::string_view name, const Math::Vec3& value)
         {
@@ -75,24 +79,54 @@ namespace Engine
             return false;
         }
 
-        SceneEntity* FindEntityInList(std::vector<SceneEntity>& entities, Entity entity)
-        {
-            const auto it = std::find_if(entities.begin(), entities.end(), [entity](const SceneEntity& candidate)
-            {
-                return candidate.EntityHandle == entity;
-            });
-
-            return it == entities.end() ? nullptr : &(*it);
-        }
-
         bool IsFinite(const Math::Vec3& value)
         {
             return std::isfinite(value.X) && std::isfinite(value.Y) && std::isfinite(value.Z);
         }
 
+        // Scale components must be normal floats: a denormal such as 1e-39 is
+        // positive but its reciprocal overflows to infinity, which the raster
+        // preparation rejects (and then blanks the whole viewport).
         bool HasStrictlyPositiveScale(const Math::Vec3& scale)
         {
-            return IsFinite(scale) && scale.X > 0.0f && scale.Y > 0.0f && scale.Z > 0.0f;
+            constexpr float smallest = std::numeric_limits<float>::min();
+            return IsFinite(scale) && scale.X >= smallest && scale.Y >= smallest && scale.Z >= smallest;
+        }
+
+        // Raises the counter above `id`, never lowering it. The largest id has no
+        // successor: "id + 1" would wrap to zero and silently leave the counter
+        // unchanged, so the counter is simply left alone (it can never be issued
+        // anyway, see CreateEntity).
+        void RaiseNextEntityId(EntityId& counter, EntityId id)
+        {
+            if (id != std::numeric_limits<EntityId>::max())
+                counter = std::max(counter, id + 1);
+        }
+
+        bool ContainsLineBreak(std::string_view text)
+        {
+            return text.find_first_of("\n\r") != std::string_view::npos;
+        }
+
+        // Reads one unsigned 32-bit decimal token. Stream extraction into an
+        // unsigned type accepts "-1" (wrapping to 4294967295); ids and counters
+        // must be plain digits within range.
+        bool ReadUnsigned32(std::istringstream& stream, u32& outValue)
+        {
+            std::string token;
+            if (!(stream >> token) || token.empty() || token.size() > 10)
+                return false;
+            u64 value = 0;
+            for (const char digit : token)
+            {
+                if (digit < '0' || digit > '9')
+                    return false;
+                value = value * 10 + static_cast<u64>(digit - '0');
+            }
+            if (value > std::numeric_limits<u32>::max())
+                return false;
+            outValue = static_cast<u32>(value);
+            return true;
         }
 
         bool HasUnitScale(const Math::Vec3& scale)
@@ -107,7 +141,17 @@ namespace Engine
                 && IsFinite(entity.Transform.RotationDegrees)
                 && HasStrictlyPositiveScale(entity.Transform.Scale)
                 && (!entity.Camera || HasUnitScale(entity.Transform.Scale))
+                && (!entity.Camera || IsValidCameraComponent(*entity.Camera))
                 && (!entity.Light || IsValidLightComponent(*entity.Light));
+        }
+
+        // Everything Save writes must load back: the insertion invariants plus
+        // text that cannot break the line-framed format.
+        bool IsPersistableEntity(const SceneEntity& entity, const Math::WorldGridPolicy& policy)
+        {
+            return IsInsertableEntity(entity, policy)
+                && !ContainsLineBreak(entity.Name)
+                && (!entity.MeshRenderer || !ContainsLineBreak(entity.MeshRenderer->MeshName));
         }
     }
 
@@ -135,6 +179,21 @@ namespace Engine
         snapshot.WorldGridPolicy = m_WorldGridPolicy;
         if (renderView.Valid)
             snapshot.Views.push_back({ renderView });
+
+        // Size the three lists exactly once: this runs every frame, and growing
+        // them by push_back reallocated each of them repeatedly.
+        size_t meshCount = 0;
+        size_t lightCount = 0;
+        size_t cameraCount = 0;
+        for (const SceneEntity& entity : m_Entities)
+        {
+            meshCount += entity.MeshRenderer && entity.MeshRenderer->Visible ? 1 : 0;
+            lightCount += entity.Light ? 1 : 0;
+            cameraCount += entity.Camera ? 1 : 0;
+        }
+        snapshot.Meshes.reserve(meshCount);
+        snapshot.Lights.reserve(lightCount);
+        snapshot.Cameras.reserve(cameraCount);
 
         for (const SceneEntity& entity : m_Entities)
         {
@@ -187,21 +246,24 @@ namespace Engine
 
     Entity Scene::CreateEntity(std::string name)
     {
-        return CreateEntityWithId(m_NextEntityId++, std::move(name));
+        // A counter at the largest id means the id space is exhausted: the
+        // largest id itself is never issued, so the counter can neither wrap to an
+        // invalid or reused id nor overflow.
+        if (m_NextEntityId == kInvalidEntityId || m_NextEntityId == std::numeric_limits<EntityId>::max())
+            return {};
+        return CreateEntityWithId(m_NextEntityId, std::move(name));
     }
 
     bool Scene::DestroyEntity(Entity entity)
     {
-        const auto it = std::find_if(m_Entities.begin(), m_Entities.end(), [entity](const SceneEntity& candidate)
-        {
-            return candidate.EntityHandle == entity;
-        });
-
-        if (it == m_Entities.end())
+        size_t index = 0;
+        if (!TryGetEntityIndex(entity, index))
             return false;
 
-        const bool destroyedMainCamera = it->EntityHandle == m_MainCameraEntity;
-        m_Entities.erase(it);
+        const bool destroyedMainCamera = m_Entities[index].EntityHandle == m_MainCameraEntity;
+        m_EntityIndexById.erase(entity.Id);
+        m_Entities.erase(m_Entities.begin() + static_cast<std::ptrdiff_t>(index));
+        RebuildEntityIndexFrom(index);
 
         if (destroyedMainCamera)
         {
@@ -342,7 +404,7 @@ namespace Engine
     CameraComponent* Scene::AddCameraComponent(Entity entity, const CameraComponent& camera)
     {
         SceneEntity* sceneEntity = FindEntityStorage(entity);
-        if (!sceneEntity || !HasUnitScale(sceneEntity->Transform.Scale))
+        if (!sceneEntity || !HasUnitScale(sceneEntity->Transform.Scale) || !IsValidCameraComponent(camera))
             return nullptr;
 
         sceneEntity->Camera = camera;
@@ -477,11 +539,15 @@ namespace Engine
             transform.RotationDegrees, transform.Scale);
     }
 
-    void Scene::SetMainCamera(const CameraComponent& camera)
+    bool Scene::SetMainCamera(const CameraComponent& camera)
     {
+        if (!IsValidCameraComponent(camera))
+            return false;
+
         m_MainCamera = camera;
         if (SceneEntity* sceneEntity = FindEntityStorage(m_MainCameraEntity))
             sceneEntity->Camera = camera;
+        return true;
     }
 
     bool Scene::SaveToFile(const std::filesystem::path& path) const
@@ -490,6 +556,23 @@ namespace Engine
         {
             Log::Error("Could not save scene with an invalid world-grid policy: ", path.string());
             return false;
+        }
+        // Refuse before touching the destination anything the loader would not
+        // accept, so a bad in-memory value can never replace the last good file
+        // with one that can no longer be loaded. The invariants are the same ones
+        // load and RestoreEntity enforce.
+        if (ContainsLineBreak(m_Name) || !IsValidCameraComponent(m_MainCamera))
+        {
+            Log::Error("Could not save scene with an unloadable name or main camera: ", path.string());
+            return false;
+        }
+        {
+            const SceneEntity* mainCamera = FindEntityStorage(m_MainCameraEntity);
+            if (m_MainCameraEntity && (!mainCamera || !mainCamera->Camera))
+            {
+                Log::Error("Could not save scene whose main camera entity has no camera: ", path.string());
+                return false;
+            }
         }
         for (const SceneEntity& entity : m_Entities)
         {
@@ -501,6 +584,12 @@ namespace Engine
             if (entity.Light && !IsValidLightComponent(*entity.Light))
             {
                 Log::Error("Could not save scene with invalid photometric light data: ", entity.Name);
+                return false;
+            }
+            if (!IsPersistableEntity(entity, m_WorldGridPolicy))
+            {
+                Log::Error("Could not save scene with an entity that would not load back "
+                    "(non-finite or non-positive transform, invalid camera, or a line break in a name): ", entity.Name);
                 return false;
             }
         }
@@ -611,6 +700,7 @@ namespace Engine
         bool parsedLegacyCameraTransform = false;
         bool parsedEntities = false;
         Entity parsedMainCameraEntity;
+        bool parsedMainCameraKey = false;
         EntityId parsedNextEntityId = 1;
         std::string section;
         size_t lineNumber = 1;
@@ -655,6 +745,8 @@ namespace Engine
         while (std::getline(input, line))
         {
             ++lineNumber;
+            if (line.size() > kMaximumSceneLineBytes)
+                return fail("line exceeds the maximum scene line length");
             if (line.empty())
                 continue;
 
@@ -776,69 +868,77 @@ namespace Engine
                 if (!parsedEntities)
                 {
                     scene.m_Entities.clear();
+                    scene.m_EntityIndexById.clear();
                     scene.m_MainCameraEntity = {};
                     parsedEntities = true;
                 }
 
                 if (key == "NextEntityId")
                 {
-                    if (!(stream >> parsedNextEntityId) || parsedNextEntityId == kInvalidEntityId)
+                    if (!ReadUnsigned32(stream, parsedNextEntityId) || parsedNextEntityId == kInvalidEntityId)
                         return fail("invalid NextEntityId value");
                 }
                 else if (key == "MainCameraEntity")
                 {
-                    if (!(stream >> parsedMainCameraEntity.Id))
-                        return fail("invalid MainCameraEntity value");
+                    if (parsedMainCameraKey || !ReadUnsigned32(stream, parsedMainCameraEntity.Id))
+                        return fail("invalid or duplicate MainCameraEntity value");
+                    parsedMainCameraKey = true;
                 }
                 else if (key == "Entity")
                 {
                     EntityId id = kInvalidEntityId;
                     std::string entityName;
-                    if (!(stream >> id >> std::quoted(entityName)) || !scene.CreateEntityWithId(id, std::move(entityName)))
+                    if (!ReadUnsigned32(stream, id) || !(stream >> std::quoted(entityName))
+                        || !scene.CreateEntityWithId(id, std::move(entityName)))
                         return fail("invalid or duplicate Entity record");
                 }
                 else if (key == "Transform")
                 {
                     Entity entity;
-                    if (!(stream >> entity.Id))
+                    if (!ReadUnsigned32(stream, entity.Id))
                         return fail("invalid Transform entity ID");
 
+                    // Parse into a scratch transform and validate before storing:
+                    // the same invariants SetEntityTransform enforces, including
+                    // the unit scale of a camera that an earlier record attached.
                     SceneEntity* sceneEntity = scene.FindEntityStorage(entity);
                     bool parsedTransform = sceneEntity != nullptr;
+                    TransformComponent parsed;
                     if (parsedTransform && version >= 4)
                     {
                         Math::SectorLocalPosition position;
                         parsedTransform = static_cast<bool>(stream
                                 >> position.Sector.X >> position.Sector.Y >> position.Sector.Z
                                 >> position.Local.X >> position.Local.Y >> position.Local.Z
-                                >> sceneEntity->Transform.RotationDegrees.X
-                                >> sceneEntity->Transform.RotationDegrees.Y
-                                >> sceneEntity->Transform.RotationDegrees.Z
-                                >> sceneEntity->Transform.Scale.X >> sceneEntity->Transform.Scale.Y >> sceneEntity->Transform.Scale.Z)
+                                >> parsed.RotationDegrees.X >> parsed.RotationDegrees.Y >> parsed.RotationDegrees.Z
+                                >> parsed.Scale.X >> parsed.Scale.Y >> parsed.Scale.Z)
                             && Math::IsCanonical(position, scene.m_WorldGridPolicy)
-                            && sceneEntity->Transform.SetPosition(position, scene.m_WorldGridPolicy);
+                            && parsed.SetPosition(position, scene.m_WorldGridPolicy);
                     }
                     else if (parsedTransform)
                     {
                         Math::DVec3 position;
                         parsedTransform = static_cast<bool>(stream
                                 >> position.X >> position.Y >> position.Z
-                                >> sceneEntity->Transform.RotationDegrees.X
-                                >> sceneEntity->Transform.RotationDegrees.Y
-                                >> sceneEntity->Transform.RotationDegrees.Z
-                                >> sceneEntity->Transform.Scale.X >> sceneEntity->Transform.Scale.Y >> sceneEntity->Transform.Scale.Z)
-                            && sceneEntity->Transform.SetWorldPosition(position, scene.m_WorldGridPolicy);
+                                >> parsed.RotationDegrees.X >> parsed.RotationDegrees.Y >> parsed.RotationDegrees.Z
+                                >> parsed.Scale.X >> parsed.Scale.Y >> parsed.Scale.Z)
+                            && parsed.SetWorldPosition(position, scene.m_WorldGridPolicy);
                     }
 
+                    parsedTransform = parsedTransform
+                        && IsFinite(parsed.RotationDegrees)
+                        && HasStrictlyPositiveScale(parsed.Scale)
+                        && (!sceneEntity->Camera || HasUnitScale(parsed.Scale));
                     if (!parsedTransform)
                         return fail("invalid Transform record or unknown entity");
+                    sceneEntity->Transform = parsed;
                 }
                 else if (key == "Camera")
                 {
                     Entity entity;
                     std::string primary;
                     CameraComponent entityCamera;
-                    if (!(stream >> entity.Id >> primary
+                    if (!ReadUnsigned32(stream, entity.Id) || !(stream >> primary
                             >> entityCamera.Projection.VerticalFovDegrees
                             >> entityCamera.Projection.NearClip
                             >> entityCamera.Projection.FarClip)
@@ -858,8 +958,8 @@ namespace Engine
                     std::string castsShadows;
                     LightComponent light;
                     double legacyIntensity = 0.0;
-                    const bool commonPrefix = static_cast<bool>(stream >> entity.Id >> type
-                        >> light.Color.X >> light.Color.Y >> light.Color.Z)
+                    const bool commonPrefix = ReadUnsigned32(stream, entity.Id)
+                        && static_cast<bool>(stream >> type >> light.Color.X >> light.Color.Y >> light.Color.Z)
                         && TryParseLightType(type, light.Type);
                     const bool photometricParsed = version >= 5
                         ? static_cast<bool>(stream >> light.PhotometricValue >> photometricUnit)
@@ -881,8 +981,8 @@ namespace Engine
                     std::string visible;
                     std::string castsShadows;
                     MeshRendererComponent meshRenderer;
-                    if (!(stream >> entity.Id
-                            >> meshRenderer.MeshAsset
+                    if (!ReadUnsigned32(stream, entity.Id)
+                        || !(stream >> meshRenderer.MeshAsset
                             >> meshRenderer.MaterialAsset
                             >> std::quoted(meshRenderer.MeshName)
                             >> visible
@@ -912,7 +1012,14 @@ namespace Engine
         if (parsedEntities)
         {
             scene.m_NextEntityId = std::max(scene.m_NextEntityId, parsedNextEntityId);
-            if (!scene.SetMainCameraEntity(parsedMainCameraEntity))
+            if (parsedMainCameraKey && !parsedMainCameraEntity.IsValid())
+            {
+                // An explicit "no main camera" (the main camera's component was
+                // removed) is the saved state: do not promote a camera, and drop
+                // the election Camera records may have made while loading.
+                scene.m_MainCameraEntity = {};
+            }
+            else if (!scene.SetMainCameraEntity(parsedMainCameraEntity))
             {
                 for (const SceneEntity& sceneEntity : scene.m_Entities)
                 {
@@ -926,7 +1033,8 @@ namespace Engine
 
             if (!scene.m_MainCameraEntity)
             {
-                scene.SetMainCamera(camera);
+                if (!scene.SetMainCamera(camera))
+                    return fail("invalid MainCamera values");
                 if (scene.m_MainCameraEntity)
                 {
                     if (!scene.SetMainCameraTransform(cameraTransform))
@@ -943,9 +1051,18 @@ namespace Engine
         }
         else
         {
-            scene.SetMainCamera(camera);
+            if (!scene.SetMainCamera(camera))
+                return fail("invalid MainCamera values");
             if (!scene.SetMainCameraTransform(cameraTransform))
                 return fail("invalid legacy MainCamera.Transform");
+        }
+
+        // One validator owns the entity invariants, whatever order the records
+        // arrived in (a Camera record before its Transform, for example).
+        for (const SceneEntity& sceneEntity : scene.m_Entities)
+        {
+            if (!IsInsertableEntity(sceneEntity, scene.m_WorldGridPolicy))
+                return fail("an entity violates the transform, camera, or light invariants");
         }
 
         outScene = std::move(scene);
@@ -954,17 +1071,22 @@ namespace Engine
 
     SceneEntity* Scene::FindEntityStorage(Entity entity)
     {
-        return entity ? FindEntityInList(m_Entities, entity) : nullptr;
+        return const_cast<SceneEntity*>(std::as_const(*this).FindEntityStorage(entity));
     }
 
     const SceneEntity* Scene::FindEntityStorage(Entity entity) const
     {
-        const auto it = std::find_if(m_Entities.begin(), m_Entities.end(), [entity](const SceneEntity& candidate)
-        {
-            return candidate.EntityHandle == entity;
-        });
+        if (!entity)
+            return nullptr;
 
-        return it == m_Entities.end() ? nullptr : &(*it);
+        const auto it = m_EntityIndexById.find(entity.Id);
+        return it == m_EntityIndexById.end() ? nullptr : &m_Entities[it->second];
+    }
+
+    void Scene::RebuildEntityIndexFrom(size_t first)
+    {
+        for (size_t index = first; index < m_Entities.size(); ++index)
+            m_EntityIndexById[m_Entities[index].EntityHandle.Id] = index;
     }
 
     void Scene::SyncMainCameraCacheFromEntity()
@@ -986,7 +1108,8 @@ namespace Engine
 
         const EntityId id = entity.EntityHandle.Id;
         m_Entities.insert(m_Entities.begin() + static_cast<std::ptrdiff_t>(index), std::move(entity));
-        m_NextEntityId = std::max(m_NextEntityId, id + 1);
+        RebuildEntityIndexFrom(index);
+        RaiseNextEntityId(m_NextEntityId, id);
         return true;
     }
 
@@ -1003,7 +1126,8 @@ namespace Engine
         sceneEntity.EntityHandle = entity;
         sceneEntity.Name = std::move(name);
         m_Entities.push_back(std::move(sceneEntity));
-        m_NextEntityId = std::max(m_NextEntityId, id + 1);
+        m_EntityIndexById[id] = m_Entities.size() - 1;
+        RaiseNextEntityId(m_NextEntityId, id);
         return entity;
     }
 }

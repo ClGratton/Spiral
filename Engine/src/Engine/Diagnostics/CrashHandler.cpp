@@ -40,6 +40,9 @@ namespace Engine
         std::string s_ApplicationName = "Spiral";
         std::atomic_bool s_Installed = false;
         std::uint32_t s_ReportSequence = 0;
+        // Resolved once at Install, before the Application constructor can change
+        // the working directory, so receipts and reports always share one tree.
+        std::filesystem::path s_CrashDirectory = std::filesystem::path("output") / "crashes";
 
 #if !defined(GE_PLATFORM_WINDOWS)
         std::atomic<int> s_SignalReceiptFile = -1;
@@ -56,9 +59,19 @@ namespace Engine
             "SpiralFatalSignalReceiptV1 signal=SIGILL disposition=reset-reraise enrichment=none\n";
         constexpr char s_SegmentationViolationReceipt[] =
             "SpiralFatalSignalReceiptV1 signal=SIGSEGV disposition=reset-reraise enrichment=none\n";
+        constexpr char s_BusErrorReceipt[] =
+            "SpiralFatalSignalReceiptV1 signal=SIGBUS disposition=reset-reraise enrichment=none\n";
         constexpr char s_UnknownSignalReceipt[] =
             "SpiralFatalSignalReceiptV1 signal=UNKNOWN disposition=reset-reraise enrichment=none\n";
-        constexpr std::array<int, 4> s_PosixFatalSignals { SIGABRT, SIGFPE, SIGILL, SIGSEGV };
+        constexpr std::array<int, 5> s_PosixFatalSignals { SIGABRT, SIGFPE, SIGILL, SIGSEGV, SIGBUS };
+
+        // A stack-overflow SIGSEGV has no stack to push the handler frame on, so
+        // the handler runs on this alternate stack (SA_ONSTACK). sigaltstack is
+        // per thread: only the thread that calls Install, normally main(), is
+        // covered; an overflow on a worker thread still dies by the default
+        // action and leaves its armed empty receipt.
+        constexpr std::size_t s_AlternateStackSize = 64 * 1024;
+        alignas(16) char s_AlternateStack[s_AlternateStackSize];
 
         struct SignalReceipt
         {
@@ -74,6 +87,7 @@ namespace Engine
                 case SIGFPE: return { s_FloatingPointReceipt, sizeof(s_FloatingPointReceipt) - 1 };
                 case SIGILL: return { s_IllegalInstructionReceipt, sizeof(s_IllegalInstructionReceipt) - 1 };
                 case SIGSEGV: return { s_SegmentationViolationReceipt, sizeof(s_SegmentationViolationReceipt) - 1 };
+                case SIGBUS: return { s_BusErrorReceipt, sizeof(s_BusErrorReceipt) - 1 };
                 default: return { s_UnknownSignalReceipt, sizeof(s_UnknownSignalReceipt) - 1 };
             }
         }
@@ -158,7 +172,7 @@ namespace Engine
         {
             const auto now = std::chrono::system_clock::now();
             const std::string fileName = SanitizeFilePart(s_ApplicationName) + "-" + FormatTimestampForFile(now) + "-" + std::to_string(++s_ReportSequence) + ".txt";
-            return std::filesystem::path("output") / "crashes" / fileName;
+            return s_CrashDirectory / fileName;
         }
 
 #if defined(GE_PLATFORM_WINDOWS)
@@ -224,27 +238,48 @@ namespace Engine
 
         void HandleTerminate()
         {
-            std::string details = "std::terminate called";
-
-            if (std::exception_ptr exception = std::current_exception())
+            // A second terminate while reporting (bad_alloc is a plausible first
+            // cause) skips straight to termination instead of recursing.
+            static std::atomic_flag reporting = ATOMIC_FLAG_INIT;
+            if (!reporting.test_and_set())
             {
                 try
                 {
-                    std::rethrow_exception(exception);
-                }
-                catch (const std::exception& caught)
-                {
-                    details = caught.what();
+                    std::string details = "std::terminate called";
+
+                    if (std::exception_ptr exception = std::current_exception())
+                    {
+                        try
+                        {
+                            std::rethrow_exception(exception);
+                        }
+                        catch (const std::exception& caught)
+                        {
+                            details = caught.what();
+                        }
+                        catch (...)
+                        {
+                            details = "Non-standard exception active during std::terminate";
+                        }
+                    }
+
+                    const auto path = CrashHandler::WriteReport("Fatal terminate", details);
+                    Log::Error("Fatal terminate. Crash report: ", path.string());
                 }
                 catch (...)
                 {
-                    details = "Non-standard exception active during std::terminate";
                 }
             }
 
-            const auto path = CrashHandler::WriteReport("Fatal terminate", details);
-            Log::Error("Fatal terminate. Crash report: ", path.string());
+#if defined(GE_PLATFORM_WINDOWS)
             std::_Exit(1);
+#else
+            // Terminate through SIGABRT like the default handler: the POSIX fatal
+            // signal handler publishes the receipt and re-raises with the default
+            // action, so the host core-dump policy and the signal exit status
+            // survive. _Exit(1) would bypass both.
+            std::abort();
+#endif
         }
 
 #if defined(GE_PLATFORM_WINDOWS)
@@ -280,6 +315,13 @@ namespace Engine
         if (!s_Installed.compare_exchange_strong(expected, true))
             return;
 
+        {
+            std::error_code absoluteError;
+            std::filesystem::path absoluteDirectory = std::filesystem::absolute(s_CrashDirectory, absoluteError);
+            if (!absoluteError)
+                s_CrashDirectory = std::move(absoluteDirectory);
+        }
+
         std::set_terminate(HandleTerminate);
 
 #if defined(GE_PLATFORM_WINDOWS)
@@ -291,7 +333,7 @@ namespace Engine
         SetUnhandledExceptionFilter(HandleWindowsException);
 #else
         std::error_code directoryError;
-        const std::filesystem::path receiptDirectory = std::filesystem::path("output") / "crashes";
+        const std::filesystem::path receiptDirectory = s_CrashDirectory;
         std::filesystem::create_directories(receiptDirectory, directoryError);
 
         if (!directoryError)
@@ -329,7 +371,16 @@ namespace Engine
         sigaddset(&action.sa_mask, SIGFPE);
         sigaddset(&action.sa_mask, SIGILL);
         sigaddset(&action.sa_mask, SIGSEGV);
+        sigaddset(&action.sa_mask, SIGBUS);
         action.sa_flags = SA_RESETHAND | SA_NODEFER;
+
+        stack_t alternateStack = {};
+        alternateStack.ss_sp = s_AlternateStack;
+        alternateStack.ss_size = s_AlternateStackSize;
+        if (::sigaltstack(&alternateStack, nullptr) == 0)
+            action.sa_flags |= SA_ONSTACK;
+        else
+            Log::Warn("POSIX fatal-signal alternate stack could not be installed; stack overflow cannot publish a receipt");
 
         bool handlersInstalled = true;
         for (const int signal : s_PosixFatalSignals)
@@ -359,6 +410,10 @@ namespace Engine
             Log::Warn("One or more POSIX fatal-signal dispositions could not be restored; receipt remains armed");
             return;
         }
+
+        stack_t disabledStack = {};
+        disabledStack.ss_flags = SS_DISABLE;
+        ::sigaltstack(&disabledStack, nullptr);
 
         const int receiptFile = s_SignalReceiptFile.exchange(-1, std::memory_order_acq_rel);
         if (receiptFile >= 0)

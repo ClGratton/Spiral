@@ -78,10 +78,15 @@ namespace Engine
         Entry* FindEntry(AssetHandle asset, RHI::TextureSampler sampler);
         Entry* FindEntry(RHI::TextureBindingHandle handle);
         bool IsError(RHI::TextureBindingHandle handle) const;
+        // preloaded, when non-null, is the decoded variant set the caller
+        // already obtained from this exact snapshot; it is consumed only if
+        // the entry must be (re)published, so the cooked file is not read
+        // twice for one generation change.
         RHI::TextureBindingHandle Resolve(
             const ArtifactResolverSnapshot& artifactResolvers,
             AssetHandle asset, RHI::TextureSampler sampler,
-            std::string& outError);
+            std::string& outError,
+            TextureArtifactVariantSet* preloaded = nullptr);
 
         RHI::Device& m_Device;
         TextureTargetProfile m_PreferredTarget = TextureTargetProfile::RGBAFallback;

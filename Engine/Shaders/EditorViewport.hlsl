@@ -237,17 +237,23 @@ struct SceneLightHeader
 bool ValidateSceneLightPayload(out SceneLightHeader header)
 {
     header = (SceneLightHeader)0;
-    uint length, stride;
-    SceneLightPayload.GetDimensions(length, stride);
-    if (stride != 16u || length < 6u || length > 4194304u)
+    uint bufferLength, stride;
+    SceneLightPayload.GetDimensions(bufferLength, stride);
+    if (stride != 16u || bufferLength < 6u || bufferLength > 4194304u)
         return false;
     const uint4 h0 = SceneLightPayload[0];
+    // The slot buffer is capacity-bucketed: the payload header declares the
+    // used word count, and every index below is validated against that count,
+    // never against the (larger) buffer.
+    const uint length = h0.z;
+    if (length < 6u || length > bufferLength)
+        return false;
     const uint4 h1 = SceneLightPayload[1];
     const uint4 h2 = SceneLightPayload[2];
     const uint4 h3 = SceneLightPayload[3];
     const uint4 h4 = SceneLightPayload[4];
     const uint4 h5 = SceneLightPayload[5];
-    if (h0.x != 0x504C5347u || h0.y != 3u || h0.z != length
+    if (h0.x != 0x504C5347u || h0.y != 3u
         || h0.w != 6u || h1.x != 6u || h5.z != 7u
         || h1.w > 16u || h1.w > h1.y || h5.x == 0u || h5.x > 64u
         || h3.x == 0u || h3.y == 0u || h3.z == 0u || h3.z > 4096u

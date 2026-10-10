@@ -1,14 +1,44 @@
 #include "Engine/Jobs/FrameTaskGraph.h"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <memory>
+#include <mutex>
 #include <queue>
 
 namespace Engine
 {
     namespace
     {
+        // Completion state of one level of worker-lane tasks. Shared with the
+        // submitted jobs so it stays valid for a job that runs after the caller
+        // returned (its task was already claimed and run by the caller).
+        struct LevelState
+        {
+            explicit LevelState(size_t taskCount)
+                : Claimed(std::make_unique<std::atomic<bool>[]>(taskCount))
+            {
+                for (size_t index = 0; index < taskCount; ++index)
+                    Claimed[index].store(false, std::memory_order_relaxed);
+            }
+
+            void Finish()
+            {
+                std::scoped_lock lock(Mutex);
+                // Notify inside the critical section: a waiter that observes zero
+                // returns without touching anything the finishing thread still uses.
+                if (--Remaining == 0)
+                    Condition.notify_all();
+            }
+
+            std::mutex Mutex;
+            std::condition_variable Condition;
+            size_t Remaining = 0;
+            std::unique_ptr<std::atomic<bool>[]> Claimed;
+        };
+
         struct GraphSchedule
         {
             std::vector<FrameTaskId> TopologicalOrder;
@@ -279,53 +309,94 @@ namespace Engine
                     skipTask(taskId);
             }
 
-            std::mutex completionMutex;
-            std::condition_variable completionCondition;
-            size_t remaining = 0;
+            // The state outlives this level through the submitted jobs: a worker that
+            // dequeues a job after the caller already ran its task only touches this
+            // shared block, never the graph-local state of Execute.
+            const auto state = std::make_shared<LevelState>(workerTasks.size());
+            size_t submitted = 0;
+
+            // Runs every submitted worker-lane task no worker has started yet on the
+            // calling thread. Without this, a frame task queued behind a long
+            // background job (a Fab import, project validation) would freeze the
+            // frame loop until that job finished.
+            const auto runUnclaimedOnCallingThread = [&]()
+            {
+                for (size_t index = 0; index < submitted; ++index)
+                {
+                    if (state->Claimed[index].exchange(true, std::memory_order_acq_rel))
+                        continue;
+                    runTask(workerTasks[index]);
+                    state->Finish();
+                }
+            };
+
+            // Workers only get a chance first when one can actually take the task:
+            // other jobs (everything pending that is not this level's own) must
+            // leave at least one worker free.
+            const auto workersSaturatedByOtherJobs = [&]()
+            {
+                size_t ownRemaining = 0;
+                {
+                    std::scoped_lock lock(state->Mutex);
+                    ownRemaining = state->Remaining;
+                }
+                const size_t pending = jobSystem.GetPendingJobCount();
+                const size_t others = pending > ownRemaining ? pending - ownRemaining : 0;
+                return others >= jobSystem.GetWorkerCount();
+            };
+
+            const auto waitForLevel = [&]()
+            {
+                for (;;)
+                {
+                    if (workersSaturatedByOtherJobs())
+                        runUnclaimedOnCallingThread();
+                    std::unique_lock lock(state->Mutex);
+                    if (state->Condition.wait_for(lock, std::chrono::milliseconds(1), [&]() { return state->Remaining == 0; }))
+                        return;
+                }
+            };
+
             try
             {
-                for (FrameTaskId taskId : workerTasks)
+                for (size_t index = 0; index < workerTasks.size(); ++index)
                 {
+                    const FrameTaskId taskId = workerTasks[index];
                     const std::string jobName = "FrameTask:" + m_Tasks[taskId].Name;
                     {
-                        std::scoped_lock lock(completionMutex);
-                        ++remaining;
+                        std::scoped_lock lock(state->Mutex);
+                        ++state->Remaining;
                     }
+                    ++submitted;
                     try
                     {
-                        jobSystem.Submit([&, taskId]
+                        jobSystem.Submit([state, &runTask, index, taskId]
                         {
+                            if (state->Claimed[index].exchange(true, std::memory_order_acq_rel))
+                                return;
                             runTask(taskId);
-                            {
-                                std::scoped_lock lock(completionMutex);
-                                // Keep notification inside the same critical section as the
-                                // terminal count. A waiter that observes zero may immediately
-                                // destroy this graph-local state when Execute returns.
-                                if (--remaining == 0)
-                                    completionCondition.notify_one();
-                            }
+                            state->Finish();
                         }, jobName);
                     }
                     catch (...)
                     {
-                        std::scoped_lock lock(completionMutex);
-                        --remaining;
+                        --submitted;
+                        std::scoped_lock lock(state->Mutex);
+                        --state->Remaining;
                         throw;
                     }
                 }
             }
             catch (const std::exception& exception)
             {
-                std::unique_lock lock(completionMutex);
-                completionCondition.wait(lock, [&]() { return remaining == 0; });
+                waitForLevel();
                 result.GraphError = "frame task submission failed: " + std::string(exception.what());
                 std::replace(result.TaskStatuses.begin(), result.TaskStatuses.end(), FrameTaskStatus::Pending, FrameTaskStatus::Skipped);
                 return result;
             }
             catch (...)
             {
-                std::unique_lock lock(completionMutex);
-                completionCondition.wait(lock, [&]() { return remaining == 0; });
+                waitForLevel();
                 result.GraphError = "frame task submission failed with an unknown exception";
                 std::replace(result.TaskStatuses.begin(), result.TaskStatuses.end(), FrameTaskStatus::Pending, FrameTaskStatus::Skipped);
                 return result;
@@ -334,8 +405,7 @@ namespace Engine
             for (FrameTaskId taskId : callingThreadTasks)
                 runTask(taskId);
 
-            std::unique_lock lock(completionMutex);
-            completionCondition.wait(lock, [&]() { return remaining == 0; });
+            waitForLevel();
         }
 
         return result;

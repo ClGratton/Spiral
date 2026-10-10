@@ -24,7 +24,13 @@ namespace Engine
         auto rbegin() { return m_Layers.rbegin(); }
         auto rend() { return m_Layers.rend(); }
 
+        // Number of registered layers and overlays (attached layers only: a layer
+        // whose OnAttach threw is removed again).
+        std::size_t GetCount() const { return m_Layers.size(); }
+
     private:
+        void RollBackUnattachedLayer(Layer* layer);
+
         std::vector<Scope<Layer>> m_Layers;
         std::size_t m_LayerInsertIndex = 0;
     };

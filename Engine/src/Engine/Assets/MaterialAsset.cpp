@@ -8,6 +8,8 @@
 #include <fstream>
 #include <iomanip>
 #include <iterator>
+#include <limits>
+#include <locale>
 #include <sstream>
 #include <system_error>
 #include <utility>
@@ -44,9 +46,18 @@ namespace Engine
                 std::find(kMaterialTextureSlots.begin(), kMaterialTextureSlots.end(), slot)));
         }
 
-        float ClampNonNegative(float value)
+        // NaN passes through std::clamp and std::max unchanged, and a NaN token cannot be read
+        // back, so a non-finite value falls back to the field's default before clamping.
+        float ClampFinite(float value, float minimum, float maximum, float fallback)
         {
-            return std::max(value, 0.0f);
+            if (!std::isfinite(value))
+                value = fallback;
+            return std::clamp(value, minimum, maximum);
+        }
+
+        float ClampNonNegative(float value, float fallback)
+        {
+            return ClampFinite(value, 0.0f, std::numeric_limits<float>::max(), fallback);
         }
 
         bool ParseBool(std::string_view value, bool& outValue)
@@ -286,31 +297,42 @@ namespace Engine
 
     void MaterialAsset::ClampValues()
     {
-        BaseColor.X = ClampNonNegative(BaseColor.X);
-        BaseColor.Y = ClampNonNegative(BaseColor.Y);
-        BaseColor.Z = ClampNonNegative(BaseColor.Z);
-        Metallic = std::clamp(Metallic, 0.0f, 1.0f);
-        Roughness = std::clamp(Roughness, 0.0f, 1.0f);
-        NormalScale = std::clamp(NormalScale, 0.0f, 4.0f);
-        OcclusionStrength = std::clamp(OcclusionStrength, 0.0f, 1.0f);
-        EmissiveColor.X = ClampNonNegative(EmissiveColor.X);
-        EmissiveColor.Y = ClampNonNegative(EmissiveColor.Y);
-        EmissiveColor.Z = ClampNonNegative(EmissiveColor.Z);
-        EmissiveStrength = ClampNonNegative(EmissiveStrength);
-        AlphaCutoff = std::clamp(AlphaCutoff, 0.0f, 1.0f);
-        DiffuseFresnelIntensity = std::clamp(DiffuseFresnelIntensity, 0.0f, 256.0f);
-        RetroreflectionIntensity = std::clamp(RetroreflectionIntensity, 0.0f, 256.0f);
-        DiffuseFresnelFalloff = std::clamp(DiffuseFresnelFalloff, 0.0f, 1.0f);
-        RetroreflectionFalloff = std::clamp(RetroreflectionFalloff, 0.0f, 1.0f);
-        SmoothTerminator = std::clamp(SmoothTerminator, -1.0f, 1.0f);
+        // BaseColor is capped at 1 like IsValidMaterialSurface requires, so a clamped material is
+        // accepted by every loader and renderer gate.
+        const MaterialAsset defaults;
+        BaseColor.X = ClampFinite(BaseColor.X, 0.0f, 1.0f, defaults.BaseColor.X);
+        BaseColor.Y = ClampFinite(BaseColor.Y, 0.0f, 1.0f, defaults.BaseColor.Y);
+        BaseColor.Z = ClampFinite(BaseColor.Z, 0.0f, 1.0f, defaults.BaseColor.Z);
+        Metallic = ClampFinite(Metallic, 0.0f, 1.0f, defaults.Metallic);
+        Roughness = ClampFinite(Roughness, 0.0f, 1.0f, defaults.Roughness);
+        NormalScale = ClampFinite(NormalScale, 0.0f, 4.0f, defaults.NormalScale);
+        OcclusionStrength = ClampFinite(OcclusionStrength, 0.0f, 1.0f, defaults.OcclusionStrength);
+        EmissiveColor.X = ClampNonNegative(EmissiveColor.X, defaults.EmissiveColor.X);
+        EmissiveColor.Y = ClampNonNegative(EmissiveColor.Y, defaults.EmissiveColor.Y);
+        EmissiveColor.Z = ClampNonNegative(EmissiveColor.Z, defaults.EmissiveColor.Z);
+        EmissiveStrength = ClampNonNegative(EmissiveStrength, defaults.EmissiveStrength);
+        AlphaCutoff = ClampFinite(AlphaCutoff, 0.0f, 1.0f, defaults.AlphaCutoff);
+        DiffuseFresnelIntensity = ClampFinite(DiffuseFresnelIntensity, 0.0f, 256.0f, defaults.DiffuseFresnelIntensity);
+        RetroreflectionIntensity = ClampFinite(RetroreflectionIntensity, 0.0f, 256.0f, defaults.RetroreflectionIntensity);
+        DiffuseFresnelFalloff = ClampFinite(DiffuseFresnelFalloff, 0.0f, 1.0f, defaults.DiffuseFresnelFalloff);
+        RetroreflectionFalloff = ClampFinite(RetroreflectionFalloff, 0.0f, 1.0f, defaults.RetroreflectionFalloff);
+        SmoothTerminator = ClampFinite(SmoothTerminator, -1.0f, 1.0f, defaults.SmoothTerminator);
     }
 
     bool MaterialAsset::SaveToFile(const std::filesystem::path& path) const
     {
         MaterialAsset material = *this;
         material.ClampValues();
+        // Clamping repairs every numeric field; an invalid enumerator or sampler cannot be
+        // repaired and must not be written as a file LoadFromFile would reject.
+        if (!IsValidMaterialAssetValues(material))
+            return false;
 
+        // The classic locale and max_digits10 make the text round trip bit-exactly, so exact-float
+        // comparisons (dirty state, undo, renderer constants) survive a save and reload.
         std::ostringstream output;
+        output.imbue(std::locale::classic());
+        output << std::setprecision(std::numeric_limits<float>::max_digits10);
         output << "SpiralMaterial " << kMaterialAssetFormatVersion << '\n';
         output << "Name " << std::quoted(material.Name) << '\n';
         output << "ShadingModel " << ToString(material.ShadingModel) << '\n';
@@ -362,6 +384,7 @@ namespace Engine
                 continue;
 
             std::istringstream stream(line);
+            stream.imbue(std::locale::classic());
             std::string key;
             stream >> key;
             if (key == "Name")

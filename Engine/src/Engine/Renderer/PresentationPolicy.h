@@ -67,8 +67,63 @@ namespace Engine
 
         void Request(PresentationPolicy policy) { Requested = policy; }
         bool IsPending() const { return !LastAppliedRequest || *LastAppliedRequest != Requested; }
-        void Commit() { LastAppliedRequest = Requested; ++Generation; }
+        // Committing a request that is already applied changes nothing, so a
+        // recovery path that commits again after swapchain creation already
+        // committed cannot advance the generation twice for one transition.
+        void Commit()
+        {
+            if (!IsPending())
+                return;
+            LastAppliedRequest = Requested;
+            ++Generation;
+        }
         void Reset() { LastAppliedRequest.reset(); Generation = 0; }
+    };
+
+    // What a backend must do when asked to apply a pending presentation-policy
+    // transition. A transition is deferred, never failed, while the window has
+    // no drawable framebuffer (a minimized window reports 0x0): the request
+    // stays pending and is applied on the first frame with a real size. Only a
+    // genuinely failed recreation may abort.
+    enum class PendingPolicyDecision { Failed, NothingPending, DeferUntilDrawable, Apply };
+    inline PendingPolicyDecision DecidePendingPolicyApplication(
+        bool initialized, bool transitionPending, int framebufferWidth, int framebufferHeight)
+    {
+        if (!initialized)
+            return PendingPolicyDecision::Failed;
+        if (!transitionPending)
+            return PendingPolicyDecision::NothingPending;
+        if (framebufferWidth <= 0 || framebufferHeight <= 0)
+            return PendingPolicyDecision::DeferUntilDrawable;
+        return PendingPolicyDecision::Apply;
+    }
+
+    // VK_SUBOPTIMAL_KHR is a success code: the image was acquired or presented.
+    // It only hints that the swapchain could be recreated to match the surface
+    // better. A driver or compositor can keep answering SUBOPTIMAL after the
+    // recreation, so one recreation is allowed per swapchain extent; asking
+    // again for the same extent would serialize every frame on a device-idle
+    // rebuild without ever changing the answer.
+    class SuboptimalRecreationGate
+    {
+    public:
+        bool ShouldRecreate(u32 width, u32 height)
+        {
+            if (m_HasExtent && m_Width == width && m_Height == height)
+                return false;
+            m_HasExtent = true;
+            m_Width = width;
+            m_Height = height;
+            return true;
+        }
+
+        // A deliberate transition (policy change) may justify one new recreation.
+        void Reset() { m_HasExtent = false; }
+
+    private:
+        bool m_HasExtent = false;
+        u32 m_Width = 0;
+        u32 m_Height = 0;
     };
 
     struct VulkanPresentationResolution { PresentationActualMode Actual = PresentationActualMode::VulkanFifo; std::string Capability; std::string FallbackReason; };

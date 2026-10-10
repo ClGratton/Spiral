@@ -17,12 +17,35 @@ namespace Engine
         m_LayerInsertIndex = 0;
     }
 
+    void LayerStack::RollBackUnattachedLayer(Layer* layer)
+    {
+        const auto it = std::find_if(m_Layers.begin(), m_Layers.end(),
+            [layer](const Scope<Layer>& candidate) { return candidate.get() == layer; });
+        if (it == m_Layers.end())
+            return;
+
+        const std::size_t index = static_cast<std::size_t>(it - m_Layers.begin());
+        if (index < m_LayerInsertIndex)
+            --m_LayerInsertIndex;
+        m_Layers.erase(it);
+    }
+
     Layer* LayerStack::PushLayer(Scope<Layer> layer)
     {
         Layer* rawLayer = layer.get();
         m_Layers.emplace(m_Layers.begin() + static_cast<std::ptrdiff_t>(m_LayerInsertIndex), std::move(layer));
         ++m_LayerInsertIndex;
-        rawLayer->OnAttach();
+        try
+        {
+            rawLayer->OnAttach();
+        }
+        catch (...)
+        {
+            // A layer whose OnAttach did not complete is not attached: unregister
+            // it without OnDetach so unwinding never detaches uninitialized state.
+            RollBackUnattachedLayer(rawLayer);
+            throw;
+        }
         return rawLayer;
     }
 
@@ -30,7 +53,15 @@ namespace Engine
     {
         Layer* rawLayer = overlay.get();
         m_Layers.emplace_back(std::move(overlay));
-        rawLayer->OnAttach();
+        try
+        {
+            rawLayer->OnAttach();
+        }
+        catch (...)
+        {
+            RollBackUnattachedLayer(rawLayer);
+            throw;
+        }
         return rawLayer;
     }
 

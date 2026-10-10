@@ -57,33 +57,6 @@ namespace Engine
 
         struct SceneMeshDraw { Ref<const MeshGpuResourceBundle> Bundle; MeshGpuPrimitiveRange Primitive; size_t ConstantIndex = 0; };
 
-        bool TryCalculateObjectBounds(const MeshArtifact& artifact,
-            SceneObjectBounds& outBounds)
-        {
-            if (artifact.Vertices.empty())
-                return false;
-            SceneObjectBounds bounds {
-                { std::numeric_limits<float>::max(), std::numeric_limits<float>::max(),
-                    std::numeric_limits<float>::max() },
-                { -std::numeric_limits<float>::max(), -std::numeric_limits<float>::max(),
-                    -std::numeric_limits<float>::max() }
-            };
-            for (const MeshArtifactVertex& vertex : artifact.Vertices)
-            {
-                for (size_t component = 0; component < 3; ++component)
-                    if (!std::isfinite(vertex.Position[component]))
-                        return false;
-                bounds.Minimum.X = std::min(bounds.Minimum.X, vertex.Position[0]);
-                bounds.Minimum.Y = std::min(bounds.Minimum.Y, vertex.Position[1]);
-                bounds.Minimum.Z = std::min(bounds.Minimum.Z, vertex.Position[2]);
-                bounds.Maximum.X = std::max(bounds.Maximum.X, vertex.Position[0]);
-                bounds.Maximum.Y = std::max(bounds.Maximum.Y, vertex.Position[1]);
-                bounds.Maximum.Z = std::max(bounds.Maximum.Z, vertex.Position[2]);
-            }
-            outBounds = bounds;
-            return true;
-        }
-
     }
 
     struct NVRHIVulkanViewportSceneRenderer::Impl
@@ -466,16 +439,15 @@ namespace Engine
             std::string meshError;
             for (size_t index = 0; index < frame.Instances.size(); ++index)
             {
-                MeshArtifact artifact;
-                if (!Renderer::ResolvePublishedMeshArtifact(
+                PublishedMeshRecord mesh;
+                if (!Renderer::ResolvePublishedMeshRecord(
                     *frame.ArtifactResolvers, frame.Instances[index].MeshAsset,
-                    artifact, meshError)) { Log::Error("Vulkan Scene viewport could not resolve snapshot mesh artifact: ", meshError); return false; }
-                SceneObjectBounds bounds;
-                if (!TryCalculateObjectBounds(artifact, bounds))
-                { Log::Error("Vulkan Scene viewport could not calculate finite mesh bounds"); return false; }
-                objectBounds.push_back(bounds);
+                    mesh, meshError)) { Log::Error("Vulkan Scene viewport could not resolve snapshot mesh artifact: ", meshError); return false; }
+                objectBounds.push_back({
+                    { mesh.BoundsMinimum[0], mesh.BoundsMinimum[1], mesh.BoundsMinimum[2] },
+                    { mesh.BoundsMaximum[0], mesh.BoundsMaximum[1], mesh.BoundsMaximum[2] } });
                 Ref<const MeshGpuResourceBundle> bundle;
-                if (!m_MeshResourceCache.Acquire(*m_Device, artifact, bundle, meshError)) { Log::Error("Vulkan Scene viewport could not acquire snapshot mesh GPU resources: ", meshError); return false; }
+                if (!m_MeshResourceCache.Acquire(*m_Device, mesh.Artifact, bundle, meshError)) { Log::Error("Vulkan Scene viewport could not acquire snapshot mesh GPU resources: ", meshError); return false; }
                 for (const MeshGpuPrimitiveRange& primitive : bundle->Primitives) draws.push_back({ bundle, primitive, index });
             }
             SceneDebugOverlayFrame debugOverlayFrame;
@@ -585,11 +557,13 @@ namespace Engine
             const RenderGraph::PassHandle lightCopyPass = graph->AddPass("Scene Light Payload Copy", RHI::QueueType::Graphics);
             graph->AddRead(lightCopyPass, lightStaging, RHI::ResourceState::CopySource);
             graph->AddWrite(lightCopyPass, lightGpu, RHI::ResourceState::CopyDest);
-            graph->SetPassCallback(lightCopyPass, [lightStaging, lightGpu](RenderGraph::ExecutionContext& context)
+            // Slot buffers are capacity-bucketed; only the payload's own bytes are copied.
+            const u64 lightCopyBytes = static_cast<u64>(lightPayload->Payload->Words.size()) * sizeof(SceneLightPayloadWord);
+            graph->SetPassCallback(lightCopyPass, [lightStaging, lightGpu, lightCopyBytes](RenderGraph::ExecutionContext& context)
             {
                 RHI::Buffer* staging = context.GetBuffer(lightStaging);
                 RHI::Buffer* gpu = context.GetBuffer(lightGpu);
-                return staging && gpu && context.GetCommandList().CopyBuffer(*gpu, 0, *staging, 0, gpu->GetDescription().SizeBytes);
+                return staging && gpu && context.GetCommandList().CopyBuffer(*gpu, 0, *staging, 0, lightCopyBytes);
             });
             RHI::TextureBindingTable* textureTable = m_TextureRuntime->GetBindingTable();
             const RenderGraph::PassHandle shadowPass = graph->AddPass(

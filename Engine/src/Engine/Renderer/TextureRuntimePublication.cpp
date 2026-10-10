@@ -39,26 +39,26 @@ namespace Engine
             return false;
         }
 
-        bool HasExpectedSemantics(MaterialTextureSlot slot, const TextureArtifact& artifact)
+        bool HasExpectedSemantics(MaterialTextureSlot slot, TextureRole role, TextureColorSpace colorSpace)
         {
             switch (slot)
             {
                 case MaterialTextureSlot::BaseColor:
-                    return artifact.Role == TextureRole::BaseColor
-                        && artifact.ColorSpace == TextureColorSpace::Srgb;
+                    return role == TextureRole::BaseColor
+                        && colorSpace == TextureColorSpace::Srgb;
                 case MaterialTextureSlot::Normal:
-                    return artifact.Role == TextureRole::Normal
-                        && artifact.ColorSpace == TextureColorSpace::Linear;
+                    return role == TextureRole::Normal
+                        && colorSpace == TextureColorSpace::Linear;
                 case MaterialTextureSlot::Orm:
-                    return artifact.Role == TextureRole::Orm
-                        && artifact.ColorSpace == TextureColorSpace::Linear;
+                    return role == TextureRole::Orm
+                        && colorSpace == TextureColorSpace::Linear;
                 case MaterialTextureSlot::Emissive:
-                    return artifact.Role == TextureRole::Emissive
-                        && artifact.ColorSpace == TextureColorSpace::Srgb;
+                    return role == TextureRole::Emissive
+                        && colorSpace == TextureColorSpace::Srgb;
                 case MaterialTextureSlot::Opacity:
                 case MaterialTextureSlot::CallistoControl:
-                    return artifact.Role == TextureRole::Mask
-                        && artifact.ColorSpace == TextureColorSpace::Linear;
+                    return role == TextureRole::Mask
+                        && colorSpace == TextureColorSpace::Linear;
             }
             return false;
         }
@@ -176,7 +176,8 @@ namespace Engine
 
     RHI::TextureBindingHandle TextureRuntimePublication::Resolve(
         const ArtifactResolverSnapshot& artifactResolvers, AssetHandle asset,
-        RHI::TextureSampler sampler, std::string& outError)
+        RHI::TextureSampler sampler, std::string& outError,
+        TextureArtifactVariantSet* preloaded)
     {
         if (!m_Publication)
         {
@@ -206,10 +207,15 @@ namespace Engine
         }
 
         TextureArtifactVariantSet variants;
-        u64 resolvedGeneration = 0;
-        if (!Renderer::ResolvePublishedTextureArtifactVariantSet(
-            artifactResolvers, asset, m_PreferredTarget, variants,
-            resolvedGeneration, outError))
+        u64 resolvedGeneration = currentGeneration;
+        bool variantsReady = preloaded != nullptr;
+        if (preloaded)
+            variants = std::move(*preloaded);
+        else
+            variantsReady = Renderer::ResolvePublishedTextureArtifactVariantSet(
+                artifactResolvers, asset, m_PreferredTarget, variants,
+                resolvedGeneration, outError);
+        if (!variantsReady)
         {
             if (entry && !entry->HasAcceptedUse)
             {
@@ -342,16 +348,19 @@ namespace Engine
                 continue;
 
             candidate.DeclaredMask |= 1u << static_cast<u32>(index);
-            TextureArtifactVariantSet variants;
-            u64 textureGeneration = 0;
+            // The slot's role/color-space verdict comes from the snapshot's
+            // retained semantics, so a steady-state frame never decodes a
+            // cooked texture. The decode happens once per snapshot and its
+            // variant set is handed to Resolve() for the first publication.
+            TextureArtifactVariantSet loadedVariants;
+            PublishedTextureSemantics semantics;
             std::string slotError;
             RHI::TextureSampler sampler = RHI::TextureSampler::LinearWrap;
             const bool resolved = MapSampler(candidate.Material.GetSampler(slot), sampler)
-                && Renderer::ResolvePublishedTextureArtifactVariantSet(
-                    artifactResolvers, textureAsset, m_PreferredTarget, variants,
-                    textureGeneration, slotError)
-                && textureGeneration == candidate.CatalogGeneration
-                && HasExpectedSemantics(slot, variants.Preferred);
+                && Renderer::ResolvePublishedTextureSemantics(
+                    artifactResolvers, textureAsset, m_PreferredTarget, semantics,
+                    &loadedVariants, slotError)
+                && HasExpectedSemantics(slot, semantics.Role, semantics.ColorSpace);
             if (!resolved)
             {
                 candidate.ErrorMask |= 1u << static_cast<u32>(index);
@@ -362,7 +371,8 @@ namespace Engine
             }
 
             candidate.Handles[index] = Resolve(
-                artifactResolvers, textureAsset, sampler, slotError);
+                artifactResolvers, textureAsset, sampler, slotError,
+                loadedVariants.Preferred.Mips.empty() ? nullptr : &loadedVariants);
             if (IsError(candidate.Handles[index]))
             {
                 candidate.ErrorMask |= 1u << static_cast<u32>(index);

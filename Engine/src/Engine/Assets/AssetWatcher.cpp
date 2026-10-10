@@ -1,10 +1,16 @@
 #include "Engine/Assets/AssetWatcher.h"
 
 #include "Engine/Assets/AssetFileSystem.h"
+#include "Engine/Core/Base.h"
 
 #include <algorithm>
 #include <system_error>
+#include <unordered_set>
 #include <utility>
+
+#if defined(GE_PLATFORM_LINUX)
+    #include <sys/stat.h>
+#endif
 
 namespace Engine
 {
@@ -20,19 +26,47 @@ namespace Engine
         return "Unknown";
     }
 
+    void AssetWatcher::SetPathResolver(AssetPathResolver resolver)
+    {
+        m_PathResolver = std::move(resolver);
+        m_Records.clear();
+        m_RecordIndex.clear();
+    }
+
+    std::filesystem::path AssetWatcher::Resolve(std::string_view sourcePath) const
+    {
+        return m_PathResolver ? m_PathResolver(sourcePath) : AssetFileSystem::ResolvePath(sourcePath);
+    }
+
+    void AssetWatcher::RebuildIndex()
+    {
+        m_RecordIndex.clear();
+        m_RecordIndex.reserve(m_Records.size());
+        for (std::size_t index = 0; index < m_Records.size(); ++index)
+            m_RecordIndex.emplace(m_Records[index].Handle, index);
+    }
+
     void AssetWatcher::SyncRegistry(const AssetRegistry& registry)
     {
         const std::vector<AssetMetadata>& assets = registry.GetAssets();
+
+        // Linear reconciliation: one pass collects the physical handles, one erase drops the
+        // records that left the registry, one pass adds or refreshes the rest.
+        std::unordered_set<AssetHandle> physical;
+        physical.reserve(assets.size());
+        for (const AssetMetadata& metadata : assets)
+            if (metadata.SourcePolicy == AssetSourcePolicy::PhysicalFile)
+                physical.insert(metadata.Handle);
+
+        const std::size_t before = m_Records.size();
         m_Records.erase(
-            std::remove_if(m_Records.begin(), m_Records.end(), [&assets](const Record& record)
+            std::remove_if(m_Records.begin(), m_Records.end(), [&physical](const Record& record)
             {
-                return std::find_if(assets.begin(), assets.end(), [&record](const AssetMetadata& metadata)
-                {
-                    return metadata.Handle == record.Handle
-                        && metadata.SourcePolicy == AssetSourcePolicy::PhysicalFile;
-                }) == assets.end();
+                return physical.find(record.Handle) == physical.end();
             }),
             m_Records.end());
+        if (m_Records.size() != before || m_RecordIndex.size() != m_Records.size())
+            RebuildIndex();
 
         for (const AssetMetadata& metadata : assets)
         {
@@ -46,8 +80,9 @@ namespace Engine
                 newRecord.Handle = metadata.Handle;
                 newRecord.Type = metadata.Type;
                 newRecord.SourcePath = metadata.SourcePath;
-                newRecord.ResolvedPath = AssetFileSystem::ResolvePath(metadata.SourcePath);
+                newRecord.ResolvedPath = Resolve(metadata.SourcePath);
                 newRecord.LastSnapshot = Capture(newRecord.ResolvedPath);
+                m_RecordIndex.emplace(newRecord.Handle, m_Records.size());
                 m_Records.push_back(std::move(newRecord));
                 continue;
             }
@@ -56,7 +91,7 @@ namespace Engine
             if (record->SourcePath != metadata.SourcePath)
             {
                 record->SourcePath = metadata.SourcePath;
-                record->ResolvedPath = AssetFileSystem::ResolvePath(metadata.SourcePath);
+                record->ResolvedPath = Resolve(metadata.SourcePath);
                 record->LastSnapshot = Capture(record->ResolvedPath);
             }
         }
@@ -64,12 +99,21 @@ namespace Engine
 
     std::vector<AssetWatchEvent> AssetWatcher::Poll(const AssetRegistry& registry)
     {
+        const auto now = std::chrono::steady_clock::now();
+        if (m_MinimumPollInterval.count() > 0 && m_HasPolled && now - m_LastPoll < m_MinimumPollInterval)
+            return {};
+        m_LastPoll = now;
+        m_HasPolled = true;
+
         SyncRegistry(registry);
 
         std::vector<AssetWatchEvent> events;
         for (Record& record : m_Records)
         {
-            record.ResolvedPath = AssetFileSystem::ResolvePath(record.SourcePath);
+            // A present file keeps its resolved path (one stat per poll). Only a missing source is
+            // searched for again, because it may have reappeared under another search root.
+            if (!record.LastSnapshot.Exists)
+                record.ResolvedPath = Resolve(record.SourcePath);
             const Snapshot current = Capture(record.ResolvedPath);
             if (!IsDifferent(record.LastSnapshot, current))
                 continue;
@@ -103,6 +147,7 @@ namespace Engine
     void AssetWatcher::Clear()
     {
         m_Records.clear();
+        m_RecordIndex.clear();
     }
 
     std::size_t AssetWatcher::GetMissingCount() const
@@ -117,6 +162,7 @@ namespace Engine
     {
         Snapshot snapshot;
 
+#if !defined(GE_PLATFORM_LINUX)
         std::error_code error;
         snapshot.Exists = std::filesystem::exists(path, error);
         if (error || !snapshot.Exists)
@@ -133,6 +179,17 @@ namespace Engine
             snapshot.Size = std::filesystem::file_size(path, error);
         if (error)
             snapshot.Size = 0;
+#else
+        // One stat answers existence, type, size and modification time.
+        struct stat status {};
+        if (::stat(path.c_str(), &status) != 0)
+            return snapshot;
+        snapshot.Exists = true;
+        snapshot.LastWriteTime = std::filesystem::file_time_type(std::chrono::duration_cast<
+            std::filesystem::file_time_type::duration>(std::chrono::seconds(status.st_mtim.tv_sec)
+                + std::chrono::nanoseconds(status.st_mtim.tv_nsec)));
+        snapshot.Size = S_ISREG(status.st_mode) ? static_cast<std::uintmax_t>(status.st_size) : 0;
+#endif
 
         return snapshot;
     }
@@ -150,11 +207,7 @@ namespace Engine
 
     AssetWatcher::Record* AssetWatcher::FindRecord(AssetHandle handle)
     {
-        const auto it = std::find_if(m_Records.begin(), m_Records.end(), [handle](const Record& record)
-        {
-            return record.Handle == handle;
-        });
-
-        return it == m_Records.end() ? nullptr : &(*it);
+        const auto it = m_RecordIndex.find(handle);
+        return it == m_RecordIndex.end() ? nullptr : &m_Records[it->second];
     }
 }

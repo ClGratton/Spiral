@@ -61,6 +61,14 @@ namespace Engine
     {
     public:
         static constexpr size_t Capacity = 4;
+        // Slot buffers are allocated at a power-of-two capacity bucket and the
+        // payload occupies the leading bytes. The CSR local-light array changes
+        // length whenever light/cluster coverage changes, so exact-size slots
+        // were destroyed and recreated on most camera-moving frames. The shader
+        // validates the used length from the payload header, never the buffer
+        // size, and the copy pass transfers only the used bytes.
+        static constexpr u64 MinimumSlotCapacityBytes = 4096;
+        [[nodiscard]] static u64 GetSlotCapacityBytes(u64 payloadBytes);
         bool Acquire(RHI::Device& device, const SceneRenderSnapshot& snapshot,
             size_t viewIndex, const ClusteredLightGrid& grid,
             const RendererColorPipelineSettings& colorSettings, u64 generation,

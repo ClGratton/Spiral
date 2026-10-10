@@ -1084,6 +1084,8 @@ namespace Engine::RHI
                 return true;
             }
 
+            const Device* GetOwnerDevice() const { return m_OwnerDevice; }
+
             bool IsReadyToSubmit() const
             {
                 return m_OwnedCommandList && m_State == State::Closed;
@@ -1803,17 +1805,34 @@ namespace Engine::RHI
                 if (!destinationResource || !sourceResource)
                     return false;
 
-                const D3D12_RESOURCE_STATES previousState = nativeDestination->GetCurrentState();
-                if (previousState != D3D12_RESOURCE_STATE_COPY_DEST)
+                // Barrier StateBefore must be the state this list has already
+                // staged (for example by an earlier TransitionBuffer), not the
+                // committed wrapper state, and every temporary transition is
+                // restored so the staged state stays true after the copy.
+                if (nativeDestination == nativeSource)
+                {
+                    Log::Error("D3D12 RHI buffer copy source and destination must be distinct buffers: ", m_DebugName);
+                    return false;
+                }
+                const D3D12_RESOURCE_STATES previousState = GetBufferState(*nativeDestination);
+                const D3D12_RESOURCE_STATES previousSourceState = GetBufferState(*nativeSource);
+                // A resource whose state already includes COPY_SOURCE (an upload
+                // heap buffer is GENERIC_READ) needs no and admits no transition.
+                const bool sourceNeedsTransition = (previousSourceState & D3D12_RESOURCE_STATE_COPY_SOURCE) == 0;
+                const auto transition = [&](ID3D12Resource* resource, D3D12_RESOURCE_STATES before, D3D12_RESOURCE_STATES after)
                 {
                     D3D12_RESOURCE_BARRIER barrier {};
                     barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-                    barrier.Transition.pResource = destinationResource;
+                    barrier.Transition.pResource = resource;
                     barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-                    barrier.Transition.StateBefore = previousState;
-                    barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+                    barrier.Transition.StateBefore = before;
+                    barrier.Transition.StateAfter = after;
                     m_CommandList->ResourceBarrier(1, &barrier);
-                }
+                };
+                if (previousState != D3D12_RESOURCE_STATE_COPY_DEST)
+                    transition(destinationResource, previousState, D3D12_RESOURCE_STATE_COPY_DEST);
+                if (sourceNeedsTransition)
+                    transition(sourceResource, previousSourceState, D3D12_RESOURCE_STATE_COPY_SOURCE);
 
                 m_CommandList->CopyBufferRegion(
                     destinationResource,
@@ -1825,15 +1844,9 @@ namespace Engine::RHI
                 m_UsedBuffers.push_back(&source);
 
                 if (previousState != D3D12_RESOURCE_STATE_COPY_DEST)
-                {
-                    D3D12_RESOURCE_BARRIER barrier {};
-                    barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-                    barrier.Transition.pResource = destinationResource;
-                    barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-                    barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
-                    barrier.Transition.StateAfter = previousState;
-                    m_CommandList->ResourceBarrier(1, &barrier);
-                }
+                    transition(destinationResource, D3D12_RESOURCE_STATE_COPY_DEST, previousState);
+                if (sourceNeedsTransition)
+                    transition(sourceResource, D3D12_RESOURCE_STATE_COPY_SOURCE, previousSourceState);
 
                 return true;
             }
@@ -2585,7 +2598,10 @@ namespace Engine::RHI
             CompletionToken Submit(CommandList& commandList, const std::vector<CompletionToken>& dependencies) override
             {
                 auto* nativeCommandList = dynamic_cast<NVRHID3D12CommandList*>(&commandList);
-                if (!nativeCommandList || !nativeCommandList->IsReadyToSubmit() || !nativeCommandList->ValidateExpectedStates())
+                // A list recorded on another device owns allocators and fences of
+                // that device and mints tokens in another completion id space.
+                if (!nativeCommandList || nativeCommandList->GetOwnerDevice() != this
+                    || !nativeCommandList->IsReadyToSubmit() || !nativeCommandList->ValidateExpectedStates())
                 {
                     Log::Error("D3D12 RHI command list submission requires a closed, device-owned command list");
                     return {};
@@ -2721,16 +2737,51 @@ namespace Engine::RHI
                     return false;
                 ID3D12Fence* fence = GetSubmissionFence(entry->Queue);
                 HANDLE event = GetSubmissionFenceEvent(entry->Queue);
-                if (!fence || !event || FAILED(fence->SetEventOnCompletion(entry->FenceValue, event)))
+                if (!fence || !event)
                     return false;
-                return WaitForSingleObject(event, timeoutMilliseconds) == WAIT_OBJECT_0
-                    && QueryCompletion(token) == CompletionStatus::Complete;
+                // The event is shared by every wait on this queue and a timed-out
+                // wait leaves its SetEventOnCompletion registration armed, so a
+                // later wake can belong to an older, smaller fence value. Clear any
+                // signalled state, and after each wake confirm the awaited value
+                // really completed; otherwise re-arm and wait out the remainder.
+                ResetEvent(event);
+                if (FAILED(fence->SetEventOnCompletion(entry->FenceValue, event)))
+                    return false;
+                const ULONGLONG start = GetTickCount64();
+                for (;;)
+                {
+                    DWORD remaining = timeoutMilliseconds;
+                    if (timeoutMilliseconds != INFINITE)
+                    {
+                        const ULONGLONG elapsed = GetTickCount64() - start;
+                        if (elapsed >= timeoutMilliseconds)
+                            return fence->GetCompletedValue() >= entry->FenceValue
+                                && QueryCompletion(token) == CompletionStatus::Complete;
+                        remaining = static_cast<DWORD>(timeoutMilliseconds - elapsed);
+                    }
+                    const DWORD waitResult = WaitForSingleObject(event, remaining);
+                    if (fence->GetCompletedValue() >= entry->FenceValue)
+                        return QueryCompletion(token) == CompletionStatus::Complete;
+                    if (waitResult != WAIT_OBJECT_0)
+                        return false;
+                    if (FAILED(fence->SetEventOnCompletion(entry->FenceValue, event)))
+                        return false;
+                }
             }
 
             bool SubmitAndWait(CommandList& commandList) override
             {
+                // Device.h requires a finite timeout: a hung or removed device must
+                // fail the synchronous helper instead of blocking its caller forever.
+                constexpr u32 kSynchronousSubmitTimeoutMilliseconds = 30000;
                 const CompletionToken token = Submit(commandList);
-                return token.IsValid() && WaitForCompletion(token, INFINITE);
+                if (!token.IsValid())
+                    return false;
+                if (WaitForCompletion(token, kSynchronousSubmitTimeoutMilliseconds))
+                    return true;
+                Log::Error("D3D12 synchronous submission ", token.SubmissionId, " did not complete within ",
+                    kSynchronousSubmitTimeoutMilliseconds, " ms");
+                return false;
             }
 
             void WaitIdle() override

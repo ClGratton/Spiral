@@ -3,6 +3,7 @@
 #include "Engine/Renderer/Renderer.h"
 
 #include <algorithm>
+#include <deque>
 #include <charconv>
 #include <cmath>
 #include <filesystem>
@@ -110,16 +111,19 @@ namespace Engine
         void Record(const RendererFrameTiming& timing)
         {
             if (m_Frames.size() == m_Capacity)
-                m_Frames.erase(m_Frames.begin());
+                m_Frames.pop_front();
             m_Frames.push_back(timing);
             UpdateGpuHeadroom(m_Frames.back());
         }
 
         bool AmendGpuTiming(const RendererGpuTimingPublication& publication)
         {
-            const auto found = std::find_if(m_Frames.begin(), m_Frames.end(), [&](const RendererFrameTiming& timing)
+            // Publications and cadence amendments always target one of the
+            // newest frames, so the search runs newest-first and stops after a
+            // few elements instead of walking the whole retained capture.
+            const auto found = std::find_if(m_Frames.rbegin(), m_Frames.rend(), [&](const RendererFrameTiming& timing)
                 { return timing.FrameIndex == publication.FrameIndex; });
-            if (found == m_Frames.end() || !ApplyRendererGpuTimingPublication(*found, publication))
+            if (found == m_Frames.rend() || !ApplyRendererGpuTimingPublication(*found, publication))
                 return false;
             UpdateGpuHeadroom(*found);
             return true;
@@ -128,9 +132,9 @@ namespace Engine
         bool AmendEffectiveLimitingSource(u64 cadenceFrameIndex, RendererEffectiveLimitingSource source,
             const std::optional<u64>& sourceFrameIndex)
         {
-            const auto found = std::find_if(m_Frames.begin(), m_Frames.end(), [&](const RendererFrameTiming& timing)
+            const auto found = std::find_if(m_Frames.rbegin(), m_Frames.rend(), [&](const RendererFrameTiming& timing)
                 { return timing.FrameIndex == cadenceFrameIndex; });
-            if (found == m_Frames.end())
+            if (found == m_Frames.rend())
                 return false;
             found->EffectiveLimitingSource = source;
             found->EffectiveLimitingSourceFrameIndex = sourceFrameIndex;
@@ -141,8 +145,8 @@ namespace Engine
         {
             auto snapshot = std::make_shared<FramePacingBenchmarkSnapshot>();
             snapshot->Condition = m_Condition;
-            snapshot->Frames = m_Frames;
-            snapshot->Summary = Summarize(m_Frames);
+            snapshot->Frames.assign(m_Frames.begin(), m_Frames.end());
+            snapshot->Summary = Summarize(snapshot->Frames);
             return snapshot;
         }
 
@@ -432,6 +436,8 @@ namespace Engine
 
         size_t m_Capacity;
         FramePacingBenchmarkCondition m_Condition;
-        std::vector<RendererFrameTiming> m_Frames;
+        // A deque keeps the full-capacity ring O(1) per frame; erasing the
+        // front of a vector moved every retained frame inside the measured loop.
+        std::deque<RendererFrameTiming> m_Frames;
     };
 }

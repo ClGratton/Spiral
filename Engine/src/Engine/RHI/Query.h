@@ -163,6 +163,10 @@ namespace Engine::RHI
         bool Write(u32 queryIndex, const std::function<bool()>& nativeOperation);
         bool Resolve(u32 firstQuery, u32 queryCount, const std::function<bool()>& nativeOperation);
         bool PrepareForSubmit();
+        // Non-mutating mirror of Publish's preconditions, so a device can
+        // refuse a submission before native execution instead of discovering
+        // an unpublishable transaction afterwards.
+        bool CanPublish(const CompletionToken& token) const;
         bool Publish(const CompletionToken& token);
         bool IsValid() const;
 

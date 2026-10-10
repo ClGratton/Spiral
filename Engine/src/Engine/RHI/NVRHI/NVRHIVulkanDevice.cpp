@@ -331,6 +331,16 @@ namespace Engine::RHI
             std::shared_ptr<VulkanTimestampQueryState> m_State;
         };
 
+        // One accepted submission's use of a timestamp pool. Resolved records
+        // which queries this submission reset, wrote and resolved, so only
+        // those are read back: a pool larger than the recorded range would
+        // otherwise report VK_NOT_READY for its untouched queries forever.
+        struct PublishedTimestampState
+        {
+            NativeQueryState State;
+            std::vector<bool> Resolved;
+        };
+
         class VulkanCommandList final : public CommandList
         {
         public:
@@ -358,6 +368,15 @@ namespace Engine::RHI
                 m_DebugMarkerNames.clear();
                 m_Color = nullptr;
                 m_Depth = nullptr;
+                // Nothing bound by an earlier recording may leak into this one:
+                // the earlier buffers can have been destroyed since, and the
+                // framebuffer was validated against a different ownership state.
+                m_Framebuffer = nullptr;
+                m_Index = nullptr;
+                m_Vertex = nullptr;
+                m_IndexFormat = IndexFormat::Uint16;
+                m_Viewport = Viewport {};
+                m_Scissor = ScissorRect {};
                 m_TextureStates.clear();
                 m_BufferStates.clear();
                 m_UsedBuffers.clear();
@@ -386,7 +405,14 @@ namespace Engine::RHI
                     return false;
                 for (PendingTimestampTransaction& transaction : m_TimestampTransactions)
                     if (!transaction.Transaction.PrepareForSubmit())
+                    {
+                        // PrepareForSubmit is one-way, so the recording cannot be
+                        // retried. Close the native list and move to a state that
+                        // Begin() accepts; the next Begin() releases every reservation.
+                        m_List->close();
+                        m_State = State::Error;
                         return false;
+                    }
                 m_PublishedTimestampStates.reserve(m_TimestampTransactions.size());
                 m_List->close();
                 m_State = State::Closed;
@@ -408,29 +434,37 @@ namespace Engine::RHI
             }
             bool BindViewportOutputs(Texture& color, Texture* depth) override
             {
-                m_Color = dynamic_cast<VulkanTexture*>(&color); m_Depth = depth ? dynamic_cast<VulkanTexture*>(depth) : nullptr;
-                if (!m_Color || !HasTextureUsage(color.GetDescription().Usage, TextureUsage::RenderTarget)
-                    || !CanUseTexture(&color) || (depth && (!m_Depth
+                // A failed bind leaves no output bound; it never mixes the new
+                // attachments with the previous framebuffer.
+                m_Color = nullptr; m_Depth = nullptr; m_Framebuffer = nullptr;
+                auto* nativeColor = dynamic_cast<VulkanTexture*>(&color);
+                auto* nativeDepth = depth ? dynamic_cast<VulkanTexture*>(depth) : nullptr;
+                if (m_State != State::Recording || !nativeColor || !HasTextureUsage(color.GetDescription().Usage, TextureUsage::RenderTarget)
+                    || !CanUseTexture(&color) || (depth && (!nativeDepth
                         || !HasTextureUsage(depth->GetDescription().Usage, TextureUsage::DepthStencil)
                         || !CanUseTexture(depth)))) return false;
                 nvrhi::FramebufferDesc framebuffer;
-                framebuffer.addColorAttachment(m_Color->Native());
-                if (m_Depth) framebuffer.setDepthAttachment(m_Depth->Native());
-                m_Framebuffer = m_Device->createFramebuffer(framebuffer);
-                return m_Framebuffer != nullptr;
+                framebuffer.addColorAttachment(nativeColor->Native());
+                if (nativeDepth) framebuffer.setDepthAttachment(nativeDepth->Native());
+                nvrhi::FramebufferHandle created = m_Device->createFramebuffer(framebuffer);
+                if (!created) return false;
+                m_Color = nativeColor; m_Depth = nativeDepth; m_Framebuffer = std::move(created);
+                return true;
             }
             bool BindDepthOutput(Texture& depth) override
             {
-                m_Color = nullptr;
-                m_Depth = dynamic_cast<VulkanTexture*>(&depth);
-                if (m_State != State::Recording || !m_Depth
+                m_Color = nullptr; m_Depth = nullptr; m_Framebuffer = nullptr;
+                auto* nativeDepth = dynamic_cast<VulkanTexture*>(&depth);
+                if (m_State != State::Recording || !nativeDepth
                     || !HasTextureUsage(depth.GetDescription().Usage, TextureUsage::DepthStencil)
                     || !CanUseTexture(&depth))
                     return false;
                 nvrhi::FramebufferDesc framebuffer;
-                framebuffer.setDepthAttachment(m_Depth->Native());
-                m_Framebuffer = m_Device->createFramebuffer(framebuffer);
-                return m_Framebuffer != nullptr;
+                framebuffer.setDepthAttachment(nativeDepth->Native());
+                nvrhi::FramebufferHandle created = m_Device->createFramebuffer(framebuffer);
+                if (!created) return false;
+                m_Depth = nativeDepth; m_Framebuffer = std::move(created);
+                return true;
             }
             bool ClearViewportOutputs(const ViewportClear& clear) override
             {
@@ -750,29 +784,42 @@ namespace Engine::RHI
                     m_UsedBuffers.push_back(&buffer);
                 return true;
             }
-            void SetViewport(const Viewport& viewport) override { m_Viewport = viewport; }
-            void SetScissorRect(const ScissorRect& rect) override { m_Scissor = rect; }
+            void SetViewport(const Viewport& viewport) override { if (m_State == State::Recording) m_Viewport = viewport; }
+            void SetScissorRect(const ScissorRect& rect) override { if (m_State == State::Recording) m_Scissor = rect; }
             void SetVertexBuffer(u32 slot, Buffer& buffer) override
             {
-                m_Vertex = m_Pipeline && CanUseBuffer(&buffer)
+                m_Vertex = m_State == State::Recording && m_Pipeline && CanUseBuffer(&buffer)
                         && IsVertexBufferStrideCompatible(m_Pipeline->GetDescription(),
                             slot, buffer.GetDescription().StrideBytes)
                     ? dynamic_cast<VulkanBuffer*>(&buffer) : nullptr;
             }
-            void SetIndexBuffer(Buffer& buffer, IndexFormat format) override { m_Index = CanUseBuffer(&buffer) ? dynamic_cast<VulkanBuffer*>(&buffer) : nullptr; m_IndexFormat = format; }
+            void SetIndexBuffer(Buffer& buffer, IndexFormat format) override { m_Index = m_State == State::Recording && CanUseBuffer(&buffer) ? dynamic_cast<VulkanBuffer*>(&buffer) : nullptr; m_IndexFormat = format; }
             bool CopyBuffer(Buffer& destination, u64 destinationOffset, Buffer& source, u64 sourceOffset, u64 size) override
             {
                 if (!CanUseBuffer(&destination) || !CanUseBuffer(&source))
                     return false;
                 auto* nativeDestination = dynamic_cast<VulkanBuffer*>(&destination);
                 auto* nativeSource = dynamic_cast<VulkanBuffer*>(&source);
-                if (m_State != State::Recording || !nativeDestination || !nativeSource || !size
+                // Mirror the D3D12 contract: CopyDest destination, CopySource source,
+                // and never a buffer copied onto itself (overlapping ranges).
+                if (m_State != State::Recording || !nativeDestination || !nativeSource || !size || nativeDestination == nativeSource
+                    || !HasBufferUsage(destination.GetDescription().Usage, BufferUsage::CopyDest)
+                    || !HasBufferUsage(source.GetDescription().Usage, BufferUsage::CopySource)
                     || destinationOffset > destination.GetDescription().SizeBytes || size > destination.GetDescription().SizeBytes - destinationOffset
                     || sourceOffset > source.GetDescription().SizeBytes || size > source.GetDescription().SizeBytes - sourceOffset) return false;
                 m_List->beginTrackingBufferState(nativeDestination->Native(), ConvertState(GetBufferState(*nativeDestination)));
                 m_List->beginTrackingBufferState(nativeSource->Native(), ConvertState(GetBufferState(*nativeSource)));
                 m_List->copyBuffer(nativeDestination->Native(), destinationOffset, nativeSource->Native(), sourceOffset, size);
-                StageBufferState(*nativeDestination, ResourceState::CopyDest); StageBufferState(*nativeSource, ResourceState::CopySource);
+                // Only publish a staged state the ownership tracker accepts. A
+                // CPU-visible staging buffer is a legal copy source, but the
+                // tracker never admits a state change for it, and committing one
+                // to the wrapper alone would make the two authorities disagree.
+                const BufferDescription& destinationDescription = destination.GetDescription();
+                const BufferDescription& sourceDescription = source.GetDescription();
+                if (IsBufferStateCompatible(destinationDescription.Usage, destinationDescription.CpuAccess, ResourceState::CopyDest))
+                    StageBufferState(*nativeDestination, ResourceState::CopyDest);
+                if (IsBufferStateCompatible(sourceDescription.Usage, sourceDescription.CpuAccess, ResourceState::CopySource))
+                    StageBufferState(*nativeSource, ResourceState::CopySource);
                 return true;
             }
             void DrawIndexed(u32 indexCount, u32 instanceCount, u32 startIndex, int baseVertex, u32 startInstance) override
@@ -817,9 +864,10 @@ namespace Engine::RHI
                 const auto state = transaction ? std::static_pointer_cast<VulkanTimestampQueryState>(transaction->State) : nullptr;
                 const VkCommandBuffer commandBuffer = NativeCommandBuffer();
                 return transaction && state && commandBuffer != VK_NULL_HANDLE
-                    && transaction->Transaction.Reset(firstQuery, queryCount, [state, commandBuffer, firstQuery, queryCount]
+                    && transaction->Transaction.Reset(firstQuery, queryCount, [state, commandBuffer, firstQuery, queryCount, resolved = &transaction->Resolved]
                         {
                             VULKAN_HPP_DEFAULT_DISPATCHER.vkCmdResetQueryPool(commandBuffer, state->Pool, firstQuery, queryCount);
+                            std::fill(resolved->begin() + firstQuery, resolved->begin() + firstQuery + queryCount, false);
                             return true;
                         });
             }
@@ -839,7 +887,12 @@ namespace Engine::RHI
             bool ResolveQueryPool(QueryPool& queryPool, u32 firstQuery, u32 queryCount) override
             {
                 PendingTimestampTransaction* transaction = FindOrBeginTimestampTransaction(queryPool);
-                return transaction && transaction->Transaction.Resolve(firstQuery, queryCount, [] { return true; });
+                return transaction && transaction->Transaction.Resolve(firstQuery, queryCount,
+                    [resolved = &transaction->Resolved, firstQuery, queryCount]
+                    {
+                        std::fill(resolved->begin() + firstQuery, resolved->begin() + firstQuery + queryCount, true);
+                        return true;
+                    });
             }
             bool Ready() const { return m_State == State::Closed; }
             bool ValidateExpectedStates() const
@@ -858,6 +911,23 @@ namespace Engine::RHI
                 }
                 return true;
             }
+            // Non-mutating mirror of MarkSubmitted's fallible steps, evaluated
+            // before the native list is executed.
+            bool CanMarkSubmitted(const CompletionToken& token) const
+            {
+                if (!Ready() || !token.IsValid())
+                    return false;
+                return std::all_of(m_TimestampTransactions.begin(), m_TimestampTransactions.end(),
+                    [&token](const PendingTimestampTransaction& transaction) { return transaction.Transaction.CanPublish(token); });
+            }
+            // The native list was executed but its bookkeeping failed. The list
+            // must not be executed again; Begin() waits for this exact token.
+            void MarkSubmittedAfterBookkeepingFailure(const CompletionToken& token)
+            {
+                m_LastSubmission = token;
+                m_State = State::Submitted;
+            }
+            const Device* GetOwnerDevice() const { return m_OwnerDevice; }
             bool MarkSubmitted(const CompletionToken& token)
             {
                 if (!Ready() || !token.IsValid())
@@ -866,7 +936,7 @@ namespace Engine::RHI
                 {
                     if (!transaction.Transaction.Publish(token))
                         return false;
-                    m_PublishedTimestampStates.push_back(transaction.State);
+                    m_PublishedTimestampStates.push_back({ transaction.State, transaction.Resolved });
                 }
                 m_LastSubmission = token;
                 CommitTrackedStates();
@@ -874,7 +944,7 @@ namespace Engine::RHI
                 return true;
             }
             nvrhi::ICommandList* Native() const { return m_List; }
-            std::vector<NativeQueryState> TakePublishedTimestampStates() { return std::move(m_PublishedTimestampStates); }
+            std::vector<PublishedTimestampState> TakePublishedTimestampStates() { return std::move(m_PublishedTimestampStates); }
             const std::vector<RecordedBufferOwnershipOperation>& GetOwnershipOperations() const { return m_OwnershipOperations; }
             const std::vector<RecordedTextureOwnershipOperation>& GetTextureOwnershipOperations() const { return m_TextureOwnershipOperations; }
             bool RecordNativeRecoveryBufferBarrier(const RecordedBufferOwnershipOperation& operation)
@@ -891,9 +961,12 @@ namespace Engine::RHI
                 QueryPool* PublicPool = nullptr;
                 NativeQueryState State;
                 TimestampQueryTransaction Transaction;
+                // Mirrors the logical recording: queries reset by this list and
+                // resolved by it. Only these are read back after completion.
+                std::vector<bool> Resolved;
 
-                PendingTimestampTransaction(QueryPool& publicPool, NativeQueryState state, TimestampQueryTransaction transaction)
-                    : PublicPool(&publicPool), State(std::move(state)), Transaction(std::move(transaction)) {}
+                PendingTimestampTransaction(QueryPool& publicPool, NativeQueryState state, TimestampQueryTransaction transaction, u32 queryCount)
+                    : PublicPool(&publicPool), State(std::move(state)), Transaction(std::move(transaction)), Resolved(queryCount, false) {}
             };
 
             PendingTimestampTransaction* FindOrBeginTimestampTransaction(QueryPool& queryPool)
@@ -911,7 +984,7 @@ namespace Engine::RHI
                 auto transaction = TimestampQueryTransaction::Begin(pool->GetLogicalPool(), *m_TimestampRetirements, state);
                 if (!transaction)
                     return nullptr;
-                m_TimestampTransactions.emplace_back(queryPool, std::move(state), std::move(*transaction));
+                m_TimestampTransactions.emplace_back(queryPool, std::move(state), std::move(*transaction), queryPool.GetDescription().Count);
                 return &m_TimestampTransactions.back();
             }
 
@@ -1031,7 +1104,10 @@ namespace Engine::RHI
                 Ready,
                 Recording,
                 Closed,
-                Submitted
+                Submitted,
+                // End() refused the recording. The native list was closed and
+                // every pending transaction is released by the next Begin().
+                Error
             };
 
             QueueType m_QueueType;
@@ -1079,7 +1155,7 @@ namespace Engine::RHI
             std::vector<Buffer*> m_UsedBuffers;
             std::vector<Texture*> m_UsedTextures;
             std::vector<PendingTimestampTransaction> m_TimestampTransactions;
-            std::vector<NativeQueryState> m_PublishedTimestampStates;
+            std::vector<PublishedTimestampState> m_PublishedTimestampStates;
             std::vector<RecordedBufferOwnershipOperation> m_OwnershipOperations;
             std::vector<RecordedTextureOwnershipOperation> m_TextureOwnershipOperations;
             bool m_AllowPendingTexture = false;
@@ -1460,7 +1536,10 @@ namespace Engine::RHI
             CompletionToken Submit(CommandList& commandList, const std::vector<CompletionToken>& dependencies) override
             {
                 auto* list = dynamic_cast<VulkanCommandList*>(&commandList);
-                if (!m_Device || !m_CompletionDevice || !list || !list->Ready() || !list->ValidateExpectedStates())
+                // A list recorded on another device owns a command buffer from a
+                // different VkDevice and mints tokens in another id space.
+                if (!m_Device || !m_CompletionDevice || !list || list->GetOwnerDevice() != this
+                    || !list->Ready() || !list->ValidateExpectedStates())
                     return {};
                 // Retire only a contiguous terminal prefix before dependency
                 // validation. Compacted dependencies remain issued and already
@@ -1476,6 +1555,10 @@ namespace Engine::RHI
                 if (std::any_of(list->GetTextureOwnershipOperations().begin(), list->GetTextureOwnershipOperations().end(), [&](const auto& operation) { return !m_TextureOwnership.ValidateSubmission(operation, dependencies); }))
                     return {};
                 const nvrhi::CommandQueue executionQueue = ConvertQueue(list->GetQueueType());
+                // Everything that can refuse the submission is decided before the
+                // irreversible native execution below.
+                if (!list->CanMarkSubmitted(CompletionToken { m_CompletionDeviceId, m_NextCompletionSubmissionId }))
+                    return {};
                 for (const CompletionToken& dependency : dependencies)
                 {
                     const auto found = FindCompletionEntry(dependency);
@@ -1487,24 +1570,32 @@ namespace Engine::RHI
                     return {};
                 const CompletionToken token { m_CompletionDeviceId, m_NextCompletionSubmissionId++ };
                 m_CompletionEntries.emplace(token.SubmissionId, CompletionEntry { executionQueue, nativeSubmissionId, {} });
-                if (!list->MarkSubmitted(token))
-                    return {};
-                auto completion = m_CompletionEntries.find(token.SubmissionId);
-                if (completion == m_CompletionEntries.end())
-                    return {};
-                completion->second.TimestampStates = list->TakePublishedTimestampStates();
+                // The GPU work is issued. A bookkeeping failure from here on must
+                // still hand the caller the exact token (so it can wait on the work
+                // and never re-execute the list), never an invalid one.
+                bool bookkeepingFailed = !list->MarkSubmitted(token);
+                if (bookkeepingFailed)
+                    list->MarkSubmittedAfterBookkeepingFailure(token);
+                const auto completion = m_CompletionEntries.find(token.SubmissionId);
+                if (!bookkeepingFailed && completion != m_CompletionEntries.end())
+                    completion->second.TimestampStates = list->TakePublishedTimestampStates();
                 for (const auto& ownership : list->GetOwnershipOperations())
                 {
+                    if (bookkeepingFailed) break;
                     const bool published = ownership.Type == BufferOwnershipOperationType::Release
                         ? m_BufferOwnership.PublishRelease(ownership, token) : m_BufferOwnership.PublishAcquire(ownership);
-                    if (!published) return {};
+                    if (!published) bookkeepingFailed = true;
                 }
                 for (const auto& ownership : list->GetTextureOwnershipOperations())
                 {
+                    if (bookkeepingFailed) break;
                     const bool published = ownership.Type == TextureOwnershipOperationType::Release
                         ? m_TextureOwnership.PublishRelease(ownership, token) : m_TextureOwnership.PublishAcquire(ownership);
-                    if (!published) return {};
+                    if (!published) bookkeepingFailed = true;
                 }
+                if (bookkeepingFailed)
+                    Log::Error("Vulkan submission ", token.SubmissionId, " was executed but its ownership or timestamp bookkeeping could not be published; "
+                        "the exact token is returned so the work can be awaited");
                 return token;
             }
             CompletionStatus QueryCompletion(const CompletionToken& token) override
@@ -1542,18 +1633,33 @@ namespace Engine::RHI
                 if (found == m_CompletionEntries.end())
                     return false;
                 const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMilliseconds);
+                u32 spins = 0;
                 do
                 {
                     if (QueryCompletion(token) == CompletionStatus::Complete)
                         return true;
-                    std::this_thread::yield();
+                    // Spin briefly for short GPU work, then sleep so a long wait does
+                    // not burn a core.
+                    if (++spins < 64)
+                        std::this_thread::yield();
+                    else
+                        std::this_thread::sleep_for(std::chrono::microseconds(200));
                 } while (std::chrono::steady_clock::now() < deadline);
                 return QueryCompletion(token) == CompletionStatus::Complete;
             }
             bool SubmitAndWait(CommandList& commandList) override
             {
+                // Device.h requires a finite timeout: a hung or lost GPU must fail
+                // the synchronous helper instead of stalling the caller for weeks.
+                constexpr u32 kSynchronousSubmitTimeoutMilliseconds = 30000;
                 const CompletionToken token = Submit(commandList);
-                return token.IsValid() && WaitForCompletion(token, std::numeric_limits<u32>::max());
+                if (!token.IsValid())
+                    return false;
+                if (WaitForCompletion(token, kSynchronousSubmitTimeoutMilliseconds))
+                    return true;
+                Log::Error("Vulkan synchronous submission ", token.SubmissionId, " did not complete within ",
+                    kSynchronousSubmitTimeoutMilliseconds, " ms");
+                return false;
             }
             void WaitIdle() override
             {
@@ -1583,7 +1689,7 @@ namespace Engine::RHI
             {
                 nvrhi::CommandQueue Queue = nvrhi::CommandQueue::Graphics;
                 u64 NativeSubmissionId = 0;
-                std::vector<NativeQueryState> TimestampStates;
+                std::vector<PublishedTimestampState> TimestampStates;
                 CompletionStatus TerminalStatus = CompletionStatus::Incomplete;
             };
             std::unordered_map<u64, CompletionEntry> m_CompletionEntries;
@@ -1704,20 +1810,37 @@ namespace Engine::RHI
                 std::vector<CollectedResult> collected;
                 collected.reserve(entry.TimestampStates.size());
                 bool nativeSuccess = true;
-                for (const NativeQueryState& nativeState : entry.TimestampStates)
+                for (const PublishedTimestampState& published : entry.TimestampStates)
                 {
                     CollectedResult result;
-                    result.State = nativeState;
-                    const auto state = std::static_pointer_cast<VulkanTimestampQueryState>(nativeState);
-                    if (state && state->Pool != VK_NULL_HANDLE && state->Count != 0)
+                    result.State = published.State;
+                    const auto state = std::static_pointer_cast<VulkanTimestampQueryState>(published.State);
+                    if (state && state->Pool != VK_NULL_HANDLE && state->Count != 0 && published.Resolved.size() == state->Count)
                     {
-                        result.Values.resize(state->Count);
-                        const VkResult queryResult = VULKAN_HPP_DEFAULT_DISPATCHER.vkGetQueryPoolResults(
-                            state->Device, state->Pool, 0, state->Count,
-                            result.Values.size() * sizeof(u64), result.Values.data(), sizeof(u64), VK_QUERY_RESULT_64_BIT);
-                        if (queryResult == VK_NOT_READY)
-                            return CompletionStatus::Incomplete;
-                        if (queryResult == VK_SUCCESS)
+                        // Read only the runs this submission resolved. The rest of the
+                        // pool was never reset or written by it, and reading unavailable
+                        // queries without WAIT would report VK_NOT_READY forever.
+                        result.Values.assign(state->Count, 0);
+                        bool readFailed = false;
+                        for (u32 first = 0; first < state->Count;)
+                        {
+                            if (!published.Resolved[first]) { ++first; continue; }
+                            u32 end = first;
+                            while (end < state->Count && published.Resolved[end]) ++end;
+                            const VkResult queryResult = VULKAN_HPP_DEFAULT_DISPATCHER.vkGetQueryPoolResults(
+                                state->Device, state->Pool, first, end - first,
+                                static_cast<size_t>(end - first) * sizeof(u64), result.Values.data() + first,
+                                sizeof(u64), VK_QUERY_RESULT_64_BIT);
+                            if (queryResult == VK_NOT_READY)
+                                return CompletionStatus::Incomplete;
+                            if (queryResult != VK_SUCCESS)
+                            {
+                                readFailed = true;
+                                break;
+                            }
+                            first = end;
+                        }
+                        if (!readFailed)
                         {
                             if (state->ValidBits < 64)
                             {
@@ -1753,8 +1876,8 @@ namespace Engine::RHI
 
             void FailTimestampQueries(CompletionEntry& entry, const CompletionToken& token)
             {
-                for (const NativeQueryState& nativeState : entry.TimestampStates)
-                    (void)m_TimestampRetirements.Complete(nativeState, token, CompletionStatus::Failed);
+                for (const PublishedTimestampState& published : entry.TimestampStates)
+                    (void)m_TimestampRetirements.Complete(published.State, token, CompletionStatus::Failed);
                 (void)m_TimestampRetirements.Retire(token, CompletionStatus::Failed);
                 entry.TimestampStates.clear();
             }

@@ -4,6 +4,7 @@
 #include "Engine/Events/KeyEvent.h"
 #include "Engine/Events/MouseEvent.h"
 #include "Engine/Jobs/FrameTaskGraph.h"
+#include "Engine/Jobs/JobSystem.h"
 #include "Engine/RHI/Device.h"
 #include "Engine/Renderer/Renderer.h"
 #include "Engine/Renderer/FramePacingBenchmark.h"
@@ -298,6 +299,14 @@ namespace Engine
         return {};
     }
 
+    namespace
+    {
+        // Upper bound on one minimized-loop wait. Short enough that CEF pumping
+        // and download polling keep a roughly 60 Hz cadence while no window
+        // event arrives, long enough that the loop sleeps instead of spinning.
+        constexpr double kMinimizedEventWaitSeconds = 0.016;
+    }
+
     Application::Application(ApplicationSpecification specification)
         : m_Specification(std::move(specification))
     {
@@ -331,6 +340,12 @@ namespace Engine
         m_ImGuiLayer = nullptr;
         Renderer::Shutdown();
         s_Instance = nullptr;
+    }
+
+    void DestroyApplicationThenShutdownJobs(Application* application)
+    {
+        delete application;
+        JobSystem::Get().Shutdown();
     }
 
     Application& Application::Get()
@@ -397,7 +412,12 @@ namespace Engine
             lastFrameTime = now;
             Timestep timestep(delta.count());
 
-            if (!m_Minimized)
+            // Latch the minimized state once. The poll inside either branch can
+            // deliver a resize synchronously and flip m_Minimized, and every later
+            // decision of this iteration (renderer frame, ImGui frame, OnUiRender)
+            // must agree with the branch that was actually taken.
+            const bool renderedFrame = !m_Minimized;
+            if (renderedFrame)
             {
                 Renderer::BeginFrame(m_FrameIndex, preFramePacing);
                 m_OpticalTriggerArmed = !m_OpticalCapturePublished
@@ -538,18 +558,35 @@ namespace Engine
             else
             {
                 // A minimized window has no active renderer timing frame, but it
-                // must still dispatch resize and close callbacks.
-                m_Window->PollEvents();
+                // must still dispatch resize and close callbacks. Block on the
+                // platform event queue for a bounded interval instead of spinning:
+                // nothing presents, so no vsync or swapchain wait paces this loop.
+                m_Window->WaitEvents(kMinimizedEventWaitSeconds);
             }
 
-            if (m_ImGuiLayer && !m_Minimized)
-                m_ImGuiLayer->Begin();
+            // One decision per iteration: the UI phase runs only when this
+            // iteration rendered a frame and the window is still drawable after
+            // the poll, so Begin, OnUiRender and End always agree and no layer
+            // draws ImGui outside a frame scope.
+            const bool uiFrameActive = renderedFrame && !m_Minimized;
+            if (uiFrameActive)
+            {
+                if (m_ImGuiLayer)
+                    m_ImGuiLayer->Begin();
 
-            for (auto& layer : m_LayerStack)
-                layer->OnUiRender();
+                for (auto& layer : m_LayerStack)
+                    layer->OnUiRender();
 
-            if (m_ImGuiLayer && !m_Minimized)
-                m_ImGuiLayer->End();
+                if (m_ImGuiLayer)
+                    m_ImGuiLayer->End();
+            }
+            else
+            {
+                // Pages, downloads and other background services keep running
+                // while the window is minimized.
+                for (auto& layer : m_LayerStack)
+                    layer->OnBackgroundUpdate();
+            }
 
             if (const RendererFrameTiming& timing = Renderer::GetLastFrameTiming();
                 (m_Specification.CommandLineArgs.HasFlag("--frame-lifecycle-telemetry-smoke")

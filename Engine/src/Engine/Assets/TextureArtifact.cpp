@@ -1,6 +1,7 @@
 #include "Engine/Assets/TextureArtifact.h"
 
 #include "Engine/Assets/AssetRegistry.h"
+#include "Engine/Core/AtomicFile.h"
 
 #include <ktx.h>
 #include <ktxint.h>
@@ -12,6 +13,8 @@
 #include <fstream>
 #include <iomanip>
 #include <limits>
+#include <locale>
+#include <sstream>
 #include <system_error>
 #include <utility>
 
@@ -330,23 +333,6 @@ namespace Engine
             if (role == TextureRole::Normal) { outFormat = TextureCookedFormat::Bc5Unorm; outKtxFormat = KTX_TTF_BC5_RG; return true; }
             outFormat = colorSpace == TextureColorSpace::Srgb ? TextureCookedFormat::Bc7Srgb : TextureCookedFormat::Bc7Unorm; outKtxFormat = KTX_TTF_BC7_RGBA; return true;
         }
-
-        bool PublishAtomically(const std::filesystem::path& temporary, const std::filesystem::path& final, std::string& outError)
-        {
-#if defined(_WIN32)
-            if (::ReplaceFileW(final.c_str(), temporary.c_str(), nullptr, REPLACEFILE_WRITE_THROUGH, nullptr, nullptr))
-                return true;
-            const DWORD replaceError = ::GetLastError();
-            if (replaceError == ERROR_FILE_NOT_FOUND && ::MoveFileExW(temporary.c_str(), final.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
-                return true;
-            outError = "could not atomically publish cooked texture artifact";
-#else
-            if (std::rename(temporary.c_str(), final.c_str()) == 0)
-                return true;
-            outError = "could not atomically publish cooked texture artifact";
-#endif
-            return false;
-        }
     }
 
     const char* ToString(TextureRole value)
@@ -499,21 +485,27 @@ namespace Engine
     {
         if (!ValidateTextureArtifact(artifact, outError)) return false;
         std::error_code error;
-        std::filesystem::create_directories(path.parent_path(), error);
-        if (error) { outError = "could not create cooked texture artifact directory"; return false; }
-        static std::atomic<u64> sequence { 0 };
-        const std::filesystem::path temporary = path.string() + ".tmp." + std::to_string(sequence.fetch_add(1, std::memory_order_relaxed));
-        std::ofstream output(temporary, std::ios::binary | std::ios::trunc);
-        if (!output) { outError = "could not open temporary cooked texture artifact"; return false; }
-        output << "SpiralTextureArtifact " << kTextureArtifactVersion << '\n' << "Source " << std::quoted(artifact.SourcePath) << '\n' << "TextureAsset " << artifact.Asset << '\n'
-            << "Role " << ToString(artifact.Role) << '\n' << "ColorSpace " << ToString(artifact.ColorSpace) << '\n' << "TargetProfile " << ToString(artifact.TargetProfile) << '\n'
-            << "CookedFormat " << ToString(artifact.CookedFormat) << '\n' << "HasAlpha " << (artifact.HasAlpha ? 1 : 0) << '\n' << "MipCount " << artifact.Mips.size() << '\n';
-        for (const TextureArtifactMip& mip : artifact.Mips) output << "Mip " << mip.Width << ' ' << mip.Height << ' ' << mip.ByteOffset << ' ' << mip.ByteSize << '\n';
-        output << "PayloadBytes " << artifact.Payload.size() << '\n' << "Payload\n";
-        output.write(reinterpret_cast<const char*>(artifact.Payload.data()), static_cast<std::streamsize>(artifact.Payload.size()));
-        output.close();
-        if (!output) { std::filesystem::remove(temporary, error); outError = "could not write cooked texture artifact"; return false; }
-        if (!PublishAtomically(temporary, path, outError)) { std::filesystem::remove(temporary, error); return false; }
+        if (!path.parent_path().empty())
+        {
+            std::filesystem::create_directories(path.parent_path(), error);
+            if (error) { outError = "could not create cooked texture artifact directory"; return false; }
+        }
+        std::string bytes;
+        {
+            std::ostringstream header;
+            header.imbue(std::locale::classic());
+            header << "SpiralTextureArtifact " << kTextureArtifactVersion << '\n' << "Source " << std::quoted(artifact.SourcePath) << '\n' << "TextureAsset " << artifact.Asset << '\n'
+                << "Role " << ToString(artifact.Role) << '\n' << "ColorSpace " << ToString(artifact.ColorSpace) << '\n' << "TargetProfile " << ToString(artifact.TargetProfile) << '\n'
+                << "CookedFormat " << ToString(artifact.CookedFormat) << '\n' << "HasAlpha " << (artifact.HasAlpha ? 1 : 0) << '\n' << "MipCount " << artifact.Mips.size() << '\n';
+            for (const TextureArtifactMip& mip : artifact.Mips) header << "Mip " << mip.Width << ' ' << mip.Height << ' ' << mip.ByteOffset << ' ' << mip.ByteSize << '\n';
+            header << "PayloadBytes " << artifact.Payload.size() << '\n' << "Payload\n";
+            bytes = header.str();
+        }
+        bytes.append(reinterpret_cast<const char*>(artifact.Payload.data()), artifact.Payload.size());
+        // Shared exclusive-create, fsync and rename path: concurrent writers cannot interleave and
+        // a crash cannot publish a truncated artifact.
+        std::string writeError;
+        if (!WriteFileAtomically(path, bytes, writeError)) { outError = "could not write cooked texture artifact: " + writeError; return false; }
         outError.clear(); return true;
     }
 
@@ -542,6 +534,14 @@ namespace Engine
         for (TextureArtifactMip& mip : candidate.Mips) if (!ReadExpected(input, "Mip") || !(input >> mip.Width >> mip.Height >> mip.ByteOffset >> mip.ByteSize)) { outError = "cooked texture artifact mip range is malformed"; return false; }
         if (!ReadExpected(input, "PayloadBytes") || !(input >> payloadBytes) || payloadBytes == 0 || payloadBytes > kMaxTexturePayloadBytes || !ReadExpected(input, "Payload")) { outError = "cooked texture artifact payload header is malformed"; return false; }
         if (input.get() != '\n') { outError = "cooked texture artifact payload separator is malformed"; return false; }
+        // The declared payload must be exactly what remains in the file; checking first keeps a tiny
+        // file from committing (and zero-filling) up to a gigabyte.
+        std::error_code sizeError;
+        const std::uintmax_t fileBytes = std::filesystem::file_size(path, sizeError);
+        const std::streamoff payloadOffset = static_cast<std::streamoff>(input.tellg());
+        if (sizeError || payloadOffset < 0 || static_cast<std::uintmax_t>(payloadOffset) > fileBytes
+            || fileBytes - static_cast<std::uintmax_t>(payloadOffset) != payloadBytes)
+        { outError = "cooked texture artifact payload length does not match the file"; return false; }
         candidate.Payload.resize(static_cast<size_t>(payloadBytes));
         input.read(reinterpret_cast<char*>(candidate.Payload.data()), static_cast<std::streamsize>(payloadBytes));
         if (input.gcount() != static_cast<std::streamsize>(payloadBytes) || input.peek() != std::char_traits<char>::eof() || !ValidateTextureArtifact(candidate, outError)) return false;

@@ -41,6 +41,9 @@ namespace Engine
 
         bool IsRunning() const;
         u32 GetWorkerCount() const;
+        // Jobs queued plus jobs currently executing; a saturation signal for
+        // callers deciding whether a worker can take their task promptly.
+        size_t GetPendingJobCount() const;
         u32 GetCurrentWorkerIndex() const;
         JobSystemStatistics GetStatistics() const;
 
