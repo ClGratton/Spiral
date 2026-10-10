@@ -61,6 +61,7 @@ Technical documents are indexed in recommended reading order by [Architecture/RE
 | [Docs/Architecture/PHYSICS_ARCHITECTURE_AND_RESEARCH.md](Architecture/PHYSICS_ARCHITECTURE_AND_RESEARCH.md) | Accepted planning contract | Physics authority, fixed stepping, backend bake-off, collision cooking, determinism levels, solver research tiers, GPU synchronization, fallbacks, and qualification. |
 | [Docs/Architecture/KTX2_BASIS_TEXTURE_IMPORT_PLAN.md](Architecture/KTX2_BASIS_TEXTURE_IMPORT_PLAN.md) | Accepted import contract | KTX2/Basis roles, cooking, streaming, libktx boundary, and validation. |
 | [Docs/Architecture/FAB_ASSET_INTEGRATION.md](Architecture/FAB_ASSET_INTEGRATION.md) | Accepted planning contract | User-controlled Fab acquisition, portable local-package import, provenance/license receipts, security boundaries, and the pre-demo headed gate. |
+| [Docs/Architecture/EDITOR_UI_ARCHITECTURE.md](Architecture/EDITOR_UI_ARCHITECTURE.md) | Accepted architecture contract | Editor module structure, panel/command registries, named bounded undo/redo history, in-house transform gizmo and world-grid snapping, outliner scope, layouts and detachable panels with the multi-viewport platform matrix and hazards, pacing non-claim, typed-control additions, and verification gates. |
 | [Docs/Architecture/MISSING_RESEARCH_AUDIT_2026.md](Architecture/MISSING_RESEARCH_AUDIT_2026.md) | Research addendum | Optional accelerators, future GPU execution, geometry compression, and standards. |
 | [Docs/Architecture/RESEARCH_DECISIONS.md](Architecture/RESEARCH_DECISIONS.md) | Research rationale | Broad renderer/physics discoveries and prototype questions. |
 | [Docs/Architecture/HAZEL_ENGINE_EVALUATION.md](Architecture/HAZEL_ENGINE_EVALUATION.md) | Reference evaluation | Why Hazel is a reference rather than the engine base. |
@@ -75,7 +76,7 @@ Only `PLAN.md` controls implementation order. Any “first implementation order,
 | [Engine/src/Engine/OWNERSHIP.md](../Engine/src/Engine/OWNERSHIP.md) | Engine module responsibilities and dependency direction, including the Math world-grid boundary. |
 | [Engine/src/Engine/Core/OWNERSHIP.md](../Engine/src/Engine/Core/OWNERSHIP.md) | Stricter Core boundary. |
 | [Engine/src/Engine/Jobs/OWNERSHIP.md](../Engine/src/Engine/Jobs/OWNERSHIP.md) | CPU worker, frame-task dependency, publication, and scheduling boundary. |
-| [Editor/OWNERSHIP.md](../Editor/OWNERSHIP.md) | Editor-as-client boundary. |
+| [Editor/OWNERSHIP.md](../Editor/OWNERSHIP.md) | Editor-as-client boundary, module directories, pure-versus-adapter tiers, and control-mailbox scope. |
 | [Sandbox/OWNERSHIP.md](../Sandbox/OWNERSHIP.md) | Public API proving-ground boundary. |
 
 If a subsystem grows rules that cannot be stated clearly in the engine-wide ownership table, add a local `OWNERSHIP.md` and list it here.
@@ -89,7 +90,7 @@ If a subsystem grows rules that cannot be stated clearly in the engine-wide owne
 | Backend/device capability | Renderer capability contract, relevant backend ADR, `PLAN.md` coverage wording, and verification matrix. |
 | Dependency/version/license/package | `Docs/DEPENDENCIES.md`; architecture ADR if the choice changes. |
 | Module/file responsibility | Nearest `OWNERSHIP.md`, `AGENTS.md` scope map, and this catalog. |
-| Editor UX | `PRODUCT.md`/`DESIGN.md` as applicable and `Docs/EDITOR_UI_REVIEW.md`. |
+| Editor UX | `PRODUCT.md`/`DESIGN.md` as applicable, `Docs/EDITOR_UI_REVIEW.md`, and `Docs/Architecture/EDITOR_UI_ARCHITECTURE.md` when history, command, gizmo, layout, detach, or typed-UI-action rules change. |
 | Build/test/CI command | Root `README.md`, `Docs/VERIFICATION.md`, and reusable scripts/workflows. |
 | Test design, tier, property/fuzz strategy, sanitizer/coverage policy | `Docs/TESTING_STRATEGY.md`; `Docs/VERIFICATION.md` when an executable command or evidence gate also changes. |
 | New Markdown file | This catalog; also `Docs/Architecture/README.md` when architectural. |
