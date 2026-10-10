@@ -743,6 +743,16 @@ namespace
         std::string LoadError;
         bool LoadThrows = false;
         BrowserPanelConfig Config;
+        // The notice dismissal store and the system-browser opener (the Epic terms safeguards).
+        // Dismissed by default, so tests of the browser machinery see no notice.
+        FabNoticeDismissalStatus NoticeStatus = FabNoticeDismissalStatus::Dismissed;
+        std::string NoticeLoadError;
+        bool NoticeSaveOk = true;
+        int NoticeLoads = 0;
+        int NoticeSaves = 0;
+        bool OpenOk = true;
+        std::string OpenError;
+        std::vector<std::pair<std::string, std::string>> Opened;
 
         Session()
         {
@@ -780,6 +790,30 @@ namespace
                     throw std::runtime_error("the close wait did not terminate");
             };
             environment.LogWarn = [this](std::string_view message) { Warnings.emplace_back(message); };
+            environment.LoadNoticeDismissal = [this](const BrowserPanelConfig&, std::string& error)
+            {
+                ++NoticeLoads;
+                error = NoticeLoadError;
+                return NoticeStatus;
+            };
+            environment.SaveNoticeDismissal = [this](const BrowserPanelConfig&, std::string& error)
+            {
+                ++NoticeSaves;
+                if (!NoticeSaveOk)
+                {
+                    error = "disk full";
+                    return false;
+                }
+                NoticeStatus = FabNoticeDismissalStatus::Dismissed;
+                return true;
+            };
+            environment.OpenExternalUrl = [this](std::string_view url, std::string_view host, std::string& error)
+            {
+                Opened.emplace_back(std::string(url), std::string(host));
+                if (!OpenOk)
+                    error = OpenError;
+                return OpenOk;
+            };
             Core = std::make_unique<BrowserPanelCore>(std::move(environment));
             Core->Configure(Config);
         }
@@ -1344,6 +1378,323 @@ namespace
         }
         return check.Ok;
     }
+
+    // ---- 7. Epic terms safeguards ---------------------------------------------------------------------------------
+
+    void RunToClosed(Session& s)
+    {
+        for (int frame = 0; frame < 8 && s.Core->GetState() == BrowserPanelCore::State::Closing; ++frame)
+            s.Core->Pump();
+    }
+
+    bool CheckNoticeNeverDelaysTheBrowser()
+    {
+        Checker check { "notice" };
+        {
+            Session s;
+            s.NoticeStatus = FabNoticeDismissalStatus::Missing;
+            check.Expect(!s.Core->NoticeVisible() && s.NoticeLoads == 0, "nothing is read before the panel is opened");
+            s.Core->SetVisible(true);
+            check.Expect(s.LoadCalls == 1 && s.Core->GetState() == BrowserPanelCore::State::Starting && s.Fake.IsInitialized(),
+                "the browser starts in the same call that opens the panel while the notice is showing");
+            check.Expect(s.Core->NoticeVisible() && s.NoticeLoads == 1 && s.NoticeSaves == 0, "the notice is shown and nothing is saved yet");
+            check.Expect(s.Core->GetDiagnostics().NoticeShown && !s.Core->GetDiagnostics().NoticeDismissed, "diagnostics report the visible notice");
+            s.Core->UpdateLayout(s.Layout());
+            check.Expect(s.Count("Navigate https://www.fab.com/") == 1, "the home page loads without any dismissal");
+            s.DeliverFrame(640, 360);
+            s.Core->Pump();
+            check.Expect(s.Core->GetState() == BrowserPanelCore::State::Running && s.Core->NoticeVisible(), "the page runs beneath the notice");
+
+            const size_t navigations = s.Count("Navigate https://www.fab.com/");
+            s.Core->DismissNotice();
+            check.Expect(!s.Core->NoticeVisible() && s.NoticeSaves == 1 && s.Core->GetDiagnostics().NoticeDismissed, "Dismiss hides the notice and saves once");
+            check.Expect(s.Core->GetState() == BrowserPanelCore::State::Running && s.Count("Navigate https://www.fab.com/") == navigations,
+                "dismissal does not touch the browser");
+            s.Core->DismissNotice();
+            check.Expect(s.NoticeSaves == 1, "a second Dismiss saves nothing");
+            s.Core->SetVisible(false);
+            s.Core->SetVisible(true);
+            check.Expect(!s.Core->NoticeVisible() && s.NoticeLoads == 1, "reopening neither re-reads the store nor shows the notice again");
+
+            // Sign-out closes the browser and deletes the profile, not the dismissal.
+            s.Core->ClearBrowsingData();
+            RunToClosed(s);
+            check.Expect(s.Core->SignedOut() && s.NoticeSaves == 1 && s.NoticeStatus == FabNoticeDismissalStatus::Dismissed && !s.Core->NoticeVisible(),
+                "sign-out neither clears nor rewrites the dismissal");
+
+            // The next launch reads the stored record.
+            Session next;
+            next.NoticeStatus = s.NoticeStatus;
+            next.Core->SetVisible(true);
+            check.Expect(next.LoadCalls == 1 && !next.Core->NoticeVisible() && next.NoticeSaves == 0, "the next launch starts the browser with the notice hidden");
+        }
+        {
+            Session s;
+            s.NoticeStatus = FabNoticeDismissalStatus::Outdated;
+            s.Core->SetVisible(true);
+            check.Expect(s.Core->NoticeVisible() && s.LoadCalls == 1, "a changed notice version shows the notice again and still starts the browser");
+        }
+        {
+            Session s;
+            s.NoticeStatus = FabNoticeDismissalStatus::Rejected;
+            s.NoticeLoadError = "the Fab notice dismissal record is malformed";
+            s.Core->SetVisible(true);
+            bool warned = false;
+            for (const std::string& warning : s.Warnings)
+                warned = warned || Contains(warning, "was ignored");
+            check.Expect(s.Core->NoticeVisible() && s.LoadCalls == 1 && warned, "a damaged record fails closed to showing the notice, with a warning, and the browser starts");
+        }
+        {
+            Session s;
+            s.NoticeStatus = FabNoticeDismissalStatus::Dismissed;
+            s.Core->SetVisible(true);
+            check.Expect(!s.Core->NoticeVisible() && s.Core->GetDiagnostics().NoticeDismissed && s.LoadCalls == 1, "a stored dismissal hides the notice");
+        }
+        {
+            Session s;
+            s.NoticeStatus = FabNoticeDismissalStatus::Missing;
+            s.NoticeSaveOk = false;
+            s.Core->SetVisible(true);
+            s.Core->DismissNotice();
+            check.Expect(!s.Core->NoticeVisible() && s.NoticeSaves == 1, "a failed save still hides the notice for this session");
+            const std::string status = s.Core->StatusLine();
+            check.Expect(Contains(status, "could not be saved") && Contains(status, "disk full") && Contains(status, "return next time"),
+                "the status line reports the failed save: " + status);
+            bool warned = false;
+            for (const std::string& warning : s.Warnings)
+                warned = warned || Contains(warning, "could not be saved");
+            check.Expect(warned && s.Core->GetState() == BrowserPanelCore::State::Starting, "the failure is logged and the browser is unaffected");
+        }
+        {
+            // The notice is independent of whether the browser could start.
+            Session s;
+            s.NoticeStatus = FabNoticeDismissalStatus::Missing;
+            s.LoadError = "the Fab browser runtime is not installed";
+            s.Core->SetVisible(true);
+            check.Expect(s.Core->GetState() == BrowserPanelCore::State::Failed && s.Core->NoticeVisible(), "a failed start still shows the notice");
+            s.Core->DismissNotice();
+            check.Expect(!s.Core->NoticeVisible() && s.NoticeSaves == 1, "and it can be dismissed");
+        }
+        return check.Ok;
+    }
+
+    bool CheckKillSwitch()
+    {
+        Checker check { "kill-switch" };
+        const struct
+        {
+            FabBrowserDisabledReason Reason;
+            const char* Token;
+            const char* Phrase;
+        } causes[] = {
+            { FabBrowserDisabledReason::CommandLine, "fab_browser_disabled_by_command_line", "--no-fab-browser" },
+            { FabBrowserDisabledReason::Setting, "fab_browser_disabled_by_setting", "Settings" },
+        };
+        for (const auto& cause : causes)
+        {
+            Session s;
+            s.NoticeStatus = FabNoticeDismissalStatus::Missing;
+            s.Config.Disabled = cause.Reason;
+            s.Core->Configure(s.Config);
+            check.Expect(s.Core->Disabled(), "configured disabled");
+            s.Core->SetVisible(true);
+            s.Core->SetVisible(true);
+            check.Expect(!s.Core->IsVisible() && s.LoadCalls == 0 && s.NoticeLoads == 0 && s.Core->GetState() == BrowserPanelCore::State::NotStarted
+                    && !s.Fake.IsInitialized(),
+                std::string("a disabled panel never opens, loads the host, or reads the store: ") + cause.Token);
+            check.Expect(Contains(s.Core->StatusLine(), cause.Phrase) && s.Core->GetDiagnostics().DisabledReason == cause.Token,
+                std::string("status and diagnostics name the cause: ") + s.Core->StatusLine());
+            s.Core->UpdateLayout(s.Layout());
+            check.Expect(s.Log.empty(), "a disabled panel makes no surface call");
+        }
+        {
+            // Turning it on while a browser runs closes it in order, without signing out.
+            Session s;
+            s.StartRunning();
+            check.Expect(s.Core->GetState() == BrowserPanelCore::State::Running, "running before the switch");
+            s.Core->SetDisabled(FabBrowserDisabledReason::Setting);
+            check.Expect(!s.Core->IsVisible() && s.Core->GetState() == BrowserPanelCore::State::Closing && s.Has("RequestClose"), "the running browser starts closing");
+            RunToClosed(s);
+            check.Expect(s.Core->GetState() == BrowserPanelCore::State::Closed && s.Has("Shutdown 2000") && s.Has("SurfaceDestroy")
+                    && s.Fake.ClearBrowsingDataCount == 0 && !s.Core->SignedOut() && s.Textures.LiveCount() == 0,
+                "it closes, shuts down, and releases the texture without clearing browsing data");
+            s.Core->SetVisible(true);
+            check.Expect(!s.Core->IsVisible() && s.LoadCalls == 1, "it cannot be reopened while disabled");
+            s.Core->SetDisabled(FabBrowserDisabledReason::None);
+            check.Expect(!s.Core->Disabled() && s.Core->GetDiagnostics().DisabledReason.empty(), "the refusal can be lifted");
+        }
+        {
+            // Lifting before anything started lets the browser start.
+            Session s;
+            s.Core->SetDisabled(FabBrowserDisabledReason::CommandLine);
+            s.Core->SetVisible(true);
+            check.Expect(s.LoadCalls == 0, "disabled before the first open");
+            s.Core->SetDisabled(FabBrowserDisabledReason::None);
+            s.Core->SetVisible(true);
+            check.Expect(s.LoadCalls == 1 && s.Core->IsVisible(), "enabled again, the panel opens and starts");
+        }
+        {
+            // Hiding is always allowed and the notice store is untouched while disabled.
+            Session s;
+            s.Config.Disabled = FabBrowserDisabledReason::Setting;
+            s.Core->Configure(s.Config);
+            s.Core->DismissNotice();
+            s.Core->SetVisible(false);
+            check.Expect(s.NoticeSaves == 0 && s.LoadCalls == 0, "a disabled panel saves nothing");
+        }
+        return check.Ok;
+    }
+
+    bool CheckOpenInBrowser()
+    {
+        Checker check { "open-in-browser" };
+        {
+            // Before the browser ever started: the home page.
+            Session s;
+            check.Expect(s.Core->OpenInBrowser() && s.Opened.size() == 1 && s.Opened[0].first == "https://www.fab.com/" && s.Opened[0].second == "www.fab.com",
+                "an idle panel opens the home page");
+            check.Expect(s.LoadCalls == 0 && Contains(s.Core->StatusLine(), "Opened Fab in your browser."), "without starting the browser, and the status says so: " + s.Core->StatusLine());
+        }
+        {
+            Session s;
+            s.StartRunning();
+            check.Expect(s.Core->DisplayScheme() == "https" && s.Core->DisplayHost() == "www.fab.com" && s.Core->GetDiagnostics().DisplayScheme == "https",
+                "the toolbar facts are the real scheme and host");
+            s.Fake.ScriptNavigationRequest("https://www.fab.com/listings/abc-123?token=SECRET#frag", BrowserNavigationKind::TopLevel);
+            s.Core->Pump();
+            check.Expect(s.Core->OpenInBrowser() && s.Opened.size() == 1 && s.Opened[0].first == "https://www.fab.com/listings/abc-123"
+                    && s.Opened[0].second == "www.fab.com",
+                "the current page opens without its query or fragment");
+            check.Expect(Contains(s.Core->StatusLine(), "Opened this page in your browser.") && !Contains(s.Opened[0].first, "SECRET"),
+                "the status says the page opened and no token left the panel");
+            s.Fake.ScriptNavigationRequest("https://www.epicgames.com/id/login", BrowserNavigationKind::TopLevel);
+            s.Core->Pump();
+            check.Expect(s.Core->DisplayHost() == "www.epicgames.com" && s.Core->OpenInBrowser() && s.Opened.back().first == "https://www.epicgames.com/id/login"
+                    && s.Opened.back().second == "www.epicgames.com",
+                "an allowed Epic sign-in page opens on its own host");
+
+            // A host that is not allowed never becomes the current address (the policy denies it), so the page stays.
+            s.Fake.ScriptNavigationRequest("https://evil.example/x", BrowserNavigationKind::TopLevel);
+            s.Core->Pump();
+            check.Expect(s.Core->DisplayHost() == "www.epicgames.com", "a denied navigation does not change the address");
+
+            // Failure is reported in the status line.
+            s.OpenOk = false;
+            s.OpenError = "no handler for https";
+            check.Expect(!s.Core->OpenInBrowser() && Contains(s.Core->StatusLine(), "Could not open your browser: no handler for https."),
+                "a failed open is reported: " + s.Core->StatusLine());
+            bool warned = false;
+            for (const std::string& warning : s.Warnings)
+                warned = warned || Contains(warning, "could not be opened");
+            check.Expect(warned, "and logged");
+            s.OpenError.clear();
+            check.Expect(!s.Core->OpenInBrowser() && Contains(s.Core->StatusLine(), "the system browser did not start"), "an empty error is given a reason");
+            s.OpenOk = true;
+            check.Expect(s.Core->OpenInBrowser() && !Contains(s.Core->StatusLine(), "Could not"), "a later success replaces the failure");
+            // A new load clears the open report.
+            s.Fake.ScriptNavigationRequest("https://www.fab.com/", BrowserNavigationKind::TopLevel);
+            s.Core->Pump();
+            check.Expect(!Contains(s.Core->StatusLine(), "Opened"), "the report ends when the next load starts: " + s.Core->StatusLine());
+
+            // After sign-out the embedded browser is gone but the button still opens the home page.
+            s.Core->ClearBrowsingData();
+            RunToClosed(s);
+            const size_t before = s.Opened.size();
+            check.Expect(s.Core->OpenInBrowser() && s.Opened.size() == before + 1 && s.Opened.back().first == "https://www.fab.com/",
+                "a closed browser still opens the home page");
+        }
+        {
+            // A browser that failed to start.
+            Session s;
+            s.LoadError = "the Chromium sandbox is unavailable";
+            s.Core->SetVisible(true);
+            check.Expect(s.Core->GetState() == BrowserPanelCore::State::Failed, "the browser failed to start");
+            check.Expect(s.Core->OpenInBrowser() && s.Opened.size() == 1 && s.Opened[0].first == "https://www.fab.com/", "Open in browser still works");
+        }
+        {
+            // A disabled panel keeps the button.
+            Session s;
+            s.Config.Disabled = FabBrowserDisabledReason::CommandLine;
+            s.Core->Configure(s.Config);
+            check.Expect(s.Core->OpenInBrowser() && s.Opened.size() == 1, "the kill switch does not remove Open in browser");
+        }
+        {
+            // Without an opener the action reports it instead of failing silently.
+            FakeUiTextures textures;
+            BrowserPanelEnvironment environment;
+            environment.Textures = &textures;
+            BrowserPanelCore core(std::move(environment));
+            check.Expect(!core.OpenInBrowser() && Contains(core.StatusLine(), "external navigation is unavailable"),
+                "no opener: " + core.StatusLine());
+        }
+        {
+            // A home page outside the navigation policy is refused, with no URL in the message.
+            Session s;
+            s.Config.HomeUrl = "https://evil.example/";
+            s.Core->Configure(s.Config);
+            check.Expect(!s.Core->OpenInBrowser() && s.Opened.empty() && Contains(s.Core->StatusLine(), "Could not open your browser")
+                    && !Contains(s.Core->StatusLine(), "evil"),
+                "a bad home URL is refused without leaking it: " + s.Core->StatusLine());
+        }
+        return check.Ok;
+    }
+
+    bool CheckPageHints()
+    {
+        Checker check { "page-hints" };
+        Session s;
+        s.StartRunning();
+        const auto hint = [&] { return s.Core->GetDiagnostics().PageHint; };
+        const auto load = [&](int status, const char* url = "https://www.fab.com/x")
+        {
+            s.Fake.SetNextMainFrameStatus(status);
+            s.Fake.ScriptNavigationRequest(url, BrowserNavigationKind::TopLevel);
+            s.Core->Pump();
+        };
+        check.Expect(hint() == "none", "no hint at first");
+        for (const int status : { 200, 204, 301, 401, 404, 429, 500, 502, 0 })
+        {
+            load(status);
+            check.Expect(hint() == "none" && s.Core->PageHint() == FabPageHint::None, "HTTP " + std::to_string(status) + " shows no security hint");
+        }
+        for (const int status : { 403, 503 })
+        {
+            load(200);
+            load(status);
+            check.Expect(hint() == "security-check-likely" && s.Core->PageHint() == FabPageHint::SecurityCheckLikely,
+                "HTTP " + std::to_string(status) + " shows the security-check hint");
+        }
+        load(200);
+        check.Expect(hint() == "none", "the next successful load clears the hint");
+
+        s.Fake.ScriptFailure("net::ERR_CONNECTION_RESET");
+        s.Core->Pump();
+        check.Expect(hint() == "load-error", "a main-frame error shows the load-error hint");
+        s.Fake.ScriptNavigationRequest("https://evil.example/x", BrowserNavigationKind::TopLevel);
+        s.Core->Pump();
+        check.Expect(hint() == "navigation-denied", "a denied navigation replaces the vaguer error hint");
+        load(403);
+        check.Expect(hint() == "security-check-likely", "a 403 outranks the earlier hints");
+        s.Fake.ScriptNavigationRequest("https://evil.example/y", BrowserNavigationKind::TopLevel);
+        s.Core->Pump();
+        check.Expect(hint() == "security-check-likely", "a vaguer cause never replaces a stronger one");
+        load(200);
+        check.Expect(hint() == "none", "a clean load clears everything");
+
+        // A denied navigation with no page loads at all.
+        Session denied;
+        denied.StartRunning();
+        denied.Fake.ScriptNavigationRequest("http://www.fab.com/", BrowserNavigationKind::TopLevel);
+        denied.Core->Pump();
+        check.Expect(denied.Core->GetDiagnostics().PageHint == "navigation-denied", "an insecure navigation shows the hint");
+
+        // The hint ends with the panel's life: a failed start has none.
+        Session failed;
+        failed.LoadError = "no host";
+        failed.Core->SetVisible(true);
+        check.Expect(failed.Core->GetDiagnostics().PageHint == "none", "a failed start has no page hint");
+        return check.Ok;
+    }
 }
 
 namespace SpiralTests
@@ -1382,6 +1733,15 @@ namespace SpiralTests
     {
         bool ok = CheckDownloadsAndStatus();
         ok = CheckContainment() && ok;
+        return ok;
+    }
+
+    bool TestBrowserPanelEpicSafeguards()
+    {
+        bool ok = CheckNoticeNeverDelaysTheBrowser();
+        ok = CheckKillSwitch() && ok;
+        ok = CheckOpenInBrowser() && ok;
+        ok = CheckPageHints() && ok;
         return ok;
     }
 }

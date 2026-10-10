@@ -8,8 +8,11 @@
 
 #include <imgui.h>
 
+#include <array>
 #include <chrono>
 #include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <iomanip>
 #include <span>
 #include <sstream>
@@ -262,6 +265,20 @@ bool EditorLayer::RunFabPanelUiSmokeFrame()
         int height = 0;
         io.Fonts->GetTexDataAsRGBA32(&pixels, &width, &height);
         m_FabPanelUiSmokeStageStart = now;
+
+        // The browser panel under test keeps its notice dismissal in the fixtures directory (never
+        // the user's real one) and reports "Open in browser" requests instead of launching a browser.
+        Fab::BrowserPanelConfig panelConfig;
+        panelConfig.Disabled = FabBrowserAvailabilityNow().Reason;
+        panelConfig.NoticeDismissalFile = std::filesystem::path(m_FabPanelUiSmokeFixtures) / "fab-notice-dismissed.json";
+        m_FabBrowser.Configure(std::move(panelConfig));
+        m_FabBrowser.SetExternalOpener([this](std::string_view url, std::string_view host, std::string& error)
+        {
+            m_FabPanelUiSmokeOpened.push_back(std::string(url) + " " + std::string(host));
+            if (!m_FabPanelUiSmokeOpenSucceeds)
+                error = "smoke refusal";
+            return m_FabPanelUiSmokeOpenSucceeds;
+        });
     }
 
     // One complete ImGui frame per call: ImGui asserts on unbalanced stacks and
@@ -283,11 +300,106 @@ bool EditorLayer::RunFabPanelUiSmokeFrame()
     const auto advance = [&]()
     {
         ++m_FabPanelUiSmokeStage;
+        m_FabPanelUiSmokeSub = 0;
         m_FabPanelUiSmokeStageStart = now;
     };
     if (now - m_FabPanelUiSmokeStageStart > 20.0)
         fail("stage " + std::to_string(m_FabPanelUiSmokeStage) + " timed out in state "
             + Fab::ToString(m_FabImport.Controller().GetStatus().State));
+
+
+    // ---- the browser panel beside the import stages ------------------------------------------------
+    // The headless Editor has no browser host, so the panel is in the failed-start state: exactly the
+    // state in which "Open in browser" and the notice must still work.
+    {
+        namespace fs = std::filesystem;
+        const fs::path noticeFile = fs::path(m_FabPanelUiSmokeFixtures) / "fab-notice-dismissed.json";
+        const auto expectText = [&](bool condition, const std::string& what)
+        {
+            if (!condition)
+                fail("browser panel: " + what);
+        };
+        if (m_FabPanelUiSmokePanelPhase == 0 && m_FabPanelUiSmokeFrames >= 4)
+        {
+            const Fab::BrowserPanelDrawRecord record = m_FabBrowser.LastDrawRecord();
+            const Fab::BrowserPanelDiagnostics diagnostics = m_FabBrowser.GetDiagnostics();
+            expectText(diagnostics.State == "Failed" && diagnostics.DisabledReason.empty(),
+                "the smoke expects the failed-start state, saw " + diagnostics.State);
+            expectText(record.NoticeLine && m_FabBrowser.NoticeVisible() && diagnostics.NoticeShown && !diagnostics.NoticeDismissed,
+                "the notice line is drawn above a browser that failed to start");
+            expectText(record.OpenInBrowserEnabled && record.AddressText == "-" && !record.LockGlyph && !record.PageHint,
+                "the toolbar draws Open in browser enabled and no address before a page exists");
+            expectText(!fs::exists(noticeFile), "no dismissal exists before Dismiss");
+
+            m_FabPanelUiSmokeOpened.clear();
+            expectText(m_FabBrowser.OpenInBrowser() && m_FabPanelUiSmokeOpened.size() == 1
+                    && m_FabPanelUiSmokeOpened[0] == "https://www.fab.com/ www.fab.com"
+                    && m_FabBrowser.StatusLine().find("Opened Fab in your browser.") != std::string::npos,
+                "Open in browser opens the home page although the browser failed to start");
+            m_FabPanelUiSmokeOpenSucceeds = false;
+            expectText(!m_FabBrowser.OpenInBrowser()
+                    && m_FabBrowser.StatusLine().find("Could not open your browser: smoke refusal.") != std::string::npos,
+                "a refused open is reported in the status line");
+            m_FabPanelUiSmokeOpenSucceeds = true;
+
+            m_FabBrowser.DismissNotice();
+            std::ifstream stored(noticeFile, std::ios::binary);
+            const std::string storedText((std::istreambuf_iterator<char>(stored)), std::istreambuf_iterator<char>());
+            expectText(!m_FabBrowser.NoticeVisible() && storedText == Fab::EncodeFabNoticeDismissal(Fab::FabDisclosureLimits::kNoticeVersion),
+                "Dismiss hides the notice and writes the exact record");
+            std::error_code permissionError;
+            expectText((fs::status(noticeFile, permissionError).permissions() & fs::perms::all) == (fs::perms::owner_read | fs::perms::owner_write),
+                "the dismissal file is owner-only");
+            m_FabPanelUiSmokePhaseFrame = m_FabPanelUiSmokeFrames;
+            m_FabPanelUiSmokePanelPhase = 1;
+        }
+        else if (m_FabPanelUiSmokePanelPhase == 1 && m_FabPanelUiSmokeFrames >= m_FabPanelUiSmokePhaseFrame + 4)
+        {
+            const Fab::BrowserPanelDrawRecord record = m_FabBrowser.LastDrawRecord();
+            expectText(!record.NoticeLine && record.OpenInBrowserEnabled, "after Dismiss the notice line is gone and Open in browser remains");
+
+            // A second panel (the next launch) reads the stored record: no notice. A record of another
+            // notice version shows it again. The kill switch keeps the panel closed.
+            const auto drawSecondPanel = [&](Fab::BrowserPanelConfig config, bool visible)
+            {
+                Fab::BrowserPanel other;
+                other.Configure(std::move(config));
+                ImGui::NewFrame();
+                other.SetVisible(visible);
+                other.Draw();
+                ImGui::Render();
+                struct Seen
+                {
+                    bool Visible;
+                    bool Disabled;
+                    Fab::BrowserPanelDrawRecord Record;
+                };
+                const Seen seen { other.IsVisible(), other.IsDisabled(), other.LastDrawRecord() };
+                other.Shutdown();
+                return seen;
+            };
+            Fab::BrowserPanelConfig persisted;
+            persisted.NoticeDismissalFile = noticeFile;
+            const auto next = drawSecondPanel(persisted, true);
+            expectText(next.Visible && !next.Record.NoticeLine && next.Record.OpenInBrowserEnabled, "the next launch shows no notice");
+
+            const fs::path newerFile = fs::path(m_FabPanelUiSmokeFixtures) / "fab-notice-newer.json";
+            std::string saveError;
+            expectText(Fab::SaveFabNoticeDismissalFile(newerFile, Fab::FabDisclosureLimits::kNoticeVersion + 1, saveError), "newer record fixture");
+            Fab::BrowserPanelConfig newer;
+            newer.NoticeDismissalFile = newerFile;
+            const auto again = drawSecondPanel(newer, true);
+            expectText(again.Visible && again.Record.NoticeLine, "a record of another notice version shows the notice again");
+
+            Fab::BrowserPanelConfig disabled;
+            disabled.NoticeDismissalFile = noticeFile;
+            disabled.Disabled = Fab::FabBrowserDisabledReason::Setting;
+            const auto off = drawSecondPanel(disabled, true);
+            expectText(!off.Visible && off.Disabled && !off.Record.OpenInBrowserEnabled && !off.Record.NoticeLine,
+                "the kill switch keeps the panel closed and undrawn");
+            m_FabPanelUiSmokePanelPhase = 2;
+        }
+    }
 
     const Fab::FabImportStatus status = m_FabImport.Controller().GetStatus();
     const std::string good = m_FabPanelUiSmokeFixtures + "/good.glb";
@@ -320,24 +432,83 @@ bool EditorLayer::RunFabPanelUiSmokeFrame()
                 fail("the good package did not reach AwaitingProvenance: " + status.Message);
             break;
         case 2:
-            // Incomplete (nothing chosen) was drawn; now a license without its attribution.
+        {
+            // Incomplete (nothing chosen) was drawn. Each licence kind the gate refuses is chosen in
+            // the form exactly as the License combo does, drawn for a frame, and then checked: the
+            // gate message is on screen, Confirm is disabled, and the shared Confirm refuses it.
+            constexpr std::array<Fab::FabLicenseChoice, 4> refused { { Fab::FabLicenseChoice::PersonalReferenceOnly,
+                Fab::FabLicenseChoice::CodePlugin, Fab::FabLicenseChoice::LegacyUeOnly, Fab::FabLicenseChoice::Other } };
+            const unsigned int index = m_FabPanelUiSmokeSub / 2;
+            if (index < refused.size())
+            {
+                if (m_FabPanelUiSmokeSub % 2 == 0)
+                {
+                    if (!m_FabImport.ChooseLicenseInForm(refused[index]))
+                        fail("a refused licence choice could not be selected in the form");
+                    ++m_FabPanelUiSmokeSub;
+                    break;
+                }
+                // The frame that followed the selection has been drawn.
+                const FabImportPanel::ProvenanceDrawRecord& drawn = m_FabImport.LastProvenanceDraw();
+                if (drawn.Verdict != Fab::FabLicenseVerdict::Refused || drawn.ConfirmEnabled
+                    || drawn.LicenseLabel != Fab::FabLicenseChoiceLabel(refused[index])
+                    || drawn.GateMessage.find("cannot be used as importable source content in Spiral") == std::string::npos)
+                    fail(std::string("the form did not draw a refusal for ") + std::string(Fab::FabLicenseChoiceLabel(refused[index])));
+                std::string error;
+                if (m_FabImport.Confirm(status.ProvenanceDigest, error)
+                    || error.find("cannot be used as importable source content in Spiral") == std::string::npos
+                    || m_FabImport.Controller().GetStatus().State != Fab::FabImportState::AwaitingProvenance)
+                    fail(std::string("Confirm did not refuse ") + std::string(Fab::FabLicenseChoiceLabel(refused[index])) + ": " + error);
+                ++m_FabPanelUiSmokeSub;
+                break;
+            }
+            // Then a license without its attribution.
             provenance.LicenseFamily = Engine::FabLicenseFamily::CreativeCommonsAttribution;
             m_FabImport.ApplyProvenance(provenance);
             if (m_FabImport.Controller().GetStatus().ProvenanceValid)
                 fail("CC-BY without attribution must be invalid");
             advance();
             break;
+        }
         case 3:
+        {
             provenance.LicenseFamily = Engine::FabLicenseFamily::CreativeCommonsAttribution;
             provenance.AttributionText = "Smoke by Publisher";
             provenance.AttributionLink = "https://www.fab.com/listings/ui-smoke";
-            provenance.NoAI = Engine::FabMetadataFlag::No;
             provenance.GeneratedWithAI = Engine::FabMetadataFlag::No;
+            if (m_FabPanelUiSmokeSub == 0)
+            {
+                // A NoAI-marked listing: allowed, but Confirm waits for the acknowledgement.
+                provenance.NoAI = Engine::FabMetadataFlag::Yes;
+                m_FabImport.ApplyProvenance(provenance);
+                ++m_FabPanelUiSmokeSub;
+                break;
+            }
+            if (m_FabPanelUiSmokeSub == 1)
+            {
+                const FabImportPanel::ProvenanceDrawRecord& drawn = m_FabImport.LastProvenanceDraw();
+                if (drawn.Verdict != Fab::FabLicenseVerdict::Allowed || !drawn.NoAiAcknowledgementShown || drawn.ConfirmEnabled
+                    || m_FabImport.NoAiNoticeAcknowledged())
+                    fail("a NoAI listing must draw the acknowledgement and keep Confirm disabled until it is ticked");
+                m_FabImport.AcknowledgeNoAiNotice();
+                ++m_FabPanelUiSmokeSub;
+                break;
+            }
+            if (m_FabPanelUiSmokeSub == 2)
+            {
+                const FabImportPanel::ProvenanceDrawRecord& drawn = m_FabImport.LastProvenanceDraw();
+                if (!drawn.ConfirmEnabled || !drawn.NoAiAcknowledgementShown || !m_FabImport.NoAiNoticeAcknowledged())
+                    fail("the acknowledged NoAI listing must enable Confirm");
+                ++m_FabPanelUiSmokeSub;
+                break;
+            }
+            provenance.NoAI = Engine::FabMetadataFlag::No;
             m_FabImport.ApplyProvenance(provenance);
             if (!m_FabImport.Controller().GetStatus().ProvenanceValid)
                 fail("a complete CC-BY provenance must be valid: " + m_FabImport.Controller().GetStatus().ProvenanceError);
             advance();
             break;
+        }
         case 4:
         {
             // The same method the Confirm button's click calls.
@@ -418,11 +589,14 @@ bool EditorLayer::RunFabPanelUiSmokeFrame()
             }
             break;
         case 13:
+            if (m_FabPanelUiSmokePanelPhase != 2)
+                fail("the browser panel checks did not finish");
             ImGui::DestroyContext(m_FabPanelUiSmokeContext);
             m_FabPanelUiSmokeContext = nullptr;
             Engine::Log::Info("FabPanelUiSmokeV1 states=idle-snapshotting-awaiting-incomplete-invalid-valid-cooking-ready-done-"
                               "failed-rejected-cancelled frames=", m_FabPanelUiSmokeFrames,
-                " browserPanel=placeholder-drawn input=no-ui-synthesis result=pass");
+                " browserPanel=failed-start-drawn notice=shown-dismissed-persisted-versioned openInBrowser=failed-start-ok-and-refusal-reported"
+                              " killSwitch=closed licenceGate=reference-plugin-ue-other-refused noAiAck=required input=no-ui-synthesis result=pass");
             advance();
             Engine::Application::Get().Close();
             break;

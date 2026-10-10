@@ -219,6 +219,15 @@ namespace Fab
             virtual void OnCursor(BrowserCursor cursor) = 0;
             // Display text from BrowserNavigationPolicy::DisplayAddress; UI only, never logged.
             virtual void OnAddress(std::string_view displayAddress) = 0;
+            // The scheme of the same main-frame address in lower case ("https"; at
+            // most 16 characters of a-z, 0-9, '+', '-', '.'; empty when there is
+            // none), delivered right before OnAddress. The toolbar shows it next to
+            // the host so the user can see where they are before typing credentials.
+            virtual void OnAddressScheme(std::string_view /*scheme*/) {}
+            // The main frame finished loading and the server answered with this HTTP
+            // status (0 when the engine reports none). Only the number: no URL, body,
+            // or header. A 403 or 503 is how a managed security check usually answers.
+            virtual void OnMainFrameLoaded(int /*httpStatus*/) {}
             virtual void OnLoadState(bool loading, bool canGoBack, bool canGoForward) = 0;
             virtual void OnDownload(const BrowserDownloadEvent& event) = 0;
             // Host text from BrowserNavigationPolicy::HostForLog. Delivered once per

@@ -3,6 +3,7 @@
 #include "FabEditorAdoption.h"
 #include "Fab/FabImportController.h"
 #include "Fab/FabIntake.h"
+#include "Fab/FabLicenseGate.h"
 
 #include <array>
 #include <deque>
@@ -92,6 +93,25 @@ public:
     const FabEditor::ProjectValidator& Validator() const { return m_Validator; }
     // The most recent panel-level note (rejections, source mismatches).
     const std::string& GetNote() const { return m_Note; }
+    // Selects a licence choice in the form exactly as the License combo does (the
+    // headless smoke uses it for the choices the typed provenance cannot express).
+    // Valid only while awaiting provenance.
+    bool ChooseLicenseInForm(Fab::FabLicenseChoice choice);
+    // Ticks the NoAI notice as its checkbox does.
+    void AcknowledgeNoAiNotice();
+    bool NoAiNoticeAcknowledged() const { return m_Form.NoAiAcknowledged; }
+
+    // What the provenance form last drew, so the headless smoke can check the licence
+    // gate and the Confirm button without reading widget state.
+    struct ProvenanceDrawRecord
+    {
+        std::string_view LicenseLabel;
+        Fab::FabLicenseVerdict Verdict = Fab::FabLicenseVerdict::Incomplete;
+        bool ConfirmEnabled = false;
+        bool NoAiAcknowledgementShown = false;
+        std::string GateMessage;
+    };
+    const ProvenanceDrawRecord& LastProvenanceDraw() const { return m_LastDraw; }
     const std::filesystem::path& GetScratchRoot() const { return m_ScratchRoot; }
     static const char* KindToken(Fab::FabIntakeKind kind);
     static const char* ReasonToken(Fab::FabIntakeReason reason);
@@ -106,13 +126,21 @@ private:
         std::array<char, 128> Version {};
         std::array<char, 512> AttributionLink {};
         std::vector<char> AttributionText = std::vector<char>(16 * 1024 + 1, '\0');
-        int LicenseFamily = 0; // 0 not chosen, 1 FabStandard, 2 CC-BY, 3 LegacyUnrealMarketplace
-        int LicenseTier = 0;   // 0 not chosen, 1 Personal, 2 Professional
+        // Index into Fab::kFabLicenseChoices: the licence and its tier in one choice.
+        // CodePlugin and Other exist only here; the receipt cannot represent them.
+        int LicenseChoice = 0;
         int NoAI = 0;          // Unknown, No, Yes
+        // The user ticked the NoAI notice. Session-only: the receipt schema has no field
+        // for it; the declared Marked No-AI value is what the receipt records.
+        bool NoAiAcknowledged = false;
         int GeneratedWithAI = 0;
         int RawSourcePolicy = 0; // ExcludedFromProject, PrivateProjectOnly
     };
 
+    // The licence choice the gate judges: the controller's provenance, or the form's
+    // CodePlugin/Other choice while the form is in step with the controller.
+    Fab::FabLicenseChoice EffectiveLicenseChoice(const Fab::FabImportStatus& status) const;
+    ProvenanceDrawRecord m_LastDraw;
     Fab::FabProvenance FormToProvenance() const;
     void ProvenanceToForm(const Fab::FabProvenance& provenance);
     void SyncForm(const Fab::FabImportStatus& status);

@@ -1,10 +1,12 @@
 #pragma once
 
 #include "BrowserSurface.h"
+#include "FabDisclosure.h"
 #include "Engine/Core/Base.h"
 #include "Engine/Events/Event.h"
 
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <span>
 #include <string>
@@ -40,7 +42,19 @@ namespace Fab
         // The window's content scale at startup (the window reports changes
         // through events only). Clamped like any device scale.
         float InitialDeviceScale = 1.0f;
+        // File that keeps the notice dismissal (see FabDisclosure.h). Empty selects
+        // kFabNoticeDismissalFileName beside ProfileDirectory, inside the same
+        // owner-only parent, never in a project and never in the profile itself, so
+        // signing out (which deletes the profile) does not discard it.
+        std::filesystem::path NoticeDismissalFile;
+        // The kill switch. Anything but None keeps the panel closed: it cannot be
+        // made visible, the browser is never started, and nothing else changes.
+        FabBrowserDisabledReason Disabled = FabBrowserDisabledReason::None;
     };
+
+    // Opens `url` in the system browser; `host` is the exact host it must be on.
+    // The production implementation is Engine::OpenExternalHttpsUrl.
+    using BrowserExternalOpener = std::function<bool(std::string_view url, std::string_view host, std::string& error)>;
 
     struct BrowserPanelDownload
     {
@@ -77,6 +91,29 @@ namespace Fab
         // User-granted sign-in hosts ("Allow once" plus "Allow always").
         Engine::u32 GrantedHostCount = 0;
         std::string RenderMode; // "software" or "hardware"
+        // The kill switch: empty when the panel is enabled, else the stable reason
+        // token (fab_browser_disabled_by_command_line, fab_browser_disabled_by_setting).
+        std::string DisabledReason;
+        // The one-line notice is drawn above the page.
+        bool NoticeShown = false;
+        // The notice was read from the store or dismissed and is hidden.
+        bool NoticeDismissed = false;
+        // none, load-error, navigation-denied, security-check-likely
+        std::string PageHint;
+        // The scheme of the page address as the toolbar shows it ("https").
+        std::string DisplayScheme;
+    };
+
+    // What the most recent Draw() put on screen, so the headless smoke can check the
+    // toolbar and the notice card without reading widget state.
+    struct BrowserPanelDrawRecord
+    {
+        bool OpenInBrowserEnabled = false;
+        bool NoticeLine = false;
+        bool PageHint = false;
+        bool LockGlyph = false;
+        // The scheme and host text as drawn ("https://www.fab.com"), or "-".
+        std::string AddressText;
     };
 
     class BrowserPanel
@@ -117,6 +154,27 @@ namespace Fab
 
         // Pops one completed, fully staged user download, if any.
         bool TryTakeCompletedDownload(BrowserPanelDownload& outDownload);
+
+        // ---- Epic terms safeguards (see FabDisclosure.h) ----
+        // The kill switch (BrowserPanelConfig::Disabled). A disabled panel ignores
+        // SetVisible(true); DisabledText says why for the menu and the log.
+        bool IsDisabled() const;
+        std::string DisabledText() const;
+        // Applies the kill switch at runtime; see BrowserPanelCore::SetDisabled.
+        void SetDisabled(FabBrowserDisabledReason reason);
+        // The one-line notice above the page; Dismiss hides it and saves the dismissal.
+        bool NoticeVisible() const;
+        void DismissNotice();
+        // The toolbar's permanent "Open in browser" button: the current https page
+        // when the navigation policy allows it, else the home page. Works in every
+        // state, including a browser that failed to start. The outcome is in the
+        // status line. False when nothing was opened.
+        bool OpenInBrowser();
+        // Replaces the external-navigation function (default: Engine::OpenExternalHttpsUrl)
+        // so a headless check can observe the request without launching a browser.
+        void SetExternalOpener(BrowserExternalOpener opener);
+        // Describes the last frame in which the window was drawn open.
+        BrowserPanelDrawRecord LastDrawRecord() const;
 
         // Orderly close for Editor shutdown: request close, pump until closed,
         // shut the surface down, and release the UI texture. Safe if unused.

@@ -447,9 +447,110 @@ namespace Fab
         }
         if (m_ShutDown)
             return;
+        if (Disabled())
+        {
+            // The kill switch: the panel stays closed and the browser is never started.
+            m_Visible = false;
+            m_Notice = "The Fab browser is " + std::string(DisabledText()) + ".";
+            return;
+        }
         m_Visible = true;
-        if (m_State == State::NotStarted)
-            Start();
+        // The notice is a line above the page and never gates the browser: the stored
+        // dismissal is read (a few bytes) and the browser starts in the same call.
+        EnsureNoticeLoaded();
+        if (m_State != State::NotStarted)
+            return;
+        Start();
+    }
+
+    void BrowserPanelCore::SetDisabled(FabBrowserDisabledReason reason)
+    {
+        m_Config.Disabled = reason;
+        if (reason == FabBrowserDisabledReason::None)
+            return;
+        SetVisible(false);
+        if (!Live())
+            return;
+        Guarded("disable", [&]
+        {
+            Info("Fab browser turned off; closing it");
+            FeedRouterHidden();
+            BeginClosing();
+        });
+    }
+
+    void BrowserPanelCore::EnsureNoticeLoaded()
+    {
+        if (m_NoticeLoaded)
+            return;
+        m_NoticeLoaded = true;
+        // No store means no notice (tests of the browser machinery); the production
+        // adapter always supplies both functions.
+        if (!m_Env.LoadNoticeDismissal)
+        {
+            m_NoticeStored = FabNoticeDismissalStatus::Dismissed;
+            return;
+        }
+        std::string error;
+        m_NoticeStored = m_Env.LoadNoticeDismissal(m_Config, error);
+        if (m_NoticeStored == FabNoticeDismissalStatus::Rejected)
+            Warn("The saved Fab notice dismissal was ignored: " + error);
+    }
+
+    bool BrowserPanelCore::NoticeVisible() const
+    {
+        return m_NoticeLoaded && FabNoticeVisible(m_NoticeStored, m_NoticeDismissedThisSession);
+    }
+
+    void BrowserPanelCore::DismissNotice()
+    {
+        if (!NoticeVisible())
+            return;
+        m_NoticeDismissedThisSession = true;
+        std::string error;
+        if (!m_Env.SaveNoticeDismissal)
+            error = "there is no place to save it";
+        if (m_Env.SaveNoticeDismissal && m_Env.SaveNoticeDismissal(m_Config, error))
+        {
+            m_NoticeReport.clear();
+            Info("Fab notice dismissed and saved");
+            return;
+        }
+        m_NoticeReport = "Your dismissal could not be saved (" + error + "); the notice will return next time.";
+        Warn(m_NoticeReport);
+    }
+
+    bool BrowserPanelCore::OpenInBrowser()
+    {
+        const bool live = Live();
+        const FabOpenDecision decision = DecideFabOpenInBrowser(
+            m_Effective, live ? std::string_view(m_DisplayScheme) : std::string_view(), live ? std::string_view(m_DisplayAddress) : std::string_view(),
+            m_Config.HomeUrl);
+        if (!decision.Valid)
+        {
+            m_OpenReport = "Could not open your browser: " + decision.Error + ".";
+            Warn(m_OpenReport);
+            return false;
+        }
+        std::string error;
+        if (!m_Env.OpenExternalUrl)
+            error = "external navigation is unavailable";
+        else if (m_Env.OpenExternalUrl(decision.Url, decision.Host, error))
+        {
+            m_OpenReport = decision.UsedCurrentPage ? "Opened this page in your browser." : "Opened Fab in your browser.";
+            Info("Fab opened in the system browser: host=" + decision.Host);
+            return true;
+        }
+        if (error.empty())
+            error = "the system browser did not start";
+        m_OpenReport = "Could not open your browser: " + error + ".";
+        Warn("Fab could not be opened in the system browser: " + error);
+        return false;
+    }
+
+    void BrowserPanelCore::RaiseHint(FabPageHint hint)
+    {
+        m_Hint = StrongerFabPageHint(m_Hint, hint);
     }
 
     void BrowserPanelCore::Start()
@@ -530,6 +631,7 @@ namespace Fab
         // Never reset a surface from inside one of its own callbacks: the caller
         // that is inside IBrowserSurface::Pump() uses m_DeferredFailure instead.
         m_Error = finalText;
+        m_Hint = FabPageHint::None;
         m_State = State::Failed;
         m_Consent.Reset();
         m_Surface.reset();
@@ -1057,6 +1159,20 @@ namespace Fab
     {
         const size_t slash = displayAddress.find('/');
         m_DisplayHost = std::string(displayAddress.substr(0, std::min<size_t>(slash, 253)));
+        m_DisplayAddress = std::string(displayAddress.substr(0, 512));
+    }
+
+    void BrowserPanelCore::OnAddressScheme(std::string_view scheme)
+    {
+        m_DisplayScheme = std::string(scheme.substr(0, 16));
+    }
+
+    void BrowserPanelCore::OnMainFrameLoaded(int httpStatus)
+    {
+        if (!IsSecurityCheckStatus(httpStatus))
+            return;
+        RaiseHint(FabPageHint::SecurityCheckLikely);
+        Info("Fab main frame finished with HTTP " + std::to_string(httpStatus));
     }
 
     void BrowserPanelCore::OnLoadState(bool loading, bool canGoBack, bool canGoForward)
@@ -1065,7 +1181,11 @@ namespace Fab
         m_CanGoBack = canGoBack;
         m_CanGoForward = canGoForward;
         if (loading)
+        {
             m_PageError.clear();
+            m_Hint = FabPageHint::None;
+            m_OpenReport.clear();
+        }
     }
 
     void BrowserPanelCore::OnDownload(const BrowserDownloadEvent& event)
@@ -1115,6 +1235,7 @@ namespace Fab
     {
         ++m_NavigationDenials;
         m_LastDeniedHost = std::string(host);
+        RaiseHint(FabPageHint::NavigationDenied);
         const auto known = std::find(m_DeniedHosts.begin(), m_DeniedHosts.end(), m_LastDeniedHost);
         if (known != m_DeniedHosts.end())
             m_DeniedHosts.erase(known);
@@ -1148,6 +1269,7 @@ namespace Fab
     void BrowserPanelCore::OnFailed(std::string_view reason)
     {
         m_PageError = std::string(reason);
+        RaiseHint(FabPageHint::LoadError);
         Warn("Fab browser reported a problem: " + m_PageError);
     }
 
@@ -1161,6 +1283,14 @@ namespace Fab
 
     const std::string& BrowserPanelCore::StatusLine() const
     {
+        const auto prefixed = [this]
+        {
+            // The outcome of the latest "Open in browser" comes first: it is the newest user action.
+            if (!m_OpenReport.empty())
+                m_Status = m_OpenReport + " " + m_Status;
+            if (!m_NoticeReport.empty())
+                m_Status = m_NoticeReport + " " + m_Status;
+        };
         switch (m_State)
         {
         case State::Failed:
@@ -1174,7 +1304,10 @@ namespace Fab
             m_Status = m_SignedOut ? "Signing out..." : "Closing the Fab browser...";
             break;
         case State::NotStarted:
-            m_Status = m_Notice.empty() ? std::string("The Fab browser starts when this panel is opened.") : m_Notice;
+            if (Disabled())
+                m_Status = "The Fab browser is " + std::string(DisabledText()) + ".";
+            else
+                m_Status = m_Notice.empty() ? std::string("The Fab browser starts when this panel is opened.") : m_Notice;
             break;
         case State::Starting:
             m_Status = "Starting the Fab browser...";
@@ -1192,6 +1325,7 @@ namespace Fab
                 m_Status = "Ready";
             break;
         }
+        prefixed();
         return m_Status;
     }
 
@@ -1217,6 +1351,11 @@ namespace Fab
         diagnostics.PopupRedirects = m_PopupRedirects;
         diagnostics.GrantedHostCount = static_cast<u32>(m_Granted.Entries().size());
         diagnostics.RenderMode = m_Config.RenderMode == BrowserRenderMode::Hardware ? "hardware" : "software";
+        diagnostics.DisabledReason = std::string(FabBrowserDisabledToken(m_Config.Disabled));
+        diagnostics.NoticeShown = NoticeVisible();
+        diagnostics.NoticeDismissed = m_NoticeLoaded && !NoticeVisible();
+        diagnostics.PageHint = std::string(FabPageHintName(m_Hint));
+        diagnostics.DisplayScheme = m_DisplayScheme;
         if (m_State == State::Failed)
             diagnostics.Error = m_Error;
         else if (m_Uploader.Failed())

@@ -5,6 +5,7 @@
 #include "Engine/Core/Sha256.h"
 #include "Engine/Jobs/JobSystem.h"
 #include "Engine/Scene/Scene.h"
+#include "FabLicenseGate.h"
 
 #include <algorithm>
 #include <cctype>
@@ -928,6 +929,11 @@ namespace Fab
         m_Status.LastRejection.clear();
         if (m_State != FabImportState::AwaitingProvenance)
             return Reject("provenance can only be confirmed while awaiting provenance");
+        // The licence-kind gate: Reference-Only, code-plugin, UE-only and Other
+        // declarations cannot become importable source content, and say so plainly.
+        const FabLicenseGateResult gate = EvaluateFabLicenseGate(m_Status.Provenance);
+        if (gate.Verdict == FabLicenseVerdict::Refused)
+            return Reject(gate.Message);
         if (!m_Status.ProvenanceValid)
             return Reject("provenance is not valid: " + m_Status.ProvenanceError);
         if (!expectedDigest.empty() && expectedDigest != m_Status.ProvenanceDigest)

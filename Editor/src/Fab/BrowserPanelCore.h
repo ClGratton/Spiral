@@ -6,6 +6,7 @@
 #include "BrowserSignInHosts.h"
 #include "BrowserSurface.h"
 #include "Engine/Renderer/UiTexture.h"
+#include "FabDisclosure.h"
 
 #include <deque>
 #include <filesystem>
@@ -259,6 +260,15 @@ namespace Fab
         // Optional log sinks. Messages never contain a URL.
         std::function<void(std::string_view)> LogInfo;
         std::function<void(std::string_view)> LogWarn;
+        // The notice dismissal store. Both empty means no notice is shown, which is
+        // what the tests of the browser machinery use; the production adapter always
+        // supplies both. Load reports Missing/Outdated/Rejected/Dismissed for the
+        // notice version this build shows; Save records the dismissal.
+        std::function<FabNoticeDismissalStatus(const BrowserPanelConfig&, std::string&)> LoadNoticeDismissal;
+        std::function<bool(const BrowserPanelConfig&, std::string&)> SaveNoticeDismissal;
+        // Opens `url` in the system browser; `host` is the exact host it must be on.
+        // Empty reports that external navigation is unavailable.
+        std::function<bool(std::string_view url, std::string_view host, std::string& error)> OpenExternalUrl;
     };
 
     // Everything the ImGui adapter latches once per frame while the window is
@@ -303,9 +313,38 @@ namespace Fab
         void Configure(BrowserPanelConfig config);
 
         // The first transition to true loads and initialises the browser, on the
-        // calling thread. Every failure is final for the process.
+        // calling thread, unless the kill switch is set (the call is ignored). The
+        // notice below is read in the same call and never delays the start. Every
+        // startup failure is final for the process.
         void SetVisible(bool visible);
         bool IsVisible() const { return m_Visible; }
+
+        // ---- Epic terms safeguards ----
+        bool Disabled() const { return m_Config.Disabled != FabBrowserDisabledReason::None; }
+        // Applies the kill switch at runtime (the Settings checkbox). Turning it on
+        // hides the panel and closes a running browser in order (without signing
+        // out); the browser returns only after a restart, like any closed browser.
+        // Turning it off just lifts the refusal.
+        void SetDisabled(FabBrowserDisabledReason reason);
+        std::string_view DisabledText() const { return FabBrowserDisabledText(m_Config.Disabled); }
+        // The one-line notice above the page: shown from the first open until the
+        // user dismisses it (stored per notice version beside the profile directory).
+        bool NoticeVisible() const;
+        // The Dismiss button: hides the notice and saves the dismissal. A failed save
+        // is reported in the status line and the notice returns next time.
+        void DismissNotice();
+        // The permanent "Open in browser" action: the current https page if the
+        // navigation policy allows it, else the home page, through
+        // BrowserPanelEnvironment::OpenExternalUrl. Works in every state. The result
+        // is in StatusLine(); false when nothing was opened.
+        bool OpenInBrowser();
+        // The hint line under the toolbar: kFabPageHintText when the page reported a
+        // load error, a navigation was denied, or the main frame ended with HTTP 403
+        // or 503; empty otherwise. Cleared when the next load starts.
+        FabPageHint PageHint() const { return m_Hint; }
+        // The page address as the toolbar shows it: the scheme ("https") and the host.
+        // Both are empty before the first main-frame address.
+        const std::string& DisplayScheme() const { return m_DisplayScheme; }
 
         // Once per frame, before Draw: pumps the surface (all Listener callbacks
         // happen inside), hides a panel that was not drawn since the last call,
@@ -378,6 +417,8 @@ namespace Fab
         void OnFrame(const BrowserFrameView& frame) override;
         void OnCursor(BrowserCursor cursor) override;
         void OnAddress(std::string_view displayAddress) override;
+        void OnAddressScheme(std::string_view scheme) override;
+        void OnMainFrameLoaded(int httpStatus) override;
         void OnLoadState(bool loading, bool canGoBack, bool canGoForward) override;
         void OnDownload(const BrowserDownloadEvent& event) override;
         void OnNavigationDenied(std::string_view host) override;
@@ -387,6 +428,8 @@ namespace Fab
         void OnClosed() override;
 
     private:
+        void EnsureNoticeLoaded();
+        void RaiseHint(FabPageHint hint);
         void Start();
         void Fail(const std::string& finalText);
         void BeginClosing();
@@ -439,6 +482,14 @@ namespace Fab
         bool m_CanGoBack = false;
         bool m_CanGoForward = false;
         std::string m_DisplayHost;
+        std::string m_DisplayAddress;
+        std::string m_DisplayScheme;
+        bool m_NoticeLoaded = false;
+        bool m_NoticeDismissedThisSession = false;
+        FabNoticeDismissalStatus m_NoticeStored = FabNoticeDismissalStatus::Missing;
+        std::string m_NoticeReport;
+        FabPageHint m_Hint = FabPageHint::None;
+        std::string m_OpenReport;
         std::string m_Error;
         std::string m_PageError;
         std::string m_Notice;

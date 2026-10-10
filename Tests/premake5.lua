@@ -19,8 +19,10 @@ project "EngineTests"
         "../Editor/src/Fab/BrowserNavigationPolicy.cpp",
         "../Editor/src/Fab/BrowserSignInHosts.cpp",
         "../Editor/src/Fab/BrowserSurface.cpp",
+        "../Editor/src/Fab/FabDisclosure.cpp",
         "../Editor/src/Fab/FabImportController.cpp",
         "../Editor/src/Fab/FabIntake.cpp",
+        "../Editor/src/Fab/FabLicenseGate.cpp",
         "../Editor/src/Fab/NullBrowserSurface.cpp",
         -- Pure Editor-private History core (plain types, no ImGui/GLFW/Scene/RHI).
         "../Editor/src/History/EditGesture.cpp",

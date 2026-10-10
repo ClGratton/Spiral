@@ -257,6 +257,20 @@ bool FabImportPanel::ApplyProvenance(const Fab::FabProvenance& provenance)
 
 bool FabImportPanel::Confirm(std::string_view expectedDigest, std::string& error)
 {
+    // The licence-kind gate, for the choices the controller cannot hold (code plugin,
+    // Other) as well as every other one: the same verdict the typed action reports.
+    {
+        const Fab::FabImportStatus status = m_Controller->GetStatus();
+        const Fab::FabLicenseGateResult gate = Fab::EvaluateFabLicenseGate(
+            EffectiveLicenseChoice(status), status.Provenance.AttributionText, status.Provenance.NoAI);
+        if (gate.Verdict == Fab::FabLicenseVerdict::Refused)
+        {
+            error = gate.Message;
+            if (m_Host.Log)
+                m_Host.Log("Fab provenance refused: " + error);
+            return false;
+        }
+    }
     Fab::FabImportProjectContext context;
     if (!m_Host.BuildContext || !m_Host.BuildContext(std::nullopt, context, error))
     {
@@ -270,6 +284,43 @@ bool FabImportPanel::Confirm(std::string_view expectedDigest, std::string& error
         return false;
     }
     return true;
+}
+
+Fab::FabLicenseChoice FabImportPanel::EffectiveLicenseChoice(const Fab::FabImportStatus& status) const
+{
+    const Fab::FabLicenseChoice held = Fab::FabLicenseChoiceFromProvenance(status.Provenance);
+    if (held == Fab::FabLicenseChoice::NotChosen && m_FormJob == status.JobId && m_FormDigest == status.ProvenanceDigest)
+    {
+        const size_t index = static_cast<size_t>(std::clamp(m_Form.LicenseChoice, 0, static_cast<int>(Fab::kFabLicenseChoices.size()) - 1));
+        if (Fab::IsPanelOnlyLicenseChoice(Fab::kFabLicenseChoices[index]))
+            return Fab::kFabLicenseChoices[index];
+    }
+    return held;
+}
+
+bool FabImportPanel::ChooseLicenseInForm(Fab::FabLicenseChoice choice)
+{
+    const Fab::FabImportStatus status = m_Controller->GetStatus();
+    if (status.State != Fab::FabImportState::AwaitingProvenance)
+        return false;
+    SyncForm(status);
+    for (size_t index = 0; index < Fab::kFabLicenseChoices.size(); ++index)
+    {
+        if (Fab::kFabLicenseChoices[index] == choice)
+            m_Form.LicenseChoice = static_cast<int>(index);
+    }
+    m_Controller->SetProvenance(FormToProvenance());
+    m_FormDigest = m_Controller->GetStatus().ProvenanceDigest;
+    return true;
+}
+
+void FabImportPanel::AcknowledgeNoAiNotice()
+{
+    if (m_Form.NoAiAcknowledged)
+        return;
+    m_Form.NoAiAcknowledged = true;
+    if (m_Host.Log)
+        m_Host.Log("Fab import: the NoAI marking was acknowledged; the content must not be used to train or feed generative AI");
 }
 
 FabImportPanel::CommitReport FabImportPanel::Commit(std::optional<Fab::FabAssignmentTarget> assignment)
@@ -351,15 +402,10 @@ Fab::FabProvenance FabImportPanel::FormToProvenance() const
     provenance.VersionOrDownloadLabel = m_Form.Version.data();
     provenance.AttributionLink = m_Form.AttributionLink.data();
     provenance.AttributionText = m_Form.AttributionText.data();
-    switch (m_Form.LicenseFamily)
-    {
-        case 1: provenance.LicenseFamily = Engine::FabLicenseFamily::FabStandard; break;
-        case 2: provenance.LicenseFamily = Engine::FabLicenseFamily::CreativeCommonsAttribution; break;
-        case 3: provenance.LicenseFamily = Engine::FabLicenseFamily::LegacyUnrealMarketplace; break;
-        default: provenance.LicenseFamily = Engine::FabLicenseFamily::Unknown; break;
-    }
-    provenance.LicenseTier = m_Form.LicenseTier == 1 ? Engine::FabLicenseTier::Personal
-        : (m_Form.LicenseTier == 2 ? Engine::FabLicenseTier::Professional : Engine::FabLicenseTier::Unknown);
+    const size_t choiceIndex = static_cast<size_t>(std::clamp(m_Form.LicenseChoice, 0, static_cast<int>(Fab::kFabLicenseChoices.size()) - 1));
+    const Fab::FabLicenseFields fields = Fab::FabLicenseFieldsForChoice(Fab::kFabLicenseChoices[choiceIndex]);
+    provenance.LicenseFamily = fields.Family;
+    provenance.LicenseTier = fields.Tier;
     const auto flag = [](int value)
     {
         return value == 1 ? Engine::FabMetadataFlag::No
@@ -381,15 +427,13 @@ void FabImportPanel::ProvenanceToForm(const Fab::FabProvenance& provenance)
     CopyInto(m_Form.AttributionLink, provenance.AttributionLink);
     std::snprintf(m_Form.AttributionText.data(), m_Form.AttributionText.size(), "%s",
         provenance.AttributionText.c_str());
-    switch (provenance.LicenseFamily)
+    const Fab::FabLicenseChoice held = Fab::FabLicenseChoiceFromProvenance(provenance);
+    m_Form.LicenseChoice = 0;
+    for (size_t index = 0; index < Fab::kFabLicenseChoices.size(); ++index)
     {
-        case Engine::FabLicenseFamily::FabStandard: m_Form.LicenseFamily = 1; break;
-        case Engine::FabLicenseFamily::CreativeCommonsAttribution: m_Form.LicenseFamily = 2; break;
-        case Engine::FabLicenseFamily::LegacyUnrealMarketplace: m_Form.LicenseFamily = 3; break;
-        default: m_Form.LicenseFamily = 0; break;
+        if (Fab::kFabLicenseChoices[index] == held)
+            m_Form.LicenseChoice = static_cast<int>(index);
     }
-    m_Form.LicenseTier = provenance.LicenseTier == Engine::FabLicenseTier::Personal ? 1
-        : (provenance.LicenseTier == Engine::FabLicenseTier::Professional ? 2 : 0);
     const auto index = [](Engine::FabMetadataFlag value)
     {
         return value == Engine::FabMetadataFlag::No ? 1 : (value == Engine::FabMetadataFlag::Yes ? 2 : 0);
@@ -405,6 +449,8 @@ void FabImportPanel::SyncForm(const Fab::FabImportStatus& status)
     // through the typed SetFabProvenance, reloads the widgets.
     if (status.JobId != m_FormJob || status.ProvenanceDigest != m_FormDigest)
     {
+        if (status.JobId != m_FormJob)
+            m_Form.NoAiAcknowledged = false;
         ProvenanceToForm(status.Provenance);
         m_FormJob = status.JobId;
         m_FormDigest = status.ProvenanceDigest;
@@ -534,14 +580,29 @@ void FabImportPanel::DrawProvenanceForm(const Fab::FabImportStatus& status)
     edited |= ImGui::InputText("Publisher", m_Form.Publisher.data(), m_Form.Publisher.size());
     edited |= ImGui::InputText("Version / download label", m_Form.Version.data(), m_Form.Version.size());
 
-    const char* families[] = { "Not chosen", "Fab Standard", "CC-BY", "Legacy Unreal Marketplace" };
-    edited |= ImGui::Combo("License", &m_Form.LicenseFamily, families, IM_ARRAYSIZE(families));
-    if (m_Form.LicenseFamily == 1)
+    // The licence and tier in one choice, as the listing's Details panel states them.
+    // Reference-Only, code-plugin, UE-only and Other are listed so they can be declared
+    // truthfully; confirming one of them is refused with the reason.
+    static const std::array<std::string, Fab::kFabLicenseChoices.size()> licenseLabels = []
     {
-        const char* tiers[] = { "Not chosen", "Personal", "Professional" };
-        edited |= ImGui::Combo("License tier", &m_Form.LicenseTier, tiers, IM_ARRAYSIZE(tiers));
-    }
-    if (m_Form.LicenseFamily == 2 || m_Form.AttributionText[0] != '\0')
+        std::array<std::string, Fab::kFabLicenseChoices.size()> labels;
+        for (size_t index = 0; index < labels.size(); ++index)
+            labels[index] = std::string(Fab::FabLicenseChoiceLabel(Fab::kFabLicenseChoices[index]));
+        return labels;
+    }();
+    static const std::array<const char*, Fab::kFabLicenseChoices.size()> licenseLabelPointers = []
+    {
+        std::array<const char*, Fab::kFabLicenseChoices.size()> pointers {};
+        for (size_t index = 0; index < pointers.size(); ++index)
+            pointers[index] = licenseLabels[index].c_str();
+        return pointers;
+    }();
+    edited |= ImGui::Combo("License", &m_Form.LicenseChoice, licenseLabelPointers.data(), static_cast<int>(licenseLabelPointers.size()));
+    const bool attributionShown = Fab::kFabLicenseChoices[static_cast<size_t>(std::clamp(
+                                      m_Form.LicenseChoice, 0, static_cast<int>(Fab::kFabLicenseChoices.size()) - 1))]
+            == Fab::FabLicenseChoice::CcBy
+        || m_Form.AttributionText[0] != '\0';
+    if (attributionShown)
     {
         edited |= ImGui::InputTextMultiline("Attribution text", m_Form.AttributionText.data(), m_Form.AttributionText.size(),
             ImVec2(-1.0f, 64.0f));
@@ -549,6 +610,19 @@ void FabImportPanel::DrawProvenanceForm(const Fab::FabImportStatus& status)
     }
     const char* flags[] = { "Unknown", "No", "Yes" };
     edited |= ImGui::Combo("Marked No-AI", &m_Form.NoAI, flags, IM_ARRAYSIZE(flags));
+    if (m_Form.NoAI == 2)
+    {
+        // The Confirm button waits for this tick. Receipt schema 1 has no field for the
+        // acknowledgement itself (and there is no provenance note field), so what is
+        // recorded is the declared Marked No-AI value of a user-confirmed receipt; the
+        // tick lasts for this job and is logged.
+        bool acknowledged = m_Form.NoAiAcknowledged;
+        if (ImGui::Checkbox("I acknowledge the NoAI marking", &acknowledged) && acknowledged)
+            AcknowledgeNoAiNotice();
+        else if (!acknowledged)
+            m_Form.NoAiAcknowledged = false;
+        ImGui::TextDisabled("NoAI content must not be used to train or feed generative AI. Tick the box to enable Confirm.");
+    }
     edited |= ImGui::Combo("Generated with AI", &m_Form.GeneratedWithAI, flags, IM_ARRAYSIZE(flags));
     const char* policies[] = { "Exclude raw source from the project", "Keep raw source in the private project" };
     edited |= ImGui::Combo("Raw source", &m_Form.RawSourcePolicy, policies, IM_ARRAYSIZE(policies));
@@ -559,14 +633,27 @@ void FabImportPanel::DrawProvenanceForm(const Fab::FabImportStatus& status)
         m_Controller->SetProvenance(provenance);
         const Fab::FabImportStatus updated = m_Controller->GetStatus();
         m_FormDigest = updated.ProvenanceDigest;
-        if (m_Form.LicenseFamily != 1)
-            m_Form.LicenseTier = 0;
     }
 
     const Fab::FabImportStatus current = m_Controller->GetStatus();
-    if (!current.ProvenanceValid)
+    const Fab::FabLicenseGateResult gate = Fab::EvaluateFabLicenseGate(
+        EffectiveLicenseChoice(current), current.Provenance.AttributionText, current.Provenance.NoAI);
+    const bool refused = gate.Verdict == Fab::FabLicenseVerdict::Refused;
+    if (refused)
+    {
+        ImGui::PushTextWrapPos(0.0f);
+        ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.35f, 1.0f), "%s", gate.Message.c_str());
+        ImGui::PopTextWrapPos();
+    }
+    else if (!current.ProvenanceValid)
+    {
         ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.3f, 1.0f), "%s", current.ProvenanceError.c_str());
-    ImGui::BeginDisabled(!current.ProvenanceValid);
+    }
+    const bool noAiPending = current.Provenance.NoAI == Engine::FabMetadataFlag::Yes && !m_Form.NoAiAcknowledged;
+    const bool confirmEnabled = current.ProvenanceValid && !refused && !noAiPending;
+    m_LastDraw = { Fab::FabLicenseChoiceLabel(EffectiveLicenseChoice(current)), gate.Verdict, confirmEnabled,
+        current.Provenance.NoAI == Engine::FabMetadataFlag::Yes, gate.Message };
+    ImGui::BeginDisabled(!confirmEnabled);
     if (ImGui::Button("Confirm provenance"))
     {
         // The only place the UI confirms: an explicit click on the visible button.

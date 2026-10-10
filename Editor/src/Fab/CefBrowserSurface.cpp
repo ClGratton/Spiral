@@ -735,6 +735,15 @@ namespace Fab
             });
         }
 
+        // Only the HTTP status number is forwarded: no URL, header, or body. It lets the
+        // panel say that a security check may be in the way (403 or 503) and nothing else.
+        void OnLoadEnd(CefRefPtr<CefBrowser>, CefRefPtr<CefFrame> frame, int httpStatusCode) override
+        {
+            if (m_State == nullptr || !frame->IsMain())
+                return;
+            m_State->Queue([httpStatusCode](IBrowserSurface::Listener& listener) { listener.OnMainFrameLoaded(httpStatusCode); });
+        }
+
         void OnLoadError(CefRefPtr<CefBrowser>, CefRefPtr<CefFrame> frame, ErrorCode errorCode, const CefString& errorText,
             const CefString&) override
         {
@@ -749,8 +758,14 @@ namespace Fab
         {
             if (m_State == nullptr || !frame->IsMain())
                 return;
-            const std::string address = BrowserNavigationPolicy::DisplayAddress(url.ToString());
-            m_State->Queue([address](IBrowserSurface::Listener& listener) { listener.OnAddress(address); });
+            const std::string spelled = url.ToString();
+            const std::string address = BrowserNavigationPolicy::DisplayAddress(spelled);
+            const std::string scheme = BrowserNavigationPolicy::SchemeForDisplay(spelled);
+            m_State->Queue([address, scheme](IBrowserSurface::Listener& listener)
+            {
+                listener.OnAddressScheme(scheme);
+                listener.OnAddress(address);
+            });
         }
 
         bool OnCursorChange(CefRefPtr<CefBrowser>, CefCursorHandle, cef_cursor_type_t type, const CefCursorInfo&) override

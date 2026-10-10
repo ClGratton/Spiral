@@ -1445,6 +1445,24 @@ namespace SpiralTests
                 && controller.GetStatus().Provenance.LicenseTier == FabLicenseTier::NotApplicable,
             "a non-Fab-Standard family normalises the tier to not applicable");
         check(TakeTree(workspace.Project()) == before, "no refused call touched the project");
+        // The licence-kind gate: a valid-looking legacy Unreal-only declaration is refused at
+        // confirmation, with its own message, even when the reviewed digest is supplied.
+        {
+            const std::string legacyDigest = controller.GetStatus().ProvenanceDigest;
+            check(!controller.ConfirmProvenance(context, legacyDigest) && controller.GetStatus().State == FabImportState::AwaitingProvenance
+                    && !controller.GetStatus().ProvenanceConfirmed
+                    && controller.GetStatus().LastRejection.find("cannot be used as importable source content in Spiral") != std::string::npos,
+                "a legacy UE-only declaration is refused at confirmation by the licence-kind gate: "
+                    + controller.GetStatus().LastRejection);
+            check(TakeTree(workspace.Project()) == before, "the refused legacy confirmation staged nothing");
+            FabProvenance referenceOnly = good;
+            referenceOnly.LicenseFamily = FabLicenseFamily::ReferenceOnly;
+            check(controller.SetProvenance(referenceOnly)
+                    && !controller.ConfirmProvenance(context, controller.GetStatus().ProvenanceDigest)
+                    && controller.GetStatus().LastRejection.find("Reference Only") != std::string::npos
+                    && controller.GetStatus().State == FabImportState::AwaitingProvenance,
+                "a Reference-Only declaration is refused with the licence-kind message: " + controller.GetStatus().LastRejection);
+        }
 
         check(controller.SetProvenance(edited) && controller.ConfirmProvenance(context, controller.GetStatus().ProvenanceDigest)
                 && controller.GetStatus().ProvenanceConfirmed && controller.GetStatus().State == FabImportState::Cooking,

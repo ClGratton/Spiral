@@ -149,6 +149,12 @@ namespace Fab
         // to 200 bytes. For panel display only; never log it.
         static std::string DisplayAddress(std::string_view url);
 
+        // The lower-case scheme of an absolute URL for panel display ("https"), or
+        // empty when the text has no "scheme:" prefix made only of a-z, A-Z, 0-9,
+        // '+', '-', '.' and starting with a letter, or the scheme is over 16 bytes.
+        // "about:blank" yields "about". It does not judge the URL.
+        static std::string SchemeForDisplay(std::string_view url);
+
     private:
         // m_Hosts[0..kBuiltInHostCount) are the built-in hosts; the rest are
         // provider hosts in insertion order.

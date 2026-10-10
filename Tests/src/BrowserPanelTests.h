@@ -8,4 +8,5 @@ namespace SpiralTests
     bool TestBrowserPanelLifecycleAndStartupFailures();
     bool TestBrowserPanelInputRouting();
     bool TestBrowserPanelDownloadsStatusAndContainment();
+    bool TestBrowserPanelEpicSafeguards();
 }

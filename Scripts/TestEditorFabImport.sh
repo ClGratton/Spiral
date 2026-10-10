@@ -342,6 +342,26 @@ ok fa-03-select select-fab-package --inbox-name good.glb --kind glb
 job="$(val fa-03-select 'd["fab"]["jobId"]')"
 ok fa-04-await wait-fab-state --state AwaitingProvenance Failed --expected-job-id "$job"
 expect fa-04-await 'd["fab"]["state"] == "AwaitingProvenance" and d["fab"]["summary"]["triangles"] == 2' "summary"
+# The licence-kind gate through the typed action: a legacy Unreal Marketplace (UE-only) declaration is
+# stored but refused at confirmation with its own token, even with its reviewed digest, and a
+# Reference-Only declaration is refused by the helper before it reaches the mailbox.
+legacy_args=(
+    --product-identity "https://www.fab.com/listings/0b4e2f6a-5c1d-4e7a-9a3b-1f2e3d4c5b6a"
+    --product-name "Test Quad" --publisher "Test Publisher" --version-label "v1"
+    --license-family LegacyUnrealMarketplace --license-tier NotApplicable
+    --no-ai No --generated-with-ai No --raw-source-policy ExcludedFromProject
+)
+ok fa-04b-legacy-provenance set-fab-provenance --expected-job-id "$job" "${legacy_args[@]}"
+rejected fa-04c-legacy-confirm fab_license_refused confirm-fab-provenance \
+    --expected-job-id "$job" --expected-provenance-digest "$(val fa-04b-legacy-provenance 'd["fab"]["provenanceDigest"]')"
+client_refused fa-04d-reference-only "Reference-only licenses cannot be imported" set-fab-provenance \
+    --expected-job-id "$job" --product-identity "https://www.fab.com/listings/0b4e2f6a-5c1d-4e7a-9a3b-1f2e3d4c5b6a" \
+    --product-name "Test Quad" --publisher "Test Publisher" --version-label "v1" \
+    --license-family ReferenceOnly --license-tier NotApplicable --no-ai No --generated-with-ai No \
+    --raw-source-policy ExcludedFromProject
+ok fa-04e-still-awaiting inspect-fab
+expect fa-04e-still-awaiting 'd["fab"]["state"] == "AwaitingProvenance" and not d["fab"]["provenanceConfirmed"]' "a refused licence kind must leave the job awaiting provenance"
+[[ "$(fingerprint all)" == "$before_import" ]] || fail "a refused licence kind changed the project"
 ok fa-05-provenance set-fab-provenance --expected-job-id "$job" "${provenance_args[@]}"
 digest="$(val fa-05-provenance 'd["fab"]["provenanceDigest"]')"
 rejected fa-06-confirm-wrong fab_provenance_digest_mismatch confirm-fab-provenance \
@@ -587,6 +607,63 @@ grep -Fq -- "result=pass" "$ui_log" || fail "the Fab panel UI smoke did not pass
 grep -Fq -- "ProjectRevision 1" "$smoke_root/uiproject/ui.spiralproject" || fail "the UI smoke commit did not persist"
 staging_clean
 
+# The Fab browser kill switch. A headless Editor has no panel to show, so the refusal order is the
+# evidence: the kill switch is checked before the headless check, with its own token for each cause,
+# hiding is always allowed, and the Fab Import workflow is untouched. Three launches: the
+# command-line switch, the persisted setting (a format 2 Editor settings file in the working
+# directory), and both (the command line wins).
+kill_launch() { # label directory [extra Editor arguments]
+    local label="$1" directory="$2"
+    shift 2
+    control_dir="$smoke_root/$label-mailbox"
+    log_path="$smoke_root/$label-editor.log"
+    (cd "$directory" && exec timeout 120s "$editor" --headless "--editor-control-dir=$control_dir" "$@") >"$log_path" 2>&1 &
+    live_process=$!
+    for _ in $(seq 1 600); do
+        [[ -f "$control_dir/session.info" ]] && return 0
+        kill -0 "$live_process" 2>/dev/null || fail "Editor exited before opening its mailbox ($label)"
+        sleep 0.02
+    done
+    fail "timed out waiting for the mailbox ($label)"
+}
+kill_stop() {
+    kill "$live_process" 2>/dev/null || true
+    wait "$live_process" 2>/dev/null || true
+    live_process=""
+}
+kill_checks() { # prefix token
+    local prefix="$1" token="$2"
+    rejected "$prefix-show" "$token" set-fab-panel-visible --visible yes
+    ok "$prefix-hide" set-fab-panel-visible --visible no
+    ok "$prefix-inspect" inspect-fab-panel
+    expect "$prefix-inspect" 'd["fab"]["panel"]["state"] == "NotStarted" and not d["fab"]["panel"]["visible"]' "a disabled panel never starts or opens"
+    ok "$prefix-import-panel" inspect-fab
+    expect "$prefix-import-panel" 'd["fab"]["state"] == "Idle"' "the Fab Import workflow stays available while the browser panel is off"
+}
+saved_project="$project"
+kill_root="$smoke_root/killswitch"
+mkdir -p "$kill_root/output/editor"
+project="$kill_root/output/projects/default.spiralproject"
+kill_launch kill-cli "$kill_root" --no-fab-browser
+kill_checks ks1 fab_browser_disabled_by_command_line
+grep -Fq -- "Fab browser panel turned off by --no-fab-browser" "$log_path" || fail "the command-line kill switch was not logged"
+kill_stop
+printf 'SpiralEditorSettings 2\nViewportNavigationPreset Fusion\nFabBrowser Disabled\n' >"$kill_root/output/editor/engine-settings.spiralsettings"
+kill_launch kill-setting "$kill_root"
+kill_checks ks2 fab_browser_disabled_by_setting
+grep -Fq -- "Fab browser panel turned off in Settings" "$log_path" || fail "the persisted kill switch was not logged"
+kill_stop
+kill_launch kill-both "$kill_root" --no-fab-browser
+kill_checks ks3 fab_browser_disabled_by_command_line
+kill_stop
+# Enabled (setting back on, no flag): the kill switch refuses nothing, so the headless check answers.
+printf 'SpiralEditorSettings 2\nViewportNavigationPreset Fusion\nFabBrowser Enabled\n' >"$kill_root/output/editor/engine-settings.spiralsettings"
+kill_launch kill-off "$kill_root"
+rejected ks4-show headless_has_no_browser_panel set-fab-panel-visible --visible yes
+kill_stop
+project="$saved_project"
+staging_clean
+
 # The default layout (manifest paths relative to the working directory, no
 # --project) takes a commit too and reopens with its receipt. The Editor runs
 # with an empty temporary directory as its working directory.
@@ -644,4 +721,4 @@ if [[ "$default_after" != "$default_before" ]]; then
     fail "the default project changed"
 fi
 
-echo "EditorFabImportTestV5 schema=5 project=temporary phases=import-then-reopen import=glb-provenance-confirm-commit place=one-history-entry rollback=verified save-reopen=entity-mesh-material-receipt exact-reuse=no-new-revision intake=glb-zip-directory rejected=corrupt-zip-traversal-bad-png-truncated-notes-symlink-wrong-kind schema-paths=leaf-only cancellation=awaiting-and-cooking panelUi=all-states-headless legacyLayout=commit-and-reopen staging=clean assignment=cas-stale-rejected-then-applied immutable=patch-rejected-no-logical-file validation=full-hash-worker panel=headless-guarded defaultProject=unchanged input=no-ui-synthesis result=pass"
+echo "EditorFabImportTestV5 schema=5 project=temporary phases=import-then-reopen import=glb-provenance-confirm-commit place=one-history-entry rollback=verified save-reopen=entity-mesh-material-receipt exact-reuse=no-new-revision intake=glb-zip-directory rejected=corrupt-zip-traversal-bad-png-truncated-notes-symlink-wrong-kind schema-paths=leaf-only cancellation=awaiting-and-cooking panelUi=all-states-headless legacyLayout=commit-and-reopen staging=clean assignment=cas-stale-rejected-then-applied immutable=patch-rejected-no-logical-file validation=full-hash-worker panel=headless-guarded licenceGate=legacy-refused-reference-only-client-refused killSwitch=cli-setting-both-refused-hide-allowed defaultProject=unchanged input=no-ui-synthesis result=pass"

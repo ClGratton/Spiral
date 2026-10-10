@@ -7,6 +7,8 @@
 #include "Engine/Assets/FabZipStaging.h"
 #include "Engine/Core/Sha256.h"
 
+#include <imgui.h>
+
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
@@ -221,8 +223,23 @@ void EditorLayer::InitializeFabIntegration()
     };
     m_FabImport.Initialize(std::move(host));
 
+    // The kill switch applies to every mode, headless included, so the typed
+    // SetFabPanelVisible refusal can be verified without a window.
+    m_FabBrowserDisabledOnCommandLine
+        = Engine::Application::Get().GetSpecification().CommandLineArgs.HasFlag("--no-fab-browser");
+    const Fab::FabBrowserAvailability availability = FabBrowserAvailabilityNow();
+    if (!availability.Enabled)
+    {
+        const std::string reason = std::string(Fab::FabBrowserDisabledText(availability.Reason));
+        Engine::Log::Info("Fab browser panel ", reason, "; the Fab Import panel and file drops still work");
+        m_ConsoleLines.emplace_back("Fab browser is " + reason + "; drop a downloaded file onto the Editor to import it");
+    }
+
     if (Engine::Application::Get().GetSpecification().Window.Headless)
     {
+        Fab::BrowserPanelConfig headlessConfig;
+        headlessConfig.Disabled = availability.Reason;
+        m_FabBrowser.Configure(std::move(headlessConfig));
         m_FabIntegrationInitialized = true;
         return;
     }
@@ -264,6 +281,7 @@ void EditorLayer::InitializeFabIntegration()
                 Engine::Log::Warn("Ignoring unknown --fab-render-mode value; the Fab browser stays on software rendering");
         }
         config.InitialDeviceScale = Engine::Application::Get().GetWindow().GetContentScale().X;
+        config.Disabled = availability.Reason;
         m_FabBrowser.Configure(std::move(config));
         m_FabImport.SetDownloadStagingRoot(downloads);
     }
@@ -290,6 +308,60 @@ void EditorLayer::DrawFabIntegration()
 {
     m_FabBrowser.Draw();
     m_FabImport.Draw();
+}
+
+Fab::FabBrowserAvailability EditorLayer::FabBrowserAvailabilityNow() const
+{
+    return Fab::ResolveFabBrowserAvailability(m_FabBrowserDisabledOnCommandLine, m_FabBrowserEnabledSetting);
+}
+
+void EditorLayer::ApplyFabBrowserAvailability()
+{
+    m_FabBrowser.SetDisabled(FabBrowserAvailabilityNow().Reason);
+}
+
+void EditorLayer::DrawFabBrowserMenuItem()
+{
+    const Fab::FabBrowserAvailability availability = FabBrowserAvailabilityNow();
+    if (!availability.Enabled)
+    {
+        // Disabled, with the reason, instead of an entry that cannot work.
+        ImGui::MenuItem("Fab Browser", nullptr, false, false);
+        ImGui::TextDisabled("  %.*s", static_cast<int>(Fab::FabBrowserDisabledText(availability.Reason).size()),
+            Fab::FabBrowserDisabledText(availability.Reason).data());
+        return;
+    }
+    bool browserVisible = m_FabBrowser.IsVisible();
+    if (ImGui::MenuItem("Fab Browser", nullptr, &browserVisible))
+        m_FabBrowser.SetVisible(browserVisible);
+}
+
+void EditorLayer::DrawFabBrowserSetting()
+{
+    // The persisted half of the kill switch. --no-fab-browser overrides it for this run.
+    bool enabled = m_FabBrowserEnabledSetting;
+    ImGui::BeginDisabled(m_FabBrowserDisabledOnCommandLine);
+    if (ImGui::Checkbox("Show the Fab browser panel", &enabled))
+    {
+        const bool previous = m_FabBrowserEnabledSetting;
+        m_FabBrowserEnabledSetting = enabled;
+        if (SaveEditorSettings())
+        {
+            ApplyFabBrowserAvailability();
+            m_ConsoleLines.emplace_back(enabled ? "Fab browser panel turned on" : "Fab browser panel turned off");
+        }
+        else
+        {
+            m_FabBrowserEnabledSetting = previous;
+        }
+    }
+    ImGui::EndDisabled();
+    if (m_FabBrowserDisabledOnCommandLine)
+        ImGui::TextDisabled("Turned off by --no-fab-browser for this run.");
+    else if (!enabled)
+        ImGui::TextDisabled("Off: the Fab Import panel and file drops still work.");
+    else
+        ImGui::TextDisabled("Turning it off closes the browser; it returns after a restart.");
 }
 
 void EditorLayer::PollFabDownloads()
@@ -676,6 +748,10 @@ EditorMaterialControlTransaction EditorLayer::ExecuteFabControlRequest(
                 return reject("fab_state_not_awaiting_provenance");
             if (jobMismatch() || !fab.HasExpectedJobId)
                 return reject("fab_job_mismatch");
+            // The licence-kind gate (Reference-Only, code plugin, UE-only, Other) refuses
+            // with its own token before the generic validity check.
+            if (Fab::EvaluateFabLicenseGate(status.Provenance).Verdict == Fab::FabLicenseVerdict::Refused)
+                return reject("fab_license_refused");
             if (!status.ProvenanceValid)
                 return reject("fab_provenance_invalid");
             if (fab.ExpectedProvenanceDigest != status.ProvenanceDigest)
@@ -772,10 +848,16 @@ EditorMaterialControlTransaction EditorLayer::ExecuteFabControlRequest(
         }
 
         case EditorMaterialControlAction::SetFabPanelVisible:
+        {
+            // The kill switch is checked first so it can be verified headlessly; hiding is always allowed.
+            const Fab::FabBrowserAvailability availability = FabBrowserAvailabilityNow();
+            if (fab.PanelVisible && !availability.Enabled)
+                return reject(std::string(Fab::FabBrowserDisabledToken(availability.Reason)));
             if (fab.PanelVisible && Engine::Application::Get().GetSpecification().Window.Headless)
                 return reject("headless_has_no_browser_panel");
             m_FabBrowser.SetVisible(fab.PanelVisible);
             return succeed("FabPanelVisibilitySet", "None");
+        }
 
         case EditorMaterialControlAction::PlaceMeshAsset:
         case EditorMaterialControlAction::SetEntityMeshRendererAssets:

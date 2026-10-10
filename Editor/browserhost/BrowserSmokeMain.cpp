@@ -129,6 +129,14 @@ namespace
         void OnCursor(Fab::BrowserCursor cursor) override { Marker("cursor", "value=%d", static_cast<int>(cursor)); }
         void OnAddress(std::string_view) override { ++m_AddressChanges; }
 
+        // The scheme and the HTTP status number the Fab panel shows or acts on; nothing else about the page.
+        void OnAddressScheme(std::string_view scheme) override
+        {
+            Marker("address_scheme", "scheme=%.*s", static_cast<int>(scheme.size()), scheme.data());
+        }
+
+        void OnMainFrameLoaded(int httpStatus) override { Marker("main_frame_loaded", "status=%d", httpStatus); }
+
         void OnLoadState(bool loading, bool canGoBack, bool canGoForward) override
         {
             m_Loading = loading;

@@ -277,6 +277,13 @@ private:
     void UpdateFabIntegration();
     void DrawFabIntegration();
     void PollFabDownloads();
+    // The Fab browser kill switch: --no-fab-browser and the persisted Editor setting.
+    // The Window menu entry, the Settings checkbox, the panel, and the typed
+    // SetFabPanelVisible all use this one resolution.
+    Fab::FabBrowserAvailability FabBrowserAvailabilityNow() const;
+    void ApplyFabBrowserAvailability();
+    void DrawFabBrowserMenuItem();
+    void DrawFabBrowserSetting();
     bool BuildFabImportProjectContext(std::optional<Fab::FabAssignmentTarget> assignment,
         Fab::FabImportProjectContext& out, std::string& error);
     bool AdoptFabImportCommit(std::string& error);
@@ -310,6 +317,8 @@ private:
     FabImportPanel m_FabImport;
     Fab::BrowserPanel m_FabBrowser;
     bool m_FabIntegrationInitialized = false;
+    bool m_FabBrowserEnabledSetting = true;
+    bool m_FabBrowserDisabledOnCommandLine = false;
     bool m_EditorFabHelperSmokeRequested = false;
     bool m_EditorFabReopenSmokeRequested = false;
     bool m_EditorFabSmokeCompleted = false;
@@ -320,6 +329,12 @@ private:
     unsigned int m_FabPanelUiSmokeStage = 0;
     unsigned int m_FabPanelUiSmokeFrames = 0;
     double m_FabPanelUiSmokeStageStart = 0.0;
+    // Sub-steps inside one smoke stage, and the browser-panel checks that run beside the import stages.
+    unsigned int m_FabPanelUiSmokeSub = 0;
+    unsigned int m_FabPanelUiSmokePanelPhase = 0;
+    unsigned int m_FabPanelUiSmokePhaseFrame = 0;
+    bool m_FabPanelUiSmokeOpenSucceeds = true;
+    std::vector<std::string> m_FabPanelUiSmokeOpened;
     std::string m_FabPanelUiSmokeFixtures;
     Engine::u64 m_EditorFabSmokeInitialRendererGeneration = 0;
     Engine::AssetHandle m_EditorFabSmokePrototypeMesh = Engine::kInvalidAssetHandle;

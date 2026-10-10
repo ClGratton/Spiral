@@ -283,6 +283,19 @@ pass "profile_directory_is_owner_only"
 assert_no_profile_processes "$WORK/profile-paint" "paint run left browser processes"
 pass "clean_shutdown_leaves_no_processes"
 
+# --- The facts the Fab panel shows or acts on, from the real engine: the scheme of the main-frame
+# address (the toolbar shows scheme plus host) and the HTTP status of a finished main-frame load (a 403
+# or 503 raises the "use Open in browser" hint). The adapter reports numbers only, never a URL or body.
+run_smoke status "$WORK/profile-status" \
+    "navigate:$URL/paint;wait-load;expect-pixel:100,100,c8640a;navigate:$URL/status/403;wait-load;wait-ms:300;navigate:$URL/status/503;wait-load;wait-ms:300;navigate:$URL/no-such-page;wait-load;wait-ms:300;navigate:$URL/paint?after=1;wait-load;wait-ms:300"
+assert_clean_run "status"
+STATUSES="$(sed -n 's/^BROWSER_SMOKE main_frame_loaded status=\([0-9]*\)$/\1/p' "$LAST_LOG" | tr '\n' ' ')"
+# The engine's initial blank load reports status 0, then one status per navigation.
+[[ "$STATUSES" == "0 200 403 503 404 200 " ]] || die "main-frame HTTP statuses were: $STATUSES" "expected 0 200 403 503 404 200"
+expect_log "$LAST_LOG" "^BROWSER_SMOKE address_scheme scheme=https$" "the main-frame scheme is reported"
+reject_log "$LAST_LOG" "main_frame_loaded .*(http|fixture)" "the status report carries no URL"
+pass "main_frame_scheme_and_http_status_are_reported_without_a_url"
+
 # --- Mouse, wheel, key, char, Enter, Backspace.
 run_smoke input "$WORK/profile-input" \
     "navigate:$URL/input;wait-load;focus:1;expect-pixel:320,300,ff0000;click:50,40;expect-pixel:320,30,00ff00;type:a;expect-pixel:370,30,00ff00;type:z;expect-pixel:420,30,00ff00;press:enter;expect-pixel:470,30,00ff00;expect-pixel:520,30,00ff00;press:backspace;expect-pixel:570,30,00ff00;wheel:320,200,0,-600;expect-pixel:320,300,0000ff"

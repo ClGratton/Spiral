@@ -27,7 +27,9 @@ namespace
     constexpr const char* AssetDragPayloadType = "SPIRAL_ASSET_HANDLE";
     constexpr int kKeyEscape = 256;
     constexpr int kKeyHome = 268;
-    constexpr int EditorSettingsFormatVersion = 1;
+    // Format 2 adds the FabBrowser line (the persisted half of the Fab browser kill switch).
+    // Format 1 files (the preset line only) still load, with the Fab browser enabled.
+    constexpr int EditorSettingsFormatVersion = 2;
 
     bool HasCommandLineOption(const Engine::ApplicationCommandLineArgs& args,
         std::string_view option)
@@ -45,6 +47,8 @@ namespace
     struct EditorSettings
     {
         ViewportNavigationPreset ViewportNavigation = ViewportNavigationPreset::Fusion;
+        // False hides and disables the embedded Fab browser panel (see FabDisclosure.h).
+        bool FabBrowserEnabled = true;
     };
 
     struct AssetDragPayload
@@ -271,6 +275,7 @@ namespace
                 return false;
             output << "SpiralEditorSettings " << EditorSettingsFormatVersion << '\n';
             output << "ViewportNavigationPreset " << ToEditorSettingsNavigationPreset(settings.ViewportNavigation) << '\n';
+            output << "FabBrowser " << (settings.FabBrowserEnabled ? "Enabled" : "Disabled") << '\n';
             output.flush();
             if (!output)
             {
@@ -322,17 +327,31 @@ namespace
         std::string key;
         std::string preset;
         if (!(input >> magic >> version >> key >> preset)
-            || magic != "SpiralEditorSettings" || version != EditorSettingsFormatVersion
+            || magic != "SpiralEditorSettings" || (version != 1 && version != EditorSettingsFormatVersion)
             || key != "ViewportNavigationPreset" || !input)
         {
             return false;
+        }
+
+        EditorSettings settings;
+        if (version >= 2)
+        {
+            std::string fabKey;
+            std::string fabValue;
+            if (!(input >> fabKey >> fabValue) || fabKey != "FabBrowser")
+                return false;
+            if (fabValue == "Enabled")
+                settings.FabBrowserEnabled = true;
+            else if (fabValue == "Disabled")
+                settings.FabBrowserEnabled = false;
+            else
+                return false;
         }
 
         std::string unexpected;
         if (input >> unexpected)
             return false;
 
-        EditorSettings settings;
         if (!ParseEditorSettingsNavigationPreset(preset, settings.ViewportNavigation))
             return false;
 
@@ -3444,9 +3463,7 @@ void EditorLayer::DrawMainMenuBar()
         ImGui::MenuItem("Profiler", nullptr, &m_PanelVisible[PanelProfiler]);
         ImGui::MenuItem("History", nullptr, &m_PanelVisible[PanelHistory]);
         ImGui::Separator();
-        bool browserVisible = m_FabBrowser.IsVisible();
-        if (ImGui::MenuItem("Fab Browser", nullptr, &browserVisible))
-            m_FabBrowser.SetVisible(browserVisible);
+        DrawFabBrowserMenuItem();
         bool importVisible = m_FabImport.IsVisible();
         if (ImGui::MenuItem("Fab Import", nullptr, &importVisible))
             m_FabImport.SetVisible(importVisible);
@@ -3677,6 +3694,10 @@ void EditorLayer::DrawMainMenuBar()
             }
             ImGui::TextDisabled("Global editor setting: %s", m_EditorSettingsPath.c_str());
             ImGui::TextDisabled("Fusion: cursor wheel zoom, MMB pan, Shift+MMB orbit. F sets a selected-origin pivot; Fit is deferred.");
+
+            ImGui::Separator();
+            ImGui::TextUnformatted("Fab Browser");
+            DrawFabBrowserSetting();
             ImGui::EndMenu();
         }
 
@@ -4509,7 +4530,9 @@ bool EditorLayer::RetargetFusionNavigationPivotToSelectedEntity()
 
 bool EditorLayer::SaveEditorSettings()
 {
-    const EditorSettings settings { m_ViewportNavigationPreset };
+    EditorSettings settings;
+    settings.ViewportNavigation = m_ViewportNavigationPreset;
+    settings.FabBrowserEnabled = m_FabBrowserEnabledSetting;
     if (WriteEditorSettings(m_EditorSettingsPath, settings))
         return true;
 
@@ -4521,6 +4544,7 @@ bool EditorLayer::SaveEditorSettings()
 void EditorLayer::LoadEditorSettings()
 {
     m_ViewportNavigationPreset = ViewportNavigationPreset::Fusion;
+    m_FabBrowserEnabledSetting = true;
     std::error_code error;
     if (!std::filesystem::exists(m_EditorSettingsPath, error))
     {
@@ -4541,7 +4565,9 @@ void EditorLayer::LoadEditorSettings()
     }
 
     m_ViewportNavigationPreset = settings.ViewportNavigation;
-    Engine::Log::Info("Editor settings loaded: viewportNavigation=", ToEditorSettingsNavigationPreset(m_ViewportNavigationPreset));
+    m_FabBrowserEnabledSetting = settings.FabBrowserEnabled;
+    Engine::Log::Info("Editor settings loaded: viewportNavigation=", ToEditorSettingsNavigationPreset(m_ViewportNavigationPreset),
+        " fabBrowser=", m_FabBrowserEnabledSetting ? "Enabled" : "Disabled");
 }
 
 void EditorLayer::UpdateViewportNavigation(Engine::Timestep timestep)
@@ -6313,11 +6339,52 @@ void EditorLayer::RunEditorSettingsSmoke()
     EditorSettings missingSettings;
     const bool missingDefaultsToFusion = !ReadEditorSettings(missingPath, missingSettings)
         && missingSettings.ViewportNavigation == ViewportNavigationPreset::Fusion;
-    const EditorSettings unrealSettings { ViewportNavigationPreset::Unreal };
+    EditorSettings unrealSettings;
+    unrealSettings.ViewportNavigation = ViewportNavigationPreset::Unreal;
+    unrealSettings.FabBrowserEnabled = false;
     EditorSettings persistedSettings;
     const bool persisted = WriteEditorSettings(persistedPath, unrealSettings)
         && ReadEditorSettings(persistedPath, persistedSettings)
-        && persistedSettings.ViewportNavigation == ViewportNavigationPreset::Unreal;
+        && persistedSettings.ViewportNavigation == ViewportNavigationPreset::Unreal
+        && !persistedSettings.FabBrowserEnabled;
+
+    // The Fab browser line: the format 1 file (preset only) still loads with the panel
+    // enabled; format 2 round-trips both values; every malformed variant is rejected whole
+    // and leaves the destination untouched.
+    const std::filesystem::path legacyPath = smokeRoot / "legacy.spiralsettings";
+    EditorSettings legacySettings;
+    legacySettings.FabBrowserEnabled = false;
+    const bool legacyLoads = WriteTextFile(legacyPath, "SpiralEditorSettings 1\nViewportNavigationPreset Unreal\n")
+        && ReadEditorSettings(legacyPath, legacySettings)
+        && legacySettings.ViewportNavigation == ViewportNavigationPreset::Unreal && legacySettings.FabBrowserEnabled;
+    EditorSettings enabledSettings;
+    enabledSettings.FabBrowserEnabled = true;
+    const std::filesystem::path enabledPath = smokeRoot / "fab-enabled.spiralsettings";
+    EditorSettings enabledRead;
+    enabledRead.FabBrowserEnabled = false;
+    const bool enabledRoundTrips = WriteEditorSettings(enabledPath, enabledSettings)
+        && ReadEditorSettings(enabledPath, enabledRead) && enabledRead.FabBrowserEnabled;
+    bool fabLineRejected = true;
+    const std::vector<std::string> malformedFab = {
+        "SpiralEditorSettings 2\nViewportNavigationPreset Fusion\n",
+        "SpiralEditorSettings 2\nViewportNavigationPreset Fusion\nFabBrowser\n",
+        "SpiralEditorSettings 2\nViewportNavigationPreset Fusion\nFabBrowser Maybe\n",
+        "SpiralEditorSettings 2\nViewportNavigationPreset Fusion\nFabBrowser enabled\n",
+        "SpiralEditorSettings 2\nViewportNavigationPreset Fusion\nFabBrowser Enabled\nExtra 1\n",
+        "SpiralEditorSettings 2\nFabBrowser Disabled\nViewportNavigationPreset Fusion\n",
+        "SpiralEditorSettings 3\nViewportNavigationPreset Fusion\nFabBrowser Disabled\n",
+        "SpiralEditorSettings 1\nViewportNavigationPreset Fusion\nFabBrowser Disabled\n",
+    };
+    for (size_t index = 0; index < malformedFab.size(); ++index)
+    {
+        const std::filesystem::path malformedPath = smokeRoot / ("fab-malformed-" + std::to_string(index) + ".spiralsettings");
+        EditorSettings untouched;
+        untouched.ViewportNavigation = ViewportNavigationPreset::Unreal;
+        untouched.FabBrowserEnabled = false;
+        if (!WriteTextFile(malformedPath, malformedFab[index]) || ReadEditorSettings(malformedPath, untouched)
+            || untouched.ViewportNavigation != ViewportNavigationPreset::Unreal || untouched.FabBrowserEnabled)
+            fabLineRejected = false;
+    }
     const bool invalidWritten = WriteTextFile(invalidPath,
         "SpiralEditorSettings 1\nViewportNavigationPreset Unsupported\n");
     EditorSettings unchangedOnInvalidRead { ViewportNavigationPreset::Unreal };
@@ -6338,10 +6405,12 @@ void EditorLayer::RunEditorSettingsSmoke()
     const bool projectManifestSeparated = manifestSeparated && manifestInput
         && manifestContents.str().find("ViewportNavigationPreset") == std::string::npos;
 
-    if (!missingDefaultsToFusion || !persisted || !invalidRejected || !projectManifestSeparated)
+    if (!missingDefaultsToFusion || !persisted || !invalidRejected || !projectManifestSeparated || !legacyLoads || !enabledRoundTrips
+        || !fabLineRejected)
         throw std::runtime_error("Editor settings smoke failed");
 
-    Engine::Log::Info("EditorSettingsSmokeV1 missingFusion=pass persistence=pass invalidTransactional=pass projectManifestSeparate=pass result=pass");
+    Engine::Log::Info("EditorSettingsSmokeV1 missingFusion=pass persistence=pass invalidTransactional=pass projectManifestSeparate=pass"
+                      " fabBrowserLine=pass format1Loads=pass result=pass");
     m_ConsoleLines.emplace_back("Editor settings smoke passed");
 }
 

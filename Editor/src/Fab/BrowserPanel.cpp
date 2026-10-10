@@ -3,6 +3,7 @@
 #include "BrowserHostLoader.h"
 #include "BrowserPanelCore.h"
 #include "Engine/Core/Log.h"
+#include "Engine/Platform/ExternalUrl.h"
 #include "Engine/Renderer/Renderer.h"
 
 #include <imgui.h>
@@ -68,10 +69,38 @@ namespace Fab
             Engine::UiTextureError LastError() override { return Engine::Renderer::GetLastUiTextureError(); }
         };
 
-        BrowserPanelEnvironment MakeEnvironment(IBrowserUiTextures& textures)
+        // Beside the profile directory, like the sign-in host list, so signing out
+        // (which deletes the profile) does not discard the dismissal.
+        std::filesystem::path NoticeDismissalPath(const BrowserPanelConfig& config)
+        {
+            return FabNoticeDismissalPath(config.ProfileDirectory, config.NoticeDismissalFile);
+        }
+
+        BrowserPanelEnvironment MakeEnvironment(IBrowserUiTextures& textures, const BrowserExternalOpener& opener)
         {
             BrowserPanelEnvironment environment;
             environment.Textures = &textures;
+            environment.LoadNoticeDismissal = [](const BrowserPanelConfig& config, std::string& error)
+            {
+                const std::filesystem::path path = NoticeDismissalPath(config);
+                if (path.empty())
+                    return FabNoticeDismissalStatus::Missing;
+                return LoadFabNoticeDismissalFile(path, FabDisclosureLimits::kNoticeVersion, error);
+            };
+            environment.SaveNoticeDismissal = [](const BrowserPanelConfig& config, std::string& error)
+            {
+                const std::filesystem::path path = NoticeDismissalPath(config);
+                if (path.empty())
+                {
+                    error = "there is no place to save it";
+                    return false;
+                }
+                return SaveFabNoticeDismissalFile(path, FabDisclosureLimits::kNoticeVersion, error);
+            };
+            environment.OpenExternalUrl = [&opener](std::string_view url, std::string_view host, std::string& error)
+            {
+                return opener(url, host, error);
+            };
             environment.LoadSurface = [](const BrowserPanelConfig& config)
             {
                 return LoadBrowserHostSurface(config.EditorDirectory);
@@ -100,7 +129,7 @@ namespace Fab
 
         constexpr const char* kSignOutPopup = "Sign out of Fab";
         constexpr const char* kSignInHostsPopup = "Sign-in hosts";
-        constexpr size_t kMaximumToolbarHostCharacters = 48;
+        constexpr const char* kOpenInBrowserLabel = "Open in browser";
 
         // The monitor with the largest overlap with the Editor window, as the
         // platform backend reports them. Everything is window (screen) pixels. When
@@ -154,7 +183,44 @@ namespace Fab
             return ImGui::CalcTextSize(label).x + ImGui::GetStyle().FramePadding.x * 2.0f;
         }
 
-        void DrawToolbar(BrowserPanelCore& core)
+        // What the last drawn frame showed, for the headless smoke (it cannot read widget state).
+        struct DrawnFrame
+        {
+            bool OpenInBrowserEnabled = false;
+            bool NoticeLine = false;
+            bool Hint = false;
+            bool LockGlyph = false;
+            std::string AddressText;
+        };
+
+        // Keeps the scheme prefix and the END of the host, which is the part that
+        // names the registrable domain; the head is what gets elided.
+        std::string ElideHost(const std::string& prefix, const std::string& host, float maximumWidth)
+        {
+            if (ImGui::CalcTextSize((prefix + host).c_str()).x <= maximumWidth)
+                return prefix + host;
+            std::string tail = host;
+            while (tail.size() > 4 && ImGui::CalcTextSize((prefix + "..." + tail).c_str()).x > maximumWidth)
+                tail.erase(0, 1);
+            return prefix + "..." + tail;
+        }
+
+        // A small padlock drawn with primitives, so it does not depend on a font glyph.
+        void DrawLock(float height)
+        {
+            const ImVec2 origin = ImGui::GetCursorScreenPos();
+            const float width = height * 0.62f;
+            ImDrawList* drawList = ImGui::GetWindowDrawList();
+            const ImU32 color = ImGui::GetColorU32(ImGuiCol_Text);
+            const float bodyTop = origin.y + height * 0.42f;
+            const float bodyBottom = origin.y + height * 0.92f;
+            drawList->AddRect(ImVec2(origin.x + width * 0.2f, origin.y + height * 0.08f), ImVec2(origin.x + width * 0.8f, bodyTop + 1.0f),
+                color, width * 0.3f, ImDrawFlags_RoundCornersTop, 1.5f);
+            drawList->AddRectFilled(ImVec2(origin.x, bodyTop), ImVec2(origin.x + width, bodyBottom), color, 1.5f);
+            ImGui::Dummy(ImVec2(width, height));
+        }
+
+        void DrawToolbar(BrowserPanelCore& core, DrawnFrame& drawn)
         {
             const ImGuiStyle& style = ImGui::GetStyle();
             const float rowStart = ImGui::GetCursorStartPos().x;
@@ -178,18 +244,53 @@ namespace Fab
                 core.GoHome();
             ImGui::EndDisabled();
 
-            // The host only: the path of a Fab page can carry an identifier the user did not choose to display.
-            ImGui::SameLine();
-            std::string host = core.DisplayHost();
-            if (host.size() > kMaximumToolbarHostCharacters)
-                host = host.substr(0, kMaximumToolbarHostCharacters - 3) + "...";
-            if (core.IsLoading())
-                host += "  (loading)";
-            ImGui::TextDisabled("%s", host.empty() ? "-" : host.c_str());
-
             const bool ownsKeyboard = core.WantsKeyboard();
             const float releaseWidth = ownsKeyboard ? ButtonWidth("Release keyboard") + style.ItemSpacing.x : 0.0f;
-            const float groupWidth = releaseWidth + ButtonWidth(kSignInHostsPopup) + style.ItemSpacing.x + ButtonWidth("Sign out");
+            const float groupWidth = releaseWidth + ButtonWidth(kOpenInBrowserLabel) + style.ItemSpacing.x
+                + ButtonWidth(kSignInHostsPopup) + style.ItemSpacing.x + ButtonWidth("Sign out");
+
+            // The real scheme and host (never the path, which can carry an identifier
+            // the user did not choose to display), so the user can see whose page it is
+            // before typing credentials.
+            ImGui::SameLine();
+            const std::string host = core.DisplayHost();
+            const std::string scheme = core.DisplayScheme();
+            const bool secure = scheme == "https" && !host.empty();
+            std::string text;
+            if (host.empty())
+            {
+                text = "-";
+            }
+            else
+            {
+                const float used = ImGui::GetCursorPosX() - rowStart;
+                const float lockWidth = secure ? ImGui::GetTextLineHeight() * 0.62f + style.ItemSpacing.x : 0.0f;
+                const float room = std::max(rowWidth - groupWidth - used - style.ItemSpacing.x * 2.0f - lockWidth, 40.0f);
+                const std::string prefix = scheme.empty() ? std::string() : scheme + "://";
+                text = ElideHost(secure ? prefix : (scheme.empty() ? std::string() : "not secure: " + prefix), host, room);
+            }
+            if (secure)
+            {
+                DrawLock(ImGui::GetTextLineHeight());
+                ImGui::SameLine();
+                ImGui::TextUnformatted(text.c_str());
+            }
+            else if (!host.empty())
+            {
+                ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.3f, 1.0f), "%s", text.c_str());
+            }
+            else
+            {
+                ImGui::TextDisabled("%s", text.c_str());
+            }
+            if (core.IsLoading())
+            {
+                ImGui::SameLine();
+                ImGui::TextDisabled("(loading)");
+            }
+            drawn.LockGlyph = secure;
+            drawn.AddressText = text;
+
             ImGui::SameLine(std::max(ImGui::GetCursorPosX() - rowStart + style.ItemSpacing.x, rowWidth - groupWidth));
             if (ownsKeyboard)
             {
@@ -197,6 +298,16 @@ namespace Fab
                     core.ReleaseKeyboard();
                 ImGui::SameLine();
             }
+            // Always available, whatever the browser's state: the page's current https
+            // address when the navigation policy allows it, else the Fab home page.
+            drawn.OpenInBrowserEnabled = true;
+            ImGui::BeginDisabled(!drawn.OpenInBrowserEnabled);
+            if (ImGui::Button(kOpenInBrowserLabel))
+                core.OpenInBrowser();
+            ImGui::EndDisabled();
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
+                ImGui::SetTooltip("Opens this page, or the Fab home page, in your system browser.");
+            ImGui::SameLine();
             ImGui::BeginDisabled(!core.Live());
             if (ImGui::Button(kSignInHostsPopup))
                 ImGui::OpenPopup(kSignInHostsPopup);
@@ -204,6 +315,34 @@ namespace Fab
             if (ImGui::Button("Sign out"))
                 ImGui::OpenPopup(kSignOutPopup);
             ImGui::EndDisabled();
+        }
+
+        // Shown under the toolbar after a load error, a denied navigation, or a page that
+        // ended with HTTP 403 or 503. It only points at the system browser: Spiral never
+        // detects, solves, or scripts a security check.
+        void DrawPageHint(BrowserPanelCore& core, DrawnFrame& drawn)
+        {
+            drawn.Hint = core.PageHint() != FabPageHint::None;
+            if (!drawn.Hint)
+                return;
+            ImGui::PushTextWrapPos(0.0f);
+            ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.3f, 1.0f), "%.*s", static_cast<int>(kFabPageHintText.size()), kFabPageHintText.data());
+            ImGui::PopTextWrapPos();
+        }
+
+        // The one-line notice above the page. It never replaces the page or delays the
+        // browser; Dismiss hides it and saves the dismissal.
+        void DrawNoticeLine(BrowserPanelCore& core, DrawnFrame& drawn)
+        {
+            drawn.NoticeLine = true;
+            const ImGuiStyle& style = ImGui::GetStyle();
+            const float dismissWidth = ButtonWidth("Dismiss");
+            ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + std::max(ImGui::GetContentRegionAvail().x - dismissWidth - style.ItemSpacing.x * 2.0f, 80.0f));
+            ImGui::TextDisabled("%.*s", static_cast<int>(kFabNoticeText.size()), kFabNoticeText.data());
+            ImGui::PopTextWrapPos();
+            ImGui::SameLine();
+            if (ImGui::Button("Dismiss"))
+                core.DismissNotice();
         }
 
         // Shown above the page while a denied navigation waits for the user's
@@ -359,10 +498,14 @@ namespace Fab
                 ImGui::SetNextFrameWantCaptureKeyboard(true);
         }
 
-        void DrawContents(BrowserPanelCore& core)
+        void DrawContents(BrowserPanelCore& core, DrawnFrame& drawn)
         {
             const ImGuiStyle& style = ImGui::GetStyle();
-            DrawToolbar(core);
+            drawn = DrawnFrame {};
+            DrawToolbar(core, drawn);
+            if (core.NoticeVisible())
+                DrawNoticeLine(core, drawn);
+            DrawPageHint(core, drawn);
             if (core.Live())
                 DrawConsentBanner(core);
 
@@ -395,11 +538,17 @@ namespace Fab
 
     struct BrowserPanel::Impl
     {
-        // Declared before Core: the core releases its textures while it is destroyed.
+        // Declared before Core: the core releases its textures while it is destroyed,
+        // and its environment refers to the opener.
         RendererUiTextures Textures;
+        BrowserExternalOpener Opener = [](std::string_view url, std::string_view host, std::string& error)
+        {
+            return Engine::OpenExternalHttpsUrl(url, host, error);
+        };
         BrowserPanelCore Core;
+        DrawnFrame LastDrawn;
 
-        Impl() : Core(MakeEnvironment(Textures)) {}
+        Impl() : Core(MakeEnvironment(Textures, Opener)) {}
     };
 
     BrowserPanel::BrowserPanel() : m_Impl(std::make_unique<Impl>()) {}
@@ -435,7 +584,7 @@ namespace Fab
         ImGui::SetNextWindowSize(ImVec2(960.0f, 640.0f), ImGuiCond_FirstUseEver);
         const ImGuiWindowFlags flags = ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse;
         if (ImGui::Begin("Fab", &open, flags))
-            DrawContents(core);
+            DrawContents(core, m_Impl->LastDrawn);
         else
             core.NotifyContentHidden();
         ImGui::End();
@@ -461,6 +610,48 @@ namespace Fab
     bool BrowserPanel::TryTakeCompletedDownload(BrowserPanelDownload& outDownload)
     {
         return m_Impl->Core.TryTakeCompletedDownload(outDownload);
+    }
+
+    bool BrowserPanel::IsDisabled() const
+    {
+        return m_Impl->Core.Disabled();
+    }
+
+    std::string BrowserPanel::DisabledText() const
+    {
+        return std::string(m_Impl->Core.DisabledText());
+    }
+
+    void BrowserPanel::SetDisabled(FabBrowserDisabledReason reason)
+    {
+        m_Impl->Core.SetDisabled(reason);
+    }
+
+    bool BrowserPanel::NoticeVisible() const
+    {
+        return m_Impl->Core.NoticeVisible();
+    }
+
+    void BrowserPanel::DismissNotice()
+    {
+        m_Impl->Core.DismissNotice();
+    }
+
+    bool BrowserPanel::OpenInBrowser()
+    {
+        return m_Impl->Core.OpenInBrowser();
+    }
+
+    void BrowserPanel::SetExternalOpener(BrowserExternalOpener opener)
+    {
+        if (opener)
+            m_Impl->Opener = std::move(opener);
+    }
+
+    BrowserPanelDrawRecord BrowserPanel::LastDrawRecord() const
+    {
+        const DrawnFrame& drawn = m_Impl->LastDrawn;
+        return { drawn.OpenInBrowserEnabled, drawn.NoticeLine, drawn.Hint, drawn.LockGlyph, drawn.AddressText };
     }
 
     void BrowserPanel::Shutdown()

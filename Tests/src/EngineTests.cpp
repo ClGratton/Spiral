@@ -76,6 +76,7 @@
 #include "PanelVisibilityTests.h"
 #include "ScenePrerequisiteTests.h"
 #include "BrowserPanelTests.h"
+#include "FabSafeguardTests.h"
 #include "BrowserSigninPolicyTests.h"
 #include "FabImportControllerTests.h"
 #include "UiTextureServiceTests.h"
@@ -12966,6 +12967,12 @@ int main(int argc, char** argv)
         FAST_TEST("Browser panel lifecycle loads once shuts down in contract order and fails closed on every startup error", SpiralTests::TestBrowserPanelLifecycleAndStartupFailures),
         FAST_TEST("Browser panel routes events through the input router with DIP conversion and focus rules", SpiralTests::TestBrowserPanelInputRouting),
         FAST_TEST("Browser panel downloads status and failure containment never leak URLs or escape exceptions", SpiralTests::TestBrowserPanelDownloadsStatusAndContainment),
+        FAST_TEST("Fab notice dismissal codec accepts only the exact grammar and the visibility rule follows the stored version", SpiralTests::TestFabNoticeDismissalCodecAndVisibility),
+        FAST_TEST("Fab notice dismissal file is owner-only atomic symlink-safe and survives sign-out beside the profile", SpiralTests::TestFabNoticeDismissalFileIsOwnerOnlyTransactionalAndBesideTheProfile),
+        FAST_TEST("Fab licence gate table refuses Reference-Only code-plugin UE-only and Other and requires CC-BY attribution", SpiralTests::TestFabLicenseGateTable),
+        FAST_TEST("Fab Open in browser opens only policy-allowed https pages without queries and falls back to the home page", SpiralTests::TestFabOpenInBrowserDecision),
+        FAST_TEST("Fab kill switch resolution and security-check page hints follow their tables", SpiralTests::TestFabKillSwitchAndPageHintTables),
+        FAST_TEST("Browser panel notice never delays the start and the kill switch Open in browser and page hints behave", SpiralTests::TestBrowserPanelEpicSafeguards),
         FAST_TEST("Browser sign-in default host table lists only documented providers and stays exact-host https-only", SpiralTests::TestBrowserSigninDefaultHostTable),
         FAST_TEST("Browser sign-in consent host popup target and granted hosts follow the exact-host policy", SpiralTests::TestBrowserSigninConsentAndPopupPolicy),
         FAST_TEST("Browser accept-language list follows the locale variables and rejects anything that is not a plain tag", SpiralTests::TestBrowserSigninAcceptLanguageList),

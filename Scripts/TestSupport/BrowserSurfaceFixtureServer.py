@@ -140,6 +140,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
         elif parsed.path == "/evil.exe":
             self.respond(200, "application/octet-stream", b"MZ" + bytes(1024),
                          [("Content-Disposition", 'attachment; filename="evil.exe"')])
+        elif parsed.path in ("/status/403", "/status/503"):
+            # What a managed security check answers with: the Fab panel only reads the number.
+            self.respond(int(parsed.path.rsplit("/", 1)[1]), "text/html",
+                         b'<title>status</title><body style="margin:0;background:#112233">')
         elif parsed.path in PAGES:
             self.respond(200, "text/html", PAGES[parsed.path].encode())
         else:

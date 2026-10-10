@@ -285,4 +285,25 @@ namespace Fab
         }
         return display;
     }
+
+    std::string BrowserNavigationPolicy::SchemeForDisplay(std::string_view url)
+    {
+        constexpr size_t kMaximumSchemeBytes = 16;
+        const size_t colon = url.find(':');
+        if (colon == std::string_view::npos || colon == 0 || colon > kMaximumSchemeBytes)
+            return {};
+        std::string scheme;
+        for (size_t index = 0; index < colon; ++index)
+        {
+            char character = url[index];
+            const bool letter = (character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z');
+            const bool other = (character >= '0' && character <= '9') || character == '+' || character == '-' || character == '.';
+            if (!letter && !(other && index > 0))
+                return {};
+            if (character >= 'A' && character <= 'Z')
+                character = static_cast<char>(character - 'A' + 'a');
+            scheme.push_back(character);
+        }
+        return scheme;
+    }
 }

@@ -116,6 +116,10 @@ namespace SpiralTests
             });
         }
 
+        // The HTTP status every following main-frame load ends with (the real adapter
+        // forwards the engine's status number from OnLoadEnd). 200 until changed.
+        void SetNextMainFrameStatus(int httpStatus) { m_NextHttpStatus = httpStatus; }
+
         void ScriptCursor(Fab::BrowserCursor cursor)
         {
             m_Script.push_back([this, cursor] { Emit([&] { m_Listener->OnCursor(cursor); }); });
@@ -251,9 +255,11 @@ namespace SpiralTests
             }
             if (kind != Fab::BrowserNavigationKind::TopLevel)
                 return;
+            Emit([&] { m_Listener->OnAddressScheme(Fab::BrowserNavigationPolicy::SchemeForDisplay(url)); });
             Emit([&] { m_Listener->OnAddress(Fab::BrowserNavigationPolicy::DisplayAddress(url)); });
             Emit([&] { m_Listener->OnLoadState(true, m_HasHistory, false); });
             m_HasHistory = true;
+            Emit([&] { m_Listener->OnMainFrameLoaded(m_NextHttpStatus); });
             Emit([&] { m_Listener->OnLoadState(false, m_HasHistory, false); });
         }
 
@@ -310,6 +316,7 @@ namespace SpiralTests
         size_t m_PumpCount = 0;
         Engine::u64 m_FrameSequence = 0;
         Engine::u64 m_NextDownloadId = 0;
+        int m_NextHttpStatus = 200;
         bool m_Initialized = false;
         bool m_InPump = false;
         bool m_HasHistory = false;
